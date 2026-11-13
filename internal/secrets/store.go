@@ -10,23 +10,10 @@ import (
 	"fmt"
 	"slices"
 	"sync"
-
-	"github.com/confidential-dot-ai/c8s/internal/lthash"
 )
 
 // ErrNotFound reports a path the store does not hold.
 var ErrNotFound = errors.New("secrets: no such path")
-
-// ErrUnavailable wraps a store that may take the next write: a CDS HA replica
-// with no leader or no quorum.
-var ErrUnavailable = errors.New("secrets: store unavailable; retry")
-
-// ErrCapacity wraps a write refused because the replicated state is near what
-// a snapshot can hold. It clears when the state shrinks.
-var ErrCapacity = errors.New("secrets: replicated state at capacity")
-
-// capacityMessage answers a write the cluster's state size refused.
-const capacityMessage = "CDS state is at its snapshot capacity: writes that grow it are refused until it shrinks; retry later"
 
 // The two refusals a write that grows the path map can meet.
 var (
@@ -135,8 +122,6 @@ type MemoryStore struct {
 	maxPaths     int
 	maxPerHolder int
 	maxValue     int
-
-	digest lthash.Hash
 }
 
 type entry struct {
@@ -161,12 +146,6 @@ func NewMemoryStore(maxPaths, maxPerHolder, maxValue int) *MemoryStore {
 	}
 }
 
-// Policy is the bounds the store holds. A CDS HA cluster fixes them at its
-// Genesis, and a replica built with others cannot apply its log.
-func (s *MemoryStore) Policy() (maxPaths, maxPerHolder, maxValue int) {
-	return s.maxPaths, s.maxPerHolder, s.maxValue
-}
-
 func (s *MemoryStore) Get(_ context.Context, path string) ([]byte, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -179,9 +158,7 @@ func (s *MemoryStore) Get(_ context.Context, path string) ([]byte, error) {
 	return append([]byte(nil), e.value...), nil
 }
 
-// putIfAbsent applies a put_if_absent command. Only Apply reaches it, so no
-// writer can skip the committer.
-func (s *MemoryStore) putIfAbsent(path string, value []byte, by Holder) ([]byte, Held, error) {
+func (s *MemoryStore) PutIfAbsent(_ context.Context, path string, value []byte, by Holder) ([]byte, Held, error) {
 	if err := s.checkValue(value); err != nil {
 		return nil, Held{}, err
 	}
@@ -197,8 +174,7 @@ func (s *MemoryStore) putIfAbsent(path string, value []byte, by Holder) ([]byte,
 	return append([]byte(nil), value...), Held{}, nil
 }
 
-// put applies a put command (see putIfAbsent).
-func (s *MemoryStore) put(path string, value []byte) (Held, error) {
+func (s *MemoryStore) Put(_ context.Context, path string, value []byte) (Held, error) {
 	if err := s.checkValue(value); err != nil {
 		return Held{}, err
 	}
@@ -225,20 +201,14 @@ func (s *MemoryStore) checkValue(value []byte) error {
 // another holder's value returns that holder's quota.
 func (s *MemoryStore) storeLocked(path string, value []byte, by Holder) {
 	if prior, ok := s.values[path]; ok {
-		s.digest.Remove(entryDigest(path, prior.value, prior.holder))
 		if s.holders[prior.holder] <= 1 {
 			delete(s.holders, prior.holder)
 		} else {
 			s.holders[prior.holder]--
 		}
 	}
-	stored := entry{
-		value:  append([]byte(nil), value...),
-		holder: by,
-	}
-	s.values[path] = stored
+	s.values[path] = entry{value: append([]byte(nil), value...), holder: by}
 	s.holders[by]++
-	s.digest.Add(entryDigest(path, stored.value, stored.holder))
 }
 
 // checkRoomLocked guards the path bounds for a write that grows the map:

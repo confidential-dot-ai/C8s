@@ -9,9 +9,6 @@ import (
 
 var ErrNoCDSAddress = errors.New("names no <host>:<port> a CDS serves on")
 
-// ClusterVersion counts the pin decrees this cluster's operator has signed.
-type ClusterVersion uint64
-
 // CDS is the confidential data service a node's clients reach. It runs on a
 // confidential VM of its own, so its TEE family is that VM's.
 type CDS struct {
@@ -20,8 +17,6 @@ type CDS struct {
 	// Measurements is a measurements document binding the CDS image to its
 	// launch file.
 	Measurements string `yaml:"measurements" json:"measurements"`
-	// PinFloor is the lowest cluster version this node takes a pin decree at.
-	PinFloor ClusterVersion `yaml:"pinFloor,omitempty" json:"pin_floor,omitempty"`
 }
 
 // CDSEndpoint is an accepted CDS block.

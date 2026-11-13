@@ -40,8 +40,6 @@ type Document struct {
 	// LeafDNSNames and LeafDNSPatterns are the DNS SAN rules CDS issues under.
 	LeafDNSNames    []string
 	LeafDNSPatterns []string
-	// HA is the replica set the cluster's CDS runs as; a zero one the singleton.
-	HA HA
 	// KMS is where pod secret release is brokered to; nil serves no pod secrets.
 	KMS *KMS
 }
@@ -78,7 +76,6 @@ func (d Document) wire() (wire, error) {
 		NodeCIDRs:          d.NodeCIDRs,
 		LeafDNSNames:       d.LeafDNSNames,
 		LeafDNSPatterns:    d.LeafDNSPatterns,
-		HA:                 d.HA.wire(),
 		KMS:                d.KMS.wire(),
 	}, nil
 }

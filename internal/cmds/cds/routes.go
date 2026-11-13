@@ -1,20 +1,16 @@
 package cds
 
 import (
-	"log/slog"
 	"net/http"
-	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/attestation"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	"github.com/confidential-dot-ai/c8s/internal/server"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/routes"
 	"github.com/confidential-dot-ai/c8s/pkg/secretbroker"
 )
@@ -25,15 +21,14 @@ type dependencies struct {
 	AllowlistHandler  allowlist.Handler
 	Routes            routeHandler
 	ReadyFn           attestation.ReadinessFunc
-	MeshCA            meshCA                      // the CA served at /ca, which signs every leaf
-	ClusterRoutes     map[string]http.HandlerFunc // a replica's cluster routes, by method and path
-	OperatorKeysPEM   []byte                      // pinned operator public keys; empty = /operator-keys 404s
-	NodeImages        armtls.PinSource            // the node images /attest admits by and /measurements publishes
-	RateLimiter       *issuer.IPRateLimiter       // per-source-IP limiter for attestation endpoints
-	ChallengeLimiter  *issuer.IPRateLimiter       // /authenticate's own, so it cannot spend the map above
-	MaxRequestSize    int64                       // applied to write endpoints; must be > 0
-	SecretsHandler    *secrets.Handler            // nil leaves /secrets unrouted (--secrets off)
-	SecretsChallenges attestation.Challenges
+	MeshCA            *issuer.MeshCA        // the one current CA: served at /ca and signs every leaf
+	OperatorKeysPEM   []byte                // pinned operator public keys; empty = /operator-keys 404s
+	MeasurementsDoc   []byte                // reference values being enforced, as served at /measurements
+	RateLimiter       *issuer.IPRateLimiter // per-source-IP limiter for attestation endpoints
+	ChallengeLimiter  *issuer.IPRateLimiter // /authenticate's own, so it cannot spend the map above
+	MaxRequestSize    int64                 // applied to write endpoints; must be > 0
+	SecretsHandler    *secrets.Handler      // nil leaves /secrets unrouted (--secrets off)
+	SecretsChallenges *attestation.ChallengeStore
 	SecretsOperator   *secrets.OperatorHandler // operator-supplied values; routed with SecretsHandler
 	SecretsExplain    *secrets.ExplainHandler  // release diagnostic; routed with SecretsHandler
 	PodSecrets        *PodSecretHandler        // nil leaves pod secret release unrouted (no KMS configured)
@@ -55,16 +50,9 @@ func newRouter(deps dependencies) http.Handler {
 	if deps.MeshCA == nil {
 		panic("cds: dependencies.MeshCA must be set")
 	}
-	if deps.NodeImages == nil {
-		panic("cds: dependencies.NodeImages must be set")
-	}
 	// One CA for the whole router: the handler signs with the certificate
-	// /ca publishes, and the route policy excludes that same certificate.
+	// /ca publishes.
 	deps.AttestHandler.MeshCA = deps.MeshCA
-	deps.Routes.MeshCA = deps.MeshCA
-	// One node image set for the whole router: /attest admits a caller by the
-	// set /measurements publishes.
-	deps.AttestHandler.NodeImages = deps.NodeImages
 	r := chi.NewRouter()
 	r.Use(server.RequestLogger)
 
@@ -109,14 +97,9 @@ func newRouter(deps dependencies) http.Handler {
 		r.Method(http.MethodPost, secretbroker.PodRoute, deps.perSandbox(deps.PodSecrets))
 	}
 
-	for route, handler := range deps.ClusterRoutes {
-		method, path, _ := strings.Cut(route, " ")
-		r.Method(method, path, handler)
-	}
-
 	r.Get("/ca", handleCA(deps.MeshCA))
 	r.Get("/operator-keys", handleOperatorKeys(deps.OperatorKeysPEM))
-	r.Get("/measurements", handleMeasurements(deps.NodeImages))
+	r.Get("/measurements", handleMeasurements(deps.MeasurementsDoc))
 
 	return r
 }
@@ -163,38 +146,30 @@ func capBody(max int64, next http.Handler) http.Handler {
 }
 
 // handleCA serves the one current mesh CA certificate; a renewal replaces it.
-func handleCA(mesh meshCA) http.HandlerFunc {
+func handleCA(mesh *issuer.MeshCA) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
-		current, issuing := mesh.Current()
-		if !issuing {
-			http.Error(w, "this CDS holds no mesh CA to publish", http.StatusServiceUnavailable)
-			return
-		}
 		w.Header().Set("Content-Type", "application/x-pem-file")
-		w.Write(current.CertPEM)
-	}
-}
-
-// handleMeasurements renders the node images this CDS admits a caller
-// against, so a verifier can compare the operator's own file with them. An
-// empty set is served, not 404'd: a CDS that certifies no node image is the
-// state a verifier most needs to be told about.
-func handleMeasurements(nodeImages armtls.PinSource) http.HandlerFunc {
-	return func(w http.ResponseWriter, _ *http.Request) {
-		document, err := refvalues.Render(nodeImages.Current())
-		if err != nil {
-			slog.Error("render the node images this CDS certifies", "error", err)
-			http.Error(w, "measurements unavailable", http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.Write(document)
+		w.Write(mesh.Current().CertPEM)
 	}
 }
 
 // handleOperatorKeys serves the pinned operator public-key bundle (public
 // material, like /ca) so `c8s verify` can report which keys may mutate the
 // allowlist. 404 when allowlist writes are disabled (no pinned keys).
+// handleMeasurements serves the reference values this CDS is enforcing. An
+// empty set is served, not 404'd: "admitting any measurement" is the state a
+// verifier most needs to be told about.
+func handleMeasurements(doc []byte) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		if len(doc) == 0 {
+			http.Error(w, "measurements unavailable", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(doc)
+	}
+}
+
 func handleOperatorKeys(operatorKeysPEM []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		if len(operatorKeysPEM) == 0 {

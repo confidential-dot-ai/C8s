@@ -19,9 +19,11 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
+	"github.com/confidential-dot-ai/c8s/internal/attestation"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/readiness"
+	"github.com/confidential-dot-ai/c8s/internal/sandboxledger"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
@@ -45,6 +47,8 @@ func run(ctx context.Context, cfg config) error {
 	if err := validateConfig(cfg); err != nil {
 		return err
 	}
+	pinned := cfg.measured.Nodes
+	slog.Info("node identities loaded", "tee", pinned.Family, "images", len(pinned.Images))
 
 	challengeLimiter, err := issuer.NewIPRateLimiter(rate.Limit(cfg.rateLimit), cfg.rateBurst, cfg.rateLimiterMax)
 	if err != nil {
@@ -68,65 +72,78 @@ func run(ctx context.Context, cfg config) error {
 	}
 	slog.Info("operator write authorization enabled (pinned operator keys)", "count", len(operatorKeys.Keys()), "key_set_hash", operatorKeysHash)
 
-	state, err := openStores(cfg)
+	allowlistStore, err := allowlist.OpenStore(cfg.allowlistDB)
 	if err != nil {
-		return err
+		return fmt.Errorf("open allowlist database: %w", err)
 	}
-	defer state.close()
+	defer allowlistStore.Close()
+	allowlistStore.SetNodeDelay(cfg.allowlistNodeDelay)
 
-	// What this CDS serves from, chosen once: its own stores and a mesh CA it
-	// mints, or the ones its cluster's log carries.
-	back, err := newBackend(ctx, cfg, state)
+	// CDS generates its mesh CA in process at startup; the private key never
+	// touches a Kubernetes Secret.
+	mesh, err := issuer.NewMeshCA(cfg.caCommonName, cfg.caCertValidity)
 	if err != nil {
-		return err
+		return fmt.Errorf("generate mesh CA: %w", err)
 	}
-	// Runs before the stores close: a replica applies its cluster's log to them.
-	defer back.Stop()
-	allowlistWrites := back.Allowlist()
-	mesh := back.MeshCA()
-	issuing, holdsCA := mesh.Current()
-	if !holdsCA {
-		return errors.New("this CDS serves no mesh CA, so it could issue nothing")
-	}
-	slog.Info("serving under a mesh CA",
-		"key_id", caKeyID(issuing.CA.Cert),
-		"fingerprint", certutil.CertFingerprint(issuing.CA.Cert.Raw),
-		"not_after", issuing.CA.Cert.NotAfter.Format(time.RFC3339),
+	slog.Info("generated in-memory mesh CA",
+		"key_id", caKeyID(mesh.Current().CA.Cert),
+		"fingerprint", certutil.CertFingerprint(mesh.Current().CA.Cert.Raw),
+		"not_after", mesh.Current().CA.Cert.NotAfter.Format(time.RFC3339),
 	)
 
-	nodeImages := separatePodAuthorities(back.NodeImages(), cfg.measured.PodImages)
-	logNodeImages(nodeImages.Current())
+	slog.Info("node image pinning enabled for /attest", "count", len(pinned.Images))
+	if pinned.Family == teetypes.FamilyTDX {
+		if firmwareOnly := imagesWithoutRegisters(pinned.Images); len(firmwareOnly) > 0 {
+			slog.Warn("these TDX node images pin no RTMR: the pin covers TDVF firmware only (MRTD), and the guest kernel and rootfs are not pinned", "images", firmwareOnly)
+		}
+	}
 
+	// Served at /measurements so a verifier holding the operator's own file can
+	// detect a swapped config. Built from the enforced values, never re-read
+	// from disk: re-reading would attest the file rather than the policy.
+	measurementsDoc, err := refvalues.Render(pinned)
+	if err != nil {
+		return fmt.Errorf("render /measurements document: %w", err)
+	}
 	cnPattern, err := compilePattern("--allowed-cn-pattern", cfg.allowedCNPattern)
 	if err != nil {
 		return err
 	}
 
 	asClient := armtls.NewAttestationClient(cfg.attestationApiURL)
-	// A pool of its own for /secrets: sharing one would make a nonce minted
-	// for issuance redeemable against a secret, and vice versa.
-	challengeStore, secretsChallenges := back.Challenges()
+	challengeStore := attestation.NewChallengeStore(cfg.challengeTTL)
+	// A separate pool for /secrets: sharing one would make a nonce minted for
+	// issuance redeemable against a secret, and vice versa.
+	secretsChallenges := attestation.NewChallengeStore(cfg.challengeTTL)
 	checker := readiness.NewChecker(asClient, cfg.readinessInterval)
 
 	// Seed before serving so the first GET /allowlist returns the bootstrap
 	// allowlist (attestation-api, system images) rather than an empty set; an
 	// unseeded store would deny every worker pull until an operator populated
 	// it. Fail closed on any seed error.
-	if err := seedWorkloads(allowlistWrites, cfg.measured.Workloads); err != nil {
+	if err := seedWorkloads(&allowlistStore, cfg.measured.Workloads); err != nil {
 		return fmt.Errorf("seed measured workloads: %w", err)
 	}
 
 	// C6: there is no route seed; an empty store waits for an operator write.
-	if _, err := allowlistWrites.LoadRoutes(); errors.Is(err, allowlist.ErrNoRoutes) {
+	if _, err := allowlistStore.LoadRoutes(); errors.Is(err, allowlist.ErrNoRoutes) {
 		slog.Warn("no route manifest stored: write one with 'c8s routes put' or 'c8s routes add'")
 	} else if err != nil {
 		return err
 	}
 
-	if err := allowlistWrites.StartJournal(); err != nil {
+	if err := allowlistStore.StartJournal(); err != nil {
 		return fmt.Errorf("start allowlist history: %w", err)
 	}
-	operatorAuthorizer := singleUse(verifier.AuthorizeIssuedAt, allowlistWrites, back.TokenFloor, time.Duration(cfg.jwtClockSkew)*time.Second)
+	var started time.Time
+	if !cfg.allowlistPersistent {
+		started = time.Now()
+	}
+	operatorAuthorizer := singleUse(verifier.AuthorizeIssuedAt, &allowlistStore, started, time.Duration(cfg.jwtClockSkew)*time.Second)
+
+	if !cfg.allowlistPersistent {
+		slog.Warn("allowlist store is not persistent: a restart resets the served allowlist to the configured workloads and regenerates the mesh CA. Operator-added digests, the allowlist history, spent operator tokens and the route manifest do not survive")
+	}
 
 	policy := issuer.CSRPolicy{
 		DNSSANPatterns:   cfg.measured.DNSSANPatterns,
@@ -138,25 +155,31 @@ func run(ctx context.Context, cfg config) error {
 	// identity"). Pins the same node identities as /attest, so the inventory
 	// answering is held to the standard its armTLS certificate already met.
 	inventoryHosts := cfg.measured.NodeCIDRs
-	sandboxDigests, err := workloadclaims.NewDigestsClient(ctx, digestsClientConfig(cfg, nodeImages))
+	nodePins := armtls.Pins{Images: pinned.Images}
+	sandboxDigests, err := workloadclaims.NewDigestsClient(ctx, digestsClientConfig(cfg, nodePins))
 	if err != nil {
 		return err
 	}
-	sandboxBindings := back.Bindings()
+
+	// The ledger is written on every issuance, not only when secrets are on:
+	// enabling the feature later would otherwise start with an empty ledger and
+	// fail closed for every pod until its certificate next renews.
+	sandboxBindings := sandboxledger.New(issuer.CapTTL(cfg.certTTL, issuer.MaxLeafTTL), cfg.sandboxLedgerMax)
+	go sandboxBindings.EvictionLoop(ctx.Done(), cfg.rateLimiterEvictInterval)
 
 	var (
 		secretsHandler  *secrets.Handler
 		secretsOperator *secrets.OperatorHandler
 		secretsExplain  *secrets.ExplainHandler
 	)
-	if enabled, why := secretsEnabled(nodeImages.Current().Images, inventoryHosts); enabled {
+	if enabled, why := secretsEnabled(pinned.Images, inventoryHosts); enabled {
 		// One store behind both handlers: an operator write and a workload read
 		// are two doors onto the same paths.
-		store := back.Secrets()
-		policy := secrets.NewCachedPolicy(allowlistWrites)
+		store := newSecretsStore(cfg)
+		policy := secrets.NewCachedPolicy(&allowlistStore)
 		secretsHandler = &secrets.Handler{
 			Store:          store,
-			Challenges:     secretsChallenges,
+			Challenges:     &secretsChallenges,
 			Inventory:      sandboxDigests,
 			Bindings:       sandboxBindings,
 			Policy:         policy,
@@ -186,46 +209,47 @@ func run(ctx context.Context, cfg config) error {
 
 	deps := dependencies{
 		AttestHandler: AttestHandler{
-			Challenges:        challengeStore,
+			Challenges:        &challengeStore,
 			AttestationClient: asClient,
 			MeshCA:            mesh,
 			CertTTL:           cfg.certTTL,
 			NamedCertTTL:      cfg.namedCertTTL,
 			RouterCertTTL:     cfg.routerCertTTL,
 			RequestTimeout:    cfg.requestTimeout,
+			Images:            pinned.Images,
 			PodImages:         cfg.measured.PodImages,
 			SANValidation:     cfg.sanValidation,
 			Policy:            policy,
-			AllowlistStore:    allowlistWrites,
+			AllowlistStore:    &allowlistStore,
 			PolicySnapshots:   &policySnapshotCache{},
 			SandboxDigests:    sandboxDigests,
 			InventoryHosts:    inventoryHosts,
 			SandboxBindings:   sandboxBindings,
 		},
 		AllowlistHandler: allowlist.Handler{
-			Allowlist:         allowlistWrites,
+			Store:             &allowlistStore,
 			WriteAuthorizer:   operatorAuthorizer,
 			MaxWriteBodyBytes: allowlistWriteBodyCap,
 		},
 		Routes: routeHandler{
-			Allowlist: allowlistWrites,
+			Store:     &allowlistStore,
 			Authorize: operatorAuthorizer,
+			MeshCA:    mesh.Current().CA.Cert,
 		},
-		ReadyFn:           readinessFn(checker.Ready, back, cfg.minCAValidity),
+		ReadyFn:           readinessFn(checker.Ready, mesh, cfg.minCAValidity),
 		MeshCA:            mesh,
-		ClusterRoutes:     back.ClusterRoutes(),
 		OperatorKeysPEM:   operatorKeys.PEM(),
-		NodeImages:        nodeImages,
+		MeasurementsDoc:   measurementsDoc,
 		RateLimiter:       rateLimiter,
 		ChallengeLimiter:  challengeLimiter,
 		MaxRequestSize:    cfg.maxRequestSize,
 		SecretsHandler:    secretsHandler,
-		SecretsChallenges: secretsChallenges,
+		SecretsChallenges: &secretsChallenges,
 		SecretsOperator:   secretsOperator,
 		SecretsExplain:    secretsExplain,
 	}
 	if kms := cfg.measured.KMS; kms != nil {
-		broker, err := newSecretBroker(mesh)
+		broker, err := newSecretBroker(ownCA{mesh})
 		if err != nil {
 			return err
 		}
@@ -235,15 +259,14 @@ func run(ctx context.Context, cfg config) error {
 	go rateLimiter.EvictionLoop(ctx, cfg.rateLimiterEvictInterval, cfg.rateLimiterIdleTimeout)
 	go challengeLimiter.EvictionLoop(ctx, cfg.rateLimiterEvictInterval, cfg.rateLimiterIdleTimeout)
 
-	// The gate refuses what the state this CDS serves no longer answers for.
-	router := back.Gate(newRouter(deps))
+	router := newRouter(deps)
 
 	go checker.Run(ctx)
 
-	addr := clientAddress(cfg)
+	addr := fmt.Sprintf("%s:%d", cfg.host, cfg.port)
 	srv := newHTTPServer(addr, router, cfg)
 
-	tlsCfg, meshPeers, err := armtls.NewServerTLSConfig(servingConfig(cfg, issuing.CA.Cert))
+	tlsCfg, meshPeers, err := armtls.NewServerTLSConfig(servingConfig(cfg, mesh.Current().CA.Cert))
 	if err != nil {
 		return fmt.Errorf("armtls server config: %w", err)
 	}
@@ -259,17 +282,13 @@ func run(ctx context.Context, cfg config) error {
 	slog.Info("cds serving armTLS", "platform", cfg.armtlsPlatform)
 
 	go cmdsutil.ShutdownOnDone(ctx, srv, 5*time.Second)
-	go back.KeepMeshCA(ctx, meshPeers)
+	go renewMeshCAWhenDue(ctx, mesh, caRenewalCheckInterval, meshPeers)
 
 	slog.Info("cds listening", "addr", addr)
 	if err := srv.ListenAndServeTLS("", ""); err != http.ErrServerClosed {
 		return err
 	}
 	return nil
-}
-
-func clientAddress(cfg config) string {
-	return fmt.Sprintf("%s:%d", cfg.host, cfg.port)
 }
 
 func newHTTPServer(addr string, handler http.Handler, cfg config) *http.Server {
@@ -329,14 +348,13 @@ func servingConfig(cfg config, meshCA *x509.Certificate) *armtls.ServerConfig {
 }
 
 // digestsClientConfig is the client CDS calls node inventories back with for
-// a sandbox's container digests. It holds an inventory to the node images CDS
-// certifies, so the two follow one set.
-func digestsClientConfig(cfg config, nodeImages armtls.PinSource) workloadclaims.DigestsClientConfig {
+// a sandbox's container digests.
+func digestsClientConfig(cfg config, pins armtls.Pins) workloadclaims.DigestsClientConfig {
 	return workloadclaims.DigestsClientConfig{
 		Platform:             cfg.armtlsPlatform.String(),
 		AttestFunc:           armtlsAttestFunc(cfg),
 		AttestationAPIURL:    cfg.attestationApiURL,
-		NodeImages:           nodeImages,
+		Pins:                 pins,
 		Timeout:              cfg.requestTimeout,
 		MeasuredPoliciesFile: "",
 	}
@@ -400,16 +418,6 @@ func secretsEnabled(nodeImages []remote.ImagePin, inventoryHosts workloadclaims.
 	return true, ""
 }
 
-func logNodeImages(images refvalues.ReferenceValues) {
-	slog.Info("node image pinning enabled for /attest", "tee", images.Family, "count", len(images.Images))
-	if images.Family != teetypes.FamilyTDX {
-		return
-	}
-	if firmwareOnly := imagesWithoutRegisters(images.Images); len(firmwareOnly) > 0 {
-		slog.Warn("these TDX node images pin no RTMR: the pin covers TDVF firmware only (MRTD), and the guest kernel and rootfs are not pinned", "images", firmwareOnly)
-	}
-}
-
 // imagesWithoutRegisters names the node images pinned by their launch
 // measurement alone.
 func imagesWithoutRegisters(images []remote.ImagePin) []string {
@@ -447,9 +455,6 @@ func validateConfig(cfg config) error {
 	}
 	if cfg.maxHeaderBytes < 0 {
 		return fmt.Errorf("--max-header-bytes must be non-negative")
-	}
-	if skew := time.Duration(cfg.jwtClockSkew) * time.Second; 2*skew >= allowlist.SpentTokenMargin {
-		return fmt.Errorf("--jwt-clock-skew must stay under half of %v, so an operator token the verifier accepts is never refused as a replay", allowlist.SpentTokenMargin)
 	}
 	// Not "0 disables": this is the stale-identity bound for a named leaf, and
 	// 0 is the disable idiom elsewhere in the chart, so a zero here would read
@@ -496,17 +501,18 @@ func compilePattern(name, raw string) (*regexp.Regexp, error) {
 	return re, nil
 }
 
-// readinessFn returns a closure that flips /readyz to 503 unless the
-// attestation-api is healthy, the state this CDS serves answers, and its mesh
-// CA certificate has more than minCAValidity left — the window renewal has to
-// succeed in.
-func readinessFn(svcReady func() bool, back backend, minCAValidity time.Duration) func() bool {
+// readinessFn returns a closure that flips /readyz to 503 when either the
+// attestation-api is unhealthy or the current mesh CA certificate is within
+// minCAValidity of expiry — the window renewal has to succeed in.
+func readinessFn(svcReady func() bool, mesh *issuer.MeshCA, minCAValidity time.Duration) func() bool {
 	return func() bool {
-		if !svcReady() || !back.Ready() {
+		if !svcReady() {
 			return false
 		}
-		issuing, holdsCA := back.MeshCA().Current()
-		return holdsCA && caValidityHolds(issuing.CA.Cert, minCAValidity, time.Now())
+		if !caValidityHolds(mesh.Current().CA.Cert, minCAValidity, time.Now()) {
+			return false
+		}
+		return true
 	}
 }
 

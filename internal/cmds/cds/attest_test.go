@@ -88,23 +88,14 @@ func newTestAttestHandler(t *testing.T, stubURL string, pinned []remote.ImagePin
 	if err != nil {
 		t.Fatalf("new mesh ca: %v", err)
 	}
-	store := attestation.NewLocalChallenges(30 * time.Second)
+	store := attestation.NewChallengeStore(30 * time.Second)
 	return AttestHandler{
-		Challenges:        store,
+		Challenges:        &store,
 		AttestationClient: remote.NewClient(stubURL),
-		MeshCA:            ownCA{mesh},
+		MeshCA:            mesh,
 		CertTTL:           time.Hour,
-		NodeImages:        certifying(pinned...),
+		Images:            pinned,
 	}
-}
-
-// The set a CDS whose configuration names it certifies, which no command
-// replaces.
-func certifying(images ...remote.ImagePin) armtls.PinSource {
-	return armtls.FixedPins(refvalues.ReferenceValues{
-		Family: teetypes.FamilySNP,
-		Images: images,
-	})
 }
 
 // imagePin pins one node image by its launch digest, the whole pin on a
@@ -119,10 +110,7 @@ func imagePin(t *testing.T, name, digest string) remote.ImagePin {
 
 func issueChallenge(t *testing.T, h AttestHandler) string {
 	t.Helper()
-	c, err := h.Challenges.Create()
-	if err != nil {
-		t.Fatalf("create challenge: %v", err)
-	}
+	c := h.Challenges.Create()
 	return base64.StdEncoding.EncodeToString(c[:])
 }
 
@@ -195,8 +183,7 @@ func TestAttest_InProcessSignAndReturnsChain(t *testing.T) {
 	}
 	leaf := chain[0]
 	ca := chain[1]
-	signing, _ := h.MeshCA.Current()
-	if !bytes.Equal(ca.Raw, signing.CA.Cert.Raw) {
+	if !bytes.Equal(ca.Raw, h.MeshCA.Current().CA.Cert.Raw) {
 		t.Fatalf("CA bundle cert does not match handler CA")
 	}
 	if err := leaf.CheckSignatureFrom(ca); err != nil {
@@ -283,7 +270,7 @@ func TestAttest_UnpinnedLaunchDigestDenied(t *testing.T) {
 func TestAttest_NoPinnedNodeImageDenied(t *testing.T) {
 	stub := newStubAttestationApi(t, testLaunchDigest)
 	h := newTestAttestHandler(t, stub.URL(), nil)
-	h.NodeImages = certifying()
+	h.Images = nil
 	challenge := issueChallenge(t, h)
 	csrPEM, _ := generateCSR(t)
 
@@ -930,24 +917,6 @@ func logRecord(t *testing.T, logs *bytes.Buffer, msg string) map[string]any {
 	}
 	t.Fatalf("no %q record: %s", msg, logs.String())
 	return nil
-}
-
-// A CDS that holds no mesh CA between the gate and the signature answers
-// unavailable, so a requester retries instead of treating it as a refusal.
-func TestAttest_NoIssuingMeshCAIsUnavailable(t *testing.T) {
-	stub := newStubAttestationApi(t, testLaunchDigest)
-	h := newTestAttestHandler(t, stub.URL(), nil)
-	h.MeshCA = noMeshCA{}
-	csrPEM, _ := generateCSR(t)
-
-	wantRefusal(t, postAttest(t, h, issueChallenge(t, h), csrPEM), http.StatusServiceUnavailable, types.ErrorCodeInternal)
-}
-
-// noMeshCA is a replica that stopped serving.
-type noMeshCA struct{}
-
-func (noMeshCA) Current() (issuer.CurrentCA, bool) {
-	return issuer.CurrentCA{}, false
 }
 
 // The issuance record is the only durable trace that a mesh identity was

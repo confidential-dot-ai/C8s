@@ -1,6 +1,6 @@
 .PHONY: build install build-c8s build-c8s-node build-get-cert build-armtls-mesh \
        build-nri-image-policy \
-       test test-podmesh-netns test-integration test-integration-cluster test-integration-cdsha test-e2e-cds-ha-vms test-node-guest-image-gpu-cc test-node-guest-image-scratch test-node-guest-image-cloud-init test-e2e-cw-label-policy test-e2e-allowlist-enforcement test-e2e-components-ready test-e2e-cw-workload mutation-check mutation-full vet fmt lint clean \
+       test test-podmesh-netns test-integration test-integration-cluster test-node-guest-image-gpu-cc test-node-guest-image-scratch test-node-guest-image-cloud-init test-e2e-cw-label-policy test-e2e-allowlist-enforcement test-e2e-components-ready test-e2e-cw-workload mutation-check mutation-full vet fmt lint clean \
        manifests generate check-crd-chart install-controller-gen require-controller-gen
 
 CONTROLLER_GEN         ?= controller-gen
@@ -82,7 +82,7 @@ build-nri-image-policy:
 C8S_TEST_COUNT ?= -count=1
 # `work` covers every go.work module; ./... stops at the root module.
 test:
-	go test -race $(C8S_TEST_COUNT) -timeout=600s work
+	go test -race $(C8S_TEST_COUNT) -timeout=120s work
 
 .PHONY: test-worker-router-api
 test-worker-router-api:
@@ -105,10 +105,6 @@ test-integration:
 # Integration (cluster) job.
 test-integration-cluster:
 	./test/integration/cluster/run.sh
-
-# Three real `c8s cds` replicas of one cluster on loopback addresses (Linux).
-test-integration-cdsha:
-	./test/integration/cdsha/run.sh -short
 
 test-node-guest-image-gpu-cc:
 	./images/node-guest/tests/gpu-cc-enforce-test.sh
@@ -188,12 +184,6 @@ test-e2e-allowlist-enforcement:
 # kubectl pointed at a cluster with C8s installed.
 test-e2e-components-ready:
 	./test/e2e/components-ready.sh
-
-# Three CDS VMs serving one cluster on real SEV-SNP hardware, cloned from an
-# existing CDS VM. Needs kubectl pointed at the launcher cluster; run it last,
-# because it replaces that cluster's CVMs with its own.
-test-e2e-cds-ha-vms:
-	./test/e2e/cds-ha-vms.sh
 
 # Live-cluster check that the sample confidential workload runs with the
 # injected c8s-cert sidecar. Needs kubectl pointed at a cluster with C8s

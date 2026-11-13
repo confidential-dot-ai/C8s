@@ -23,7 +23,7 @@ const DefaultMaxWriteBodyBytes int64 = 64 * 1024
 
 // Handler holds the dependencies for allowlist HTTP handlers.
 type Handler struct {
-	Allowlist       *Handle
+	Store           *Store
 	WriteAuthorizer WriteAuthorizer
 	// MaxWriteBodyBytes caps mutation request bodies. Zero means
 	// DefaultMaxWriteBodyBytes; a non-positive value clamps to the default.
@@ -45,12 +45,12 @@ func (h Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 	var version string
 	var err error
 	if r.URL.RawQuery == pkgallowlist.NodeQuery {
-		body, version, err = h.Allowlist.InEffect(time.Now())
+		body, version, err = h.Store.InEffect(time.Now())
 	} else {
-		body, version, err = h.Allowlist.Served()
+		body, version, err = h.Store.Served()
 	}
 	if err != nil {
-		readFailed(w, err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	tag := pkgallowlist.EntityTag(objectDigest(body))
@@ -96,12 +96,13 @@ func (h Handler) HandleReplaceAll(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("allowlist write stores no operator signature: its body is not the document's canonical bytes",
 			"remote", r.RemoteAddr)
 	}
-	if err := h.Allowlist.ReplaceAll(al, write); err != nil {
+	if err := h.Store.ReplaceAll(al, write); err != nil {
 		if errors.Is(err, ErrVersionMismatch) {
 			http.Error(w, err.Error()+"; fetch it and apply the change again", http.StatusPreconditionFailed)
 			return
 		}
-		WriteFailed(w, err)
+		slog.Error("allowlist write failed", "err", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
@@ -170,57 +171,18 @@ func (a WriteAuthorizer) ReadAuthorized(w http.ResponseWriter, r *http.Request, 
 	}
 	if err := a(r, body); err != nil {
 		slog.Warn("write rejected", "method", r.Method, "path", r.URL.Path, "remote", r.RemoteAddr, "reason", err)
-		if refusedByTheStore(err) {
-			WriteFailed(w, err)
-			return nil, false
-		}
 		httputil.RefuseOperatorToken(w, err)
 		return nil, false
 	}
 	return body, true
 }
 
-// WriteFailed answers a write the allowlist store refused or could not take,
-// the route manifest's included. The 503 is retryable at another replica; the
-// 507s clear when the state shrinks.
-func WriteFailed(w http.ResponseWriter, err error) {
-	switch {
-	case errors.Is(err, ErrUnavailable):
-		slog.Warn("allowlist write not taken", "err", err)
-		httputil.WriteUnavailable(w, ErrUnavailable)
-	case errors.Is(err, ErrCapacity):
-		slog.Warn("allowlist write refused: the replicated state is at its snapshot capacity", "err", err)
-		http.Error(w, ErrCapacity.Error(), http.StatusInsufficientStorage)
-	case errors.Is(err, ErrStoreFull):
-		slog.Error("allowlist write refused: the store has no room left", "err", err)
-		http.Error(w, ErrStoreFull.Error(), http.StatusInsufficientStorage)
-	default:
-		slog.Error("allowlist write failed", "err", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-	}
-}
-
-// refusedByTheStore reports an error of the store rather than of the token.
-func refusedByTheStore(err error) bool {
-	return errors.Is(err, ErrUnavailable) || errors.Is(err, ErrCapacity) || errors.Is(err, ErrStoreFull)
-}
-
-func readFailed(w http.ResponseWriter, err error) {
-	if IsLocalStoreFault(err) {
-		slog.Warn("allowlist read failed on the local store", "err", err)
-		httputil.WriteUnavailable(w, ErrUnavailable)
-		return
-	}
-	slog.Error("allowlist read failed", "err", err)
-	http.Error(w, "internal server error", http.StatusInternalServerError)
-}
-
 // HandleHistory handles GET /allowlist/history: every document CDS served,
 // oldest first, and the host privilege the allowlist declared.
 func (h Handler) HandleHistory(w http.ResponseWriter, _ *http.Request) {
-	history, err := h.Allowlist.History()
+	history, err := h.Store.History()
 	if err != nil {
-		readFailed(w, err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -233,7 +195,7 @@ var objectHex = regexp.MustCompile(`^[0-9a-f]{64}$`)
 // of a document in the history.
 func (h Handler) HandleObject(w http.ResponseWriter, r *http.Request) {
 	h.serveByDigest(w, r, "application/json", func(digest string) ([]byte, bool, error) {
-		return h.Allowlist.Object(digest)
+		return h.Store.Object(digest)
 	})
 }
 
@@ -241,7 +203,7 @@ func (h Handler) HandleObject(w http.ResponseWriter, r *http.Request) {
 // operator write token that signed that document.
 func (h Handler) HandleSignature(w http.ResponseWriter, r *http.Request) {
 	h.serveByDigest(w, r, "text/plain", func(digest string) ([]byte, bool, error) {
-		token, ok, err := h.Allowlist.Signature(digest)
+		token, ok, err := h.Store.Signature(digest)
 		return []byte(token), ok, err
 	})
 }
@@ -254,7 +216,7 @@ func (h Handler) serveByDigest(w http.ResponseWriter, r *http.Request, contentTy
 	}
 	body, ok, err := lookup("sha256:" + hex)
 	if err != nil {
-		readFailed(w, err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	if !ok {

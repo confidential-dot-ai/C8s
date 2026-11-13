@@ -2,7 +2,6 @@ package nriimagepolicy
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"github.com/containerd/nri/pkg/api"
@@ -27,9 +26,6 @@ import (
 func (c nodeCVM) containerMounts(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) (*api.ContainerAdjustment, error) {
 	p := c.p
 	if fetchesRouteManifest(pod, ctr) {
-		if err := p.refusedUntilFirstDecree(); err != nil {
-			return nil, err
-		}
 		return p.routerCDSMount(), nil
 	}
 	injected := injectedCredentialSidecar(pod, ctr)
@@ -57,9 +53,6 @@ func (c nodeCVM) containerMounts(ctx context.Context, pod *api.PodSandbox, ctr *
 	if len(mounts) == 0 {
 		return nil, nil
 	}
-	if err := p.refusedUntilFirstDecree(); err != nil {
-		return nil, err
-	}
 	return &api.ContainerAdjustment{Mounts: mounts}, nil
 }
 
@@ -69,16 +62,6 @@ func (c podCVM) containerMounts(_ context.Context, _ *api.PodSandbox, _ *api.Con
 		return nil, nil
 	}
 	return &api.ContainerAdjustment{Mounts: []*api.Mount{readOnlyBind(c.p.clientDocument, workloadclaims.ClientDocumentPath)}}, nil
-}
-
-// refusedUntilFirstDecree refuses immediately rather than waiting: the look
-// can outlast containerd's NRI request timeout, and the kubelet retries the
-// creation.
-func (p *plugin) refusedUntilFirstDecree() error {
-	if p.awaitingDecree.Load() {
-		return errors.New("the node is still taking its first CDS pin decree; retry once it has")
-	}
-	return nil
 }
 
 // holdsCredentialsIdentity reports whether this container runs as the identity
@@ -100,22 +83,16 @@ func fetchesRouteManifest(pod *api.PodSandbox, ctr *api.Container) bool {
 		ctr.GetUser().GetUid() == workloadclaims.UpstreamUID
 }
 
-// routerCDSMount is the CDS endpoint and the node's CDS pins: without the
-// followed pins the router loses its routes the moment an image roll retires
-// its launch-time set. The pins land at a path of their own, so the router is
-// not handed a credential client's trust root.
+// routerCDSMount is the CDS endpoint alone: the router polls the signed route
+// manifest from the one CDS its node admits, and takes its pins from the
+// measured base the chart renders rather than from a node document.
 func (p *plugin) routerCDSMount() *api.ContainerAdjustment {
-	var mounts []*api.Mount
-	if p.cdsAddress != "" {
-		mounts = append(mounts, readOnlyBind(p.cdsAddress, workloadclaims.CDSAddressPath))
-	}
-	if p.cdsPins != "" {
-		mounts = append(mounts, readOnlyBind(p.cdsPins, workloadclaims.RouterCDSPinsPath))
-	}
-	if len(mounts) == 0 {
+	if p.cdsAddress == "" {
 		return nil
 	}
-	return &api.ContainerAdjustment{Mounts: mounts}
+	return &api.ContainerAdjustment{
+		Mounts: []*api.Mount{readOnlyBind(p.cdsAddress, workloadclaims.CDSAddressPath)},
+	}
 }
 
 // injectedCredentialSidecar reports the webhook's own shape: a reserved
