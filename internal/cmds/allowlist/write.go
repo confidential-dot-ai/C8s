@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	hacli "github.com/confidential-dot-ai/c8s/internal/cmds/cdsha"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
@@ -226,6 +227,15 @@ func replaceIfUnchanged(ctx context.Context, c allowlistclient.Client, doc *pkga
 	if version == "" {
 		// Without a version the write would be unconditional.
 		return errors.New(`CDS served the allowlist without a version, so the write cannot be made conditional on it`)
+	}
+	if cs, ok := signer.(chainSigner); ok {
+		handled, err := hacli.WritePolicy(ctx, cs.opts, doc, version)
+		if errors.Is(err, hacli.ErrPolicyChanged) {
+			err = errAllowlistChanged
+		}
+		if handled {
+			return err
+		}
 	}
 	err := c.ReplaceAll(ctx, doc, version, signer)
 	if err == nil {

@@ -15,6 +15,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	hacli "github.com/confidential-dot-ai/c8s/internal/cmds/cdsha"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
@@ -361,7 +362,7 @@ func conditionalWrite(cmd *cobra.Command, c allowlistclient.Client, doc *pkgallo
 // did not do.
 func writeFailure(unconfirmedHeading, refusedHeading string, err error) error {
 	var unconfirmed *unconfirmedError
-	if errors.As(err, &unconfirmed) {
+	if errors.As(err, &unconfirmed) || errors.Is(err, hacli.ErrNotConfirmed) {
 		return fmt.Errorf("%s: %w", unconfirmedHeading, err)
 	}
 	return fmt.Errorf("%s: %w", refusedHeading, err)

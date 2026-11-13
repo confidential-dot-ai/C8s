@@ -10,6 +10,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cdsca"
+	hacli "github.com/confidential-dot-ai/c8s/internal/cmds/cdsha"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cdslaunch"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/verify"
@@ -110,6 +111,7 @@ func NewCmd() *cobra.Command {
 
 	cmd.AddCommand(cdsca.NewCmd())
 	cmd.AddCommand(cdslaunch.NewCmd())
+	cmd.AddCommand(hacli.NewCmd())
 
 	return cmd
 }

@@ -7,6 +7,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/c8srunc"
+	hacli "github.com/confidential-dot-ai/c8s/internal/cmds/cdsha"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/version"
 )
@@ -57,6 +59,10 @@ func main() {
 	defer stop()
 	if err := rootCmd.ExecuteContext(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, err)
+		if errors.Is(err, hacli.ErrNotConfirmed) {
+			// A CDS chain write that may have been applied.
+			os.Exit(3)
+		}
 		os.Exit(cmdsutil.ExitStatus(err))
 	}
 }
