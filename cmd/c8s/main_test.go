@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"os"
 	"reflect"
 	"slices"
@@ -124,6 +125,89 @@ func TestIsRuncAlias(t *testing.T) {
 		if got := isRuncAlias(tt.argv0); got != tt.want {
 			t.Errorf("isRuncAlias(%q) = %v, want %v", tt.argv0, got, tt.want)
 		}
+	}
+}
+
+// Every command with subcommands refuses a word that names none of them and
+// keeps its own Args rule and action; one without an action prints its help
+// when given no word.
+func TestCommandGroupsRefuseAnUnknownSubcommand(t *testing.T) {
+	rootCmd.InitDefaultCompletionCmd()
+	groups := append([]*cobra.Command{rootCmd}, groupsBelow(rootCmd)...)
+	own := map[*cobra.Command]groupRules{}
+	for _, group := range groups {
+		own[group] = rulesOf(group)
+	}
+	t.Cleanup(func() {
+		for group, rules := range own {
+			group.Args, group.RunE = rules.args, rules.runE
+		}
+	})
+	refuseUnknownSubcommands(rootCmd)
+	for _, group := range groups {
+		t.Run(group.CommandPath(), func(t *testing.T) {
+			before := own[group]
+			if before.args != nil && !sameFunc(group.Args, before.args) {
+				t.Error("its own Args rule was replaced")
+			}
+			if before.runnable && !sameFunc(group.RunE, before.runE) {
+				t.Error("its own action was replaced")
+			}
+			if answersAnUnknownWordByExiting(group) {
+				return
+			}
+			path := strings.Fields(group.CommandPath())[1:]
+			refusesAnUnknownWord(t, group, path)
+			if !before.runnable {
+				printsItsHelpBare(t, group, path)
+			}
+		})
+	}
+}
+
+type groupRules struct {
+	args     cobra.PositionalArgs
+	runE     func(*cobra.Command, []string) error
+	runnable bool
+}
+
+func rulesOf(cmd *cobra.Command) groupRules {
+	return groupRules{
+		args:     cmd.Args,
+		runE:     cmd.RunE,
+		runnable: cmd.Runnable(),
+	}
+}
+
+// sameFunc compares two func values by their code, as Go cannot compare funcs.
+func sameFunc(a, b any) bool {
+	return reflect.ValueOf(a).Pointer() == reflect.ValueOf(b).Pointer()
+}
+
+// secret-probe answers an unknown action itself, with exit status 2.
+func answersAnUnknownWordByExiting(group *cobra.Command) bool {
+	return group.CommandPath() == "c8s secret-probe"
+}
+
+func refusesAnUnknownWord(t *testing.T, group *cobra.Command, path []string) {
+	t.Helper()
+	var err error
+	out := captureStdout(t, func() { err = runC8s(t, append(slices.Clone(path), "bogus")...) })
+	want := fmt.Sprintf("unknown command %q for %q", "bogus", group.CommandPath())
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("%s bogus = %v, want an error containing %s", group.CommandPath(), err, want)
+	}
+	if strings.Contains(out, "Available Commands:") {
+		t.Errorf("%s bogus printed its help", group.CommandPath())
+	}
+}
+
+func printsItsHelpBare(t *testing.T, group *cobra.Command, path []string) {
+	t.Helper()
+	var err error
+	out := captureStdout(t, func() { err = runC8s(t, path...) })
+	if err != nil || !strings.Contains(out, "Available Commands:") {
+		t.Errorf("bare %s = %v with output %q, want its help", group.CommandPath(), err, out)
 	}
 }
 

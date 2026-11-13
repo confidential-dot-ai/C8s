@@ -3,6 +3,7 @@ package podprovider
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -24,13 +25,24 @@ type instanceIntent struct {
 	Deleted         bool          `json:"deleted,omitempty"`
 }
 
+// errForeignInstance reports an instance the cloud returned under the
+// record's key or identity that the record did not create: another identity,
+// or labels that differ from the frozen create. An answer naming no instance
+// is not one: it shows nothing about the instance and is retried. Before the
+// record holds an instance identity the reconciler retries a foreign instance
+// as unavailable; after, it ends the pod with InstanceIdentityMismatch.
+var errForeignInstance = errors.New("cloud instance is not the one the record created")
+
 func (in *instanceIntent) owns(got *instance) error {
-	if got == nil || got.ID == "" || (in.InstanceID != "" && got.ID != in.InstanceID) {
-		return errors.New("cloud returned another or missing instance identity")
+	if got == nil || got.ID == "" {
+		return errors.New("cloud returned no instance identity")
+	}
+	if in.InstanceID != "" && got.ID != in.InstanceID {
+		return fmt.Errorf("%w: another instance identity", errForeignInstance)
 	}
 	for k, value := range in.Request.Labels {
 		if got.Labels[k] != value {
-			return errors.New("cloud instance ownership differs from its frozen launch")
+			return fmt.Errorf("%w: ownership labels differ from the frozen launch", errForeignInstance)
 		}
 	}
 	return nil

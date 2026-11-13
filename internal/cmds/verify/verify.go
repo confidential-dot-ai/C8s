@@ -287,6 +287,18 @@ func run(ctx context.Context, cfg config, out, errOut io.Writer) int {
 		fmt.Fprintf(errOut, "error: unknown --mode %q (valid modes: auto, armtls-cert, discovery, attest-pq, attest-lb)\n", cfg.mode)
 		return exitUsage
 	}
+	switch cfg.kind {
+	case "", "auto", "cds", "lb", "workload":
+	default:
+		fmt.Fprintf(errOut, "error: unknown --kind %q (valid kinds: auto, cds, lb, workload)\n", cfg.kind)
+		return exitUsage
+	}
+	switch cfg.output {
+	case "", "text", "json":
+	default:
+		fmt.Fprintf(errOut, "error: unknown --output %q (valid formats: text, json)\n", cfg.output)
+		return exitUsage
+	}
 
 	plan, err := buildPolicy(cfg)
 	if err != nil {
@@ -1216,7 +1228,7 @@ func resolveMode(cfg config) string {
 		return "discovery"
 	case "cds", "workload":
 		return "armtls-cert"
-	default: // auto (or unknown kind): let gatherEvidence try the LB discovery
+	default: // auto: let gatherEvidence try the LB discovery
 		// doc, then the armTLS serving cert, so a bare target with no --kind is
 		// detected either way. Returning a concrete mode here would defeat that.
 		return "auto"

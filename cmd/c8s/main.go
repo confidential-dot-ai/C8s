@@ -49,6 +49,7 @@ func main() {
 		os.Exit(c8srunc.Main(os.Args))
 	}
 	normalizeArgvAlias()
+	refuseUnknownSubcommands(rootCmd)
 	ctx, stop := cmdsutil.SignalContext()
 	defer stop()
 	if err := rootCmd.ExecuteContext(ctx); err != nil {
@@ -64,6 +65,42 @@ const runcAlias = "c8s-runc"
 func isRuncAlias(argv0 string) bool {
 	base := filepath.Base(argv0)
 	return base == runcAlias || strings.HasSuffix(base, "-"+runcAlias)
+}
+
+// refuseUnknownSubcommands gives every command group below root, cobra's
+// completion included, the unknown-command error cobra gives only root.
+func refuseUnknownSubcommands(root *cobra.Command) {
+	root.InitDefaultCompletionCmd()
+	for _, group := range groupsBelow(root) {
+		refuseWordsThatNameNoSubcommand(group)
+	}
+}
+
+// groupsBelow lists every command under parent that has subcommands.
+func groupsBelow(parent *cobra.Command) []*cobra.Command {
+	var groups []*cobra.Command
+	for _, cmd := range parent.Commands() {
+		if cmd.HasSubCommands() {
+			groups = append(groups, cmd)
+		}
+		groups = append(groups, groupsBelow(cmd)...)
+	}
+	return groups
+}
+
+// A group keeps an Args rule of its own. cobra checks Args only on a command
+// with an action, so a group without one gets an action that prints its help.
+func refuseWordsThatNameNoSubcommand(group *cobra.Command) {
+	if group.Args == nil {
+		group.Args = cobra.NoArgs
+	}
+	if !group.Runnable() {
+		group.RunE = printHelp
+	}
+}
+
+func printHelp(cmd *cobra.Command, _ []string) error {
+	return cmd.Help()
 }
 
 func normalizeArgvAlias() {
