@@ -21,8 +21,8 @@ func newKeygenCmd() *cobra.Command {
 		Use:   "new",
 		Short: "Generate an operator EC keypair (P-256)",
 		Long: `Generate an operator keypair: the private key that signs allowlist,
-secret, and volume writes, and the public key CDS pins at install
-(c8s install --operator-keys).
+secret, and volume writes, and the public key CDS pins in its configuration
+(c8s cds config new --operator-keys).
 
 Both files are created new — an existing file is never overwritten. The
 private key is written 0600.`,

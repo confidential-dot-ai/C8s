@@ -44,7 +44,8 @@ const (
 	defaultIdleTimeout    = 30 * time.Second
 	maxHeaderBytes        = 16 << 10
 	// maxConcurrentConns caps accepted sockets and upstream connections alike,
-	// well above the node's consumers (CDS, ratls-mesh, sidecars, NRI).
+	// well above the node's consumers: the sidecars injected into its pods,
+	// the router's helpers and, on an aks or gke node, the NRI plugin.
 	maxConcurrentConns = 256
 )
 
@@ -59,9 +60,9 @@ type config struct {
 	idleTimeout       time.Duration
 }
 
-// NewCmd returns the attest-proxy subcommand. It runs as a sidecar in the
-// attestation-api DaemonSet pod, publishing the pod-loopback API on the
-// node-local socket.
+// NewCmd returns the attest-proxy subcommand. It publishes the loopback API on
+// the node-local socket: as a sidecar in the attestation-api DaemonSet pod on
+// an aks or gke node, and as a systemd service on the measured node image.
 func NewCmd() *cobra.Command {
 	cfg := config{
 		readTimeout:  defaultRequestTimeout,

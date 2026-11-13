@@ -86,7 +86,7 @@ host-namespace policy is a cluster policy the chart always renders, which that
 administrator can delete, so an
 adversarial administrator means the measured node image. Deleting CDS drops the
 served entries, the secrets, and the route manifest, after which every member
-pod must be recreated ([operator.md](operator.md#cds-is-a-singleton)).
+pod must be recreated ([operator.md](operator.md#cds-runs-as-one-vm)).
 
 ## The pod network
 
