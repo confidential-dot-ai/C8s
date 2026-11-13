@@ -81,15 +81,22 @@ with the tag:
 TAG=<RELEASE_TAG>
 ```
 
-`<RELEASE_TAG>` is the tag to check, for example `v0.75.1`. Download the
-statement and its bundle, then verify the signature:
+`<RELEASE_TAG>` is the tag to check, for example `v0.75.1`. Stable tags are
+signed from `main` and beta tags (`vX.Y.Z-beta.N`) from `beta`, so set the
+branch that signed it:
+
+```sh
+BRANCH=main  # beta for a vX.Y.Z-beta.N tag
+```
+
+Download the statement and its bundle, then verify the signature:
 
 ```sh
 gh release download "$TAG" --repo confidential-dot-ai/C8s \
   --pattern release-statement.json --pattern release-statement.sigstore.json
 cosign verify-blob \
   --bundle release-statement.sigstore.json \
-  --certificate-identity https://github.com/confidential-dot-ai/C8s/.github/workflows/semver-tag.yml@refs/heads/main \
+  --certificate-identity https://github.com/confidential-dot-ai/C8s/.github/workflows/semver-tag.yml@refs/heads/$BRANCH \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   release-statement.json
 ```
@@ -104,8 +111,8 @@ A download failure means the tag has no release. The capital C in
 authority) keeps the case and cosign compares the identity exactly.
 
 The signature proves only that the statement came from `semver-tag.yml` on
-`main`. Check its fields against the tag, parsing them rather than comparing
-file bytes:
+that branch. Check its fields against the tag, parsing them rather than
+comparing file bytes:
 
 ```sh
 COMMIT=$(gh api "repos/confidential-dot-ai/C8s/commits/$TAG" --jq .sha)
@@ -163,9 +170,8 @@ statement. It never moves `latest`, an `X.Y` alias, a stable tag, or a floating
 guest-image tag, and beta tags never change the stable baseline on `main`.
 
 A beta is signed under its own identity, so a verifier pinning the `main`
-identity does not accept one: verify it as above with
-`...semver-tag.yml@refs/heads/beta` as `--certificate-identity`. The signature
-proves that the `beta` workflow made the statement, so its value rests on the
+identity does not accept one: verify it as above with `BRANCH=beta`. The
+signature proves that the `beta` workflow made the statement, so its value rests on the
 branch rules below. To bring `main` into `beta`, merge a pull request from
 `main` with a merge commit.
 
