@@ -48,6 +48,9 @@ type verifyPlan struct {
 	routes *routeCheck
 	// trustKeys is the parsed --trust-operator-keys bundle, nil when unset.
 	trustKeys []*ecdsa.PublicKey
+	// operatorKeysDigest is the digest the set a kind=cds target serves at
+	// /operator-keys must equal, nil when no --operator-keys bundle pins it.
+	operatorKeysDigest []byte
 }
 
 // buildPolicy parses the measurement allowlist, resolves the register pins and
@@ -124,8 +127,14 @@ func buildPolicy(cfg config) (*verifyPlan, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := expectedOperatorKeysDigest(cfg); err != nil {
-		return nil, err
+	// In the attested modes --operator-keys pins the published route manifest,
+	// which parseRouteCheck reads below.
+	var operatorKeysDigest []byte
+	if !attestedMode(cfg) {
+		operatorKeysDigest, err = expectedOperatorKeysDigest(cfg)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	var caPool *x509.CertPool
@@ -192,13 +201,14 @@ func buildPolicy(cfg config) (*verifyPlan, error) {
 			Registers:    pins.manual,
 			AllowDebug:   cfg.allowDebug,
 		}},
-		pins:         pins,
-		meshCA:       caPool,
-		initDataHash: initDataHash,
-		refValues:    refValues,
-		served:       served,
-		routes:       routes,
-		trustKeys:    trustKeys,
+		pins:               pins,
+		meshCA:             caPool,
+		initDataHash:       initDataHash,
+		refValues:          refValues,
+		served:             served,
+		routes:             routes,
+		trustKeys:          trustKeys,
+		operatorKeysDigest: operatorKeysDigest,
 	}, nil
 }
 
