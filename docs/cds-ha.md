@@ -20,6 +20,11 @@ ha:
 `c8s cds config new --ha-endpoint <host:port> ...` writes it.
 The order is the slot order. All replicas boot the same launch file, so they share one measurement.
 
+Every entry of the launch file's `nodes` must bind a launch (`approver_key`, `launch_file` or `launch_file_digest`), as every `nodes` entry of the chain must: the launch file's set is the first one the chain certifies.
+A replica refuses to start on a launch file with an unbound entry, and `accept-node` refuses to extend such a set.
+Upgrading from an earlier build: a set whose launch file has an unbound `nodes` entry does not boot on this one.
+Binding the entry changes the launch file, and with it the measurement every accepted build pins, so the set re-roots: a new cluster ID, launch file and genesis, and node launch documents pinned anew.
+
 Replica flags (none of them is measured; a wrong value costs availability, not safety):
 
 | flag | meaning |
@@ -160,8 +165,8 @@ Notes:
 - A set that a majority of the members' running builds are not in is refused without `--force` (U2).
 - `accept-image` and `raise-floor` re-read the chain and retry a write another write beat (409) for up to `--retry-for` (default 1m).
 - `c8s allowlist` and `c8s routes` write to a replica set as chain entries. A replica answers the old `PUT /allowlist` and `PUT /routes` with 409; a single replica still takes `PUT /secrets`.
-- The CLI records, per cluster (`--state-dir`, default `c8s/cds-ha` in the user config directory), the genesis and the last head a write was answered done for. It refuses a replica serving a chain without that head, or of another genesis.
-- A write that may have been applied exits 3.
+- The CLI records, per cluster (`--state-dir`, default `c8s/cds-ha` in the user config directory), the genesis and the last head a write was answered done for. It refuses a replica serving a chain without that head, or of another genesis. Without a record, it takes only a genesis signed by `--operator-key`; an operator who did not sign it passes `--genesis <hash>` to a `c8s cds ha` write once, which records it.
+- A write that may have been applied exits 3, as does a `c8s allowlist` write to a single CDS that no answer confirmed.
 
 ## Deployment and upgrades
 

@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	hacli "github.com/confidential-dot-ai/c8s/internal/cmds/cdsha"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
@@ -252,7 +253,7 @@ func replaceIfUnchanged(ctx context.Context, c allowlistclient.Client, doc *pkga
 	case landed:
 		return nil
 	case served == version:
-		return &unconfirmedError{cause: err, version: version}
+		return &cmdsutil.ExitStatusError{Status: cmdsutil.ExitNotConfirmed, Err: &unconfirmedError{cause: err, version: version}}
 	default:
 		return errAllowlistChanged
 	}

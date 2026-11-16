@@ -428,6 +428,57 @@ func TestACutReplicaServesOnlyOnceItHoldsTheKeptEntry(t *testing.T) {
 	})
 }
 
+// An own-build check that hangs, as one waiting on a slow attestation API,
+// holds no lock: the replica serves while it runs.
+func TestSlowSelfCheckBlocksNoRead(t *testing.T) {
+	s := newSet(t, 1)
+	s.bootstrap()
+	n := s.node(0)
+	entered, release := make(chan struct{}, 1), make(chan struct{})
+	defer close(release)
+	s.mu.Lock()
+	n.selfWait, n.selfEntered = release, entered
+	s.mu.Unlock()
+	if _, _, err := n.Submit(context.Background(), s.accepted(n.State().Head, buildA, buildB)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the newly accepted build was never checked")
+	}
+	served := make(chan error, 1)
+	go func() {
+		_, err := s.serves(0)
+		served <- err
+	}()
+	select {
+	case err := <-served:
+		if err != nil {
+			t.Fatalf("refused while its own build check ran: %v", err)
+		}
+	case <-time.After(5 * T):
+		t.Fatal("a read waited for the own-build check")
+	}
+}
+
+// A store rolled back to an older head of the chain is written forward,
+// and the replica never serves below the head it holds.
+func TestStoreRollbackIsWrittenForward(t *testing.T) {
+	s := newSet(t, 1)
+	s.bootstrap()
+	old, _ := s.store.GetHead(context.Background())
+	s.write(0)
+	head := s.write(0)
+	s.setHead(old)
+	if got, err := s.serves(0); err != nil || got != head {
+		t.Fatalf("served %+v %v after the store rolled back, want %+v", got, err, head)
+	}
+	if got := s.storeHead(); got.Seq != head.Seq || got.Hash != head.Hash {
+		t.Fatalf("store head %+v, not written forward to %+v", got, head)
+	}
+}
+
 // A replica refuses a resolution dropping an entry it answered done.
 func TestResolveRefusesDoneEntry(t *testing.T) {
 	s := newSet(t, 1)

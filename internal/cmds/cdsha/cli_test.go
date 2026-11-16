@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -25,8 +26,10 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cdschain"
 	haapi "github.com/confidential-dot-ai/c8s/internal/cdsha"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cdsconn"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
 // Only a 200 naming the entry is done; a 202 or a broken answer
@@ -88,17 +91,18 @@ func TestPlanResolution(t *testing.T) {
 		name     string
 		statuses []*haapi.Status
 		lost     []int
-		rec      *record
+		ackedAt  cdschain.Hash
 		want     string
 	}{
-		{"ok", []*haapi.Status{forkOn(keep, drop), forkOn(drop, keep), {}}, nil, nil, ""},
-		{"a replica does not answer", []*haapi.Status{forkOn(keep, drop), nil, {}}, nil, nil, "does not answer"},
-		{"assumed lost", []*haapi.Status{forkOn(keep, drop), nil, {}}, []int{1}, nil, ""},
-		{"drops a done entry", []*haapi.Status{forkOn(keep, drop), forkOn(drop, keep, cdschain.Head{Seq: 5}), {}}, nil, nil, "done"},
-		{"drops the acknowledged head", []*haapi.Status{forkOn(keep, drop), forkOn(drop, keep), {}}, nil, &record{Acknowledged: cdschain.Head{Seq: 5, Hash: drop}}, "acknowledged"},
-		{"keeps an unseen entry", []*haapi.Status{forkOn(cdschain.Hash{3}, drop), {}, {}}, nil, nil, "neither"},
+		{"ok", []*haapi.Status{forkOn(keep, drop), forkOn(drop, keep), {}}, nil, cdschain.Hash{}, ""},
+		{"a replica does not answer", []*haapi.Status{forkOn(keep, drop), nil, {}}, nil, cdschain.Hash{}, "does not answer"},
+		{"assumed lost", []*haapi.Status{forkOn(keep, drop), nil, {}}, []int{1}, cdschain.Hash{}, ""},
+		{"drops a done entry", []*haapi.Status{forkOn(keep, drop), forkOn(drop, keep, cdschain.Head{Seq: 5}), {}}, nil, cdschain.Hash{}, "done"},
+		{"drops the acknowledged head", []*haapi.Status{forkOn(keep, drop), forkOn(drop, keep), {}}, nil, drop, "acknowledged"},
+		{"keeps the acknowledged chain", []*haapi.Status{forkOn(keep, drop), forkOn(drop, keep), {}}, nil, keep, ""},
+		{"keeps an unseen entry", []*haapi.Status{forkOn(cdschain.Hash{3}, drop), {}, {}}, nil, cdschain.Hash{}, "neither"},
 	} {
-		got, err := planResolution(tc.statuses, 5, keep, tc.lost, tc.rec)
+		got, err := planResolution(tc.statuses, 5, keep, tc.lost, tc.ackedAt)
 		if tc.want == "" && (err != nil || got != drop) {
 			t.Errorf("%s: %v %v", tc.name, got, err)
 		}
@@ -165,6 +169,8 @@ type racedReplica struct {
 	entries []cdschain.Entry
 	race    func(head *cdschain.State) cdschain.Entry
 	races   int
+	// answer, when set, rewrites the head a taken entry is answered with.
+	answer func(*cdschain.Head)
 }
 
 func (f *racedReplica) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -190,7 +196,11 @@ func (f *racedReplica) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		f.entries = append(f.entries, e)
-		_ = json.NewEncoder(w).Encode(cdschain.Head{Cluster: state.Cluster, Seq: state.Head.Seq + 1, Hash: e.Hash()})
+		head := cdschain.Head{Cluster: state.Cluster, Seq: state.Head.Seq + 1, Hash: e.Hash()}
+		if f.answer != nil {
+			f.answer(&head)
+		}
+		_ = json.NewEncoder(w).Encode(head)
 	}
 }
 
@@ -230,7 +240,7 @@ func TestWritePolicyLosingARaceIsRetried(t *testing.T) {
 		return state
 	}
 	for attempt := 1; ; attempt++ {
-		handled, err := WritePolicy(context.Background(), opts, doc("ghcr.io/x/w:v1"), head().PolicyVersion())
+		handled, err := WritePolicy(context.Background(), opts, doc("ghcr.io/x/w:v1"), head().CurrentPolicyVersion())
 		if !handled {
 			t.Fatal("a replica set was not handled")
 		}
@@ -306,7 +316,7 @@ func TestRefreshPolicyOutranksTheDroppedBranch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	version, _ := strconv.ParseUint(state.PolicyVersion(), 10, 64)
+	version, _ := strconv.ParseUint(state.CurrentPolicyVersion(), 10, 64)
 	if version <= held+1 || string(state.Policy) != string(canonical) {
 		t.Fatalf("served at version %d (a dropped policy may hold %d): %s", version, held+1, state.Policy)
 	}
@@ -585,5 +595,151 @@ func TestStatusReportsAReplicaItCannotRead(t *testing.T) {
 	}
 	if err == nil || !strings.Contains(err.Error(), "1 of 1 replicas") {
 		t.Fatalf("status with no replica read: %v, want an error", err)
+	}
+}
+
+// A done answer is held to the entry's seq and cluster too: a replica naming
+// another one has not confirmed this write, which is then not recorded.
+func TestAppendHoldsTheAnswerToTheEntry(t *testing.T) {
+	for name, lie := range map[string]func(*cdschain.Head){
+		"seq":     func(h *cdschain.Head) { h.Seq += 5 },
+		"cluster": func(h *cdschain.Head) { h.Cluster = "other" },
+	} {
+		entries, key := testChain(t, 1)
+		replica := &racedReplica{entries: entries, answer: lie}
+		srv := httptest.NewServer(replica)
+		w := &writer{o: &options{stateDir: t.TempDir()}, url: srv.URL, client: srv.Client(), key: key}
+		state, err := w.verified(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		pub, _ := cdschain.PublicKeyPEM(&key.PublicKey)
+		if _, err := w.append(context.Background(), state, cdschain.TypeOperatorKeys, cdschain.OperatorKeys{Keys: pub}); !errors.Is(err, ErrNotConfirmed) {
+			t.Errorf("an answer naming another %s: %v", name, err)
+		}
+		if rec, _ := w.o.record("lane"); rec != nil && rec.Acknowledged.Seq != 0 {
+			t.Errorf("an answer naming another %s was recorded at %d", name, rec.Acknowledged.Seq)
+		}
+		srv.Close()
+	}
+}
+
+// A conditional route manifest write lands only on the manifest it was read
+// from, as the single CDS's If-Match: an edit landing in between, or no
+// manifest at all, refuses it.
+func TestWriteRoutesIsConditional(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	entries, key := testChain(t, 1)
+	replica := &racedReplica{entries: entries}
+	srv := httptest.NewServer(replica)
+	defer srv.Close()
+	signer, err := operatorauth.NewSigner(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := &cdsconn.Options{URL: srv.URL, Insecure: true, OperatorKey: writeOperatorKey(t, key), Timeout: 5 * time.Second}
+	first, second := []byte(`{"routes":[]}`), []byte(`{"routes":[{}]}`)
+	if _, err := WriteRoutes(context.Background(), opts, first, signer, routeDigest(first)); !errors.Is(err, ErrRoutesChanged) {
+		t.Fatalf("a conditional write with no manifest on the chain: %v", err)
+	}
+	if _, err := WriteRoutes(context.Background(), opts, first, signer, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := WriteRoutes(context.Background(), opts, second, signer, routeDigest(second)); !errors.Is(err, ErrRoutesChanged) {
+		t.Fatalf("a write conditional on a manifest the chain does not hold: %v", err)
+	}
+	if replica.head().Seq != 1 {
+		t.Fatalf("head %d: a refused write was appended", replica.head().Seq)
+	}
+	if _, err := WriteRoutes(context.Background(), opts, second, signer, routeDigest(first)); err != nil {
+		t.Fatalf("a write conditional on the chain's manifest: %v", err)
+	}
+}
+
+// Through a router that answers /ha/status itself (503 before a route
+// manifest applies), the CDS is not taken for a replica set: the old write
+// is sent, which a replica set would refuse.
+func TestWriteEntryIsNotHandledWithoutAnHAStatus(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	_, key := testChain(t, 1)
+	router := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "no route manifest", http.StatusServiceUnavailable)
+	}))
+	defer router.Close()
+	opts := &cdsconn.Options{URL: router.URL, Insecure: true, OperatorKey: writeOperatorKey(t, key), Timeout: 5 * time.Second}
+	if handled, err := writeEntry(context.Background(), opts, cdschain.TypePolicy, nil); handled {
+		t.Fatalf("a router without routes was taken for a replica set: %v", err)
+	}
+}
+
+// An operator who did not sign the genesis has no record: --genesis pins the
+// chain instead, and records it; a chain of another genesis is refused.
+func TestGenesisPinForAnOperatorWithoutARecord(t *testing.T) {
+	entries, _ := testChain(t, 1)
+	srv := httptest.NewServer(&racedReplica{entries: entries})
+	defer srv.Close()
+	added := testKey(t)
+	w := &writer{o: &options{stateDir: t.TempDir()}, url: srv.URL, client: srv.Client(), key: added}
+	if _, err := w.verified(context.Background()); err == nil || !strings.Contains(err.Error(), "--genesis") {
+		t.Fatalf("no record and no pin: %v", err)
+	}
+	w.o.genesisPin = cdschain.Hash{7}.String()
+	if _, err := w.verified(context.Background()); err == nil {
+		t.Fatal("a chain of another genesis was taken")
+	}
+	w.o.genesisPin = entries[0].Hash().String()
+	if _, err := w.verified(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	w.o.genesisPin = ""
+	if rec, err := w.o.record("lane"); err != nil || rec == nil || rec.Genesis != entries[0].Hash() {
+		t.Fatalf("record after the pin: %+v %v", rec, err)
+	}
+	if _, err := w.verified(context.Background()); err != nil {
+		t.Fatalf("the recorded genesis: %v", err)
+	}
+}
+
+// An interrupted wait after a resolve ends at once with the interrupt, not
+// as a --settle-timeout.
+func TestAfterResolveEndsOnTheInterrupt(t *testing.T) {
+	_, key := testChain(t, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "unconfirmed", http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+	o := &options{Options: cdsconn.Options{URL: srv.URL, Insecure: true, OperatorKey: writeOperatorKey(t, key), Timeout: 5 * time.Second}, stateDir: t.TempDir()}
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(200*time.Millisecond, cancel)
+	start := time.Now()
+	if err := o.afterResolve(ctx, []string{srv.URL}, 3, time.Minute); !errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "settle-timeout") || time.Since(start) > 10*time.Second {
+		t.Fatalf("after the interrupt: %v after %s", err, time.Since(start))
+	}
+}
+
+// A write that may have been applied exits 3 through every caller.
+func TestNotConfirmedExitStatus(t *testing.T) {
+	if got := cmdsutil.ExitStatus(fmt.Errorf("writing: %w", ErrNotConfirmed)); got != cmdsutil.ExitNotConfirmed {
+		t.Fatalf("exit status %d", got)
+	}
+}
+
+// Concurrent acknowledgements never move the record down.
+func TestAcknowledgeTakesTurns(t *testing.T) {
+	o := &options{stateDir: t.TempDir()}
+	g := cdschain.Hash{9}
+	var wg sync.WaitGroup
+	for seq := uint64(1); seq <= 64; seq++ {
+		wg.Go(func() {
+			if err := o.acknowledge(g, cdschain.Head{Cluster: "lane", Seq: seq}); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	wg.Wait()
+	if rec, _ := o.record("lane"); rec == nil || rec.Acknowledged.Seq != 64 {
+		t.Fatalf("record at %+v after acknowledging up to 64", rec)
 	}
 }

@@ -82,24 +82,22 @@ func startHA(ctx context.Context, cfg config, mesh *issuer.MeshCA, store *allowl
 		SelfCheck: func(_ context.Context, measurements string) (bool, error) {
 			return ownBuildPasses(serving, measurements, cfg.attestationApiURL)
 		},
-		OnState: func(s *cdschain.State) {
+		OnState: func(s *cdschain.State) error {
+			meshPeers.UpdateClientCA(mesh.Current().CA.Cert)
 			if err := policy(s); err != nil {
-				slog.Error("CDS replica cannot serve the chain's allowlist", "version", s.PolicyVersion(), "error", err)
+				return fmt.Errorf("serving the chain's allowlist (version %s): %w", s.CurrentPolicyVersion(), err)
 			}
 			if s.Nodes != servedNodes {
 				if err := serveNodes(nodes, s.Nodes, cfg.measured.Nodes, cfg.measured.PodImages); err != nil {
-					slog.Error("CDS replica cannot certify the chain's node images; it keeps the set before", "error", err)
-				} else {
-					servedNodes = s.Nodes
-					retireInventoryConns()
+					return fmt.Errorf("certifying the chain's node images: %w", err)
 				}
+				servedNodes = s.Nodes
+				retireInventoryConns()
 			}
-			if s.Routes != nil {
-				if err := store.ReplaceRoutes(routes.Envelope{Manifest: s.Routes.Manifest, Token: s.Routes.Token}, ""); err != nil && !errors.Is(err, allowlist.ErrRevisionNotGreater) {
-					slog.Error("CDS replica cannot serve the chain's route manifest", "error", err)
-				}
+			if err := serveRoutes(store, s); err != nil {
+				return fmt.Errorf("serving the chain's route manifest: %w", err)
 			}
-			meshPeers.UpdateClientCA(mesh.Current().CA.Cert)
+			return nil
 		},
 		Validate: chainValidator(cfg.measured.PodImages, mesh, store),
 	}, chainStore)
@@ -141,7 +139,7 @@ func chainPolicyServer(store *allowlist.Store, seed *pkgallowlist.Allowlist) fun
 	store.HoldNodes()
 	served := ""
 	return func(s *cdschain.State) error {
-		v := s.PolicyVersion()
+		v := s.CurrentPolicyVersion()
 		if v == served {
 			return nil
 		}
@@ -166,7 +164,7 @@ func servePolicy(store *allowlist.Store, s *cdschain.State, seed *pkgallowlist.A
 			return err
 		}
 	}
-	if err := store.ReplaceAll(doc, allowlist.OperatorWrite{SetVersion: s.PolicyVersion()}); err != nil {
+	if err := store.ReplaceAll(doc, allowlist.OperatorWrite{SetVersion: s.CurrentPolicyVersion()}); err != nil {
 		return err
 	}
 	if first {
@@ -232,6 +230,15 @@ func validatePodAuthorities(b cdschain.Body, pods []remote.ImagePin) error {
 		return cdsconfig.ValidatePodOperatorAuthorities(pods, keys)
 	}
 	return nil
+}
+
+// serveRoutes serves the chain's route manifest, none before a routes entry:
+// a resolve that drops a routes entry moves the manifest back.
+func serveRoutes(store *allowlist.Store, s *cdschain.State) error {
+	if s.Routes == nil {
+		return store.SetRoutes(nil)
+	}
+	return store.SetRoutes(&routes.Envelope{Manifest: s.Routes.Manifest, Token: s.Routes.Token})
 }
 
 // validateRoutes holds a routes entry to what PUT /routes checks.

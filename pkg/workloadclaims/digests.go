@@ -248,9 +248,11 @@ type DigestsClientConfig struct {
 	// ([armtls.ErrUnpinned]).
 	Pins armtls.Pins
 	// CurrentPins, when set, replaces Pins on every handshake: for a set
-	// that changes while CDS runs (a replica set's nodes entry). Pair it with
-	// CloseIdleConnections on a change, so no connection made under the old
-	// set carries a later request.
+	// that changes while CDS runs (a replica set's nodes entry). A connection
+	// made under the old set is not checked again: CloseIdleConnections on a
+	// change drops the pooled ones, but a callback in flight then keeps its
+	// connection and may return it to the pool, so a later callback can still
+	// reuse it. Dropping the old set's connections is best effort.
 	CurrentPins func() armtls.Pins
 	// Timeout bounds one callback. Zero or negative means 10s.
 	Timeout time.Duration
@@ -275,8 +277,8 @@ func (c DigestsClientConfig) tlsConfig() *armtls.ClientConfig {
 	return cfg
 }
 
-// CloseIdleConnections drops every pooled connection, so the next callback
-// handshakes under the pins in force.
+// CloseIdleConnections drops the connections pooled now. A callback in flight
+// keeps its own connection and may pool it afterwards (CurrentPins).
 func (c *DigestsClient) CloseIdleConnections() { c.http.CloseIdleConnections() }
 
 // NewDigestsClient builds the client. ctx bounds the client's certificate

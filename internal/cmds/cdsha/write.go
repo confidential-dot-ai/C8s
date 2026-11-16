@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdsa"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,7 +33,10 @@ import (
 // ErrNotConfirmed is a write that may have been applied: the replica
 // answered "committed, not confirmed" (202), or nothing after the entry
 // was sent. It is never recorded as acknowledged; `c8s` exits 3.
-var ErrNotConfirmed = errors.New("the write may have been applied but is not confirmed: check the replicas' heads with c8s cds ha status before writing again")
+var ErrNotConfirmed error = &cmdsutil.ExitStatusError{
+	Status: cmdsutil.ExitNotConfirmed,
+	Err:    errors.New("the write may have been applied but is not confirmed: check the replicas' heads with c8s cds ha status before writing again"),
+}
 
 // writer appends operator-signed entries through one replica.
 type writer struct {
@@ -85,8 +89,15 @@ func (w *writer) verified(ctx context.Context) (*cdschain.State, error) {
 	switch {
 	case rec != nil && rec.Genesis != state.Genesis:
 		return nil, fmt.Errorf("the replica's chain starts at genesis %s, recorded %s", state.Genesis, rec.Genesis)
+	case rec == nil && w.o.genesisPin != "":
+		if pinned, err := cdschain.ParseHash(w.o.genesisPin); err != nil || pinned != state.Genesis {
+			return nil, fmt.Errorf("the replica's chain starts at genesis %s, not --genesis %s", state.Genesis, w.o.genesisPin)
+		}
+		if err := w.o.acknowledge(state.Genesis, cdschain.Head{V: cdschain.Version, Cluster: state.Cluster, Hash: state.Genesis}); err != nil {
+			return nil, err
+		}
 	case rec == nil && c.Genesis.VerifySignature([]*ecdsa.PublicKey{&w.key.PublicKey}) != nil:
-		return nil, errors.New("the replica's genesis is not signed by --operator-key and no genesis is recorded")
+		return nil, errors.New("the replica's genesis is not signed by --operator-key and no genesis is recorded: pass --genesis with the hash 'c8s cds ha genesis' printed, or copy the record of the operator who signed it")
 	case rec != nil && (rec.Acknowledged.Seq > state.Head.Seq || c.Hashes[rec.Acknowledged.Seq] != rec.Acknowledged.Hash):
 		return nil, fmt.Errorf("the replica serves a chain without head %d, which was acknowledged before this read: the chain was rolled back, or the replica is behind", rec.Acknowledged.Seq)
 	}
@@ -221,6 +232,9 @@ func (w *writer) append(ctx context.Context, state *cdschain.State, typ cdschain
 	head, err := Submit(ctx, w.client, w.url, e)
 	if err != nil {
 		return head, err
+	}
+	if head.Cluster != state.Cluster || head.Seq != state.Head.Seq+1 {
+		return head, fmt.Errorf("the replica answered done for head %d of %q, not %d of %q: %w", head.Seq, head.Cluster, state.Head.Seq+1, state.Cluster, ErrNotConfirmed)
 	}
 	fmt.Fprintf(os.Stderr, "committed head %d (%s)\n", head.Seq, head.Hash)
 	return head, w.o.acknowledge(state.Genesis, head)
@@ -496,14 +510,14 @@ var ErrPolicyChanged = errors.New("the allowlist changed since it was read")
 
 // WritePolicy writes doc as a policy entry when the CDS at opts is a replica
 // set (handled), conditional on the allowlist version it was read at
-// (cdschain.State.PolicyVersion).
+// (cdschain.State.CurrentPolicyVersion).
 func WritePolicy(ctx context.Context, opts *cdsconn.Options, doc *pkgallowlist.Allowlist, version string) (bool, error) {
 	canonical, err := doc.Canonical()
 	if err != nil {
 		return false, err
 	}
 	handled, err := writeEntry(ctx, opts, cdschain.TypePolicy, func(state *cdschain.State) (any, error) {
-		if version != state.PolicyVersion() {
+		if version != state.CurrentPolicyVersion() {
 			return nil, ErrPolicyChanged
 		}
 		return cdschain.Policy{Allowlist: canonical}, nil
@@ -514,23 +528,40 @@ func WritePolicy(ctx context.Context, opts *cdsconn.Options, doc *pkgallowlist.A
 	return handled, err
 }
 
+// ErrRoutesChanged is a route manifest write conditional on a manifest the
+// chain no longer holds, as a single CDS's 412.
+var ErrRoutesChanged = errors.New("the route manifest changed since it was read")
+
 // WriteRoutes writes a route manifest, in the envelope the router verifies,
-// as a routes entry when the CDS at opts is a replica set (handled).
-func WriteRoutes(ctx context.Context, opts *cdsconn.Options, manifest []byte, signer operatorauth.Authorizer) (bool, error) {
+// as a routes entry when the CDS at opts is a replica set (handled). With
+// ifMatch set, the chain's manifest must be the one of that hex route digest.
+func WriteRoutes(ctx context.Context, opts *cdsconn.Options, manifest []byte, signer operatorauth.Authorizer, ifMatch string) (bool, error) {
 	token, err := signer.Authorization(http.MethodPut, routes.Path, manifest)
 	if err != nil {
 		return false, err
 	}
 	token, _ = strings.CutPrefix(token, "Bearer ")
-	return writeEntry(ctx, opts, cdschain.TypeRoutes, func(*cdschain.State) (any, error) {
+	handled, err := writeEntry(ctx, opts, cdschain.TypeRoutes, func(state *cdschain.State) (any, error) {
+		if ifMatch != "" && (state.Routes == nil || routeDigest(state.Routes.Manifest) != ifMatch) {
+			return nil, ErrRoutesChanged
+		}
 		return cdschain.Routes{Manifest: manifest, Token: token}, nil
 	})
+	if ifMatch != "" && errors.Is(err, errHeadMoved) {
+		err = fmt.Errorf("%w: %w", ErrRoutesChanged, err)
+	}
+	return handled, err
+}
+
+func routeDigest(manifest []byte) string {
+	d := routes.Digest(manifest)
+	return hex.EncodeToString(d[:])
 }
 
 // writeEntry appends payload(state) through the replica at opts, unless the
-// CDS there answers no HA status (a single CDS: not handled). An error before
-// that answer is handled: the old write would reach the same CDS, and a
-// replica set refuses it.
+// CDS there answers no HA status (a single CDS, or a router that does not
+// route /ha: not handled; a replica set refuses the old write). An error
+// before any answer is handled: the old write would reach the same CDS.
 func writeEntry(ctx context.Context, opts *cdsconn.Options, typ cdschain.Type, payload func(*cdschain.State) (any, error)) (bool, error) {
 	o := &options{Options: *opts}
 	w, err := o.writer(ctx)
@@ -539,9 +570,9 @@ func writeEntry(ctx context.Context, opts *cdsconn.Options, typ cdschain.Type, p
 	}
 	var status haapi.Status
 	err = haapi.Call(ctx, w.client, http.MethodGet, w.url+haapi.StatusPath, nil, &status)
-	// A single CDS answers no HA status; every replica names its member key.
+	// Every replica answers its status, naming its member key.
 	var se *operatorauth.StatusError
-	if (errors.As(err, &se) && se.Status == http.StatusNotFound) || (err == nil && status.Member == "") {
+	if errors.As(err, &se) || (err == nil && status.Member == "") {
 		return false, nil
 	}
 	if err != nil {

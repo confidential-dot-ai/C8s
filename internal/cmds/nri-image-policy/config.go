@@ -19,6 +19,7 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
+	"github.com/confidential-dot-ai/c8s/internal/cdschain"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/podassign"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
@@ -562,6 +563,14 @@ func (c *config) validatePull() error {
 	source, err := c.Allowlist.Pull.cdsSource()
 	if err != nil {
 		return err
+	}
+	if chain := c.Allowlist.Pull.CDSChain; chain != "" {
+		if !source.located() {
+			return errors.New("allowlist.pull.cds_chain requires allowlist.pull.url or cds_address_file: the chain is read from the CDS")
+		}
+		if _, err := cdschain.ParsePin(chain); err != nil {
+			return fmt.Errorf("allowlist.pull.cds_chain: %w", err)
+		}
 	}
 	if !source.located() {
 		return nil

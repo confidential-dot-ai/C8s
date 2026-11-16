@@ -84,25 +84,34 @@ func (s ImagePolicySource) ValuesExcluding(pins MeasurementPins) (refvalues.Refe
 // ErrCDSPinUnbound marks a pin set that does not name one CDS VM.
 var ErrCDSPinUnbound = errors.New("is not one CDS VM's identity")
 
-// CDSLaunchFile is the configuration a pin set identifies its CDS by: every
-// entry must bind the same launch file, and a set binding none, or two, names
-// no one VM. A CDS is the cluster's trust root, and its image alone says
-// nothing about the cluster it serves — the configuration does, and the launch
-// binding is what proves it.
+// CDSLaunchFile is the configuration a pin set identifies its CDS by
+// (CheckCDSPins).
 func CDSLaunchFile(values refvalues.ReferenceValues) ([]byte, error) {
+	if err := CheckCDSPins(values); err != nil {
+		return nil, err
+	}
+	return values.Images[0].LaunchFile, nil
+}
+
+// CheckCDSPins holds a pin set to naming one CDS VM: every entry must bind
+// the same launch file, and a set binding none, or two, names no one VM. A
+// CDS is the cluster's trust root, and its image alone says nothing about the
+// cluster it serves — the configuration does, and the launch binding is what
+// proves it.
+func CheckCDSPins(values refvalues.ReferenceValues) error {
 	if values.Empty() {
-		return nil, fmt.Errorf("%w: it pins no image, so nothing tells this cluster's CDS from any other attested TEE", ErrCDSPinUnbound)
+		return fmt.Errorf("%w: it pins no image, so nothing tells this cluster's CDS from any other attested TEE", ErrCDSPinUnbound)
 	}
 	file := values.Images[0].LaunchFile
 	for _, image := range values.Images {
 		if len(image.LaunchFile) == 0 {
-			return nil, fmt.Errorf("%w: entry %q binds no launch file, and a CDS is pinned to the configuration it runs on", ErrCDSPinUnbound, image.Name)
+			return fmt.Errorf("%w: entry %q binds no launch file, and a CDS is pinned to the configuration it runs on", ErrCDSPinUnbound, image.Name)
 		}
 		if !bytes.Equal(image.LaunchFile, file) {
-			return nil, fmt.Errorf("%w: entry %q binds another configuration, and one pin names one CDS", ErrCDSPinUnbound, image.Name)
+			return fmt.Errorf("%w: entry %q binds another configuration, and one pin names one CDS", ErrCDSPinUnbound, image.Name)
 		}
 	}
-	return file, nil
+	return nil
 }
 
 // ResolveCDSPins returns the pins a client holds its CDS to, and whether the
@@ -117,7 +126,7 @@ func ResolveCDSPins(nodePolicy string, source ImagePolicySource) (remote.Policy,
 			return remote.Policy{}, false, err
 		}
 	}
-	if _, err := CDSLaunchFile(values); err != nil {
+	if err := CheckCDSPins(values); err != nil {
 		return remote.Policy{}, fromNode, fmt.Errorf("%s %w", cdsPinSource(nodePolicy, fromNode, source), err)
 	}
 	return values.Policy(), fromNode, nil

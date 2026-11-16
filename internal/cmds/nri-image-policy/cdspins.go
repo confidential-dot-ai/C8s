@@ -55,10 +55,25 @@ func (p *plugin) prepareCDSPins() error {
 	if err != nil {
 		return fmt.Errorf("render the node's CDS pins: %w", err)
 	}
-	path, err := renderNodeDocument(renderedCDSPinsName, document)
+	path, err := rewriteNodeDocument(renderedCDSPinsName, document)
 	if err != nil {
 		return err
 	}
 	p.cdsPins = path
 	return nil
+}
+
+// rewriteNodeDocument is renderNodeDocument for a document pods read on every
+// handshake: one already rendered is rewritten in place, so the pods started
+// before a plugin restart, which bind-mount its inode, read the new contents
+// and the chain's later in-place updates too.
+func rewriteNodeDocument(name string, document []byte) (string, error) {
+	path := filepath.Join(enforcerRuntimeDir, name)
+	if _, err := os.Stat(path); err != nil {
+		return renderNodeDocument(name, document)
+	}
+	if err := os.WriteFile(path, document, 0o644); err != nil {
+		return "", fmt.Errorf("write %s: %w", name, err)
+	}
+	return path, nil
 }
