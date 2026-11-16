@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/sys/unix"
 
 	"github.com/confidential-dot-ai/c8s/internal/cdschain"
 	haapi "github.com/confidential-dot-ai/c8s/internal/cdsha"
@@ -453,8 +454,23 @@ func (o *options) record(cluster string) (*record, error) {
 }
 
 // acknowledge records head, answered done on the chain of genesis. The
-// record never goes down.
+// record never goes down: concurrent commands take turns under a lock file.
 func (o *options) acknowledge(genesis cdschain.Hash, head cdschain.Head) error {
+	path, err := o.recordPath(head.Cluster)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	lock, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	if err := unix.Flock(int(lock.Fd()), unix.LOCK_EX); err != nil {
+		return fmt.Errorf("locking the record: %w", err)
+	}
 	rec, err := o.record(head.Cluster)
 	switch {
 	case err != nil:
@@ -466,13 +482,6 @@ func (o *options) acknowledge(genesis cdschain.Hash, head cdschain.Head) error {
 	}
 	data, err := json.MarshalIndent(record{Cluster: head.Cluster, Genesis: genesis, Acknowledged: head}, "", "  ")
 	if err != nil {
-		return err
-	}
-	path, err := o.recordPath(head.Cluster)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
 	return fileutil.WriteAtomic(path, append(data, '\n'), 0o600)

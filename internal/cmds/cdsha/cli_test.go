@@ -698,3 +698,21 @@ func TestGenesisPinForAnOperatorWithoutARecord(t *testing.T) {
 		t.Fatalf("the recorded genesis: %v", err)
 	}
 }
+
+// Concurrent acknowledgements never move the record down.
+func TestAcknowledgeTakesTurns(t *testing.T) {
+	o := &options{stateDir: t.TempDir()}
+	g := cdschain.Hash{9}
+	var wg sync.WaitGroup
+	for seq := uint64(1); seq <= 64; seq++ {
+		wg.Go(func() {
+			if err := o.acknowledge(g, cdschain.Head{Cluster: "lane", Seq: seq}); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	wg.Wait()
+	if rec, _ := o.record("lane"); rec == nil || rec.Acknowledged.Seq != 64 {
+		t.Fatalf("record at %+v after acknowledging up to 64", rec)
+	}
+}
