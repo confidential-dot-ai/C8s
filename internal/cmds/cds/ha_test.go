@@ -354,3 +354,29 @@ func TestValidateHAConfig(t *testing.T) {
 		}
 	}
 }
+
+// The serving check before signing runs under the request timeout: a check
+// still running when it expires answers 504 and signs nothing.
+func TestAttestServingCheckHasTheRequestTimeout(t *testing.T) {
+	stub := newStubAttestationApi(t, testLaunchDigest)
+	h := newTestAttestHandler(t, stub.URL(), nil)
+	h.RequestTimeout = time.Minute
+	h.Serving = func(ctx context.Context) error {
+		if _, ok := ctx.Deadline(); !ok {
+			return errors.New("the serving check has no deadline")
+		}
+		return nil
+	}
+	csrPEM, _ := generateCSR(t)
+	if w := postAttest(t, h, issueChallenge(t, h), csrPEM); w.Code != http.StatusOK {
+		t.Fatalf("/attest = %d: %s", w.Code, w.Body)
+	}
+	h.RequestTimeout = 50 * time.Millisecond
+	h.Serving = func(ctx context.Context) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	if w := postAttest(t, h, issueChallenge(t, h), csrPEM); w.Code != http.StatusGatewayTimeout {
+		t.Fatalf("a serving check past the request timeout: /attest = %d, want 504: %s", w.Code, w.Body)
+	}
+}
