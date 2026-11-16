@@ -66,7 +66,10 @@ func newRouter(deps dependencies) http.Handler {
 		deps.AttestHandler.Serving = haServing(deps.HA)
 		deps.AllowlistHandler.Objects = deps.HA.Policy
 		ready := deps.ReadyFn
-		deps.ReadyFn = func() bool { return ready() && deps.HA.Status().Serving == "" }
+		deps.ReadyFn = func() bool {
+			s := deps.HA.Status()
+			return ready() && s.Serving == "" && s.StoreError == ""
+		}
 	}
 
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {

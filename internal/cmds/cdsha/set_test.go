@@ -170,7 +170,7 @@ func TestResolveRewritesTheAllowlistAboveTheDroppedBranch(t *testing.T) {
 	}
 	state := l.waitServing(t)
 	writeOpts := &cdsconn.Options{URL: l.url, Insecure: true, OperatorKey: l.keyPath, Timeout: 5 * time.Second}
-	if handled, err := WritePolicy(context.Background(), writeOpts, policyDocument(t, "ghcr.io/x/w:v1"), state.PolicyVersion()); !handled || err != nil {
+	if handled, err := WritePolicy(context.Background(), writeOpts, policyDocument(t, "ghcr.io/x/w:v1"), state.CurrentPolicyVersion()); !handled || err != nil {
 		t.Fatalf("policy write: %v %v", handled, err)
 	}
 	state = l.waitServing(t)

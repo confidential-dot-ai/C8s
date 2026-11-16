@@ -1,7 +1,7 @@
 [Unit]
-Description=CDS replica runtime disk (its endpoint; not measured)
-# The host may rewrite it, which can only cost availability: a wrong
-# endpoint misplaces one vote.
+Description=CDS replica runtime disk (its chain store's etcd client file; not measured)
+# The host may rewrite it, which can only cost availability: it picks the
+# store the replica reads, and the replica adopts only entries that verify.
 ConditionPathExists=/dev/disk/by-label/cdsstore
 
 [Mount]

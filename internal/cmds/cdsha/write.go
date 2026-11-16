@@ -493,14 +493,14 @@ var ErrPolicyChanged = errors.New("the allowlist changed since it was read")
 
 // WritePolicy writes doc as a policy entry when the CDS at opts is a replica
 // set (handled), conditional on the allowlist version it was read at
-// (cdschain.State.PolicyVersion).
+// (cdschain.State.CurrentPolicyVersion).
 func WritePolicy(ctx context.Context, opts *cdsconn.Options, doc *pkgallowlist.Allowlist, version string) (bool, error) {
 	canonical, err := doc.Canonical()
 	if err != nil {
 		return false, err
 	}
 	handled, err := writeEntry(ctx, opts, cdschain.TypePolicy, func(state *cdschain.State) (any, error) {
-		if version != state.PolicyVersion() {
+		if version != state.CurrentPolicyVersion() {
 			return nil, ErrPolicyChanged
 		}
 		return cdschain.Policy{Allowlist: canonical}, nil
