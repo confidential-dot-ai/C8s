@@ -15,15 +15,22 @@ const maxPolicyBytes = 16 << 20
 // errNotFound is a 404 from fetchPolicy: CDS holds no such object or signature.
 var errNotFound = errors.New("not found")
 
-// fetchPolicy GETs url from any peer: callers authenticate what it returns.
-// A transport failure or timeout is a *connectError.
-func fetchPolicy(ctx context.Context, url, serverName string, timeout time.Duration) ([]byte, error) {
+// policyClient returns the client for fetchPolicy, which takes a redirect as
+// its status. The caller closes its idle connections when done.
+func policyClient(serverName string, timeout time.Duration) *http.Client {
+	client := insecureClient(serverName, timeout)
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return client
+}
+
+// fetchPolicy GETs url with a policyClient from any peer: callers
+// authenticate what it returns. A transport failure or timeout is a
+// *connectError.
+func fetchPolicy(ctx context.Context, client *http.Client, url string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
-	client := insecureClient(serverName, timeout)
-	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, &connectError{err}

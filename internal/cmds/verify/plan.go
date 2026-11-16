@@ -177,7 +177,7 @@ func buildPolicy(cfg config) (*verifyPlan, error) {
 		return nil, fmt.Errorf("--allowlist requires --mesh-ca: the stamped policy digest is vouched by CDS's signature on the leaf, not by the hardware evidence")
 	}
 
-	trustKeys, err := checkHistoryFlags(cfg, refValues.Images)
+	trustKeys, err := checkHistoryFlags(cfg, refValues)
 	if err != nil {
 		return nil, err
 	}

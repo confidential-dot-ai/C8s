@@ -155,7 +155,7 @@ func enforceImagePolicy(
 		return pinCoverage{}, fmt.Errorf("--image-policy-file is for %q but the evidence platform is %q", plan.refValues.Family, oc.Platform)
 	}
 	response := remote.VerifyResponse{Result: *result}
-	if err := armtls.EnforceImages(response, plan.refValues.Images, platform, measured); err != nil {
+	if err := enforceEachImage(response, plan.refValues.Images, platform, measured); err != nil {
 		return pinCoverage{}, fmt.Errorf("--image-policy-file: %w", err)
 	}
 	oc.MeasuredPolicies, coverage.historyBound = replayedHistory(response, plan.refValues.Images, platform, measured)
@@ -176,7 +176,7 @@ func matchesFullImageEntry(
 ) bool {
 	for _, entry := range images {
 		if len(entry.Registers[1]) != 0 && len(entry.Registers[2]) != 0 &&
-			armtls.EnforceImages(response, []remote.ImagePin{entry}, platform, measured) == nil {
+			armtls.EnforceImages(response, []remote.ImagePin{entry}, platform, replayedBy(entry, &response.Result, measured)) == nil {
 			return true
 		}
 	}
@@ -259,23 +259,69 @@ func checkMeasuredList(measured []string) error {
 // anchored reports whether img pins a launch anchor.
 func anchored(img remote.ImagePin) bool { return img.Anchor != nil }
 
+// replayedBy returns the part of the unauthenticated measured list img
+// replays: none for an unanchored image or a register still at its seed, so
+// the list cannot fail those.
+func replayedBy(img remote.ImagePin, result *teetypes.VerificationResult, measured []string) []string {
+	if !anchored(img) {
+		return nil
+	}
+	// Evidence without RTMR[3] (SNP, or a report missing it) replays nothing
+	// either; the anchor check then fails closed on its own.
+	seed := runtimemeasure.Seed(img.Anchor)
+	if got, err := result.Claims.RTMR(3); err != nil || bytes.Equal(got, seed[:]) {
+		return nil
+	}
+	return measured
+}
+
+// enforceEachImage is armtls.EnforceImages with each image judged against
+// the measured list it replays. An image's anchor and list are checked only
+// once its launch measurement, registers and launch file match, so a list
+// error cannot mask why another image was not booted; the error reported is
+// the last of an image whose launch measurement matched, as EnforceImages
+// does.
+func enforceEachImage(response remote.VerifyResponse, images []remote.ImagePin, platform teetypes.PlatformType, measured []string) error {
+	var lastErr error
+	for _, img := range images {
+		bare := img
+		bare.Anchor = nil
+		err := armtls.EnforceImages(response, []remote.ImagePin{bare}, platform, nil)
+		if errors.Is(err, remote.ErrMeasurementNotAllowed) {
+			if lastErr == nil {
+				lastErr = err
+			}
+			continue
+		}
+		if err == nil && anchored(img) {
+			err = armtls.EnforceImages(response, []remote.ImagePin{img}, platform, replayedBy(img, &response.Result, measured))
+		}
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+	}
+	return lastErr
+}
+
 // replayedHistory returns the prefix of measured that RTMR[3] proves on top of
 // the seed of an anchored image the evidence matches on its own, and whether
 // such an image bound RTMR[3]. Another image's anchor proves nothing about a
 // guest that booted an unanchored one.
 func replayedHistory(response remote.VerifyResponse, images []remote.ImagePin, platform teetypes.PlatformType, measured []string) ([]string, bool) {
 	for _, img := range images {
-		if !anchored(img) || armtls.EnforceImages(response, []remote.ImagePin{img}, platform, measured) != nil {
+		replayed := replayedBy(img, &response.Result, measured)
+		if !anchored(img) || armtls.EnforceImages(response, []remote.ImagePin{img}, platform, replayed) != nil {
 			continue
 		}
-		k, err := runtimemeasure.MatchBindingPrefix(&response.Result, img.Anchor, measured)
+		k, err := runtimemeasure.MatchBindingPrefix(&response.Result, img.Anchor, replayed)
 		if err != nil {
 			continue
 		}
 		if k == 0 {
 			return nil, true
 		}
-		return slices.Clone(measured[:k]), true
+		return slices.Clone(replayed[:k]), true
 	}
 	return nil, false
 }
@@ -375,6 +421,11 @@ func enforceRTMRPins(
 	if pins.rtmr3 != nil {
 		want := pins.rtmr3
 		replay := pins.anchor != nil && len(measured) > 0
+		// A register still at the seed replays nothing, so the unauthenticated
+		// list cannot fail it.
+		if got, err := result.Claims.RTMR(3); err == nil && bytes.Equal(got, want) {
+			replay = false
+		}
 		if replay {
 			if err := checkMeasuredList(measured); err != nil {
 				return err
