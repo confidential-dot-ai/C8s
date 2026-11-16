@@ -230,7 +230,7 @@ func TestWritePolicyLosingARaceIsRetried(t *testing.T) {
 		return state
 	}
 	for attempt := 1; ; attempt++ {
-		handled, err := WritePolicy(context.Background(), opts, doc("ghcr.io/x/w:v1"), head().PolicyVersion())
+		handled, err := WritePolicy(context.Background(), opts, doc("ghcr.io/x/w:v1"), head().CurrentPolicyVersion())
 		if !handled {
 			t.Fatal("a replica set was not handled")
 		}
@@ -306,7 +306,7 @@ func TestRefreshPolicyOutranksTheDroppedBranch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	version, _ := strconv.ParseUint(state.PolicyVersion(), 10, 64)
+	version, _ := strconv.ParseUint(state.CurrentPolicyVersion(), 10, 64)
 	if version <= held+1 || string(state.Policy) != string(canonical) {
 		t.Fatalf("served at version %d (a dropped policy may hold %d): %s", version, held+1, state.Policy)
 	}
