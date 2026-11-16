@@ -2,6 +2,7 @@ package nriimagepolicy
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/netip"
@@ -44,7 +45,7 @@ type chainPins struct {
 func newChainPins(cfg pullConfig, url string, clusterDNS netip.Addr) (*chainPins, error) {
 	pin, err := cdschain.ParsePin(cfg.CDSChain)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("allowlist.pull.cds_chain: %w", err)
 	}
 	dial := clusterFirstDialer(netip.AddrPortFrom(clusterDNS, clusterDNSPort)).DialContext
 	// Entries verify by signature; the head by the attested call.

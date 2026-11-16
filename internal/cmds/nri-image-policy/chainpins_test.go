@@ -273,3 +273,23 @@ func TestDigestsListenerFollowsTheChainsBuilds(t *testing.T) {
 		t.Fatal("a replica of a build outside the chain's set was admitted")
 	}
 }
+
+// cds_chain is checked when the config loads: a pin that does not parse is
+// refused naming the key, and so is a chain with no CDS to read it from,
+// which would otherwise leave enforce_existing off for good.
+func TestValidate_CDSChain(t *testing.T) {
+	cfg := validConfig()
+	cfg.Allowlist.Pull.CDSChain = "0:" + strings.Repeat("ab", 32)
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("a chain pin with a CDS: %v", err)
+	}
+	cfg.Allowlist.Pull.CDSChain = "seven"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "allowlist.pull.cds_chain") {
+		t.Fatalf("a pin that does not parse: %v", err)
+	}
+	cfg = validConfig()
+	cfg.Allowlist.Pull = pullConfig{CDSChain: "0:" + strings.Repeat("ab", 32)}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "allowlist.pull.cds_chain") {
+		t.Fatalf("a chain pin with no CDS: %v", err)
+	}
+}
