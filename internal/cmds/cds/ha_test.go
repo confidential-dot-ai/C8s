@@ -320,3 +320,37 @@ func TestReplicaServesEveryChainPolicyByDigest(t *testing.T) {
 		t.Errorf("a digest outside the chain and history = %d, want 404", w.Code)
 	}
 }
+
+// The replica flags take only values a replica runs with, and only on a CDS
+// whose configuration has an ha block.
+func TestValidateHAConfig(t *testing.T) {
+	valid := haConfig{gossip: 2 * time.Second, peerTimeout: 2 * time.Second, storeTimeout: 5 * time.Second}
+	set := &cdsconfig.Config{HA: &cdsconfig.HA{Endpoints: []string{"a:1"}}}
+	if err := validateHAConfig(config{measured: set, ha: valid}); err != nil {
+		t.Fatalf("defaults refused: %v", err)
+	}
+	if err := validateHAConfig(config{measured: &cdsconfig.Config{}, ha: haConfig{runtimeDir: "/run/cds-store"}}); err != nil {
+		t.Fatalf("a single CDS refuses the runtime disk every CDS VM is given: %v", err)
+	}
+	for name, tc := range map[string]struct {
+		measured *cdsconfig.Config
+		edit     func(*haConfig)
+	}{
+		"zero gossip interval":                  {set, func(h *haConfig) { h.gossip = 0 }},
+		"gossip interval without a half":        {set, func(h *haConfig) { h.gossip = time.Nanosecond; h.peerTimeout = time.Nanosecond }},
+		"negative gossip interval":              {set, func(h *haConfig) { h.gossip = -time.Second }},
+		"zero peer timeout":                     {set, func(h *haConfig) { h.peerTimeout = 0 }},
+		"peer timeout above the interval":       {set, func(h *haConfig) { h.peerTimeout = 3 * time.Second }},
+		"zero store timeout":                    {set, func(h *haConfig) { h.storeTimeout = 0 }},
+		"negative store timeout":                {set, func(h *haConfig) { h.storeTimeout = -time.Second }},
+		"--ha-self without an ha block":         {&cdsconfig.Config{}, func(h *haConfig) { h.self = "a:1" }},
+		"--ha-store-etcd without an ha block":   {&cdsconfig.Config{}, func(h *haConfig) { h.storeEtcd = "etcd.yaml" }},
+		"--ha-store-memory without an ha block": {&cdsconfig.Config{}, func(h *haConfig) { h.storeMemory = true }},
+	} {
+		ha := valid
+		tc.edit(&ha)
+		if err := validateHAConfig(config{measured: tc.measured, ha: ha}); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}
