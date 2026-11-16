@@ -95,6 +95,10 @@ type issuanceState struct {
 	relying relyingParty
 	// read is the leaf "is read" named, for the sentences that follow it.
 	read *leaf
+	// sanBinding records that a scenario turned IP SAN binding on, so a CSR
+	// carrying the requester's own address needs the CDS to observe that
+	// address as the request source (requester_source_is_own_address).
+	sanBinding bool
 }
 
 // leafOf is the leaf name holds, which a sentence must have established.
@@ -150,6 +154,38 @@ func (w *world) publicKeyOf(name string) (crypto.PublicKey, error) {
 		return nil, fmt.Errorf("the key %q holds: %w", name, err)
 	}
 	return &key.PublicKey, nil
+}
+
+// heldPair is a pod's leaf read together with its key. Every renewal publishes
+// a fresh key, and the reader files are replaced one at a time, so a pair
+// counts only when the key is the same before and after the leaf is read.
+func (w *world) heldPair(name string) (*leaf, crypto.PublicKey, error) {
+	p, err := w.injectedPod(name)
+	if err != nil {
+		return nil, nil, err
+	}
+	for range 3 {
+		before, err := w.publicKeyOf(name)
+		if err != nil {
+			return nil, nil, err
+		}
+		l, err := w.podLeaf(p)
+		if err != nil {
+			return nil, nil, err
+		}
+		if l == nil {
+			return nil, nil, fmt.Errorf("%q holds no leaf in its certificate volume", name)
+		}
+		after, err := w.publicKeyOf(name)
+		if err != nil {
+			return nil, nil, err
+		}
+		if same, ok := before.(interface{ Equal(crypto.PublicKey) bool }); ok && same.Equal(after) {
+			p.leaf = l
+			return l, after, nil
+		}
+	}
+	return nil, nil, fmt.Errorf("the key %q holds changed during every read of its leaf", name)
 }
 
 func carriesWorkloadID(ctx context.Context, name string) error {
@@ -259,8 +295,17 @@ func holdsLeaf(ctx context.Context, name string) error {
 	}
 	found, err := poll(observe, func() (bool, error) {
 		l, err := w.podLeaf(p)
-		if err != nil || l == nil {
+		if err != nil {
 			return false, err
+		}
+		if l == nil {
+			// Conformance pods sleep, so a terminated one here is not a finished
+			// workload but a killed one — its image de-listed by the node's
+			// recheck, say — and no leaf will appear. Fail with the cause.
+			if reason := w.terminated(p); reason != "" {
+				return false, fmt.Errorf("%q holds no leaf: %s; the node's recheck may have denied it: %s", name, reason, tail(w.certLog(p), 5))
+			}
+			return false, nil
 		}
 		p.leaf = l
 		return true, nil
@@ -269,7 +314,7 @@ func holdsLeaf(ctx context.Context, name string) error {
 		return err
 	}
 	if !found {
-		return fmt.Errorf("%q holds no leaf after %s; its requester logged: %s", name, observe, tail(w.certLog(p), 5))
+		return fmt.Errorf("%q holds no leaf after %s; its requester logged: %s; its containers: %+v", name, observe, tail(w.certLog(p), 5), w.statuses(p))
 	}
 	return nil
 }
@@ -335,6 +380,13 @@ func renewsLeaf(ctx context.Context, name string) error {
 		if rs := refusals(w.certLog(p), failedRenewal); len(rs) > refusedBefore {
 			p.refusal = rs[len(rs)-1]
 			return true, nil
+		}
+		// A renewal runs in the sidecar, which stops with the pod. If the pod
+		// has been terminated — its image de-listed and killed by the node's
+		// recheck, say — nothing will renew, so fail now with the cause rather
+		// than wait out the window on a dead requester.
+		if reason := w.terminated(p); reason != "" {
+			return false, fmt.Errorf("%q cannot renew: %s; the node's recheck may have denied it (its image left the applied allowlist): %s", name, reason, tail(w.certLog(p), 5))
 		}
 		return false, nil
 	})
@@ -470,11 +522,17 @@ func leafSandboxIDOf(ctx context.Context, name, podName string) error {
 
 func leafCertifiesKey(ctx context.Context, name, keyHolder string) error {
 	w := getWorld(ctx)
-	l, err := w.leafOf(name)
-	if err != nil {
-		return err
+	var l *leaf
+	var pub crypto.PublicKey
+	var err error
+	if _, driven := w.issuance.requesters[name]; !driven && name == keyHolder {
+		l, pub, err = w.heldPair(name)
+	} else {
+		l, err = w.leafOf(name)
+		if err == nil {
+			pub, err = w.publicKeyOf(keyHolder)
+		}
 	}
-	pub, err := w.publicKeyOf(keyHolder)
 	if err != nil {
 		return err
 	}
@@ -730,6 +788,7 @@ type relyingParty struct {
 	allowlist string
 	expects   []string
 	verdict   string
+	reason    string // the verifier's output on a rejection
 }
 
 // workdir is a directory for the relying party's files, removed after the
@@ -813,11 +872,11 @@ func relyingPartyVerifies(ctx context.Context, name string) error {
 	if rp.allowlist != "" {
 		args = append(args, "--allowlist="+rp.allowlist)
 	}
-	verdict, err := w.be.call("relying_party", args...)
+	out, err := w.be.call("relying_party", args...)
 	if err != nil {
 		return err
 	}
-	rp.verdict = verdict
+	rp.verdict, rp.reason, _ = strings.Cut(out, "\n")
 	return nil
 }
 
@@ -827,7 +886,7 @@ func relyingPartyVerdict(ctx context.Context, want string) error {
 		return errors.New("the relying party has verified nothing")
 	}
 	if w.issuance.relying.verdict != want {
-		return fmt.Errorf("the relying party %s the leaf", w.issuance.relying.verdict)
+		return fmt.Errorf("the relying party %s the leaf: %s", w.issuance.relying.verdict, w.issuance.relying.reason)
 	}
 	return nil
 }
@@ -840,7 +899,7 @@ func cdsPinsDigests(ctx context.Context) error {
 		return err
 	}
 	if len(pins) == 0 {
-		return godog.ErrSkip
+		return skipf("the CDS pins no launch digests here")
 	}
 	return nil
 }
@@ -853,6 +912,7 @@ func cdsEmptyPins(ctx context.Context) error {
 // only when the installed value differs.
 func ipSANBinding(ctx context.Context, state string) error {
 	w := getWorld(ctx)
+	w.issuance.sanBinding = state == "on"
 	want := strconv.FormatBool(state == "on")
 	current, err := w.be.call("cds_arg", "san-validation")
 	if err != nil {

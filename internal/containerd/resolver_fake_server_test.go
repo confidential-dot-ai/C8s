@@ -2,9 +2,11 @@ package containerd
 
 import (
 	"context"
+	"encoding/json"
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -12,14 +14,17 @@ import (
 
 	containersapi "github.com/containerd/containerd/api/services/containers/v1"
 	imagesapi "github.com/containerd/containerd/api/services/images/v1"
+	sandboxapi "github.com/containerd/containerd/api/services/sandbox/v1"
 	tasksapi "github.com/containerd/containerd/api/services/tasks/v1"
 	"github.com/containerd/containerd/api/types"
 	tasktypes "github.com/containerd/containerd/api/types/task"
 	"github.com/containerd/containerd/v2/pkg/namespaces"
+	specs "github.com/opencontainers/runtime-spec/specs-go"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
@@ -71,11 +76,13 @@ func (f *fakeImages) Get(ctx context.Context, req *imagesapi.GetImageRequest) (*
 	}, nil
 }
 
-// fakeContainers is a minimal containers service knowing a single container ID.
+// fakeContainers is a minimal containers service knowing a single container
+// ID, with the OCI spec containerd stores for it.
 type fakeContainers struct {
 	containersapi.UnimplementedContainersServer
 
 	knownID string
+	spec    *anypb.Any
 }
 
 func (f *fakeContainers) Get(_ context.Context, req *containersapi.GetContainerRequest) (*containersapi.GetContainerResponse, error) {
@@ -86,6 +93,7 @@ func (f *fakeContainers) Get(_ context.Context, req *containersapi.GetContainerR
 		Container: &containersapi.Container{
 			ID:      req.ID,
 			Runtime: &containersapi.Container_Runtime{Name: "io.containerd.runc.v2"},
+			Spec:    f.spec,
 		},
 	}, nil
 }
@@ -133,6 +141,30 @@ func (f *fakeTasks) Kill(_ context.Context, req *tasksapi.KillRequest) (*emptypb
 	return &emptypb.Empty{}, nil
 }
 
+// fakeSandboxes is a minimal sandbox store serving sandboxes by id.
+type fakeSandboxes struct {
+	sandboxapi.UnimplementedStoreServer
+
+	sandboxes map[string]*types.Sandbox
+}
+
+func (f *fakeSandboxes) Get(_ context.Context, req *sandboxapi.StoreGetRequest) (*sandboxapi.StoreGetResponse, error) {
+	sb, ok := f.sandboxes[req.GetSandboxID()]
+	if !ok {
+		return nil, status.Errorf(codes.NotFound, "sandbox %q: not found", req.GetSandboxID())
+	}
+	return &sandboxapi.StoreGetResponse{Sandbox: sb}, nil
+}
+
+// servedSandbox carries Runtime, which containerd's client dereferences.
+func servedSandbox(id string, extensions map[string]*anypb.Any) *types.Sandbox {
+	return &types.Sandbox{
+		SandboxID:  id,
+		Runtime:    &types.Sandbox_Runtime{Name: "io.containerd.runc.v2"},
+		Extensions: extensions,
+	}
+}
+
 // tempSocketPath returns a path short enough for a unix socket (the kernel
 // caps sun_path at ~108 bytes, which deep TMPDIRs can exceed).
 func tempSocketPath(t *testing.T) string {
@@ -156,7 +188,7 @@ func tempSocketPath(t *testing.T) string {
 
 // startFakeContainerd serves the fake services on a unix socket and returns
 // the socket path.
-func startFakeContainerd(t *testing.T, images *fakeImages, containers *fakeContainers, tasks *fakeTasks) string {
+func startFakeContainerd(t *testing.T, images *fakeImages, containers *fakeContainers, tasks *fakeTasks, sandboxes *fakeSandboxes) string {
 	t.Helper()
 	socket := tempSocketPath(t)
 	lis, err := net.Listen("unix", socket)
@@ -172,6 +204,9 @@ func startFakeContainerd(t *testing.T, images *fakeImages, containers *fakeConta
 	}
 	if tasks != nil {
 		tasksapi.RegisterTasksServer(srv, tasks)
+	}
+	if sandboxes != nil {
+		sandboxapi.RegisterStoreServer(srv, sandboxes)
 	}
 	go func() { _ = srv.Serve(lis) }()
 	t.Cleanup(srv.Stop)
@@ -190,7 +225,7 @@ func newTestResolver(t *testing.T, socket string) *Resolver {
 
 func TestResolve(t *testing.T) {
 	images := &fakeImages{knownName: "docker.io/library/nginx:1.27"}
-	socket := startFakeContainerd(t, images, nil, nil)
+	socket := startFakeContainerd(t, images, nil, nil, nil)
 	r := newTestResolver(t, socket)
 
 	t.Run("short ref is normalized before lookup", func(t *testing.T) {
@@ -246,7 +281,7 @@ func TestResolve(t *testing.T) {
 
 func TestResolveReconnects(t *testing.T) {
 	images := &fakeImages{knownName: "docker.io/library/nginx:1.27"}
-	socket := startFakeContainerd(t, images, nil, nil)
+	socket := startFakeContainerd(t, images, nil, nil, nil)
 	r := newTestResolver(t, socket)
 
 	// First call fails with Unavailable; the resolver must re-dial and retry.
@@ -309,6 +344,36 @@ func TestResolveReconnects(t *testing.T) {
 	}
 }
 
+// The stored spec carries the five capability sets and the user.
+func TestContainerSpec(t *testing.T) {
+	const containerID = "abc123"
+	stored := &specs.Spec{Process: &specs.Process{
+		User:         specs.User{UID: 65532},
+		Capabilities: &specs.LinuxCapabilities{Bounding: []string{"CAP_CHOWN"}},
+	}}
+	value, err := json.Marshal(stored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	containers := &fakeContainers{
+		knownID: containerID,
+		spec:    &anypb.Any{TypeUrl: "types.containerd.io/opencontainers/runtime-spec/1/Spec", Value: value},
+	}
+	r := newTestResolver(t, startFakeContainerd(t, nil, containers, nil, nil))
+
+	spec, err := r.ContainerSpec(context.Background(), containerID)
+	if err != nil {
+		t.Fatalf("ContainerSpec: %v", err)
+	}
+	if spec.Process.User.UID != 65532 || !slices.Equal(spec.Process.Capabilities.Bounding, []string{"CAP_CHOWN"}) {
+		t.Fatalf("spec process = %+v, want the stored user and capabilities", spec.Process)
+	}
+
+	if _, err := r.ContainerSpec(context.Background(), "no-such-id"); err == nil {
+		t.Fatal("ContainerSpec succeeded for an unknown container")
+	}
+}
+
 func TestStopContainer(t *testing.T) {
 	const containerID = "abc123"
 
@@ -319,7 +384,7 @@ func TestStopContainer(t *testing.T) {
 
 	t.Run("kills the running task with SIGKILL", func(t *testing.T) {
 		containers, tasks := newFakes()
-		socket := startFakeContainerd(t, nil, containers, tasks)
+		socket := startFakeContainerd(t, nil, containers, tasks, nil)
 		r := newTestResolver(t, socket)
 
 		if err := r.StopContainer(context.Background(), containerID); err != nil {
@@ -334,7 +399,7 @@ func TestStopContainer(t *testing.T) {
 
 	t.Run("unknown container fails at load", func(t *testing.T) {
 		containers, tasks := newFakes()
-		socket := startFakeContainerd(t, nil, containers, tasks)
+		socket := startFakeContainerd(t, nil, containers, tasks, nil)
 		r := newTestResolver(t, socket)
 
 		err := r.StopContainer(context.Background(), "no-such-id")
@@ -349,7 +414,7 @@ func TestStopContainer(t *testing.T) {
 	t.Run("missing task fails at task lookup", func(t *testing.T) {
 		containers, tasks := newFakes()
 		tasks.getErr = status.Error(codes.NotFound, "no running task")
-		socket := startFakeContainerd(t, nil, containers, tasks)
+		socket := startFakeContainerd(t, nil, containers, tasks, nil)
 		r := newTestResolver(t, socket)
 
 		err := r.StopContainer(context.Background(), containerID)
@@ -364,7 +429,7 @@ func TestStopContainer(t *testing.T) {
 	t.Run("kill failure is surfaced", func(t *testing.T) {
 		containers, tasks := newFakes()
 		tasks.killErr = status.Error(codes.Internal, "shim exploded")
-		socket := startFakeContainerd(t, nil, containers, tasks)
+		socket := startFakeContainerd(t, nil, containers, tasks, nil)
 		r := newTestResolver(t, socket)
 
 		err := r.StopContainer(context.Background(), containerID)

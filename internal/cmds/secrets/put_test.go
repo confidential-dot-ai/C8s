@@ -169,6 +169,21 @@ func TestPutRefusesOccupiedPathWithoutOverwrite(t *testing.T) {
 	}
 }
 
+// A spent token is a 409 without a PutResponse; it must not read as a refusal
+// naming what holds the path.
+func TestPutReportsSpentToken(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "operator token already used", http.StatusConflict)
+	}))
+	t.Cleanup(srv.Close)
+	key := writeOperatorKey(t)
+
+	_, _, err := run(t, "hunter2", "put", "/tenant-a/db", "--url", srv.URL, "--insecure", "--operator-key", key)
+	if err == nil || !strings.Contains(err.Error(), "operator token already used") {
+		t.Fatalf("put against a spent-token 409 = %v, want the CDS error", err)
+	}
+}
+
 // --overwrite still asks to create first, so the line naming what is destroyed
 // is printed before the write that destroys it.
 func TestPutOverwriteNamesWhatItReplaces(t *testing.T) {
@@ -464,5 +479,31 @@ func TestExplainSurfacesServerErrors(t *testing.T) {
 	_, _, err := run(t, "", "explain", "--sandbox", testSandboxID, "--url", srv.URL, "--insecure", "--operator-key", key)
 	if err == nil || !strings.Contains(err.Error(), "cds returned 401") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// A CDS answer past maxResponseBytes is refused where it is read, so neither
+// command acts on the part of it that arrived.
+func TestAnAnswerOverTheCapIsRefused(t *testing.T) {
+	oversized := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write(bytes.Repeat([]byte("x"), maxResponseBytes+1))
+	}))
+	t.Cleanup(oversized.Close)
+	key := writeOperatorKey(t)
+
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{name: "put", args: []string{"put", "/a", "--url", oversized.URL, "--insecure", "--operator-key", key}},
+		{name: "explain", args: []string{"explain", "--sandbox", testSandboxID, "--url", oversized.URL, "--insecure", "--operator-key", key}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, _, err := run(t, "v", tc.args...); err == nil || !strings.Contains(err.Error(), "read response") {
+				t.Fatalf("err = %v", err)
+			}
+		})
 	}
 }

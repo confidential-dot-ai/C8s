@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/cucumber/godog"
 )
@@ -41,15 +42,32 @@ const (
 	allowlistRoute     = "/allowlist"
 	allowlistLookalike = "/allowlisted"
 	relayFailureBody   = "CDS unavailable"
+	// backendDigestMismatchBody is the 502 the router returns while its
+	// workload backend pool lags the allowlist digest a request was checked
+	// against: a transient state after an allowlist or route change. A
+	// workload-name mismatch is a different refusal ("backend unavailable"),
+	// so matching this body does not retry an intended rejection.
+	backendDigestMismatchBody = "backend_digest_mismatch"
+	// routerDigestChangedBody is the 503 (routes specification E6,
+	// policy/routes.md §9) the router returns when its own mesh leaf renewed
+	// under a different allowlist digest than the request's handshake bound —
+	// its leaves renew on their own schedule, and any allowlist write rolls
+	// them (routes.md:327). The sanctioned recovery is to attest again
+	// (pkg/types.ErrorCodeRouterDigestChanged), which each routerGet attempt
+	// already does on a fresh connection. route_digest_changed and the
+	// membership refusals carry other bodies, so matching this one does not
+	// retry an intended rejection.
+	routerDigestChangedBody = "router_digest_changed"
 )
 
 // routerState is what the scenario has learnt of the router: its rendered
 // configuration, the last answer a client got and the certificate the
 // router presented.
 type routerState struct {
-	conf    *nginxConf
-	answer  *answer
-	serving []byte // DER
+	conf     *nginxConf
+	answer   *answer
+	lastHost string // the resolved Host of the last request, for log matching
+	serving  []byte // DER
 }
 
 // nginxConf is the router's rendered nginx configuration, as locations.
@@ -102,8 +120,8 @@ func (w *world) routerConf() (*nginxConf, error) {
 
 // published is the exact location serving a mounted file as contentType,
 // and, when file is given, a file of that name: the discovery document
-// (application/json) or the CDS-issued certificate (cert.pem, beside the
-// mesh CA's ca.pem, both application/x-pem-file).
+// (application/json) or the CDS-issued certificate (tls.crt, beside the
+// mesh CA's ca.crt, both application/x-pem-file).
 func (c *nginxConf) published(contentType, file string) string {
 	for path, block := range c.exact {
 		alias := aliasRE.FindStringSubmatch(block)
@@ -117,15 +135,29 @@ func (c *nginxConf) published(contentType, file string) string {
 	return ""
 }
 
+// allowlistRouteEnabled reads the route off the router's configuration, or,
+// where the backend cannot read it, from the router serving the allowlist
+// there.
 func allowlistRouteEnabled(ctx context.Context) error {
-	c, err := getWorld(ctx).routerConf()
+	w := getWorld(ctx)
+	c, err := w.routerConf()
+	if errors.Is(err, godog.ErrSkip) {
+		a, err := w.httpRequest("router_request", http.MethodGet, allowlistRoute, nil, "", "", "")
+		if err != nil {
+			return err
+		}
+		if a.status != http.StatusOK {
+			return skipf("the built-in allowlist route answers %d here", a.status)
+		}
+		return nil
+	}
 	if err != nil {
 		return err
 	}
 	_, exact := c.exact[allowlistRoute]
 	_, prefix := c.prefix[allowlistRoute+"/"]
 	if !exact || !prefix {
-		return godog.ErrSkip
+		return skipf("the router does not render the built-in allowlist route here")
 	}
 	return nil
 }
@@ -136,7 +168,7 @@ func discoveryEnabled(ctx context.Context) error {
 		return err
 	}
 	if c.published("application/json", "") == "" {
-		return godog.ErrSkip
+		return skipf("the router does not publish discovery here")
 	}
 	return nil
 }
@@ -147,14 +179,33 @@ func cdsCredentialSelected(ctx context.Context) error {
 		return err
 	}
 	if mode != "cds" {
-		return godog.ErrSkip
+		return skipf("the router presents its %s credential here, not the CDS-issued one", mode)
 	}
 	return nil
 }
 
-func (w *world) routerGet(path string) error {
-	a, err := w.httpRequest("router_request", http.MethodGet, path, nil, "", "", "")
-	if err != nil {
+// routerGet sends the router GET path with headers ("Name: value"), retrying
+// through the transient backend_digest_mismatch 502 the router returns while
+// its workload backend pool catches up to a just-applied allowlist or route
+// digest. Any other answer, success or failure, is kept at once.
+func (w *world) routerGet(path string, headers ...string) error {
+	var a *answer
+	// Each attempt is an attested handshake, so poll on the router's own
+	// refetch cadence rather than every second, as applyRoutes does.
+	if _, err := pollEvery(5*time.Second, observe, func() (bool, error) {
+		var err error
+		if a, err = w.httpRequest("router_request", http.MethodGet, path, nil, "", "", "", headers...); err != nil {
+			return false, err
+		}
+		// Retry through the two transient refusals a just-applied allowlist
+		// or route change provokes: the 502 while the backend pool lags the
+		// digest, and the 503 while the router's own leaf has rolled but this
+		// attested attempt bound the old one. Each is body-discriminated, so
+		// an intended rejection (a different body) still surfaces.
+		transient := (a.status == http.StatusBadGateway && bytes.Contains(a.body, []byte(backendDigestMismatchBody))) ||
+			(a.status == http.StatusServiceUnavailable && bytes.Contains(a.body, []byte(routerDigestChangedBody)))
+		return !transient, nil
+	}); err != nil {
 		return err
 	}
 	w.router.answer = a
@@ -319,7 +370,7 @@ func presentsCDSCertificate(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	path := c.published("application/x-pem-file", "cert.pem")
+	path := c.published("application/x-pem-file", "tls.crt")
 	if path == "" {
 		return errors.New("the router publishes no CDS-issued certificate")
 	}

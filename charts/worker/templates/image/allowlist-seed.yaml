@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "c8s.fullname" . }}-allowlist-seed
+  namespace: {{ .Release.Namespace }}
+  labels:
+{{ include "c8s.commonLabels" . | indent 4 }}
+    app.kubernetes.io/component: cds
+data:
+  allowlist-seed.json: {{ include "worker.allowlistSeedJSON" . | trim | quote }}

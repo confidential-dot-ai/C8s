@@ -10,20 +10,23 @@
 # operator-signed allowlist loop into admission decisions, the armTLS mesh
 # wrapping traffic, workload adoption, and uninstall.
 #
-# The TEE is replaced at exactly one point: evidence generation. A
-# mock-attestation deployment (test/mock-attestation) serves synthetic SNP
-# reports — launch digest all-zero — on the node IP :8400, the address
-# cvmMode=bare-metal consumers dial for the node-baked api. Every stack component
-# that delegates verification to the attestation-api (get-cert, CDS, the
-# mesh, the NRI plugin) works unchanged. In-process hardware verification
+# The TEE is replaced at exactly one point: evidence generation. The chart's
+# attestation-api DaemonSet runs the mock (test/mock-attestation), which
+# serves synthetic SNP reports — launch digest all-zero — behind the chart's
+# own attest-proxy socket. Every stack component that delegates verification
+# to the attestation-api (get-cert, CDS, the mesh, the NRI plugin) works
+# unchanged. In-process hardware verification
 # (`c8s verify`, the `c8s allowlist` CLI) cannot pass synthetic evidence, so
 # allowlist writes here are signed with the production pkg/operatorauth
 # signer (./optoken) and sent over plain curl; CDS still verifies the
 # operator token server-side.
 #
+# The operator's Pod CVM provider runs too, against a fake Cloud instance API
+# (test/mock-cloud) that starts no VM: the provider registers its node and
+# launches into the mock, and no pod CVM ever boots.
+#
 # What this deliberately is not: a confidential-cluster test. Nothing here
-# asserts TEE properties — that is what the metal lanes (snp-metal-e2e,
-# tdx-metal-e2e) are for. See docs/integration-tests.md.
+# asserts TEE properties. See docs/integration-tests.md.
 #
 # Prerequisites: docker (or podman via KIND_EXPERIMENTAL_PROVIDER=podman),
 # kind, kubectl, helm, go, openssl, curl, python3. Run from the repo root via
@@ -41,12 +44,12 @@ WORKDIR="${C8S_IT_WORKDIR:-$(mktemp -d)}"
 mkdir -p "$WORKDIR"
 
 cleanup() {
-    cds_pf_stop
-    router_pf_stop
     if [ "${C8S_IT_KEEP:-}" = 1 ]; then
-        echo "kept: kind cluster $CLUSTER, state in $WORKDIR"
+        echo "kept: kind cluster $CLUSTER, CDS container $CDS_CONTAINER, Cloud container $CLOUD_CONTAINER, state in $WORKDIR"
         return
     fi
+    cds_stop
+    cloud_stop
     kind delete cluster --name "$CLUSTER" >/dev/null 2>&1 || true
     rm -rf "$WORKDIR"
 }
@@ -69,6 +72,7 @@ docker build -q -f cmd/cds/Dockerfile               -t "ghcr.io/confidential-dot
 docker build -q -f cmd/nri-image-policy/Dockerfile  -t "ghcr.io/confidential-dot-ai/nri-image-policy:$IMAGE_TAG" . >/dev/null
 docker build -q -f cmd/armtls-mesh/Dockerfile        -t "ghcr.io/confidential-dot-ai/armtls-mesh:$IMAGE_TAG"       . >/dev/null
 docker build -q -f test/mock-attestation/Dockerfile -t "ghcr.io/confidential-dot-ai/mock-attestation:$IMAGE_TAG" . >/dev/null
+docker build -q -f test/mock-cloud/Dockerfile       -t "ghcr.io/confidential-dot-ai/mock-cloud:$IMAGE_TAG"       . >/dev/null
 
 log "Building the c8s binary"
 make build-c8s >/dev/null
@@ -85,10 +89,15 @@ NODE="$(kind get nodes --name "$CLUSTER" | head -1)"
 [ -n "$NODE" ] || fail "kind reported no node"
 NODE_IP="$(kubectl get node "$NODE" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')"
 [ -n "$NODE_IP" ] || fail "could not resolve the node IP"
+# The node stands in for a confidential one; values.yaml selects this label.
+kubectl label node "$NODE" c8s.test/confidential=true >/dev/null \
+    || fail "could not label the node confidential"
 
 log "Loading images into the cluster"
 # One at a time: the podman provider crosses images loaded in a single call.
-for img in c8s-operator cds nri-image-policy armtls-mesh mock-attestation; do
+# The CDS is not one of them: it runs outside the cluster, in a container of
+# the kind network.
+for img in c8s-operator nri-image-policy armtls-mesh mock-attestation; do
     kind load docker-image "ghcr.io/confidential-dot-ai/$img:$IMAGE_TAG" --name "$CLUSTER" >/dev/null
 done
 
@@ -100,17 +109,29 @@ node_exec ctr -n k8s.io images pull "docker.io/$CURL_IMAGE" >/dev/null \
     || fail "could not pull $CURL_IMAGE into the node (registry rate limit?)"
 node_exec ctr -n k8s.io images pull "docker.io/$WORKLOAD_IMAGE" >/dev/null \
     || fail "could not pull $WORKLOAD_IMAGE into the node (registry rate limit?)"
+# The adopted workload's image, as its manifest pins it. Also kept out of the
+# floor: the entry `c8s install --workload-ref` writes for that workload must
+# be the only one describing its pod, or CDS names neither and the leaf
+# carries no workload name.
+ADOPT_IMAGE="docker.io/$(python3 -c '
+import sys, yaml
+for doc in yaml.safe_load_all(sys.stdin):
+    if doc and doc["kind"] == "Deployment":
+        print(doc["spec"]["template"]["spec"]["containers"][0]["image"])' \
+    < "$SCRIPT_DIR/manifests/adopt-me.yaml")"
+node_exec ctr -n k8s.io images pull "$ADOPT_IMAGE" >/dev/null \
+    || fail "could not pull $ADOPT_IMAGE into the node (registry rate limit?)"
 # router's nginx is pulled at install time — after the floor scan — so its
 # chart-pinned digest is pulled by reference and seeded up front; otherwise
 # the plugin's enforce-existing check kills the front door's own container.
-ROUTER_NGINX_REF="$(helm show values internal/helmchart/c8s | python3 -c '
+ROUTER_NGINX_REF="$(python3 -c '
 import sys, yaml
-img = yaml.safe_load(sys.stdin)["router"]["nginx"]["image"]
+img = yaml.safe_load(sys.stdin)["routerNginx"]["image"]
 repo = img["repository"]
 # Bare docker-hub names (nginxinc/foo) need the registry made explicit for ctr.
 if "/" not in repo or ("." not in repo.split("/")[0] and ":" not in repo.split("/")[0] and repo.split("/")[0] != "localhost"):
     repo = "docker.io/" + repo
-print(repo + "@" + img["digest"])')"
+print(repo + "@" + img["digest"])' < charts/lib/files/components.yaml)"
 node_exec ctr -n k8s.io images pull "$ROUTER_NGINX_REF" >/dev/null \
     || fail "could not pull $ROUTER_NGINX_REF into the node"
 
@@ -131,27 +152,19 @@ HELPER_IMAGE="$(kubectl -n local-path-storage get configmap local-path-config \
 grep -Fq "$HELPER_IMAGE" "$WORKDIR/floor.tsv" \
     || fail "kind local-path helper image $HELPER_IMAGE missing from the floor scan"
 NRI_STORE_DIGEST="$(awk -F'\t' '$2 ~ /nri-image-policy:it$/ {print $1; exit}' "$WORKDIR/floor.tsv")"
-CDS_STORE_DIGEST="$(awk -F'\t' '$2 ~ /\/cds:it$/ {print $1; exit}' "$WORKDIR/floor.tsv")"
-[ -n "$NRI_STORE_DIGEST" ] && [ -n "$CDS_STORE_DIGEST" ] || fail "loaded-image digests missing from the floor scan"
-# Client-side render: the chart's kubeVersion floor is checked against the
-# live server version, not helm's compiled-in default.
-KUBE_VERSION="$(kubectl version -o json \
-    | python3 -c 'import json, sys; print(json.load(sys.stdin)["serverVersion"]["gitVersion"])')"
-# nriImagePolicy.exemptNamespaces must stay empty in this lane: the sweep pod
-# shares the installer's namespace and digest, so an exempt downgrade would
-# re-admit it despite the argv pin and hide a regression.
-python3 - "$WORKDIR/floor.tsv" "$WORKDIR/values.yaml" "docker.io/$CURL_IMAGE" "$NRI_STORE_DIGEST" <<'PYEOF'
+[ -n "$NRI_STORE_DIGEST" ] || fail "the loaded nri-image-policy digest is missing from the floor scan"
+python3 - "$WORKDIR/floor.tsv" "$WORKDIR/floor-values.yaml" "docker.io/$CURL_IMAGE" "$NRI_STORE_DIGEST" "$ADOPT_IMAGE" <<'PYEOF'
 import re, sys, yaml
 floor = {}
 for line in open(sys.argv[1]):
     digest, ref = line.rstrip("\n").split("\t")
     floor.setdefault(digest, ref)
 # Kept out of the floor on purpose: the admission test's unseen digest (the
-# curl ref), and the nri-image-policy digest — production admits that image
-# only under the chart's argv-pinned entry, never by digest. The pinned entry
-# is injected from the chart render below; leaving an any-argv row here would
-# union-admit any argv and void the uninstall regression.
-floor = {d: r for d, r in floor.items() if r != sys.argv[3] and d != sys.argv[4]}
+# curl ref), the nri-image-policy digest — production admits that image
+# only under the chart's argv-pinned entry, never by digest; an any-argv row
+# here would union-admit any argv and void the uninstall regression — and the
+# adopted workload's image, whose only entry is the one install writes for it.
+floor = {d: r for d, r in floor.items() if r not in (sys.argv[3], sys.argv[5]) and d != sys.argv[4]}
 
 def entry_name(digest, ref):
     # Mirrors pkg/allowlist DigestEntryName.
@@ -170,105 +183,192 @@ workloads = {
 with open(sys.argv[2], "w") as f:
     yaml.safe_dump({
         "nriImagePolicy": {
-            # The kind node bakes no plugin or boot config, so the chart's
-            # installer stays off: its baked form would find no config to
-            # patch. The full installer is applied out-of-band below.
-            "enabled": False,
+            # The installer is admitted argv-pinned by the loaded image's digest.
+            "image": {"digest": sys.argv[4]},
             "bootstrapAllowlist": {"workloads": workloads},
         },
-        # A route manifest write applies within one poll.
-        "router": {"routing": {"pollInterval": "2s"}},
     }, f)
 print(f"floor: {len(workloads)} any-argv entries")
 PYEOF
 
-log "Rendering the NRI installer and its argv-pinned seed entry"
-# One render feeds both the out-of-band installer DaemonSet and the pinned
-# seed entry injected into the floor: two renders could drift their flags,
-# and the plugin's enforce-existing check would kill the install init
-# container over an argv mismatch.
-helm template c8s internal/helmchart/c8s -n "$NS" \
-    --kube-version "$KUBE_VERSION" \
-    --set-string image.tag="$IMAGE_TAG" \
-    --set-string attestationApi.cvmMode=bare-metal \
-    --set attestationApi.enabled=false \
-    --set nriImagePolicy.enabled=true \
-    --set-string nriImagePolicy.image.tag="$IMAGE_TAG" \
-    --set-string nriImagePolicy.image.digest="$NRI_STORE_DIGEST" \
-    --set-string cds.image.digest="$CDS_STORE_DIGEST" \
-    --set-string "cds.measurements[0]=$MOCK_MEASUREMENT" \
-    --set router.enabled=false \
-    --set volumed.enabled=false \
-    --set armtlsMesh.enabled=false \
-    -f "$WORKDIR/values.yaml" > "$WORKDIR/nri-render.yaml" \
-    || fail "could not render the NRI installer chart documents"
-python3 - "$WORKDIR/nri-render.yaml" "$WORKDIR/values.yaml" "$WORKDIR/nri-installer.yaml" <<'PYEOF'
-import json, sys, yaml
-render_path, values_path, ds_path = sys.argv[1:4]
-docs = [d for d in yaml.safe_load_all(open(render_path)) if d]
-seed_cm = next(d for d in docs if d.get("kind") == "ConfigMap" and d["metadata"]["name"].endswith("-allowlist-seed"))
-seed = json.loads(seed_cm["data"]["allowlist-seed.json"])
-pinned = {k: v for k, v in seed["workloads"].items() if k.startswith("nri-image-policy-")}
-assert len(pinned) == 1, f"want exactly one pinned nri-image-policy entry, got {sorted(pinned)}"
-values = yaml.safe_load(open(values_path))
-values["nriImagePolicy"]["bootstrapAllowlist"]["workloads"].update(pinned)
-with open(values_path, "w") as f:
-    yaml.safe_dump(values, f)
-installer = next(d for d in docs if d.get("kind") == "DaemonSet" and d["metadata"]["name"].endswith("-worker"))
-with open(ds_path, "w") as f:
-    yaml.safe_dump(installer, f)
-print(f"pinned seed entry {next(iter(pinned))} injected into the floor values")
-PYEOF
-
-# Digest-alias the loaded C8s images: the NRI installer renders its pod image
-# as repo@<store digest>; the alias makes containerd resolve that reference
-# to the loaded image without a registry pull.
-while IFS=$'\t' read -r digest ref; do
-    case "$ref" in
-        ghcr.io/confidential-dot-ai/*:*) node_exec ctr -n k8s.io images tag "$ref" "${ref%:*}@$digest" >/dev/null ;;
-    esac
-done < "$WORKDIR/floor.tsv"
-
-log "Deploying the mock attestation-api"
-kubectl apply -f test/integration/cluster/manifests/mock-attestation.yaml
-kubectl -n "$MOCK_ATTESTATION_NS" rollout status "deploy/$MOCK_ATTESTATION_NAME" --timeout=120s
-
 openssl ecparam -genkey -name prime256v1 -noout -out "$WORKDIR/operator.key" 2>/dev/null
 openssl ec -in "$WORKDIR/operator.key" -pubout -out "$WORKDIR/operator-pub.pem" 2>/dev/null
 
-# The node image's nri-node-ip.service publishes the node address before any
-# component starts; kind has no such unit. Bare-metal components under a
-# fail-closed policy with no attestation-api socket mount this file (type
-# File) and read $(NODE_IP) from it, so without it they never leave
-# ContainerCreating. Same path, content and mode the plugin writes.
-node_exec sh -c "install -d -m 0711 /run/nri-image-policy \
-    && printf '%s\n' '$NODE_IP' > /run/nri-image-policy/node-ip \
-    && chmod 0644 /run/nri-image-policy/node-ip" \
-    || fail "could not publish the node-ip file"
+log "Reading the kind network"
+# The CDS runs outside the cluster, on the kind network: its IPv4 subnet
+# bounds the node addresses the inventory callback may dial. Docker assigns
+# the CDS its own address when it starts, below.
+docker network inspect "$KIND_NETWORK" -f '{{range .IPAM.Config}}{{.Subnet}} {{end}}' \
+    | python3 -c 'import ipaddress, sys
+for subnet in sys.stdin.read().split():
+    net = ipaddress.ip_network(subnet)
+    if net.version == 4:
+        print(net)
+        break' > "$WORKDIR/kind-subnet"
+KIND_SUBNET=$(cat "$WORKDIR/kind-subnet")
+[ -n "$KIND_SUBNET" ] || fail "the $KIND_NETWORK network has no IPv4 subnet"
+# Every component runs the image this lane built and loaded as $IMAGE_TAG.
+python3 - "$IMAGE_TAG" > "$WORKDIR/image-tags.yaml" <<'PYEOF'
+import sys, yaml
+values = {}
+for component in yaml.safe_load(open("charts/lib/files/components.yaml"))["components"]:
+    node = values
+    for key in component["valuePath"].split("."):
+        node = node.setdefault(key, {})
+    node["tag"] = sys.argv[1]
+yaml.safe_dump(values, sys.stdout)
+PYEOF
+# c8s_install <install flags>: the release shape the seed render and every
+# install share, so the entries the CDS is configured with are the ones the
+# install applies. The overlay mocks the attestation-api and names kind's
+# cluster DNS and pod and Service ranges.
+c8s_install() {
+    ./build/c8s install \
+        --chart charts/cloud \
+        --namespace "$NS" \
+        --operator-keys "$WORKDIR/operator-pub.pem" \
+        -f "$WORKDIR/image-tags.yaml" \
+        -f "$SCRIPT_DIR/values.yaml" \
+        -f "$WORKDIR/floor-values.yaml" \
+        "$@"
+}
+
+# Name every tagged store image repo@<store digest>, as a registry pull does.
+# The NRI installer's pod image is that reference, resolved without a pull.
+# kind's preloaded images carry no such name, so the kubelet reports their
+# image ID, a digest the plugin never matches and the install's image-policy
+# preflight cannot find in the floor; a restarted kubelet reports the name.
+while IFS=$'\t' read -r digest ref; do
+    case "$ref" in
+        *@*) ;;
+        *) node_exec ctr -n k8s.io images tag --force "$ref" "${ref%:*}@$digest" >/dev/null ;;
+    esac
+done < "$WORKDIR/floor.tsv"
+node_exec systemctl restart kubelet
+# kubelet_reports_store_digests: every container the cluster runs reports a
+# digest of the floor scan.
+kubelet_reports_store_digests() {
+    kubectl get pods -A -o json 2>/dev/null | python3 -c '
+import json, sys
+store = {line.split("\t", 1)[0] for line in open(sys.argv[1])}
+pods = json.load(sys.stdin)["items"]
+ids = [s.get("imageID", "") for p in pods
+       for s in p["status"].get("initContainerStatuses", []) + p["status"].get("containerStatuses", [])]
+sys.exit(not all(i.rsplit("@", 1)[-1] in store for i in ids if i))' "$WORKDIR/floor.tsv"
+}
+for _ in $(seq 1 60); do
+    kubelet_reports_store_digests && break
+    sleep 2
+done
+kubelet_reports_store_digests || fail "the kubelet still reports a container image by a digest the store scan does not name"
+
+# --- The CDS this cluster trusts ---
+
+log "Running the workload this release adopts"
+# The adoption step below installs with --workload-ref, and install writes an
+# allowlist entry for the workload that ref names, read from its live pod
+# template. So the workload runs before any render names it, and every render
+# from here on carries its entry.
+kubectl apply -f test/integration/cluster/manifests/adopt-me.yaml
+kubectl -n adopted wait --for=condition=Available deploy/web --timeout=120s \
+    || fail "adoption fixture never became Available"
+# How the seed render and the adoption install below name that workload: one
+# ref, so both render the same entry for it. --wait is what install requires
+# of --workload-ref; the seed render installs nothing.
+ADOPT_FLAGS=(--workload-ref web=adopted/deployment/web:8080 --wait)
+
+log "Writing the CDS configuration and its pin"
+# The entries the CDS must serve are the ones this install renders:
+# --allowlist-seed-out writes them before any CDS exists, and the install
+# below refuses to proceed unless the configuration carries exactly them.
+c8s_install --allowlist-seed-out "$WORKDIR/allowlist-seed.json" "${ADOPT_FLAGS[@]}" \
+    || fail "could not render this release's allowlist seed"
+
+# The CDS VM's identity as the mock reports it: one launch digest, under the
+# one vCPU count this lane pins, and the same digest for the nodes CDS admits.
+printf '{"snp_variants":[{"smp":1,"measurement":{"snp_launch_digest":"%s","algorithm":"sha384"}}]}' \
+    "$MOCK_MEASUREMENT" > "$WORKDIR/cds-image-manifest.json"
+printf '{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"node","measurement":"%s"}]}' \
+    "$MOCK_MEASUREMENT" > "$WORKDIR/node-pins.json"
+rm -rf "$WORKDIR/cds"
+./build/c8s cds config new --out "$WORKDIR/cds" \
+    --cluster-id "$CLUSTER" \
+    --operator-keys "$WORKDIR/operator-pub.pem" \
+    --allowlist-seed "$WORKDIR/allowlist-seed.json" \
+    --node-pins "$WORKDIR/node-pins.json" \
+    --node-cidr "$KIND_SUBNET" \
+    --pod-cidr 10.244.0.0/16 \
+    --service-cidr 10.96.0.0/16 \
+    --image-manifest "$WORKDIR/cds-image-manifest.json" \
+    --platform sev-snp \
+    --vcpus 1 \
+    || fail "could not write the CDS configuration and pin"
+
+log "Starting the CDS outside the cluster"
+# The pin names the launch binding its attestation-api reports, which every
+# client checks (lib.sh, cds_start). Docker assigns the address, the one
+# endpoint every client of this cluster dials, so the renders and the install
+# below take it from there.
+cds_start
+CDS_ADDRESS="$(cds_address)"
+# How every install below names that CDS.
+CDS_INSTALL_FLAGS=(--cds-address "$CDS_ADDRESS" --cds-pin "$WORKDIR/cds/cds-pin.json")
+cds_wait
+pass "CDS serves the cluster its own launch binds it to"
+
+log "Starting the mock Cloud and configuring the Pod CVM provider"
+# The operator mounts the provider's Secret from its first start, so the
+# Cloud it names and the Secret both exist before the install.
+cloud_start
+pod_cvm_secret
+# Every instance of the mock Cloud names a pod status endpoint in the
+# documentation range, where nothing answers. The node resets a connection to
+# it rather than leaving it to hang. The provider's attested request still
+# retries until its own timeout, so a reconcile of a pod with a running
+# instance takes tens of seconds here.
+node_exec iptables -I FORWARD -d 203.0.113.0/24 -p tcp -j REJECT --reject-with tcp-reset \
+    || fail "could not make the node refuse the mock Cloud's endpoint range"
+
+# --- Install ---
 
 log "c8s install"
-./build/c8s install --namespace "$NS" --cvm-mode=bare-metal --hardware-platform=sev-snp \
-    --single-node --resolve-digests=false --image-tag="$IMAGE_TAG" \
-    --operator-keys "$WORKDIR/operator-pub.pem" \
-    --measurements "$MOCK_MEASUREMENT" \
-    -f "$WORKDIR/values.yaml" --wait || fail "c8s install failed"
+# The refusal check below reads the plugin's journal from here on.
+INSTALL_SINCE="$(node_exec date +%s)"
+# Without --wait: the installer restarts containerd, and the components wait
+# on the plugin it registers.
+c8s_install "${CDS_INSTALL_FLAGS[@]}" --wait=false || fail "c8s install failed"
 
-# --- NRI image-policy plugin ---
-
-log "Installing the NRI image-policy plugin"
-# Under --cvm-mode=bare-metal the chart renders the installer only in its baked
-# pins-patching form, and the install above leaves even that off (values.yaml):
-# the kind node bakes no plugin for it to pin. The harness renders the full
-# installer from the chart source (above, before c8s install) and applies it
-# out-of-band — same installer, same containerd patch, same plugin.
-kubectl apply -f "$WORKDIR/nri-installer.yaml"
-# The installer patches the node's containerd config and restarts it; the
-# DaemonSet reports Ready once the plugin answers its health socket.
-kubectl -n "$NS" rollout status ds/c8s-nri-image-policy-worker --timeout=300s \
-    || fail "NRI plugin did not become healthy"
+# The installer patches the node's containerd config and restarts it, and the
+# plugin comes up with the restarted runtime.
+for _ in $(seq 1 300); do
+    node_exec test -S /run/nri-image-policy/health.sock && break
+    sleep 1
+done
+node_exec test -S /run/nri-image-policy/health.sock \
+    || fail "NRI plugin never answered its health socket on the node"
 node_exec test -S /run/nri-image-policy/workload-claims.sock \
     || fail "admission inventory socket missing on the node"
 pass "NRI plugin registered with containerd and serves the admission inventory"
+
+for _ in $(seq 1 60); do
+    node_exec test -s /run/nri-image-policy/node-ip && break
+    sleep 1
+done
+[ "$(node_exec cat /run/nri-image-policy/node-ip)" = "$NODE_IP" ] \
+    || fail "the NRI plugin did not publish the node address in /run/nri-image-policy/node-ip"
+pass "NRI plugin publishes the node address"
+
+# The restart interrupted the installer's own install container, admitted only
+# argv-pinned by the seed CDS serves. A fresh pod retries it at once, rather
+# than on kubelet's crash backoff.
+kubectl -n "$NS" delete pod -l app.kubernetes.io/component=nri-installer-worker
+kubectl -n "$NS" rollout status ds/c8s-nri-image-policy-worker --timeout=300s \
+    || fail "NRI plugin did not become healthy"
+pass "NRI installer DaemonSet Ready on the served allowlist"
+
+kubectl -n "$NS" rollout status ds/c8s-attestation-api --timeout=300s \
+    || fail "the attestation-api DaemonSet (mock) did not become Ready"
+pass "attestation-api DaemonSet Ready on the mock image"
 
 kind get kubeconfig --name "$CLUSTER" > "$WORKDIR/kubeconfig"
 cat > "$WORKDIR/env" <<EOF
@@ -278,6 +378,18 @@ NODE=$NODE
 NODE_IP=$NODE_IP
 WORKDIR=$WORKDIR
 EOF
+# The provider registers its node once the operator leads and renews the
+# node's heartbeat while the mock Cloud answers.
+kubectl -n "$NS" wait --for=condition=Available deploy/c8s-operator --timeout=300s \
+    || fail "c8s-operator not Available"
+for _ in $(seq 1 120); do
+    [ "$(kubectl get node "$POD_CVM_NODE" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)" = True ] && break
+    sleep 1
+done
+[ "$(kubectl get node "$POD_CVM_NODE" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')" = True ] \
+    || fail "the Pod CVM provider's node $POD_CVM_NODE never became Ready"
+pass "Pod CVM provider registered its node against the mock Cloud"
+
 if [ "${C8S_IT_SETUP_ONLY:-}" = 1 ]; then
     echo "=== Stack installed; checks skipped (C8S_IT_SETUP_ONLY=1) ==="
     exit 0
@@ -286,53 +398,60 @@ fi
 # --- Tests ---
 
 log "Control plane"
-for deploy in c8s-operator c8s-cds c8s-router; do
-    kubectl -n "$NS" wait --for=condition=Available "deploy/$deploy" --timeout=180s \
-        || fail "$deploy not Available"
-done
-kubectl -n "$NS" rollout status ds/c8s-armtls-mesh --timeout=240s || fail "armtls-mesh not ready"
-pass "operator, CDS, router and armtls-mesh all Ready after c8s install"
+kubectl -n "$NS" wait --for=condition=Available deploy/c8s-operator --timeout=300s \
+    || fail "c8s-operator not Available"
+# The router serves ports of its own, so it runs in the namespace the mesh
+# policy names. Its sandbox waits on the plugin's inventory socket.
+kubectl -n "$ROUTER_NS" wait --for=condition=Available deploy/c8s-router --timeout=300s \
+    || fail "c8s-router not Available"
+refusal="$(node_exec journalctl -t nri-image-policy --no-pager --since "@$INSTALL_SINCE" \
+    | grep "gets no identity" | grep "\"namespace\":\"$ROUTER_NS\"" || true)"
+[ -z "$refusal" ] || fail "the plugin refused a router pod for its life: $refusal"
+pass "operator, CDS and router all Ready after c8s install, the router started after the plugin"
 
 kubectl get crd confidentialworkloads.confidential.ai >/dev/null || fail "ConfidentialWorkload CRD missing"
 kubectl get mutatingwebhookconfiguration c8s-pod-injector >/dev/null || fail "pod-injector webhook config missing"
-kubectl get validatingadmissionpolicy c8s-cw-label-integrity >/dev/null || fail "cw-label policy missing"
+kubectl get validatingwebhookconfiguration c8s-pod-validator >/dev/null || fail "pod-validator webhook config missing"
 kubectl get validatingadmissionpolicy c8s-deny-host-namespaces >/dev/null || fail "host-namespace policy missing"
-pass "CRD, mutating webhook, and both ValidatingAdmissionPolicies installed"
+pass "CRD, both webhooks, and the host-namespace policy installed"
 
 log "Allowlist API"
 # Unsigned and wrongly-signed writes are refused; a write signed by the
-# pinned operator key lands, is served, and deletes cleanly. Exercised on a
-# throwaway digest so no assertion can pass on the seeded entries.
-cds_pf_start
+# pinned operator key lands, is served, and removes the entry cleanly.
+# Exercised on a throwaway digest so no assertion can pass on the seeded
+# entries. Every write carries the whole document.
 THROWAWAY_DIGEST="sha256:$(printf 'ab%.0s' {1..32})"
 any_workload "$THROWAWAY_DIGEST" "example.com/harness/throwaway:1" > "$WORKDIR/add.json"
+allowlist_document throwaway "$WORKDIR/add.json" > "$WORKDIR/put.json"
 code="$(curl -sSk -o /dev/null -w '%{http_code}' -X PUT -H 'Content-Type: application/json' \
-    --data-binary @"$WORKDIR/add.json" "https://127.0.0.1:$CDS_LOCAL_PORT/allowlist/workloads/throwaway" || true)"
+    --data-binary @"$WORKDIR/put.json" "$(cds_url)/allowlist" || true)"
 [ "$code" = "401" ] || fail "unsigned allowlist write: want HTTP 401, got $code"
 pass "unsigned allowlist write rejected (401)"
 
 openssl ecparam -genkey -name prime256v1 -noout -out "$WORKDIR/rogue.key" 2>/dev/null
-rogue_token="$("$WORKDIR/optoken" "$WORKDIR/rogue.key" PUT /allowlist/workloads/throwaway "$WORKDIR/add.json")"
+rogue_token="$("$WORKDIR/optoken" "$WORKDIR/rogue.key" PUT /allowlist "$WORKDIR/put.json")"
 code="$(curl -sSk -o /dev/null -w '%{http_code}' -X PUT -H "Authorization: $rogue_token" -H 'Content-Type: application/json' \
-    --data-binary @"$WORKDIR/add.json" "https://127.0.0.1:$CDS_LOCAL_PORT/allowlist/workloads/throwaway" || true)"
+    --data-binary @"$WORKDIR/put.json" "$(cds_url)/allowlist" || true)"
 [ "$code" = "401" ] || fail "wrong-key allowlist write: want HTTP 401, got $code"
 pass "allowlist write signed by an unpinned key rejected (401)"
 
-code="$(cds_write PUT /allowlist/workloads/throwaway "$WORKDIR/add.json")"
+code="$(allowlist_set throwaway "$WORKDIR/add.json")"
 [ "$code" = "204" ] || fail "signed allowlist write: want HTTP 204, got $code"
-curl -sSk "https://127.0.0.1:$CDS_LOCAL_PORT/allowlist" | grep -q "$THROWAWAY_DIGEST" \
+curl -sSk "$(cds_url)/allowlist" | grep -q "$THROWAWAY_DIGEST" \
     || fail "added digest not served from /allowlist"
-: > "$WORKDIR/del.json"
-code="$(cds_write DELETE /allowlist/workloads/throwaway "$WORKDIR/del.json")"
-[ "$code" = "204" ] || fail "signed allowlist delete: want HTTP 204, got $code"
-if curl -sSk "https://127.0.0.1:$CDS_LOCAL_PORT/allowlist" | grep -q "$THROWAWAY_DIGEST"; then
-    fail "deleted digest still served from /allowlist"
+code="$(allowlist_set throwaway)"
+[ "$code" = "204" ] || fail "signed allowlist removal: want HTTP 204, got $code"
+if curl -sSk "$(cds_url)/allowlist" | grep -q "$THROWAWAY_DIGEST"; then
+    fail "removed digest still served from /allowlist"
 fi
-pass "signed allowlist write + delete round-trip through CDS"
+pass "signed allowlist write + removal round-trip through CDS"
 
 log "Route API"
-# Until CDS stores a manifest the router routes nothing, and says so (A2).
-code="$(router_get "$ROUTER_HOST" / "$WORKDIR/route-body")"
+# Until CDS stores a manifest the router routes nothing, and says so. Dialed at
+# the node's published 443: the router pod's own ruleset drops a namespace
+# entrant, so no port-forward reaches it.
+code="$(curl -sSk -o /dev/null -w '%{http_code}' --max-time 10 \
+    --resolve "$ROUTER_HOST:443:$NODE_IP" "https://$ROUTER_HOST/" || true)"
 [ "$code" = "503" ] || fail "front door before any route manifest: want HTTP 503, got $code"
 pass "front door answers 503 before a route manifest is stored"
 
@@ -341,11 +460,11 @@ pass "front door answers 503 before a route manifest is stored"
 # route digest of exactly those bytes.
 route_manifest 1 > "$WORKDIR/routes-1.json"
 code="$(curl -sSk -o /dev/null -w '%{http_code}' -X PUT -H 'Content-Type: application/json' \
-    --data-binary @"$WORKDIR/routes-1.json" "https://127.0.0.1:$CDS_LOCAL_PORT/routes" || true)"
+    --data-binary @"$WORKDIR/routes-1.json" "$(cds_url)/routes" || true)"
 [ "$code" = "401" ] || fail "unsigned route write: want HTTP 401, got $code"
 rogue_token="$("$WORKDIR/optoken" "$WORKDIR/rogue.key" PUT /routes "$WORKDIR/routes-1.json")"
 code="$(curl -sSk -o /dev/null -w '%{http_code}' -X PUT -H "Authorization: $rogue_token" -H 'Content-Type: application/json' \
-    --data-binary @"$WORKDIR/routes-1.json" "https://127.0.0.1:$CDS_LOCAL_PORT/routes" || true)"
+    --data-binary @"$WORKDIR/routes-1.json" "$(cds_url)/routes" || true)"
 [ "$code" = "401" ] || fail "wrong-key route write: want HTTP 401, got $code"
 pass "unsigned and wrong-key route writes rejected (401)"
 
@@ -396,7 +515,27 @@ case "$LABELS" in
     *confidential.ai/cw=vllm*) : ;;
     *) fail "webhook did not stamp the cw label (labels: $LABELS)" ;;
 esac
-pass "webhook injected c8s-cert + c8s-cert-wait and stamped confidential.ai/cw=vllm"
+SELECTOR="$(kubectl -n demo get pod "$POD" -o jsonpath='{.spec.nodeSelector.c8s\.test/confidential}' 2>/dev/null || true)"
+[ "$SELECTOR" = "true" ] || fail "webhook did not select the confidential node (c8s.test/confidential: $SELECTOR)"
+pass "webhook injected c8s-cert + c8s-cert-wait, stamped confidential.ai/cw=vllm and selected the confidential node"
+
+kubectl -n demo get pod "$POD" -o json | python3 -c '
+import json, sys
+spec = json.load(sys.stdin)["spec"]
+token_volumes = {
+    v["name"] for v in spec["volumes"]
+    if any("serviceAccountToken" in source for source in v.get("projected", {}).get("sources", []))
+}
+containers = spec.get("initContainers", []) + spec["containers"]
+platform_names = {"c8s-mesh", "c8s-cert", "c8s-cert-wait"}
+assert platform_names.issubset({c["name"] for c in containers}), "missing injected containers"
+app = next(c for c in spec["containers"] if c["name"] == "app")
+assert token_volumes.intersection(m["name"] for m in app.get("volumeMounts", [])), "app lost its API token"
+for c in containers:
+    if c["name"] in platform_names:
+        assert token_volumes.isdisjoint(m["name"] for m in c.get("volumeMounts", [])), c["name"] + " mounts an API token"
+'
+pass "service-account token remains on the application and is absent from injected sidecars"
 
 # The operator provisions the workload's headless Service.
 for _ in $(seq 1 30); do
@@ -416,18 +555,19 @@ for _ in $(seq 1 60); do
 done
 CERTLOG="$(kubectl -n demo logs "$POD" -c c8s-cert 2>/dev/null || true)"
 echo "$CERTLOG" | grep -q "certificate obtained" || fail "get-cert never obtained a certificate: $CERTLOG"
-echo "$CERTLOG" | grep -q "sandbox_token=true" || fail "get-cert issued without a sandbox token: $CERTLOG"
-pass "workload leaf issued with a sandbox-identity token (NRI inventory + CDS callback)"
+echo "$CERTLOG" | grep -q "workload instance asserted" || fail "get-cert issued without a sandbox assertion: $CERTLOG"
+echo "$CERTLOG" | grep -q "credential generation published" || fail "get-cert published no credential generation: $CERTLOG"
+pass "workload leaf issued with a sandbox-identity token and published as a generation"
 
 kubectl -n demo wait --for=condition=Ready "pod/$POD" --timeout=240s \
     || fail "workload pod never became Ready"
 pass "workload pod Running behind the full injection + admission path"
 
-# The issued leaf is bound to the workload's in-cluster DNS identity.
-kubectl -n demo exec "$POD" -c app -- cat /etc/c8s/certs/tls.crt > "$WORKDIR/leaf.pem" 2>/dev/null \
-    || fail "could not read the issued leaf from the workload pod"
-SAN="$(openssl x509 -in "$WORKDIR/leaf.pem" -noout -ext subjectAltName 2>/dev/null || true)"
-echo "$SAN" | grep -q "DNS:c8s-vllm.demo.svc" || fail "leaf SAN is not the workload identity: $SAN"
+# The issued leaf is bound to the workload's in-cluster DNS identity. The
+# workload cannot read it (the credential volume is the platform containers'),
+# so the SAN is read from what get-cert logged about the leaf it published.
+echo "$CERTLOG" | grep -q "c8s-vllm.demo.svc" \
+    || fail "get-cert published a leaf without the workload identity: $CERTLOG"
 pass "issued leaf carries SAN c8s-vllm.demo.svc"
 
 log "Admission rejections"
@@ -438,8 +578,10 @@ pass "pod with an unmatching cw label rejected at admission"
 
 pod_fixture bad-hostnet bad-hostnet demo sleep 3600 > "$WORKDIR/bad-hostnet.yaml"
 OUT="$(kubectl apply -f "$WORKDIR/bad-hostnet.yaml" 2>&1 || true)"
-echo "$OUT" | grep -q "c8s-deny-host-namespaces" || fail "hostNetwork tenant pod not rejected: $OUT"
-pass "hostNetwork tenant pod rejected by the host-namespace policy"
+# The mutating webhook covers every pod in the namespace now, so it refuses
+# this one before the host-namespace policy sees it.
+echo "$OUT" | grep -q "must not set hostNetwork" || fail "hostNetwork tenant pod not rejected: $OUT"
+pass "hostNetwork tenant pod rejected at admission"
 
 log "Dynamic provisioning (issue #210)"
 # kind's default class is local-path, the node cluster's shape: the provisioner's
@@ -485,7 +627,7 @@ pass "non-allowlisted image denied at container creation (fail-closed)"
 
 # Allow, and the same pod proceeds.
 any_workload "$CURL_DIGEST" "docker.io/$CURL_IMAGE" > "$WORKDIR/add-curl.json"
-code="$(cds_write PUT /allowlist/workloads/curl "$WORKDIR/add-curl.json")"
+code="$(allowlist_set curl "$WORKDIR/add-curl.json")"
 [ "$code" = "204" ] || fail "signed allowlist re-add: want HTTP 204, got $code"
 # kubelet's CreateContainerError backoff stretches into the minutes, so this
 # wait must comfortably outlive it.
@@ -493,161 +635,128 @@ kubectl -n demo wait --for=condition=Ready pod/denied --timeout=360s \
     || fail "pod still blocked after its image was allowlisted"
 pass "signed allowlist write flips a denied pod to Running (plugin pulled the update)"
 
+code="$(allowlist_set curl)"
+[ "$code" = "204" ] || fail "signed allowlist removal of curl: want HTTP 204, got $code"
+kubectl -n demo wait --for=condition=Ready=false pod/denied --timeout=60s \
+    || fail "pod still Ready after its image left the allowlist"
+pass "signed allowlist removal kills the running container (plugin rechecked on apply)"
+# Later steps run the curl image again.
+kubectl -n demo delete pod denied --wait=false >/dev/null
+code="$(allowlist_set curl "$WORKDIR/add-curl.json")"
+[ "$code" = "204" ] || fail "signed allowlist re-add of curl: want HTTP 204, got $code"
+
 log "Mesh"
-# Mirrored from test/e2e/mesh-cw-enforcement.sh: a direct pod-IP dial from a
-# meshed namespace is intercepted and wrapped (the inbound counter moves);
-# the bypasses that skip interception — a Service VIP, a dial from a
-# mesh-excluded namespace — must never reach the workload in plaintext.
+# Every pod of a covered namespace carries its own endpoint, and the pod's
+# credentials stay with the platform containers. The node enforcer installs
+# the pod's packet rules before any container runs, so a plaintext dial from a
+# pod the mesh does not cover cannot reach the workload.
+INIT_NAMES="$(kubectl -n demo get pod "$POD" -o jsonpath='{.spec.initContainers[*].name}')"
+case "$INIT_NAMES" in
+    "c8s-mesh c8s-cert c8s-cert-wait"*) : ;;
+    *) fail "injected shape is not endpoint-first (init: $INIT_NAMES)" ;;
+esac
+APP_MOUNTS="$(kubectl -n demo get pod "$POD" -o jsonpath='{range .spec.containers[?(@.name=="app")].volumeMounts[*]}{.name}{"\n"}{end}')"
+echo "$APP_MOUNTS" | grep -q '^c8s-certs$' \
+    && fail "the workload container mounts the credential volume: $APP_MOUNTS"
+pass "pod carries its own mesh endpoint and no credential files in the workload"
+
 POD_IP="$(kubectl -n demo get pod "$POD" -o jsonpath='{.status.podIP}')"
 [ -n "$POD_IP" ] || fail "could not resolve the workload pod IP"
 
 pod_fixture client it-mesh-client default sleep 1200 | kubectl apply -f - >/dev/null
-kubectl wait --for=condition=Ready pod/it-mesh-client --timeout=120s || fail "mesh client pod not Ready"
-CLIENT_IP="$(kubectl get pod it-mesh-client -o jsonpath='{.status.podIP}')"
-await_ipset ARMTLS-MESH-LOCAL-PODS "$CLIENT_IP"
-await_ipset ARMTLS-MESH-CW-PODS "$POD_IP"
+kubectl wait --for=condition=Ready pod/it-mesh-client --timeout=180s || fail "mesh client pod not Ready"
+pass "a second member pod became Ready behind its own endpoint"
 
-# The egress guard drops every non-TCP packet a cw pod sends, carving out
-# UDP/53 to the cluster resolver. The carve-out sits in a chain downstream of
-# kube-proxy's Service DNAT, so a query arrives there addressed to a CoreDNS
-# pod and a rule written against the packet's destination cannot fire — the
-# pod stays Running and every name it resolves fails. Assert resolution, not
-# health.
+# A member-to-member dial rides each pod's endpoint over armTLS.
+code="$(kubectl exec it-mesh-client -- curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "http://$POD_IP:8080/" || true)"
+[ "$code" = "200" ] || fail "member-to-member pod-IP request failed (got $code); the mesh-wrapped path must work"
+pass "pod-IP dial between member pods is carried over armTLS"
+
+# The resolver exception: a member pod resolves cluster names and nothing else.
 KUBERNETES_IP="$(kubectl -n default get svc kubernetes -o jsonpath='{.spec.clusterIP}')"
 resolved="$(kubectl -n demo exec "$POD" -c app -- timeout 15 nslookup kubernetes.default.svc.cluster.local 2>&1)" \
-    || fail "cw pod cannot resolve a cluster name; the egress guard's DNS carve-out is unreachable in its chain:
+    || fail "member pod cannot resolve a cluster name; the ruleset's resolver exception is unreachable:
 $resolved"
 echo "$resolved" | grep -q "$KUBERNETES_IP" \
-    || fail "cw pod's resolver answered without the kubernetes ClusterIP $KUBERNETES_IP: $resolved"
-pass "cw pod resolves cluster DNS through the egress guard's carve-out"
-
-# The carve-out names one resolver. Widening it to any UDP/53 destination
-# would pass the check above and hand every cw pod a plaintext channel to an
-# arbitrary host, so the scope is asserted directly.
+    || fail "member pod's resolver answered without the kubernetes ClusterIP $KUBERNETES_IP: $resolved"
 if kubectl -n demo exec "$POD" -c app -- timeout 8 nslookup example.com 192.0.2.53 >/dev/null 2>&1; then
-    fail "cw pod reached an off-cluster resolver on UDP/53; the carve-out must name the cluster DNS server only"
+    fail "member pod reached an unnamed resolver on UDP/53; the exception names the cluster DNS server only"
 fi
-pass "cw pod cannot reach an unnamed resolver on UDP/53"
+pass "member pod resolves through the named resolver and no other"
 
-inbound='^armtls_mesh_connections_total.*direction="inbound"'
-base_inbound="$(mesh_metric "$inbound")"
-code="$(kubectl exec it-mesh-client -- curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "http://$POD_IP:8080/" || true)"
-[ "$code" = "200" ] || fail "pod-IP request to the cw workload failed (got $code); the mesh-wrapped path must work"
-await_metric_above "$inbound" "${base_inbound:-0}" "mesh inbound connection counter"
-pass "pod-IP dial to the cw workload is mesh-wrapped (inbound counter moved)"
-
-# Service VIP over the cw pods: the mesh skips ClusterIPs by design, so the
-# hop must fail closed or ride the mesh — never plaintext (see below).
-cat > "$WORKDIR/vip-svc.yaml" <<'EOF'
-apiVersion: v1
-kind: Service
-metadata:
-  name: it-cw-vip
-  namespace: demo
-spec:
-  type: ClusterIP
-  selector:
-    confidential.ai/cw: vllm
-  ports:
-    - { port: 80, targetPort: 8080 }
-EOF
-kubectl apply -f "$WORKDIR/vip-svc.yaml"
-VIP="$(kubectl -n demo get svc it-cw-vip -o jsonpath='{.spec.clusterIP}')"
-for _ in $(seq 1 30); do
-    kubectl get endpointslices -n demo -l kubernetes.io/service-name=it-cw-vip \
-        -o jsonpath='{.items[*].endpoints[*].addresses[*]}' 2>/dev/null | grep -q . && break
-    sleep 2
-done
-# Two secure outcomes, depending on which nat PREROUTING rule runs first:
-# mesh-first -> the VIP matches no pod-IP rule, kube-proxy DNATs, the FORWARD
-# guard DROPs (curl rc 28); kube-proxy-first -> the DNAT'd packet matches the
-# mesh's pod-IP interception and the hop is WRAPPED (rc 0, inbound counter
-# moves). The insecure outcome is plaintext, which no counter move proves.
-drops='^armtls_mesh_iptables_cw_inbound_drops_total'
-base_drops="$(mesh_metric "$drops")"
-base_inbound_vip="$(mesh_metric "$inbound")"
-out="$(kubectl exec it-mesh-client -- sh -c "curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://$VIP:80/; echo rc=\$?" || true)"
-rc="$(echo "$out" | grep -o 'rc=[0-9]*' | cut -d= -f2)"
-case "$rc" in
-    28)
-        await_metric_above "$drops" "${base_drops:-0}" "cw inbound drop counter"
-        pass "Service-VIP plaintext bypass dropped by the cw inbound guard (counter moved)"
-        ;;
-    0)
-        echo "$out" | grep -q "^200" || fail "VIP dial rc=0 but no 200: $out"
-        await_metric_above "$inbound" "${base_inbound_vip:-0}" \
-            "VIP dial returned 200 but the mesh recorded no inbound connection, so the hop reached the cw workload outside the mesh — in plaintext"
-        pass "Service-VIP dial wrapped by the mesh (inbound counter moved; rule-ordering variant)"
-        ;;
-    *)
-        fail "VIP bypass to the cw workload: want rc=28 (dropped) or rc=0 (wrapped), got rc=$rc"
-        ;;
-esac
-
-# A mesh-excluded namespace (kube-system) is not intercepted on egress; its
-# direct dial to the cw pod IP is left to the node's inbound chains.
+# A pod of an exempt namespace is not a member: its plaintext dial reaches the
+# member's inbound listener, which refuses it for want of an armTLS peer.
 pod_fixture client it-mesh-excl kube-system sleep 600 | kubectl apply -f - >/dev/null
 kubectl wait --for=condition=Ready pod/it-mesh-excl -n kube-system --timeout=120s \
-    || fail "excluded-namespace client pod not Ready"
-# This dial crosses the same nat PREROUTING chains as the VIP case, so it has
-# the same two secure outcomes and the same one insecure outcome. Which of the
-# two secure ones happens is a property of rule ordering, not of the client's
-# namespace, so demanding rc=28 alone fails on a wrapped hop and passes a
-# plaintext one unnoticed (rc=0 proves only "not dropped"). Require the
-# matching counter instead.
-base_drops_excl="$(mesh_metric "$drops")"
-base_inbound_excl="$(mesh_metric "$inbound")"
-out="$(kubectl exec -n kube-system it-mesh-excl -- sh -c "curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://$POD_IP:8080/; echo rc=\$?" || true)"
-rc="$(echo "$out" | grep -o 'rc=[0-9]*' | cut -d= -f2)"
-case "$rc" in
-    28)
-        await_metric_above "$drops" "${base_drops_excl:-0}" "cw inbound drop counter"
-        pass "excluded-namespace plaintext bypass dropped by the cw inbound guard (counter moved)"
-        ;;
-    0)
-        echo "$out" | grep -q "^200" || fail "excluded-namespace dial rc=0 but no 200: $out"
-        await_metric_above "$inbound" "${base_inbound_excl:-0}" \
-            "excluded-namespace dial returned 200 but the mesh recorded no inbound connection, so the hop reached the cw workload outside the mesh — in plaintext"
-        pass "excluded-namespace dial wrapped by the mesh (inbound counter moved; rule-ordering variant)"
-        ;;
-    *)
-        fail "excluded-namespace bypass to the cw workload: want rc=28 (dropped) or rc=0 (wrapped), got rc=$rc"
-        ;;
-esac
+    || fail "exempt-namespace client pod not Ready"
+out="$(kubectl exec -n kube-system it-mesh-excl -- sh -c "curl -s -o /dev/null -w '%{http_code}' --max-time 8 http://$POD_IP:8080/; echo rc=\$?" || true)"
+echo "$out" | grep -q '^200' \
+    && fail "a non-member reached the workload in plaintext: $out"
+pass "plaintext dial from a non-member pod never reaches the workload ($out)"
+
+log "Route publication"
+# E4: route publication is off by default, so /.well-known/c8s/routes is 404;
+# "Routing by the route manifest" checks it with router.routePublication on.
+# publication prints the status of one front-door GET of the path and leaves
+# the status, Cache-Control and base64 body in routes-pub.txt. It runs in an
+# exempt namespace: a member pod's egress is carried over armTLS, which the
+# front door does not speak.
+kubectl -n kube-system delete configmap it-mesh-ca --ignore-not-found >/dev/null
+kubectl -n kube-system create configmap it-mesh-ca --from-file=ca.pem="$WORKDIR/cds-mesh-ca.pem"
+publication() {
+    kubectl -n kube-system delete pod it-routes-pub --ignore-not-found >/dev/null 2>&1 || true
+    python3 "$CLUSTER_HARNESS_DIR/pod-fixture.py" front-door it-routes-pub kube-system "$CURL_IMAGE" \
+        --ca-configmap it-mesh-ca -- sh -c \
+        "curl -sS --cacert /ca/ca.pem -D /tmp/h -o /tmp/b -w '%{http_code}\n' https://c8s-router.$ROUTER_NS.svc/.well-known/c8s/routes; grep -i '^cache-control:' /tmp/h | tr -d '\r'; echo; base64 -w0 /tmp/b" \
+        | kubectl apply -f - >/dev/null
+    kubectl -n kube-system wait --for=jsonpath='{.status.phase}'=Succeeded pod/it-routes-pub --timeout=120s >/dev/null \
+        || fail "route publication request failed"
+    kubectl -n kube-system logs it-routes-pub > "$WORKDIR/routes-pub.txt" || fail "could not read the it-routes-pub logs"
+    kubectl -n kube-system delete pod it-routes-pub --ignore-not-found >/dev/null 2>&1 || true
+    head -n1 "$WORKDIR/routes-pub.txt"
+}
+code="$(publication)"
+[ "$code" = "404" ] || fail "route publication off: want HTTP 404, got $code"
+pass "route publication off by default: /.well-known/c8s/routes is 404"
 
 log "router front door"
-kubectl -n "$NS" exec deploy/c8s-router -c nginx -- cat /tls/ca.pem > "$WORKDIR/mesh-ca.pem" \
-    || fail "could not read the mesh CA from router"
-kubectl create configmap it-mesh-ca --from-file=ca.pem="$WORKDIR/mesh-ca.pem"
-pod_fixture front-door it-curl-lb default curl -sS --cacert /ca/ca.pem \
-    "https://c8s-router.$NS.svc/healthz" > "$WORKDIR/curl-lb.yaml"
-kubectl apply -f "$WORKDIR/curl-lb.yaml"
-kubectl wait --for=jsonpath='{.status.phase}'=Succeeded pod/it-curl-lb --timeout=120s \
+# The front-door client verifies the router against the mesh CA, read from
+# CDS: the router's pod is a mesh member, and a member admits no exec. Over
+# plain curl like every other CDS read here — in-process verification cannot
+# pass this lane's synthetic evidence (see the header).
+curl -sSk "$(cds_url)/ca" > "$WORKDIR/mesh-ca.pem" \
+    || fail "could not read the mesh CA from CDS"
+grep -q "BEGIN CERTIFICATE" "$WORKDIR/mesh-ca.pem" || fail "the mesh CA read from CDS is not a certificate"
+kubectl -n kube-system delete configmap it-mesh-ca --ignore-not-found >/dev/null
+kubectl -n kube-system create configmap it-mesh-ca --from-file=ca.pem="$WORKDIR/mesh-ca.pem"
+# The front door answers plain TLS, so its client must not be a member: a
+# member's dial is captured into armTLS, which nginx does not speak. An exempt
+# namespace is the in-cluster stand-in for the external clients it serves.
+front_door_pod it-curl-healthz kube-system it-mesh-ca "https://c8s-router.$ROUTER_NS.svc/healthz" \
+    > "$WORKDIR/curl-healthz.yaml"
+kubectl apply -f "$WORKDIR/curl-healthz.yaml"
+kubectl -n kube-system wait --for=jsonpath='{.status.phase}'=Succeeded pod/it-curl-healthz --timeout=120s \
     || fail "front-door healthz request failed"
-[ "$(kubectl logs it-curl-lb)" = "ok" ] || fail "front-door /healthz did not return ok"
+[ "$(kubectl -n kube-system logs it-curl-healthz)" = "ok" ] || fail "front-door /healthz did not return ok"
 pass "router front door serves HTTPS verified against the CDS mesh CA"
 
 log "Workload adoption"
-kubectl apply -f test/integration/cluster/manifests/adopt-me.yaml
-kubectl -n adopted wait --for=condition=Available deploy/web --timeout=120s \
-    || fail "adoption fixture never became Available"
 # Without --operator-key, install writes the --upstream route as a new
 # manifest; the harness stores it with optoken below, since `c8s routes
 # put` verifies CDS in-process and cannot pass synthetic evidence. An ambient
 # C8S_OPERATOR_KEY would make install sign and store it instead.
-C8S_OPERATOR_KEY='' ./build/c8s install --namespace "$NS" --cvm-mode=bare-metal --hardware-platform=sev-snp \
-    --single-node --resolve-digests=false --image-tag="$IMAGE_TAG" \
-    --operator-keys "$WORKDIR/operator-pub.pem" \
-    --measurements "$MOCK_MEASUREMENT" \
-    --workload-ref web=adopted/deployment/web:8443 --upstream web \
+printf 'router:\n  routePublication:\n    enabled: true\n' > "$WORKDIR/values-publish.yaml"
+C8S_OPERATOR_KEY='' c8s_install "${CDS_INSTALL_FLAGS[@]}" "${ADOPT_FLAGS[@]}" \
+    --upstream web \
     --routes-out "$WORKDIR/routes-install.json" \
-    -f "$WORKDIR/values.yaml" --wait || fail "c8s install --workload-ref failed"
+    -f "$WORKDIR/values-publish.yaml" \
+    || fail "c8s install --workload-ref failed"
 TMPL_ANNOTATION="$(kubectl -n adopted get deploy web -o jsonpath='{.spec.template.metadata.annotations.confidential\.ai/cw}')"
 [ "$TMPL_ANNOTATION" = "web" ] || fail "adopted workload template not stamped (got: $TMPL_ANNOTATION)"
 # The first leaf predates the app container, so it names no workload;
-# get-cert renews until CDS names it, then SIGHUPs nginx. It runs as nginx's
-# uid (101) to signal it. Only a stamped template may carry these.
-kubectl -n adopted patch deploy web --type merge -p '{"spec":{"template":{"metadata":{"annotations":{"confidential.ai/c8s-reload-nginx":"true","confidential.ai/c8s-get-cert-run-as-user":"101","confidential.ai/c8s-get-cert-run-as-group":"101"}}}}}' \
+# get-cert renews until CDS names it. It runs as nginx's uid (101), which is
+# what keeps the leaf readable. Only a stamped template may carry these.
+kubectl -n adopted patch deploy web --type merge -p '{"spec":{"template":{"metadata":{"annotations":{"confidential.ai/c8s-get-cert-run-as-user":"101","confidential.ai/c8s-get-cert-run-as-group":"101"}}}}}' \
     || fail "could not annotate the adopted template"
 kubectl -n adopted rollout status deploy/web --timeout=300s || fail "adopted workload never rolled out"
 pass "install adopted a running workload (template stamped, rollout injected)"
@@ -675,115 +784,49 @@ done
 [ "$SUMMARY" = "1/1" ] || fail "status mirror never reported the adopted workload (got: $SUMMARY)"
 pass "status mirror reports the adopted workload (attestationSummary 1/1)"
 
-log "Routing by the route manifest"
-# Either port-forward can point at a pod the second install rolled.
-cds_pf_stop
-router_pf_stop
-python3 - "$WORKDIR/routes-install.json" "$ROUTER_HOST" <<'PY' || fail "install --upstream wrote an unexpected route manifest"
+# Store the manifest the install wrote, at the next revision: its backend
+# names the allowlist entry install wrote for the adopted workload, which is
+# the name CDS stamps on that pod's leaf and the router requires of a
+# workload backend.
+python3 - "$WORKDIR/routes-install.json" > "$WORKDIR/routes-web.json" <<'PY' || fail "the install's route manifest does not name the adopted workload"
 import json, sys
 m = json.load(open(sys.argv[1]))
-# A new manifest's revision is the Unix time, above any a router still holds.
-assert m["revision"] >= 1_000_000_000, m
-want = [{"path": "/", "match": "prefix",
-         "backend": {"address": "c8s-web.adopted.svc.cluster.local:8443", "workload": "web"}}]
-assert m["hosts"] == {sys.argv[2]: {"routes": want}}, m["hosts"]
-PY
-pass "install --upstream wrote a new manifest routing $ROUTER_HOST / to the adopted workload"
-INSTALL_REV="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["revision"])' "$WORKDIR/routes-install.json")"
-
-# route_revision <revision> <workload> <match> [<ca-pem-file>]: the install
-# manifest at a later revision, naming <workload> with <match>, plus an
-# address backend anchored on the CA file when given.
-route_revision() {
-    python3 - "$WORKDIR/routes-install.json" "$@" <<'PY'
-import json, sys
-m = json.load(open(sys.argv[1]))
-m["revision"] = int(sys.argv[2])
+m["revision"] += 1
 for host in m["hosts"].values():
-    route = host["routes"][0]
-    route["backend"]["workload"], route["match"] = sys.argv[3], sys.argv[4]
-    if len(sys.argv) > 5:
-        host["routes"].append({"path": "/admin", "match": "prefix",
-                               "backend": {"address": "admin.default.svc.cluster.local:8443",
-                                           "serverName": "admin.default.svc", "ca": open(sys.argv[5]).read()}})
+    backend = host["routes"][0]["backend"]
+    assert backend["workload"] == "web", backend
 print(json.dumps(m))
 PY
-}
+code="$(cds_write PUT /routes "$WORKDIR/routes-web.json")"
+[ "$code" = "204" ] || fail "route manifest naming the adopted workload: want HTTP 204, got $code"
 
-# --resolve-digests=false writes no `web` entry, so the pod's leaf carries the
-# floor's name for its nginx digest (the floor's entry_name).
-WEB_ENTRY="nginx-unprivileged-$(printf '%s' "${WORKLOAD_IMAGE#*@sha256:}" | cut -c1-12)"
-
-# served_leaf_named <name>: the adopted nginx serves a leaf whose
-# matched-workload extension (1.3.6.1.4.1.66378.1.5) carries <name>, within
-# two minutes. The unnamed first leaf would make every route to it 502.
-served_leaf_named() {
-    local pf rc=1
-    kubectl -n adopted port-forward deploy/web "$ADOPTED_LOCAL_PORT:8443" >/dev/null 2>&1 &
-    pf=$!
-    for _ in $(seq 1 60); do
-        if openssl s_client -connect "127.0.0.1:$ADOPTED_LOCAL_PORT" </dev/null 2>/dev/null \
-            | openssl x509 -noout -text 2>/dev/null | tr -d ' \n' | grep -q "1.3.6.1.4.1.66378.1.5:.*$1"; then
-            rc=0
-            break
-        fi
-        sleep 2
-    done
-    kill "$pf" 2>/dev/null || true
-    return "$rc"
-}
-served_leaf_named "$WEB_ENTRY" || fail "the adopted nginx never served a leaf named $WEB_ENTRY"
-pass "the adopted nginx reloaded onto a leaf named $WEB_ENTRY"
-
-# Revisions above the install's, which is above any the Route API checks
-# stored.
-route_revision "$((INSTALL_REV + 1))" "$WEB_ENTRY" prefix > "$WORKDIR/routes-2.json"
-code="$(cds_write PUT /routes "$WORKDIR/routes-2.json")"
-[ "$code" = "204" ] || fail "route manifest naming $WEB_ENTRY: want HTTP 204, got $code"
-await_route "$ROUTER_HOST" / 200 "Welcome to nginx"
-pass "front door routes / to the adopted workload over TLS, its leaf named $WEB_ENTRY"
-
-# Go's plain-text 404, not nginx's HTML one or the backend's: the routing
-# listener refused them, with the path as the client sent it.
-await_route other.example / 404 "404 page not found"
-await_route "$ROUTER_HOST" /a//b 404 "404 page not found"
-pass "the routing listener answers 404 for an unrouted host and a path with an empty segment"
-
-# router routes in-cluster clients the same way, by the Service name.
-kubectl delete pod it-curl-lb 2>/dev/null || true
-pod_fixture front-door it-curl-lb default curl -sS --cacert /ca/ca.pem \
-    "https://c8s-router.$NS.svc/" > "$WORKDIR/curl-lb.yaml"
-kubectl apply -f "$WORKDIR/curl-lb.yaml"
-kubectl wait --for=jsonpath='{.status.phase}'=Succeeded pod/it-curl-lb --timeout=120s \
-    || fail "front-door request to the adopted workload failed"
-# Read the body once: piping a live `kubectl logs` into `grep -q` is a race
-# under pipefail (grep exits on the match and the producer can die to SIGPIPE)
-# and re-reading in the failure message can show a body grep never saw.
-BODY="$(kubectl logs it-curl-lb)" || fail "could not read the it-curl-lb logs"
+# The front door routes its catch-all to the adopted workload, which the
+# routing sidecar reaches as a mesh client of that workload. The router polls
+# the manifest, so the request repeats until it applies.
+BODY=""
+for _ in $(seq 1 10); do
+    kubectl -n kube-system delete pod it-curl-root --ignore-not-found >/dev/null 2>&1 || true
+    front_door_pod it-curl-root kube-system it-mesh-ca "https://c8s-router.$ROUTER_NS.svc/" \
+        > "$WORKDIR/curl-root.yaml"
+    kubectl apply -f "$WORKDIR/curl-root.yaml" >/dev/null
+    kubectl -n kube-system wait --for=jsonpath='{.status.phase}'=Succeeded pod/it-curl-root --timeout=120s >/dev/null \
+        || fail "front-door request to the adopted workload failed"
+    # Read the body once: piping a live `kubectl logs` into `grep -q` races
+    # with SIGPIPE under pipefail.
+    BODY="$(kubectl -n kube-system logs it-curl-root)" || fail "could not read the it-curl-root logs"
+    case "$BODY" in
+        *"Welcome to nginx"*) break ;;
+    esac
+    sleep 2
+done
 case "$BODY" in
     *"Welcome to nginx"*) ;;
     *) fail "front door did not proxy the adopted workload: $BODY" ;;
 esac
-pass "in-cluster front door routes the Service name to the adopted workload"
-
-# No allowlist entry is named web here, so the pod's leaf does not carry that
-# name and the router refuses it (B1), without trying another route (B5).
-route_revision "$((INSTALL_REV + 2))" web exact > "$WORKDIR/routes-3.json"
-code="$(cds_write PUT /routes "$WORKDIR/routes-3.json")"
-[ "$code" = "204" ] || fail "route manifest naming web: want HTTP 204, got $code"
-await_route "$ROUTER_HOST" / 502
-await_route "$ROUTER_HOST" /unrouted 404 "404 page not found"
-pass "a backend whose leaf lacks the route's workload name gets 502; an unrouted path 404"
-
-code="$(cds_get /ca "$WORKDIR/cds-mesh-ca-now.pem")"
-[ "$code" = "200" ] || fail "GET /ca: want HTTP 200, got $code"
-route_revision "$((INSTALL_REV + 3))" "$WEB_ENTRY" prefix "$WORKDIR/cds-mesh-ca-now.pem" > "$WORKDIR/routes-4.json"
-code="$(cds_write PUT /routes "$WORKDIR/routes-4.json")"
-[ "$code" = "422" ] || fail "address backend anchored on the mesh CA: want HTTP 422, got $code"
-pass "CDS refuses an address backend anchored on the mesh CA (422)"
+pass "router routes the front door to the adopted workload over the mesh"
 
 log "Checking the served allowlist pins the host sweep argv"
-curl -sSk "https://127.0.0.1:$CDS_LOCAL_PORT/allowlist" > "$WORKDIR/served.json" \
+curl -sSk "$(cds_url)/allowlist" > "$WORKDIR/served.json" \
     || fail "could not read the served allowlist"
 python3 - "$WORKDIR/served.json" "$NRI_STORE_DIGEST" <<'PYEOF'
 import json, sys
@@ -806,15 +849,13 @@ assert any(s[0] == ("/bin/sh", "-c") and len(s[1]) == 1 and "c8s host sweep" in 
     f"no host-sweep script pin: {shapes}"
 print(f"served allowlist: {len(containers)} argv-pinned shapes for the nri image, sweep shapes pinned")
 PYEOF
-# The uninstall's sweep image resolution relies on the release carrying
-# tag=it and no digest for the nri image; a chart-default digest would flip
-# the sweep to an upstream image this lane never loaded.
+# The uninstall sweeps in the release's nri image by digest: the loaded one,
+# which the served pin above names.
 helm -n "$NS" get values c8s --all -o json | python3 -c '
 import json, sys
 img = json.load(sys.stdin)["nriImagePolicy"]["image"]
-assert img.get("tag") == "it" and not img.get("digest"), \
-    f"nriImagePolicy.image = {img}; want tag=it and no digest"
-'
+assert img.get("digest") == sys.argv[1], f"nriImagePolicy.image = {img}; want digest {sys.argv[1]}"
+' "$NRI_STORE_DIGEST"
 pass "served allowlist pins the host sweep argv (no any-argv hole for the nri digest)"
 
 log "Uninstall"
@@ -825,10 +866,13 @@ fi
 if kubectl get mutatingwebhookconfiguration c8s-pod-injector >/dev/null 2>&1; then
     fail "mutating webhook config left behind after uninstall"
 fi
+if kubectl get validatingwebhookconfiguration c8s-pod-validator >/dev/null 2>&1; then
+    fail "pod-validator webhook config left behind after uninstall"
+fi
 if kubectl get validatingadmissionpolicy c8s-deny-host-namespaces >/dev/null 2>&1; then
     fail "ValidatingAdmissionPolicies left behind after uninstall"
 fi
-pass "uninstall removes the release, webhook, and admission policies"
+pass "uninstall removes the release, both webhooks, and the admission policies"
 
 echo ""
 echo "=== All $CHECKS cluster integration checks passed ==="

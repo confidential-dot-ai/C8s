@@ -1,15 +1,19 @@
 package cmdsutil
 
 import (
+	"bytes"
+	"context"
+	"errors"
 	"fmt"
+	"io/fs"
+	"log/slog"
 	"os"
 	"strings"
 
 	"github.com/spf13/pflag"
 
-	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
-	"github.com/confidential-dot-ai/attestation-go/remote"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 // ImagePolicySource selects one complete refvalues JSON document. File and JSON
@@ -20,55 +24,38 @@ type ImagePolicySource struct {
 }
 
 // IsSet reports whether a complete policy was supplied.
-func (s ImagePolicySource) IsSet() bool { return s.File != "" || s.JSON != "" }
+func (s ImagePolicySource) IsSet() bool {
+	return s.File != "" || s.JSON != ""
+}
 
-// MeasurementPins holds the independent digest/register inputs. Registers
-// carries the raw --rtmrs values; which family they apply to is refvalues'. Prefix is "cds-"
-// for commands whose flags name CDS explicitly; otherwise it is empty.
+// MeasurementPins holds the independent launch-digest inputs a target is
+// pinned by where a complete document does not name it.
 type MeasurementPins struct {
 	Measurements     []string
 	MeasurementsFile string
-	Registers        []string
-	Prefix           string
 }
 
-// MeasurementPinsFromStrings adapts commands that accept comma-separated strings.
-func MeasurementPinsFromStrings(measurements, rtmrs, prefix string) MeasurementPins {
-	pins := MeasurementPins{Prefix: prefix}
-	if measurements != "" {
-		pins.Measurements = strings.Split(measurements, ",")
-	}
-	if rtmrs != "" {
-		pins.Registers = strings.Split(rtmrs, ",")
-	}
-	return pins
-}
-
-func (p MeasurementPins) flags() []string {
+// Flags names the launch-digest inputs the caller set, for an error that says
+// which argument to drop.
+func (p MeasurementPins) Flags() []string {
 	var flags []string
 	if len(p.Measurements) > 0 {
-		flags = append(flags, "--"+p.Prefix+"measurements")
+		flags = append(flags, "--measurements")
 	}
 	if p.MeasurementsFile != "" {
 		flags = append(flags, "--measurements-file")
 	}
-	if len(p.Registers) > 0 {
-		flags = append(flags, "--"+p.Prefix+"rtmrs")
-	}
 	return flags
 }
 
-// LoadValues loads complete image identities, rejecting independent pin inputs
-// before reading a policy. Without a source it returns an empty set.
-func (s ImagePolicySource) LoadValues(pins MeasurementPins) (refvalues.ReferenceValues, error) {
+// Values loads the complete image identities this source names. An unset
+// source names none, which is an empty set rather than an error.
+func (s ImagePolicySource) Values() (refvalues.ReferenceValues, error) {
 	if !s.IsSet() {
 		return refvalues.ReferenceValues{}, nil
 	}
 	if s.File != "" && s.JSON != "" {
 		return refvalues.ReferenceValues{}, fmt.Errorf("--image-policy-file cannot be combined with --image-policy-json")
-	}
-	if flags := pins.flags(); len(flags) != 0 {
-		return refvalues.ReferenceValues{}, fmt.Errorf("--image-policy-file/--image-policy-json cannot be combined with %s", strings.Join(flags, " or "))
 	}
 	if s.JSON != "" {
 		set, err := refvalues.Parse([]byte(s.JSON))
@@ -84,54 +71,145 @@ func (s ImagePolicySource) LoadValues(pins MeasurementPins) (refvalues.Reference
 	return set, nil
 }
 
-// ImagePolicyValuesConfig supplies a complete policy and optional platform check.
-// PlatformFlag names the caller's platform flag in validation errors.
-type ImagePolicyValuesConfig struct {
-	Source       ImagePolicySource
-	Pins         MeasurementPins
-	Platform     string
-	PlatformFlag string
+// ValuesExcluding is Values for a command that also takes flat launch digests:
+// a complete document and a digest list are alternatives, so naming both is a
+// usage error rather than a union.
+func (s ImagePolicySource) ValuesExcluding(pins MeasurementPins) (refvalues.ReferenceValues, error) {
+	if flags := pins.Flags(); s.IsSet() && len(flags) != 0 {
+		return refvalues.ReferenceValues{}, fmt.Errorf("--image-policy-file/--image-policy-json cannot be combined with %s", strings.Join(flags, " or "))
+	}
+	return s.Values()
 }
 
-// LoadImagePolicyValues loads complete identities and checks their TEE against
-// the configured platform when one is supplied.
-func LoadImagePolicyValues(cfg ImagePolicyValuesConfig) (refvalues.ReferenceValues, error) {
-	values, err := cfg.Source.LoadValues(cfg.Pins)
-	if err != nil || !cfg.Source.IsSet() {
-		return values, err
+// ErrCDSPinUnbound marks a pin set that does not name one CDS VM.
+var ErrCDSPinUnbound = errors.New("is not one CDS VM's identity")
+
+// CDSLaunchFile is the configuration a pin set identifies its CDS by: every
+// entry must bind the same launch file, and a set binding none, or two, names
+// no one VM. A CDS is the cluster's trust root, and its image alone says
+// nothing about the cluster it serves — the configuration does, and the launch
+// binding is what proves it.
+func CDSLaunchFile(values refvalues.ReferenceValues) ([]byte, error) {
+	if values.Empty() {
+		return nil, fmt.Errorf("%w: it pins no image, so nothing tells this cluster's CDS from any other attested TEE", ErrCDSPinUnbound)
 	}
-	if cfg.Platform != "" {
-		flag := cfg.PlatformFlag
-		if flag == "" {
-			flag = "--platform"
+	file := values.Images[0].LaunchFile
+	for _, image := range values.Images {
+		if len(image.LaunchFile) == 0 {
+			return nil, fmt.Errorf("%w: entry %q binds no launch file, and a CDS is pinned to the configuration it runs on", ErrCDSPinUnbound, image.Name)
 		}
-		family, err := teetypes.ParseFamily(cfg.Platform)
-		if err != nil {
-			return refvalues.ReferenceValues{}, fmt.Errorf("%s: %w", flag, err)
-		}
-		if family != values.Family {
-			return refvalues.ReferenceValues{}, fmt.Errorf("image policy declares tee %q but %s is %q", values.Family, flag, family)
+		if !bytes.Equal(image.LaunchFile, file) {
+			return nil, fmt.Errorf("%w: entry %q binds another configuration, and one pin names one CDS", ErrCDSPinUnbound, image.Name)
 		}
 	}
-	return values, nil
+	return file, nil
 }
 
-// Load returns complete image identities or independent digest/register pins.
-// Complete identities are never flattened into independent lists.
-func (s ImagePolicySource) Load(pins MeasurementPins) (remote.Policy, error) {
-	if s.IsSet() {
-		values, err := s.LoadValues(pins)
-		return values.Policy(), err
-	}
-	measurements, err := LoadMeasurements(pins.Measurements, pins.MeasurementsFile)
+// ResolveCDSPins returns the pins a client holds its CDS to, and whether the
+// node's own policy decided them. While the node mounts a policy it is the
+// only source and a supplied one is refused. That policy follows the
+// cluster's pin decrees while ctx runs; a supplied one never moves.
+func ResolveCDSPins(ctx context.Context, nodePolicy string, source ImagePolicySource) (armtls.PinSource, bool, error) {
+	node, err := FollowNodePins(ctx, nodePolicy)
 	if err != nil {
-		return remote.Policy{}, fmt.Errorf("--%smeasurements: %w", pins.Prefix, err)
+		return nil, false, err
 	}
-	rtmrs, err := refvalues.ParseRegisterPins(pins.Registers)
+	if node != nil {
+		if supplied := suppliedPolicyFlags(source); len(supplied) > 0 {
+			return nil, false, fmt.Errorf("this node provides %s; remove %s", nodePolicy, strings.Join(supplied, " and "))
+		}
+		return node, true, nil
+	}
+	values, err := source.Values()
 	if err != nil {
-		return remote.Policy{}, fmt.Errorf("--%srtmrs: %w", pins.Prefix, err)
+		return nil, false, err
 	}
-	return remote.Policy{Measurements: measurements, Registers: rtmrs}, nil
+	if _, err := CDSLaunchFile(values); err != nil {
+		return nil, false, fmt.Errorf("%s %w", suppliedPinSource(source), err)
+	}
+	return armtls.FixedPins(values), false, nil
+}
+
+// ClientCDSPins is ResolveCDSPins and the line a credential client logs about
+// the set it resolved. The conformance probe resolves silently
+// (internal/cmds/secretprobe).
+func ClientCDSPins(ctx context.Context, nodePolicy string, source ImagePolicySource) (armtls.PinSource, error) {
+	pins, fromNode, err := ResolveCDSPins(ctx, nodePolicy, source)
+	if err != nil {
+		return nil, err
+	}
+	slog.Info("CDS pins resolved", "from_node", fromNode)
+	return pins, nil
+}
+
+// suppliedPinSource names where the refused pins came from, so a client is
+// told which input to fix.
+func suppliedPinSource(source ImagePolicySource) string {
+	if source.IsSet() {
+		return strings.Join(suppliedPolicyFlags(source), " and ")
+	}
+	return "the CDS pin set"
+}
+
+// NodeProvidesCDSPins reports whether the enforcer mounts this node's CDS pins
+// at path, so a client can say which half of its CDS configuration is short
+// before resolving either.
+func NodeProvidesCDSPins(path string) (bool, error) {
+	return nodeProvides(path)
+}
+
+// RequireNodeVerifier holds a credential client to the node's own
+// attestation-api while the enforcer mounts its CDS policy at nodePolicy and
+// presents that attestation-api at socket. The verifier is what decides
+// whether the CDS a client dials satisfies those pins, so a client answering
+// to a named verifier is not pinned at all.
+//
+// Both paths are the node's own mounts, and the rule is ResolveCDSPins': while
+// they are there they are the only source, and a supplied verifier is refused.
+// Where the node hands out no policy, or runs no attestation-api a pod can
+// reach, the caller's own argument stands.
+func RequireNodeVerifier(nodePolicy, socket, supplied string) error {
+	pinned, err := nodeProvides(nodePolicy)
+	if err != nil {
+		return err
+	}
+	served, err := nodeProvides(socket)
+	if err != nil {
+		return err
+	}
+	if !pinned || !served {
+		return nil
+	}
+	if endpoint := "unix://" + socket; supplied != endpoint {
+		return fmt.Errorf("this node pins CDS in %s and serves its attestation-api at %s, so --attestation-api-url must be %s; got %q",
+			nodePolicy, socket, endpoint, supplied)
+	}
+	return nil
+}
+
+// nodeProvides reports whether the node mounts path. An error other than an
+// absent path fails the caller: a mount it cannot read still binds it.
+func nodeProvides(path string) (bool, error) {
+	switch _, err := os.Stat(path); {
+	case errors.Is(err, fs.ErrNotExist):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("node mount %s: %w", path, err)
+	}
+	return true, nil
+}
+
+// suppliedPolicyFlags names the pin inputs the caller set, for an error that
+// says which argument to drop.
+func suppliedPolicyFlags(source ImagePolicySource) []string {
+	var flags []string
+	if source.File != "" {
+		flags = append(flags, "--image-policy-file")
+	}
+	if source.JSON != "" {
+		flags = append(flags, "--image-policy-json")
+	}
+	return flags
 }
 
 // LoadMeasurements combines digest flags and a newline-separated digest
@@ -149,20 +227,17 @@ func LoadMeasurements(values []string, path string) ([][]byte, error) {
 }
 
 // BindImagePolicyFlags registers canonical JSON sources. A nil inline pointer
-// exposes only file input; prefix is "cds-" for the mesh's independent CDS policy.
-// Only one source may be used.
-func BindImagePolicyFlags(fs *pflag.FlagSet, file, inline *string, prefix, purpose string) {
+// exposes only file input. Only one source may be used.
+func BindImagePolicyFlags(fs *pflag.FlagSet, file, inline *string, purpose string) {
 	selected := ""
 	bind := func(target *string, name, usage string) {
 		fs.Var(&policySourceFlag{target: target, selected: &selected, name: name}, name, usage)
 	}
-	fileName := prefix + "image-policy-file"
-	jsonName := prefix + "image-policy-json"
 	*file = ""
-	bind(file, fileName, "path to a complete JSON image policy (image, RTMR and launch-key pins); "+purpose)
+	bind(file, "image-policy-file", "path to a complete JSON image policy (image, RTMR and launch-key pins); "+purpose)
 	if inline != nil {
 		*inline = ""
-		bind(inline, jsonName, "inline complete JSON image policy, in the same format as --"+fileName+"; "+purpose)
+		bind(inline, "image-policy-json", "inline complete JSON image policy, in the same format as --image-policy-file; "+purpose)
 	}
 }
 

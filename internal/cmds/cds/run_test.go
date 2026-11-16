@@ -2,6 +2,7 @@ package cds
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -24,15 +25,16 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 
+	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
+	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
@@ -62,34 +64,6 @@ func TestCompilePattern(t *testing.T) {
 	t.Run("invalid returns error", func(t *testing.T) {
 		if _, err := compilePattern("--x", "("); err == nil {
 			t.Fatal("expected error for invalid regex, got nil")
-		}
-	})
-}
-
-func TestCompilePatterns(t *testing.T) {
-	t.Run("nil input yields nil slice", func(t *testing.T) {
-		got, err := compilePatterns("--x", nil)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if got != nil {
-			t.Fatalf("expected nil slice, got %v", got)
-		}
-	})
-
-	t.Run("empties are skipped", func(t *testing.T) {
-		got, err := compilePatterns("--x", []string{"", `^a$`, ""})
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if len(got) != 1 {
-			t.Fatalf("expected 1 compiled pattern (empties skipped), got %d", len(got))
-		}
-	})
-
-	t.Run("propagates compile error", func(t *testing.T) {
-		if _, err := compilePatterns("--x", []string{"["}); err == nil {
-			t.Fatal("expected error for invalid regex in list, got nil")
 		}
 	})
 }
@@ -131,9 +105,9 @@ func TestNormalizeHTTPServerConfig_PreservesNonZero(t *testing.T) {
 	}
 }
 
-// writeOperatorKeyPair generates an operator EC key, writes the public half as
-// a PEM bundle, and returns the private key plus the bundle path.
-func writeOperatorKeyPair(t *testing.T) (*ecdsa.PrivateKey, string) {
+// operatorKeyPair generates an operator EC key and returns it with the PEM
+// bundle pinning its public half, as a CDS configuration carries it.
+func operatorKeyPair(t *testing.T) (*ecdsa.PrivateKey, []byte) {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -143,20 +117,14 @@ func writeOperatorKeyPair(t *testing.T) (*ecdsa.PrivateKey, string) {
 	if err != nil {
 		t.Fatalf("marshal operator key: %v", err)
 	}
-	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})
-	path := filepath.Join(t.TempDir(), "operator-keys.pem")
-	if err := os.WriteFile(path, pemBytes, 0o600); err != nil {
-		t.Fatalf("write operator keys: %v", err)
-	}
-	return key, path
+	return key, pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})
 }
 
-// writeOperatorKeysPEM writes a PEM bundle with one EC public key and returns
-// its path.
-func writeOperatorKeysPEM(t *testing.T) string {
+// operatorKeysPEM is a PEM bundle with one EC public key.
+func operatorKeysPEM(t *testing.T) []byte {
 	t.Helper()
-	_, path := writeOperatorKeyPair(t)
-	return path
+	_, pemBytes := operatorKeyPair(t)
+	return pemBytes
 }
 
 // newHealthyAttestationApi returns an httptest server that answers every path
@@ -171,11 +139,14 @@ func newHealthyAttestationApi(t *testing.T) *httptest.Server {
 	return srv
 }
 
-// validRunConfig returns a config that passes run()'s validation with armTLS
-// disabled, an in-tempdir allowlist DB, and hermetic endpoints.
+// validRunConfig returns a config that passes run()'s validation, with an
+// in-tempdir allowlist DB and hermetic endpoints. The cluster it serves is the
+// measured configuration; pass another with measuredConfig to vary the
+// operator keys or the workloads.
 func validRunConfig(t *testing.T, attestationURL string) config {
 	t.Helper()
 	return config{
+		measured:                   measuredConfig(t, cluster{operatorPEM: operatorKeysPEM(t), workloads: map[string]string{"cds": digestA}}),
 		host:                       "127.0.0.1",
 		port:                       0,
 		logLevel:                   "error",
@@ -185,6 +156,8 @@ func validRunConfig(t *testing.T, attestationURL string) config {
 		jwtClockSkew:               30,
 		certTTL:                    time.Hour,
 		namedCertTTL:               issuer.MaxNamedLeafTTL,
+		routerCertTTL:              20 * time.Second,
+		allowlistNodeDelay:         30 * time.Second,
 		challengeTTL:               time.Minute,
 		requestTimeout:             time.Second,
 		maxRequestSize:             65536,
@@ -200,7 +173,7 @@ func validRunConfig(t *testing.T, attestationURL string) config {
 		rateLimiterMax:             1000,
 		rateLimiterEvictInterval:   time.Minute,
 		rateLimiterIdleTimeout:     5 * time.Minute,
-		armtlsPlatform:             "",
+		armtlsPlatform:             teetypes.FamilySNP,
 	}
 }
 
@@ -229,11 +202,6 @@ func TestRun_ErrorPaths(t *testing.T) {
 			wantSub: "--log-level",
 		},
 		{
-			name:    "bad attestation api url",
-			mutate:  func(_ *testing.T, cfg *config) { cfg.attestationApiURL = "not a url" },
-			wantSub: "--attestation-api-url",
-		},
-		{
 			name:    "invalid config",
 			mutate:  func(_ *testing.T, cfg *config) { cfg.namedCertTTL = 0 },
 			wantSub: "--named-cert-ttl",
@@ -242,24 +210,6 @@ func TestRun_ErrorPaths(t *testing.T) {
 			name:    "rate limiter max entries",
 			mutate:  func(_ *testing.T, cfg *config) { cfg.rateLimiterMax = 0 },
 			wantSub: "rate limiter",
-		},
-		{
-			name: "operator keys file missing",
-			mutate: func(t *testing.T, cfg *config) {
-				cfg.operatorKeys = filepath.Join(t.TempDir(), "missing.pem")
-			},
-			wantSub: "--operator-keys",
-		},
-		{
-			name: "operator keys file has no EC key",
-			mutate: func(t *testing.T, cfg *config) {
-				path := filepath.Join(t.TempDir(), "bad.pem")
-				if err := os.WriteFile(path, []byte("not pem at all"), 0o600); err != nil {
-					t.Fatalf("write bad operator keys: %v", err)
-				}
-				cfg.operatorKeys = path
-			},
-			wantSub: "--operator-keys",
 		},
 		{
 			name: "allowlist db unopenable",
@@ -275,7 +225,7 @@ func TestRun_ErrorPaths(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if err := store.StartJournal(); err != nil {
+				if err := store.Local().StartJournal(); err != nil {
 					t.Fatal(err)
 				}
 				store.Close()
@@ -291,21 +241,9 @@ func TestRun_ErrorPaths(t *testing.T) {
 			wantSub: "allowlist history",
 		},
 		{
-			name:    "invalid dns san pattern",
-			mutate:  func(_ *testing.T, cfg *config) { cfg.dnsSANPatterns = []string{"("} },
-			wantSub: "--dns-san-pattern",
-		},
-		{
 			name:    "invalid cn pattern",
 			mutate:  func(_ *testing.T, cfg *config) { cfg.allowedCNPattern = "(" },
 			wantSub: "--allowed-cn-pattern",
-		},
-		{
-			name: "seed file missing fails closed",
-			mutate: func(t *testing.T, cfg *config) {
-				cfg.allowlistSeed = filepath.Join(t.TempDir(), "missing-seed.json")
-			},
-			wantSub: "seed allowlist",
 		},
 		{
 			name:    "unsupported armtls platform",
@@ -316,7 +254,7 @@ func TestRun_ErrorPaths(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := validRunConfig(t, api.URL)
 			tc.mutate(t, &cfg)
-			err := run(cfg)
+			err := run(t.Context(), cfg)
 			if err == nil {
 				t.Fatalf("run() succeeded, want error containing %q", tc.wantSub)
 			}
@@ -327,30 +265,19 @@ func TestRun_ErrorPaths(t *testing.T) {
 	}
 }
 
-// Full plain-HTTP startup: operator keys, measurements, seed, and
-// SAN validation enabled. run() must serve /healthz and exit cleanly on SIGTERM.
-func TestRun_ServesAndShutsDownOnSIGTERM(t *testing.T) {
-	api := newHealthyAttestationApi(t)
-
-	seedPath := filepath.Join(t.TempDir(), "seed.json")
-	seedJSON := anySeed(map[string]string{"cds": digestA})
-	if err := os.WriteFile(seedPath, []byte(seedJSON), 0o600); err != nil {
-		t.Fatalf("write seed: %v", err)
-	}
-
-	cfg := validRunConfig(t, api.URL)
-	cfg.port = freePort(t)
-	cfg.measurements = []string{strings.Repeat("ab", 48)}
-	cfg.dnsSANPatterns = []string{`^[a-z.-]+$`}
+// Full startup from a measured configuration, with SAN validation enabled.
+// run() must serve /healthz and exit cleanly once its context is cancelled.
+func TestRun_ServesAndShutsDownWhenCancelled(t *testing.T) {
+	cfg := armTLSRunConfig(t)
 	cfg.allowedCNPattern = `^.*$`
-	cfg.operatorKeys = writeOperatorKeysPEM(t)
-	cfg.allowlistSeed = seedPath
 	cfg.sanValidation = true
+	client := armTLSClient(nil)
 
+	ctx, stop := context.WithCancel(t.Context())
 	errCh := make(chan error, 1)
-	go func() { errCh <- run(cfg) }()
+	go func() { errCh <- run(ctx, cfg) }()
 
-	base := fmt.Sprintf("http://127.0.0.1:%d", cfg.port)
+	base := fmt.Sprintf("https://127.0.0.1:%d", cfg.port)
 	deadline := time.Now().Add(15 * time.Second)
 	up := false
 	for time.Now().Before(deadline) {
@@ -359,7 +286,7 @@ func TestRun_ServesAndShutsDownOnSIGTERM(t *testing.T) {
 			t.Fatalf("run() exited early: %v", err)
 		default:
 		}
-		resp, err := http.Get(base + "/healthz")
+		resp, err := client.Get(base + "/healthz")
 		if err == nil {
 			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
@@ -376,7 +303,7 @@ func TestRun_ServesAndShutsDownOnSIGTERM(t *testing.T) {
 	}
 
 	// The seeded allowlist must be served before shutdown.
-	resp, err := http.Get(base + "/allowlist")
+	resp, err := client.Get(base + "/allowlist")
 	if err != nil {
 		t.Fatalf("GET /allowlist: %v", err)
 	}
@@ -394,7 +321,7 @@ func TestRun_ServesAndShutsDownOnSIGTERM(t *testing.T) {
 	}
 
 	// Operator keys are pinned, so /operator-keys must serve the bundle.
-	resp, err = http.Get(base + "/operator-keys")
+	resp, err = client.Get(base + "/operator-keys")
 	if err != nil {
 		t.Fatalf("GET /operator-keys: %v", err)
 	}
@@ -403,34 +330,35 @@ func TestRun_ServesAndShutsDownOnSIGTERM(t *testing.T) {
 		t.Errorf("GET /operator-keys = %d, want 200", resp.StatusCode)
 	}
 
-	if err := syscall.Kill(syscall.Getpid(), syscall.SIGTERM); err != nil {
-		t.Fatalf("send SIGTERM: %v", err)
-	}
+	stop()
 	select {
 	case err := <-errCh:
 		if err != nil {
 			t.Fatalf("run() returned error on shutdown: %v", err)
 		}
 	case <-time.After(15 * time.Second):
-		t.Fatal("run() did not shut down after SIGTERM")
+		t.Fatal("run() did not shut down after its context was cancelled")
 	}
 }
 
-// startRunServer launches run(cfg) in the background, waits for /healthz, and
-// registers a cleanup that SIGTERMs the process and requires a clean exit.
-func startRunServer(t *testing.T, cfg config) string {
+// startRunServer launches run(cfg) on its armTLS listener, waits for /healthz,
+// and registers a cleanup that cancels run and requires a clean exit.
+// It returns the base URL and the client that reaches it.
+func startRunServer(t *testing.T, cfg config) (string, *http.Client) {
 	t.Helper()
-	base := fmt.Sprintf("http://127.0.0.1:%d", cfg.port)
-	startRunServerOn(t, cfg, base, http.DefaultClient)
-	return base
+	base := fmt.Sprintf("https://127.0.0.1:%d", cfg.port)
+	client := armTLSClient(nil)
+	startRunServerOn(t, cfg, base, client)
+	return base, client
 }
 
 // startRunServerOn is startRunServer for a listener that client knows how to
 // reach: base carries the scheme, and client the TLS configuration.
 func startRunServerOn(t *testing.T, cfg config, base string, client *http.Client) {
 	t.Helper()
+	ctx, stop := context.WithCancel(t.Context())
 	errCh := make(chan error, 1)
-	go func() { errCh <- run(cfg) }()
+	go func() { errCh <- run(ctx, cfg) }()
 
 	deadline := time.Now().Add(15 * time.Second)
 	for {
@@ -453,29 +381,25 @@ func startRunServerOn(t *testing.T, cfg config, base string, client *http.Client
 	}
 
 	t.Cleanup(func() {
-		if err := syscall.Kill(syscall.Getpid(), syscall.SIGTERM); err != nil {
-			t.Fatalf("send SIGTERM: %v", err)
-		}
+		stop()
 		select {
 		case err := <-errCh:
 			if err != nil {
 				t.Fatalf("run() returned error on shutdown: %v", err)
 			}
 		case <-time.After(15 * time.Second):
-			t.Fatal("run() did not shut down after SIGTERM")
+			t.Fatal("run() did not shut down after its context was cancelled")
 		}
 	})
 }
 
-// TestRun_LogsMeasurementPinning: with --measurements set, startup must log the
-// pinning-enabled line, not the UNSAFE empty-allowlist warning. DNS validation
-// succeeds first; a bad CN pattern stops startup after the pinning log.
-func TestRun_LogsMeasurementPinning(t *testing.T) {
+// TestRun_LogsNodeImagePinning: the configuration's node identities must log
+// the pinning-enabled line, not the UNSAFE empty-allowlist warning. A bad CN
+// pattern stops startup after the pinning log.
+func TestRun_LogsNodeImagePinning(t *testing.T) {
 	api := newHealthyAttestationApi(t)
 	cfg := validRunConfig(t, api.URL)
 	cfg.logLevel = "info"
-	cfg.measurements = []string{strings.Repeat("ab", 48)}
-	cfg.dnsSANPatterns = []string{`^service[.]example$`}
 	cfg.allowedCNPattern = "("
 
 	r, w, err := os.Pipe()
@@ -484,7 +408,7 @@ func TestRun_LogsMeasurementPinning(t *testing.T) {
 	}
 	orig := os.Stdout
 	os.Stdout = w
-	runErr := run(cfg)
+	runErr := run(t.Context(), cfg)
 	os.Stdout = orig
 	// run() left slog's default pointed at the pipe; detach it before closing.
 	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -497,25 +421,36 @@ func TestRun_LogsMeasurementPinning(t *testing.T) {
 	if runErr == nil || !strings.Contains(runErr.Error(), "--allowed-cn-pattern") {
 		t.Fatalf("run() error = %v, want --allowed-cn-pattern failure", runErr)
 	}
-	if !strings.Contains(string(logged), "measurement pinning enabled") {
+	if !strings.Contains(string(logged), "node image pinning enabled") {
 		t.Fatalf("startup log missing pinning-enabled line:\n%s", logged)
 	}
-	if strings.Contains(string(logged), "--measurements empty") {
+	if strings.Contains(string(logged), "name no launch measurement") {
 		t.Fatalf("startup log warned about empty measurements despite pinning:\n%s", logged)
 	}
+}
+
+// A node-image upgrade pins the image being replaced and the one being rolled
+// out at once, and on TDX each carries its own registers. CDS serves such a
+// configuration; startRunServer fails the test if run() exits instead.
+func TestRun_ServesNodeImagesWithDifferentRegisters(t *testing.T) {
+	cfg := armTLSRunConfig(t)
+	cfg.measured = measuredConfig(t, cluster{
+		operatorPEM: operatorKeysPEM(t),
+		workloads:   map[string]string{"cds": digestA},
+		nodes:       upgradingNodesDocument,
+	})
+	startRunServer(t, cfg)
 }
 
 // TestRun_AllowlistWriteAcceptsClockSkewedToken: the operator-token verifier
 // must apply --jwt-clock-skew as leeway, so a token stamped by a slightly-fast
 // operator clock still authorizes the write.
 func TestRun_AllowlistWriteAcceptsClockSkewedToken(t *testing.T) {
-	api := newHealthyAttestationApi(t)
-	operatorKey, keysPath := writeOperatorKeyPair(t)
-	cfg := validRunConfig(t, api.URL) // jwtClockSkew: 30
-	cfg.port = freePort(t)
-	cfg.operatorKeys = keysPath
+	operatorKey, keysPEM := operatorKeyPair(t)
+	cfg := armTLSRunConfig(t) // jwtClockSkew: 30
+	cfg.measured = measuredConfig(t, cluster{operatorPEM: keysPEM, workloads: map[string]string{"cds": digestA}})
 	cfg.allowlistPersistent = true // a non-persistent store refuses tokens for --jwt-clock-skew after start
-	base := startRunServer(t, cfg)
+	base, client := startRunServer(t, cfg)
 
 	body := []byte(anySeed(map[string]string{"cds": digestA}))
 	sum := sha256.Sum256(body)
@@ -536,7 +471,7 @@ func TestRun_AllowlistWriteAcceptsClockSkewedToken(t *testing.T) {
 		t.Fatalf("build request: %v", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("PUT /allowlist: %v", err)
 	}
@@ -550,12 +485,10 @@ func TestRun_AllowlistWriteAcceptsClockSkewedToken(t *testing.T) {
 // A non-persistent store forgets spent tokens at restart, so CDS refuses a
 // fresh token until --jwt-clock-skew has passed since start.
 func TestRun_NonPersistentStoreRefusesTokensAfterStart(t *testing.T) {
-	api := newHealthyAttestationApi(t)
-	operatorKey, keysPath := writeOperatorKeyPair(t)
-	cfg := validRunConfig(t, api.URL) // jwtClockSkew: 30, not persistent
-	cfg.port = freePort(t)
-	cfg.operatorKeys = keysPath
-	base := startRunServer(t, cfg)
+	operatorKey, keysPEM := operatorKeyPair(t)
+	cfg := armTLSRunConfig(t) // jwtClockSkew: 30, not persistent
+	cfg.measured = measuredConfig(t, cluster{operatorPEM: keysPEM, workloads: map[string]string{"cds": digestA}})
+	base, client := startRunServer(t, cfg)
 
 	body := []byte(anySeed(map[string]string{"cds": digestA}))
 	sum := sha256.Sum256(body)
@@ -574,27 +507,25 @@ func TestRun_NonPersistentStoreRefusesTokensAfterStart(t *testing.T) {
 		t.Fatal(err)
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	respBody, _ := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusUnauthorized || !strings.Contains(string(respBody), allowlist.ErrTokenBeforeStart.Error()) {
-		t.Fatalf("PUT /allowlist = %d (%s), want 401 carrying ErrTokenBeforeStart", resp.StatusCode, respBody)
+	if resp.StatusCode != http.StatusUnauthorized || !strings.Contains(string(respBody), operatorauth.ErrTokenBeforeStart.Error()) {
+		t.Fatalf("PUT /allowlist = %d (%s), want 401 carrying operatorauth.ErrTokenBeforeStart", resp.StatusCode, respBody)
 	}
 }
 
 // A whole-document write stores its token as the document's signature, so the
 // token must not authorize a second write.
 func TestRun_AllowlistWriteTokenSignsOnce(t *testing.T) {
-	api := newHealthyAttestationApi(t)
-	operatorKey, keysPath := writeOperatorKeyPair(t)
-	cfg := validRunConfig(t, api.URL)
-	cfg.port = freePort(t)
-	cfg.operatorKeys = keysPath
+	operatorKey, keysPEM := operatorKeyPair(t)
+	cfg := armTLSRunConfig(t)
+	cfg.measured = measuredConfig(t, cluster{operatorPEM: keysPEM, workloads: map[string]string{"cds": digestA}})
 	cfg.allowlistPersistent = true // a non-persistent store refuses tokens for --jwt-clock-skew after start
-	base := startRunServer(t, cfg)
+	base, client := startRunServer(t, cfg)
 
 	doc, err := pkgallowlist.ParseJSON([]byte(anySeed(map[string]string{"web": digestA})))
 	if err != nil {
@@ -622,7 +553,7 @@ func TestRun_AllowlistWriteTokenSignsOnce(t *testing.T) {
 			t.Fatal(err)
 		}
 		req.Header.Set("Authorization", "Bearer "+token)
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := client.Do(req)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -630,7 +561,7 @@ func TestRun_AllowlistWriteTokenSignsOnce(t *testing.T) {
 		return resp.StatusCode
 	}
 	get := func(path string) []byte {
-		resp, err := http.Get(base + path)
+		resp, err := client.Get(base + path)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -661,7 +592,7 @@ func TestRun_AllowlistWriteTokenSignsOnce(t *testing.T) {
 	if got := get("/allowlist/objects/sha256/" + hexDigest); !bytes.Equal(got, body) {
 		t.Fatalf("object = %s, want %s", got, body)
 	}
-	keys, err := operatorauth.ParsePublicKeysPEM(mustRead(t, keysPath))
+	keys, err := operatorauth.ParsePublicKeysPEM(keysPEM)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -669,15 +600,6 @@ func TestRun_AllowlistWriteTokenSignsOnce(t *testing.T) {
 	if err := operatorauth.VerifyStored(keys, stored, http.MethodPut, "/allowlist", body); err != nil {
 		t.Fatalf("VerifyStored(served signature) = %v", err)
 	}
-}
-
-func mustRead(t *testing.T, path string) []byte {
-	t.Helper()
-	b, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return b
 }
 
 // TestRun_ARMTLSWarmupFailureFailsClosed: with armTLS enabled, a failed serving
@@ -691,74 +613,19 @@ func TestRun_ARMTLSWarmupFailureFailsClosed(t *testing.T) {
 	cfg.port = freePort(t)
 	cfg.armtlsPlatform = "sev-snp"
 
+	ctx, stop := context.WithCancel(t.Context())
+	defer stop()
 	errCh := make(chan error, 1)
-	go func() { errCh <- run(cfg) }()
+	go func() { errCh <- run(ctx, cfg) }()
 	select {
 	case err := <-errCh:
 		if err == nil || !strings.Contains(err.Error(), "warm up") {
 			t.Fatalf("run() error = %v, want warm-up failure", err)
 		}
 	case <-time.After(20 * time.Second):
-		_ = syscall.Kill(syscall.Getpid(), syscall.SIGTERM)
+		stop()
 		<-errCh
 		t.Fatal("run() kept serving after armTLS warm-up failure")
-	}
-}
-
-func TestLoadOperatorKeys(t *testing.T) {
-	t.Run("valid bundle", func(t *testing.T) {
-		path := writeOperatorKeysPEM(t)
-		keys, pemBytes, err := loadOperatorKeys(path)
-		if err != nil {
-			t.Fatalf("loadOperatorKeys: %v", err)
-		}
-		if len(keys) != 1 {
-			t.Errorf("keys = %d, want 1", len(keys))
-		}
-		if len(pemBytes) == 0 {
-			t.Error("raw PEM bytes empty")
-		}
-	})
-
-	t.Run("missing file", func(t *testing.T) {
-		if _, _, err := loadOperatorKeys(filepath.Join(t.TempDir(), "nope.pem")); err == nil {
-			t.Fatal("expected error for missing file")
-		}
-	})
-
-	t.Run("no EC key fails closed", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "empty.pem")
-		if err := os.WriteFile(path, []byte("garbage"), 0o600); err != nil {
-			t.Fatalf("write: %v", err)
-		}
-		if _, _, err := loadOperatorKeys(path); err == nil {
-			t.Fatal("expected error for bundle without EC public key")
-		}
-	})
-}
-
-// measurementDigests renders the /attest allowlist for the callback's pin. It
-// must not silently drop an entry: /attest compares the same allowlist as
-// strings, so a dropped entry would leave the callback unpinned while /attest
-// still enforced it — two derivations of one allowlist disagreeing in the
-// direction that weakens the callback.
-func TestMeasurementDigests(t *testing.T) {
-	valid := map[string]bool{"abcd": true, "ef01": true}
-	got, err := measurementDigests(valid)
-	if err != nil {
-		t.Fatalf("measurementDigests: %v", err)
-	}
-	if len(got) != 2 {
-		t.Fatalf("got %d digests, want 2", len(got))
-	}
-
-	if _, err := measurementDigests(map[string]bool{"abcd": true, "0xnothex": true}); err == nil {
-		t.Fatal("a non-hex measurement was dropped instead of failing startup")
-	}
-
-	empty, err := measurementDigests(nil)
-	if err != nil || len(empty) != 0 {
-		t.Fatalf("empty allowlist: got %v, %v", empty, err)
 	}
 }
 
@@ -767,16 +634,9 @@ func TestMeasurementDigests(t *testing.T) {
 // certificate and the sandbox-digests client's, with a fake SNP report.
 func armTLSRunConfig(t *testing.T) config {
 	t.Helper()
-	seedPath := filepath.Join(t.TempDir(), "seed.json")
-	if err := os.WriteFile(seedPath, []byte(anySeed(map[string]string{"cds": digestA})), 0o600); err != nil {
-		t.Fatalf("write seed: %v", err)
-	}
 	cfg := validRunConfig(t, mockapi.New(t).URL())
 	cfg.port = freePort(t)
 	cfg.armtlsPlatform = "sev-snp"
-	cfg.measurements = []string{strings.Repeat("ab", 48)}
-	cfg.operatorKeys = writeOperatorKeysPEM(t)
-	cfg.allowlistSeed = seedPath
 	return cfg
 }
 
@@ -867,6 +727,35 @@ func TestRun_ARMTLSServesPublishedDocumentsToCertlessClients(t *testing.T) {
 	}
 }
 
+// pastHalfLife is the renewal trigger: half the certificate's lifetime,
+// leaving the rest of it for renewal to keep retrying in.
+func TestPastHalfLife(t *testing.T) {
+	now := time.Now()
+	window := func(start, end time.Duration) *x509.Certificate {
+		return &x509.Certificate{
+			NotBefore: now.Add(start),
+			NotAfter:  now.Add(end),
+		}
+	}
+
+	for _, tc := range []struct {
+		name string
+		cert *x509.Certificate
+		want bool
+	}{
+		{"fresh certificate", window(-time.Minute, time.Hour), false},
+		{"just before half its lifetime", window(-29*time.Minute, 31*time.Minute), false},
+		{"past half its lifetime", window(-31*time.Minute, 29*time.Minute), true},
+		{"expired", window(-2*time.Hour, -time.Hour), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := pastHalfLife(tc.cert, now); got != tc.want {
+				t.Errorf("pastHalfLife() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // A certificate that is presented is verified against the mesh CA: one the
 // CA did not issue fails the handshake, so a handler never sees it. Together
 // with the certless reads above this pins ClientAuth to
@@ -923,5 +812,141 @@ func TestRun_ARMTLSRefusesPlainHTTP(t *testing.T) {
 	}
 	if block, _ := pem.Decode(body); block != nil {
 		t.Fatalf("plain-HTTP GET /ca refused but the body carries a PEM block: %s", body)
+	}
+}
+
+// Secret writes and explain spend the operator token once, as allowlist writes
+// do: the replay is 409 and a freshly minted token still works.
+func TestRun_SecretsOperatorTokenSpendsOnce(t *testing.T) {
+	cfg := armTLSRunConfig(t)
+	operatorKey, keysPEM := operatorKeyPair(t)
+	cfg.measured = measuredConfig(t, cluster{operatorPEM: keysPEM, workloads: map[string]string{"cds": digestA}})
+	cfg.allowlistPersistent = true // a non-persistent store refuses tokens for --jwt-clock-skew after start
+	base := fmt.Sprintf("https://127.0.0.1:%d", cfg.port)
+	client := armTLSClient(nil)
+	startRunServerOn(t, cfg, base, client)
+
+	der, err := x509.MarshalPKCS8PrivateKey(operatorKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := operatorauth.NewSignerFromKeyPEM(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mint := func(method, path string, body []byte) string {
+		authz, err := signer.Authorization(method, path, body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return authz
+	}
+	send := func(method, path string, body []byte, authz string) int {
+		req, err := http.NewRequest(method, base+path, bytes.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", authz)
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("%s %s: %v", method, path, err)
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	put, _ := json.Marshal(secrets.PutRequest{Value: base64.StdEncoding.EncodeToString([]byte("v1")), Overwrite: true})
+	authz := mint(http.MethodPut, "/secrets/a", put)
+	for _, step := range []struct {
+		name  string
+		authz string
+		want  int
+	}{
+		{"first use", authz, http.StatusCreated},
+		{"replay", authz, http.StatusConflict},
+		{"fresh token", mint(http.MethodPut, "/secrets/a", put), http.StatusOK},
+	} {
+		if got := send(http.MethodPut, "/secrets/a", put, step.authz); got != step.want {
+			t.Fatalf("PUT /secrets/a, %s = %d, want %d", step.name, got, step.want)
+		}
+	}
+
+	explain := "/secrets-explain/" + strings.Repeat("a", 64)
+	authz = mint(http.MethodGet, explain, nil)
+	for _, step := range []struct {
+		name  string
+		authz string
+		want  int
+	}{
+		{"first use", authz, http.StatusOK},
+		{"replay", authz, http.StatusConflict},
+		{"fresh token", mint(http.MethodGet, explain, nil), http.StatusOK},
+	} {
+		if got := send(http.MethodGet, explain, nil, step.authz); got != step.want {
+			t.Fatalf("GET %s, %s = %d, want %d", explain, step.name, got, step.want)
+		}
+	}
+}
+
+// A due renewal replaces the published certificate, which is what /ca and
+// every issuance then answer with.
+func TestRenewMeshCAWhenDueRepublishesTheCertificate(t *testing.T) {
+	mesh, err := issuer.NewMeshCA("test ca", 2*time.Millisecond)
+	if err != nil {
+		t.Fatalf("mesh ca: %v", err)
+	}
+	first := mesh.Current().CA.Cert
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go renewMeshCAWhenDue(ctx, mesh, time.Millisecond, nil)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for mesh.Current().CA.Cert.Equal(first) {
+		if time.Now().After(deadline) {
+			t.Fatal("renewal did not replace the published certificate")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// Cancelling the context stops the loop.
+func TestRenewMeshCAWhenDueStopsOnContextCancel(t *testing.T) {
+	mesh, err := issuer.NewMeshCA("test ca", 2*time.Millisecond)
+	if err != nil {
+		t.Fatalf("mesh ca: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	stopped := make(chan struct{})
+	go func() {
+		renewMeshCAWhenDue(ctx, mesh, time.Millisecond, nil)
+		close(stopped)
+	}()
+
+	cancel()
+	select {
+	case <-stopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("renewal loop outlived its context")
+
+	}
+}
+
+func TestCAKeyIDSurvivesARenewal(t *testing.T) {
+	mesh, err := issuer.NewMeshCA("test ca", time.Hour)
+	if err != nil {
+		t.Fatalf("mesh ca: %v", err)
+	}
+	first := mesh.Current().CA.Cert
+
+	renewed, err := mesh.RenewCertificate()
+	if err != nil {
+		t.Fatalf("renew: %v", err)
+	}
+	if bytes.Equal(renewed.CA.Cert.Raw, first.Raw) {
+		t.Fatal("renewal published the same certificate, so no field could tell the two apart")
+	}
+	if got, want := caKeyID(renewed.CA.Cert), caKeyID(first); got != want {
+		t.Errorf("key id after renewal = %s, want the retained key's %s", got, want)
 	}
 }

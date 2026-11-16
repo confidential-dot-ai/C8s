@@ -8,6 +8,8 @@ package localverify
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/sha512"
 	"crypto/x509"
 	"encoding/hex"
@@ -16,6 +18,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/google/go-sev-guest/verify/trust"
@@ -73,6 +76,11 @@ type Params struct {
 	// enforced here on its claims. Empty = no pin; with a pin, a missing
 	// launch digest fails closed.
 	Measurements [][]byte
+
+	// RuntimeExtensions is the peer's claimed TDX RTMR[3] runtime extension
+	// list. Verify ignores it; a caller enforcing anchored image pins replays
+	// it (armtls.EnforceImages).
+	RuntimeExtensions []string
 }
 
 // VerifyFunc is the signature of [Verify], taken as a parameter by consumers
@@ -147,24 +155,45 @@ func enforceResult(res *teetypes.VerificationResult, p Params) error {
 }
 
 // CertEnvelope extracts the armTLS attestation from a certificate and returns
-// the evidence envelope plus the expected REPORTDATA anchor — SHA-384 over the
-// public key (no per-request nonce, so no freshness proof).
+// the evidence envelope plus the Params it carries: the expected REPORTDATA
+// anchor — SHA-384 over the public key (no per-request nonce, so no freshness
+// proof) — and the runtime extension list.
 //
 // An extension carrying a full envelope (az-snp, TDX) is forwarded verbatim; a
 // raw SEV-SNP report is wrapped as {attestation_report, cert_chain.vcek?}, with
 // the VCEK inline when the extension carried one.
-func CertEnvelope(cert *x509.Certificate) (platform string, evidence json.RawMessage, expectedReportData []byte, err error) {
+func CertEnvelope(cert *x509.Certificate) (platform string, evidence json.RawMessage, p Params, err error) {
 	att, err := armtls.ExtractAttestation(cert)
 	if err != nil {
-		return "", nil, nil, err
+		return "", nil, Params{}, err
 	}
 	env, err := att.Envelope()
 	if err != nil {
-		return "", nil, nil, err
+		return "", nil, Params{}, err
 	}
 	rd, err := agarmtls.ReportDataForKey(cert.PublicKey, nil)
 	if err != nil {
-		return "", nil, nil, fmt.Errorf("compute expected REPORTDATA: %w", err)
+		return "", nil, Params{}, fmt.Errorf("compute expected REPORTDATA: %w", err)
 	}
-	return string(env.Platform), env.Evidence, rd[:sha512.Size384], nil
+	p.ExpectedReportData = rd[:sha512.Size384]
+	p.RuntimeExtensions = att.RuntimeExtensions
+	return string(env.Platform), env.Evidence, p, nil
+}
+
+// CheckServingLeaf enforces what an armTLS serving leaf carries: the
+// serverAuth purpose, and a key on one of the ECDSA curves armTLS issues
+// (pkg/armtls.GenerateKeyPair mints P-256). The caller prefixes the error
+// with the peer it describes.
+func CheckServingLeaf(cert *x509.Certificate) error {
+	if !slices.Contains(cert.ExtKeyUsage, x509.ExtKeyUsageServerAuth) {
+		return errors.New("certificate does not permit serverAuth")
+	}
+	pub, ok := cert.PublicKey.(*ecdsa.PublicKey)
+	if !ok {
+		return fmt.Errorf("certificate key is %T, want ECDSA P-256 or P-384", cert.PublicKey)
+	}
+	if pub.Curve != elliptic.P256() && pub.Curve != elliptic.P384() {
+		return fmt.Errorf("certificate key is ECDSA %s, want P-256 or P-384", pub.Curve.Params().Name)
+	}
+	return nil
 }

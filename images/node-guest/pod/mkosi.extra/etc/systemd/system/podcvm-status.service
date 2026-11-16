@@ -1,0 +1,27 @@
+# The attested status and assignment endpoint. It starts podcvm-containerd
+# and podcvm-kubelet once a pod is assigned.
+[Unit]
+Description=Pod CVM attested pod status on :8443
+ConditionPathExists=/run/confos/role-pod
+Requires=pod-stage.service attestation-api.service
+After=pod-stage.service attestation-api.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# ${CRED_PLATFORM} comes from the pod sync's platform drop-in; empty fails.
+ExecStart=/usr/local/bin/c8s pod-status serve --listen :8443 --platform=${CRED_PLATFORM}
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadOnlyPaths=/etc/confai /run/confos/launch
+# Assignment state and manifests survive this service's restart in guest RAM.
+# The assignment installs the NRI policy, then starts podcvm-containerd and,
+# once the plugin reports the pod registered, publishes the manifest and
+# starts podcvm-kubelet.
+ReadWritePaths=/run/c8s-pod /etc/nri/conf.d
+
+[Install]
+WantedBy=multi-user.target

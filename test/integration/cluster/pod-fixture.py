@@ -15,6 +15,7 @@ def main():
     parser.add_argument("command", nargs="+")
     parser.add_argument("--node", help="pin the pod to this node")
     parser.add_argument("--pull-policy", help="the container's imagePullPolicy")
+    parser.add_argument("--ca-configmap", help="front-door mode: the ConfigMap holding ca.pem")
     parser.add_argument(
         "--annotation",
         action="append",
@@ -138,8 +139,10 @@ def main():
     elif args.mode == "bad-hostnet":
         pod["spec"]["hostNetwork"] = True
     elif args.mode == "front-door":
+        if not args.ca_configmap:
+            parser.error("front-door mode requires --ca-configmap")
         container["volumeMounts"] = [{"name": "ca", "mountPath": "/ca", "readOnly": True}]
-        pod["spec"]["volumes"] = [{"name": "ca", "configMap": {"name": "it-mesh-ca"}}]
+        pod["spec"]["volumes"] = [{"name": "ca", "configMap": {"name": args.ca_configmap}}]
     elif args.mode == "pvc":
         container["volumeMounts"] = [{"name": "data", "mountPath": "/data"}]
         pod["spec"]["volumes"] = [

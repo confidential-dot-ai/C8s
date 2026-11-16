@@ -2,7 +2,7 @@
 // store.
 //
 // Writes are authorized by an operator EC private key whose public key CDS pins
-// (cds --operator-keys) — the same credential that signs an allowlist mutation,
+// ('c8s cds config new --operator-keys') — the same credential that signs an allowlist mutation,
 // and the same key the `secrets` grants in that allowlist are rooted in. The
 // private key never leaves the CLI: it signs a short-lived token bound to the
 // method, path, and body of one request.
@@ -41,8 +41,8 @@ an allowlist entry whose 'secrets' grant covers the path. Write the grant with
 'c8s allowlist apply'; this command supplies the value.
 
 Writes are signed with an operator EC private key you supply via --operator-key
-(or C8S_OPERATOR_KEY), whose public half CDS pins separately via
-'c8s install --operator-keys'.
+(or C8S_OPERATOR_KEY), whose public half CDS pins from its configuration
+('c8s cds config new --operator-keys').
 
 Values live in the CDS process and nowhere else, so a CDS restart clears the
 store and every workload holding a secret has to be rolled (see

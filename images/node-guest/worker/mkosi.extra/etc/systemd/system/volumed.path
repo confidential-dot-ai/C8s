@@ -1,0 +1,13 @@
+[Unit]
+Description=Wait for the kubelet's pod directory before opening volumes
+# INVARIANT: this watch orders itself against nothing. systemd starts a path
+# unit before basic.target, which every service of this image starts after, so
+# ordering the watch after one of them is a cycle systemd breaks by dropping a
+# job of its choosing. volumed.service carries the staging dependency.
+
+[Path]
+PathExists=/var/lib/kubelet/pods
+Unit=volumed.service
+
+[Install]
+WantedBy=multi-user.target

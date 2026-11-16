@@ -1,0 +1,63 @@
+# containerd for the worker's kubelet: upstream's defaults, with every setting
+# a worker's runtime rests on stated here rather than inherited. The drop-ins
+# beside this file route every ordinary-pod handler through the measured
+# runtime wrapper and require the admission plugin; `containerd config dump`
+# reports what the merge comes to, and tools/containerdcheck holds every
+# handler to the wrapper.
+#
+# version 4 is the schema the pinned containerd (mkosi.sync) reads without
+# migrating, and containerdcheck requires the drop-ins to declare the same one.
+version = 4
+imports = ['/etc/containerd/conf.d/*.toml']
+# containerd-data-disk.service backs root with a filesystem the overlayfs
+# snapshotter below can use as an upperdir.
+root = '/var/lib/containerd'
+state = '/run/containerd'
+
+# INVARIANT: the endpoint the worker's kubelet dials and the socket the NRI
+# floor names (internal/cmds/worker, image-policy.yaml.in).
+[plugins.'io.containerd.server.v1.grpc']
+  address = '/run/containerd/containerd.sock'
+
+[plugins.'io.containerd.internal.v1.opt']
+  # INVARIANT: on the image's writable filesystem — the plugin owning this
+  # directory creates it at startup.
+  path = '/var/lib/containerd/opt'
+
+# The CRI stream server, which serves exec, attach and port-forward.
+# INVARIANT: bound to loopback, so no stream reaches a node address.
+[plugins.'io.containerd.grpc.v1.cri']
+  stream_server_address = '127.0.0.1'
+  stream_server_port = '10010'
+
+[plugins.'io.containerd.cri.v1.images']
+  snapshotter = 'overlayfs'
+  use_local_image_pull = true
+
+# Bump with `crane digest registry.k8s.io/pause:<tag>`.
+[plugins.'io.containerd.cri.v1.images'.pinned_images]
+  sandbox = 'registry.k8s.io/pause:3.10.1@sha256:278fb9dbcca9518083ad1e11276933a2e96f23de604a3a08cc3c80002767d24c'
+
+[plugins.'io.containerd.cri.v1.images'.registry]
+  config_path = '/etc/containerd/certs.d'
+
+[plugins.'io.containerd.cri.v1.runtime']
+  # The image carries no SELinux policy; ports and ICMP are a workload's to
+  # bind, which the floor's capability set already bounds.
+  enable_selinux = false
+  enable_unprivileged_ports = true
+  enable_unprivileged_icmp = true
+
+# The plugins mkosi.sync stages and the directory Cilium writes its
+# configuration into.
+[plugins.'io.containerd.cri.v1.runtime'.cni]
+  bin_dirs = ['/opt/cni/bin']
+  conf_dir = '/etc/cni/net.d'
+
+[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc]
+  runtime_type = 'io.containerd.runc.v2'
+  # The kubelet's static pod mark, which c8s-runc's floor reads from the bundle.
+  pod_annotations = ['kubernetes.io/config.source']
+
+[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc.options]
+  SystemdCgroup = true

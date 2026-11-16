@@ -91,6 +91,25 @@ func RequesterKeyDigest(pub crypto.PublicKey) ([]byte, error) {
 	return sum[:], nil
 }
 
+// UnverifiedSandboxIDFromToken reads the sandbox ID a token states. The caller must have
+// obtained the token from its own node's inventory over the baked socket, whose
+// peer credentials bind the statement to the calling sandbox; the signature is
+// there for CDS, which has no such channel.
+func UnverifiedSandboxIDFromToken(tokenDER []byte) (string, error) {
+	var tok sandboxTokenASN1
+	rest, err := asn1.Unmarshal(tokenDER, &tok)
+	if err != nil {
+		return "", fmt.Errorf("workloadclaims: unmarshal sandbox token: %w", err)
+	}
+	if len(rest) > 0 {
+		return "", fmt.Errorf("workloadclaims: %d trailing bytes after sandbox token", len(rest))
+	}
+	if tok.Version != sandboxTokenVersion {
+		return "", fmt.Errorf("workloadclaims: unsupported sandbox token version %d", tok.Version)
+	}
+	return tok.SandboxID, nil
+}
+
 // VerifiedSandbox is what a valid token establishes: which sandbox the
 // requester is in, and which node's inventory vouched for it.
 type VerifiedSandbox struct {

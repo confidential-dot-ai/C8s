@@ -29,6 +29,50 @@ func TestLintCleanAllowlistReportsOK(t *testing.T) {
 	}
 }
 
+// The findings and their order are what an operator reads back from 'c8s
+// allowlist lint': each entry's own findings in sorted name order, then the
+// cross-entry digest union.
+func TestLintOfflineFindingOrder(t *testing.T) {
+	tagged := "docker.io/library/busybox:latest"
+	component := `{"digest":"` + digA + `","image":"` + tagged + `","command":{"policy":"exact","argv":["/c8s"]},` +
+		`"args":{"policy":"any"},"mounts":{"policy":"exact","rules":[{"destination":"/tmp","kind":"emptyDir"}]}}`
+	denied := `{"digest":"` + digB + `","command":{"policy":"deny"},"args":{"policy":"deny"}}`
+	open := `{"digest":"` + digC + `","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"},"env":{"policy":"any"}}`
+	al := mustParseAllowlist(t, `{"schema":"`+pkgallowlist.Schema+`","workloads":{
+		"a-empty":{},
+		"b-tagged":{"label":"`+tagged+`","containers":[`+component+`,`+denied+`]},
+		"c-granted":{"secrets":{"policy":"allow","read":["/**"]},"containers":[`+ctrJSON(digD, "/app")+`]},
+		"d-open":{"containers":[`+open+`]},
+		"e-pinned":{"containers":[`+ctrJSON(digC, "/app")+`]}}}`)
+
+	var out []string
+	for _, f := range lintOffline(al) {
+		out = append(out, f.String())
+	}
+	report := strings.Join(out, "\n")
+
+	at := -1
+	for _, want := range []string{
+		`workload "a-empty" has no init or main containers`,
+		`workload "b-tagged" label "` + tagged + `" is a tag`,
+		"leaves args any",
+		`image "` + tagged + `" is a tag`,
+		"the container can never start",
+		"grants secrets without pinning environment values",
+		`grants the root secret subtree "/**"`,
+		"appears in 2 entries and one grants 'any'",
+	} {
+		i := strings.Index(report, want)
+		if i < 0 {
+			t.Fatalf("lint findings missing %q:\n%s", want, report)
+		}
+		if i < at {
+			t.Fatalf("lint finding %q is out of order:\n%s", want, report)
+		}
+		at = i
+	}
+}
+
 // The derive -> lint -> apply loop: what 'derive' emits is a bare name-keyed
 // map, and 'lint' must pre-flight it rather than reject it as a document with
 // an unknown field.
@@ -572,15 +616,12 @@ func TestLintRejectsSearchPathsOverlappingDataMounts(t *testing.T) {
 					policy.env + `}`
 				// Use an init container as well as a main to exercise both lists.
 				file := writeFile(t, "al.json", `{"schema":"c8s.allowlist/v1","workloads":{"w":{"initContainers":[`+container+`],"containers":[`+ctrJSON(digB, "/main")+`]}}}`)
-				for _, flags := range [][]string{nil, {"--cvm-mode=pod"}, {"--cvm-mode=node"}} {
-					args := append([]string{"lint", "--strict", file}, flags...)
-					out, _, err := runCmd(args...)
-					if (err != nil) != tc.refused {
-						t.Fatalf("lint %v error = %v, want refusal %v; output: %s", flags, err, tc.refused, out)
-					}
-					if tc.refused && !strings.Contains(out, "overlapping data mount") {
-						t.Fatalf("lint did not explain the search-path conflict: %s", out)
-					}
+				out, _, err := runCmd("lint", "--strict", file)
+				if (err != nil) != tc.refused {
+					t.Fatalf("lint error = %v, want refusal %v; output: %s", err, tc.refused, out)
+				}
+				if tc.refused && !strings.Contains(out, "overlapping data mount") {
+					t.Fatalf("lint did not explain the search-path conflict: %s", out)
 				}
 			})
 		}

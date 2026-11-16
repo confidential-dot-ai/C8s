@@ -6,7 +6,6 @@ const (
 	ErrorCodeInvalidRequest            = "invalid_request"
 	ErrorCodeInvalidChallenge          = "invalid_challenge"
 	ErrorCodeInvalidCSR                = "invalid_csr"
-	ErrorCodeInvalidToken              = "invalid_token"
 	ErrorCodeVerificationFailed        = "verification_failed"
 	ErrorCodeMeasurementDenied         = "measurement_denied"
 	ErrorCodeKeyBinding                = "key_binding"
@@ -30,10 +29,21 @@ const (
 	// WebPKI Secret), so there is no TEE-held serving key to bind; that
 	// deployment shape is attest-pq-only.
 	ErrorCodeExternalTLS = "external_tls"
+	// ErrorCodeServingLeafRejected: attest-lb refuses (503) a serving leaf
+	// that loads but cannot be bound: an acme leaf outside its validity
+	// window, or a leaf served with a chain that has expired (tls.crt for
+	// cds, --serving-cert-file for acme). An unreadable or unparsable serving
+	// file, and in cds mode a mesh leaf or CA outside its validity window or
+	// a tls.crt chain block nginx cannot load, get
+	// ErrorCodeBindingUnavailable.
+	ErrorCodeServingLeafRejected = "serving_leaf_rejected"
 	// ErrorCodeSecretHolderQuota: the caller is at --secrets-max-paths-per-workload.
 	ErrorCodeSecretHolderQuota = "secret_holder_quota"
 	// ErrorCodeSecretStoreFull: the store is at --secrets-max-paths.
 	ErrorCodeSecretStoreFull = "secret_store_full"
+	// ErrorCodeStateCapacity: the replicated state is near what a snapshot can
+	// hold, so writes that grow it are refused until it shrinks.
+	ErrorCodeStateCapacity = "state_capacity"
 	// ErrorCodeRoutesUnavailable: no route manifest is applied yet, so the
 	// automated ingress service refuses attested sessions (route policy A2).
 	// A retry succeeds after the operator writes a manifest and the router
@@ -43,6 +53,26 @@ const (
 	// automated ingress service refuses new attested sessions (route policy
 	// F2).
 	ErrorCodeRoutesStale = "routes_stale"
+	// ErrorCodeRouteDigestChanged: a manifest other than the one the
+	// session's handshake bound is applied. Attest again.
+	ErrorCodeRouteDigestChanged = "route_digest_changed"
+	// ErrorCodeRouterDigestChanged: the router's mesh leaf renewed under
+	// another allowlist digest than the session's handshake bound, or while
+	// the request was reaching a workload. Attest again; a request outside an
+	// attested session can retry.
+	ErrorCodeRouterDigestChanged = "router_digest_changed"
+	// ErrorCodeSessionsBusy: the router holds as many attest-lb bindings as
+	// it may, for this client or in all. Retry shortly.
+	ErrorCodeSessionsBusy = "sessions_busy"
+	// ErrorCodeBindingExpired: the attest-lb binding of this connection lapsed
+	// before the request. Attest again.
+	ErrorCodeBindingExpired = "binding_expired"
+	// ErrorCodeSecretRefused: CDS or the KMS it brokers to refused a pod
+	// secret release.
+	ErrorCodeSecretRefused = "secret_refused"
+	// ErrorCodeKMSUnavailable: the KMS a pod secret release is brokered to
+	// did not answer usefully. Retry.
+	ErrorCodeKMSUnavailable = "kms_unavailable"
 )
 
 // ErrorResponse is the body a C8s service returns with a non-2xx status: one

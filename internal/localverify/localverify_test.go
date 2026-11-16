@@ -209,7 +209,7 @@ func TestCertEnvelope(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		platform, evidence, erd, err := CertEnvelope(cert)
+		platform, evidence, params, err := CertEnvelope(cert)
 		if err != nil {
 			t.Fatalf("CertEnvelope: %v", err)
 		}
@@ -223,8 +223,8 @@ func TestCertEnvelope(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !bytes.Equal(erd, rd[:48]) {
-			t.Errorf("erd = %x, want the unpadded key anchor %x", erd, rd[:48])
+		if !bytes.Equal(params.ExpectedReportData, rd[:48]) {
+			t.Errorf("ExpectedReportData = %x, want the unpadded key anchor %x", params.ExpectedReportData, rd[:48])
 		}
 	})
 

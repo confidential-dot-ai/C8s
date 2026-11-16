@@ -16,8 +16,8 @@ type DiscoveryDocument struct {
 
 // PublicTLSDiscovery describes the public-facing TLS identity (hostname + mode).
 type PublicTLSDiscovery struct {
-	Hostname string `json:"hostname"`
-	Mode     string `json:"mode"`
+	Hostname string        `json:"hostname"`
+	Mode     FrontDoorMode `json:"mode"`
 }
 
 // CDSTLSDiscovery carries the CDS-issued serving certificate and where it (and
@@ -36,4 +36,8 @@ type AttestationDiscovery struct {
 	Challenge string          `json:"challenge"`
 	Platform  string          `json:"platform"`
 	Evidence  json.RawMessage `json:"evidence"`
+
+	// RuntimeExtensions is the TDX RTMR[3] runtime extension list sent with
+	// the evidence, unauthenticated until replayed against the quote.
+	RuntimeExtensions []string `json:"runtime_extensions,omitempty"`
 }

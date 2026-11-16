@@ -25,14 +25,14 @@ import (
 // response.
 type operatorHarness struct {
 	h        OperatorHandler
-	store    *MemoryStore
+	store    *Handle
 	seenBody []byte
 	authErr  error
 }
 
 func newOperatorHarness(t *testing.T) *operatorHarness {
 	t.Helper()
-	oh := &operatorHarness{store: NewMemoryStore(8, 7, 64)}
+	oh := &operatorHarness{store: NewMemoryStore(8, 7, 64).Local()}
 	oh.h = OperatorHandler{
 		Store: oh.store,
 		Authorize: func(_ *http.Request, body []byte) error {
@@ -45,7 +45,7 @@ func newOperatorHarness(t *testing.T) *operatorHarness {
 
 // setStore swaps in a store bounded for the test at hand, keeping the
 // harness's own view and the handler's the same one.
-func (oh *operatorHarness) setStore(s *MemoryStore) {
+func (oh *operatorHarness) setStore(s *Handle) {
 	oh.store, oh.h.Store = s, s
 }
 
@@ -187,7 +187,7 @@ func TestOperatorPutRejectsUnauthorized(t *testing.T) {
 
 // Nil means no operator keys are pinned, which must reject rather than admit.
 func TestOperatorPutWithoutAuthorizerRejects(t *testing.T) {
-	h := OperatorHandler{Store: NewMemoryStore(8, 7, 64)}
+	h := OperatorHandler{Store: NewMemoryStore(8, 7, 64).Local()}
 	w, _ := doPut(h, putRequest(t, "/a", []byte("v"), false))
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", w.Code)
@@ -266,7 +266,7 @@ func TestOperatorPutRespectsTheStoreValueBound(t *testing.T) {
 // ceiling; an existing path can still be replaced.
 func TestOperatorPutAtTheCeilingIsInsufficientStorage(t *testing.T) {
 	oh := newOperatorHarness(t)
-	oh.setStore(NewMemoryStore(2, 1, 64))
+	oh.setStore(NewMemoryStore(2, 1, 64).Local())
 
 	for _, p := range []string{"/a", "/b"} {
 		if w, _ := doPut(oh.h, putRequest(t, p, []byte("first"), false)); w.Code != http.StatusCreated {
@@ -319,7 +319,7 @@ func TestOperatorPutAgainstRealOperatorAuth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store := NewMemoryStore(8, 7, 64)
+	store := NewMemoryStore(8, 7, 64).Local()
 	h := OperatorHandler{
 		Store:     store,
 		Authorize: operatorauth.Verifier{Keys: []*ecdsa.PublicKey{&key.PublicKey}}.Authorize,

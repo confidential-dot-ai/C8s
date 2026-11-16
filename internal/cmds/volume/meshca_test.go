@@ -58,12 +58,12 @@ func newAttestedCDS(t *testing.T, caDER []byte) (*keyStore, *httptest.Server) {
 func attestedOptions(t *testing.T, url, dir string) *options {
 	t.Helper()
 	return &options{Options: cdsconn.Options{
-		URL:          url,
-		Measurements: []string{testutil.TestMeasurement},
-		Timeout:      5 * time.Second,
-		OperatorKey:  operatorKeyFile(t, dir),
-		Verifier:     testutil.ApproveAll(),
-		DirectCDS:    true,
+		URL:                url,
+		MeasurementsConfig: testutil.CDSPinFile(t),
+		Timeout:            5 * time.Second,
+		OperatorKey:        operatorKeyFile(t, dir),
+		Verifier:           testutil.ApproveAll(),
+		DirectCDS:          true,
 	}}
 }
 
@@ -99,7 +99,7 @@ func TestRunCreateRefusesBeforeBuilding(t *testing.T) {
 	for name, mutate := range map[string]func(o *options){
 		"no operator key":            func(o *options) { o.OperatorKey = "" },
 		"plaintext without insecure": func(o *options) { o.URL = "http://cds.example" },
-		"unpinned endpoint":          func(o *options) { o.Measurements = nil },
+		"unpinned endpoint":          func(o *options) { o.MeasurementsConfig = "" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Setenv(cdsconn.EnvOperatorKey, "")

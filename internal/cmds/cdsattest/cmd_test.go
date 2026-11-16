@@ -2,16 +2,22 @@ package cdsattest
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
-	"os"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
+	"github.com/confidential-dot-ai/attestation-go/remote"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
@@ -36,17 +42,18 @@ func TestNewCmdDurationDefaults(t *testing.T) {
 	}
 }
 
-func writeFixtureFile(t *testing.T) string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "evidence.json")
-	if err := os.WriteFile(path, []byte(`{"attestation_report":"AAAA","cert_chain":{"vcek":"BBBB"}}`), 0o600); err != nil {
-		t.Fatal(err)
+// TestNewCmdHasNoMeshIdentityFlags: no flag points the attestation endpoints
+// at a credential other than the member one the router dials with.
+func TestNewCmdHasNoMeshIdentityFlags(t *testing.T) {
+	flags := NewCmd().Flags()
+	for _, name := range []string{"mesh-identity-cert-file", "mesh-identity-key-file", "mesh-identity-ca-file"} {
+		if flags.Lookup(name) != nil {
+			t.Fatalf("--%s is defined, want no such flag", name)
+		}
 	}
-	return path
 }
 
 func TestRunErrors(t *testing.T) {
-	fixture := writeFixtureFile(t)
 	tests := []struct {
 		name    string
 		cfg     config
@@ -54,33 +61,23 @@ func TestRunErrors(t *testing.T) {
 	}{
 		{
 			name:    "front-door mode is required",
-			cfg:     config{evidenceFixture: fixture},
+			cfg:     config{},
 			wantSub: "--front-door-mode",
 		},
 		{
 			name:    "unknown front-door mode",
-			cfg:     config{frontDoorMode: "public", evidenceFixture: fixture},
+			cfg:     config{frontDoorMode: "public"},
 			wantSub: "--front-door-mode",
 		},
 		{
 			name:    "missing platform",
-			cfg:     config{frontDoorMode: types.FrontDoorModeCDS, evidenceFixture: fixture},
+			cfg:     config{frontDoorMode: types.FrontDoorModeCDS},
 			wantSub: "--platform is required",
-		},
-		{
-			name:    "no evidence source",
-			cfg:     config{frontDoorMode: types.FrontDoorModeCDS, platform: "snp"},
-			wantSub: "--attestation-api-url or --evidence-fixture",
-		},
-		{
-			name:    "unreadable evidence fixture",
-			cfg:     config{frontDoorMode: types.FrontDoorModeCDS, platform: "snp", evidenceFixture: filepath.Join(t.TempDir(), "missing.json")},
-			wantSub: "read evidence fixture",
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := attestProvider(tc.cfg, slog.New(slog.DiscardHandler))
+			_, err := attestProvider(tc.cfg)
 			if err == nil || !strings.Contains(err.Error(), tc.wantSub) {
 				t.Fatalf("attestProvider() error = %v, want substring %q", err, tc.wantSub)
 			}
@@ -98,31 +95,83 @@ func TestRunRequiresCDSURL(t *testing.T) {
 	}
 }
 
-// routedRunConfig is a config run accepts with the attestation endpoints off,
-// polling a CDS that cannot be reached.
-func routedRunConfig(t *testing.T, port int) config {
+func TestCmdRequiresRoutingPort(t *testing.T) {
+	cmd := NewCmd()
+	cmd.SetArgs([]string{
+		"--log-level=error",
+		"--cds-url=https://127.0.0.1:9",
+		"--attestation-api-url=http://127.0.0.1:9",
+	})
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	if err := cmd.ExecuteContext(t.Context()); err == nil || !strings.Contains(err.Error(), "--routing-port must be between") {
+		t.Fatalf("cds-attest without --routing-port = %v, want the --routing-port error", err)
+	}
+}
+
+func TestRunRefusesBeforeServing(t *testing.T) {
+	tests := []struct {
+		name    string
+		edit    func(*config)
+		wantSub string
+	}{
+		{
+			name:    "no front-door mode",
+			edit:    func(c *config) { c.frontDoorMode = "" },
+			wantSub: "--front-door-mode must be",
+		},
+		{
+			name:    "a front-door mode given twice",
+			edit:    func(c *config) { c.frontDoorModeFile = filepath.Join(t.TempDir(), "front-door-mode") },
+			wantSub: "mutually exclusive",
+		},
+		{
+			name:    "a plaintext verifier beyond this pod",
+			edit:    func(c *config) { c.attestationAPIURL = "http://10.43.0.9:8400" },
+			wantSub: "is plaintext at an address this pod named",
+		},
+		{
+			name:    "an unpinned CDS",
+			edit:    func(c *config) { c.routing.imagePolicyFile = "" },
+			wantSub: cmdsutil.ErrCDSPinUnbound.Error(),
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := routedRunConfig(t, freePort(t))
+			tc.edit(&cfg)
+			if err := run(t.Context(), cfg); err == nil || !strings.Contains(err.Error(), tc.wantSub) {
+				t.Fatalf("run() = %v, want an error containing %q", err, tc.wantSub)
+			}
+		})
+	}
+}
+
+// routedRunConfig is a config run accepts, polling a CDS that cannot be
+// reached and naming an attestation-api that does not answer.
+func routedRunConfig(t *testing.T, attestPort int) config {
 	t.Helper()
-	identity := writeTestMeshIdentity(t)
 	return config{
-		host:                 "127.0.0.1",
-		port:                 port,
-		logLevel:             "error",
-		meshIdentityCertFile: identity.certFile,
-		meshIdentityKeyFile:  identity.keyFile,
-		meshIdentityCAFile:   identity.caFile,
-		attestationAPIURL:    "http://127.0.0.1:9",
-		readHeaderTimeout:    time.Second,
-		tunnelIOTimeout:      defaultTunnelIOTimeout,
-		attestOff:            true,
+		host:              "127.0.0.1",
+		port:              attestPort,
+		logLevel:          "error",
+		frontDoorMode:     types.FrontDoorModeCDS,
+		attestationAPIURL: "http://127.0.0.1:9",
+		platform:          "snp",
+		readHeaderTimeout: time.Second,
+		tunnelIOTimeout:   defaultTunnelIOTimeout,
+		establishRate:     defaultEstablishRate,
+		establishBurst:    defaultEstablishBurst,
 		routing: routingConfig{
-			cdsURL:           "https://127.0.0.1:9",
-			operatorKeysFile: filepath.Join(t.TempDir(), "absent"),
-			allowUnpinnedCDS: true,
-			pollInterval:     time.Hour,
-			backendTimeout:   time.Hour,
-			host:             "127.0.0.1",
-			reservedPaths:    defaultReservedPaths,
-			tunnelBudget:     quantityFlag{bytes: oneRequestBudget, set: true},
+			cdsURL:          "https://127.0.0.1:9",
+			imagePolicyFile: testutil.CDSPinFile(t),
+			launchKeysFile:  filepath.Join(t.TempDir(), "absent"),
+			pollInterval:    time.Hour,
+			backendTimeout:  time.Hour,
+			host:            "127.0.0.1",
+			port:            freePort(t),
+			reservedPaths:   defaultReservedPaths,
+			tunnelBudget:    quantityFlag{bytes: oneRequestBudget, set: true},
 		},
 	}
 }
@@ -132,6 +181,19 @@ func TestRunRejectsNonPositiveTunnelIOTimeout(t *testing.T) {
 	cfg.tunnelIOTimeout = 0
 	if err := run(t.Context(), cfg); err == nil || !strings.Contains(err.Error(), "--tunnel-io-timeout must be positive") {
 		t.Fatalf("run() with --tunnel-io-timeout=0 = %v, want the tunnel-io-timeout error", err)
+	}
+}
+
+func TestRunRejectsNonPositiveEstablishRate(t *testing.T) {
+	for _, zero := range []func(*config){
+		func(c *config) { c.establishRate = 0 },
+		func(c *config) { c.establishBurst = 0 },
+	} {
+		cfg := routedRunConfig(t, freePort(t))
+		zero(&cfg)
+		if err := run(t.Context(), cfg); err == nil || !strings.Contains(err.Error(), "--establish-rate and --establish-burst must be positive") {
+			t.Fatalf("run() = %v, want the establish-rate error", err)
+		}
 	}
 }
 
@@ -147,6 +209,50 @@ func TestRunReturnsListenError(t *testing.T) {
 	cfg.routing.port = freePort(t)
 	if err := run(t.Context(), cfg); err == nil || !strings.Contains(err.Error(), "address already in use") {
 		t.Fatalf("run() on an occupied port = %v, want the bind error", err)
+	}
+}
+
+func TestRunReturnsRoutingListenError(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	cfg := routedRunConfig(t, freePort(t))
+	cfg.routing.port = l.Addr().(*net.TCPAddr).Port // already taken
+	if err := run(t.Context(), cfg); err == nil || !strings.Contains(err.Error(), "routing listener:") {
+		t.Fatalf("run() on an occupied routing port = %v, want the routing listener's bind error", err)
+	}
+}
+
+func TestAttestProviderAsksTheAttestationAPI(t *testing.T) {
+	var asked remote.AttestRequest
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&asked); err != nil {
+			t.Error(err)
+		}
+		json.NewEncoder(w).Encode(remote.AttestResponse{Evidence: json.RawMessage(`{}`)})
+	}))
+	defer api.Close()
+	cfg := config{
+		frontDoorMode:     types.FrontDoorModeCDS,
+		platform:          "snp",
+		generation:        "genoa",
+		attestationAPIURL: api.URL,
+	}
+	provider, err := attestProvider(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, platform, generation, err := provider.Evidence(t.Context(), []byte("report-data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(asked.ReportData) != "report-data" || asked.Platform != teetypes.PlatformSNP {
+		t.Fatalf("attestation-api asked %+v, want report_data %q for platform %q", asked, "report-data", teetypes.PlatformSNP)
+	}
+	if platform != "snp" || generation != "genoa" {
+		t.Fatalf("Evidence() platform, generation = %q, %q, want snp, genoa", platform, generation)
 	}
 }
 
@@ -176,15 +282,9 @@ func freePort(t *testing.T) int {
 }
 
 func TestRunServesUntilSignalled(t *testing.T) {
-	fixture := writeFixtureFile(t)
-
 	port := freePort(t)
 	cfg := routedRunConfig(t, port)
-	cfg.attestOff = false
 	cfg.logLevel = "not-a-level" // exercises the newLogger fallback too
-	cfg.frontDoorMode = types.FrontDoorModeCDS
-	cfg.evidenceFixture = fixture
-	cfg.platform = "snp"
 	cfg.generation = "genoa"
 	cfg.sessionTTL = time.Minute
 

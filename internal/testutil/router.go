@@ -20,6 +20,15 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
+// CloseEveryResponse wraps h like an nginx location with keepalive_timeout 0:
+// every response carries Connection: close.
+func CloseEveryResponse(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Connection", "close")
+		h.ServeHTTP(w, r)
+	})
+}
+
 // NewRouterServer stands in for a router front door: a TLS server whose
 // serving cert has no armTLS extension and which serves only its discovery
 // document at /v1/discovery. ApproveAll accepts the document's evidence.

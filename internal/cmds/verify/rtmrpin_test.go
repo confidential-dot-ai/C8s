@@ -3,6 +3,7 @@ package verify
 import (
 	"context"
 	"crypto/x509"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
@@ -85,9 +86,8 @@ func TestImageManifestPinVerifies(t *testing.T) {
 // The manifest's MRTD is compared exactly and is never unioned into the
 // --measurements allowlist. An allowlist is satisfied by ANY member, so a
 // launch digest from a different build sitting in --measurements would
-// otherwise pass while RTMR[1]/[2] were pinned against this manifest — the
-// tuple split the atomic load exists to prevent, and the same rule
-// get-kubeconfig applies to the same file.
+// otherwise pass while RTMR[1]/[2] were pinned against this manifest, which
+// would split the tuple --image-manifest pins as one.
 //
 // The CLI now refuses the two together outright (see
 // TestMeasurementsWithImageManifestIsAUsageError), so the second half of this
@@ -352,6 +352,9 @@ func TestTDXMRTDOnlyWarns(t *testing.T) {
 func TestTDXMRTDOnlyRejectedWithoutCAAnchor(t *testing.T) {
 	for _, mode := range []string{"", "auto", "armtls-cert", "discovery", "attest-pq"} {
 		cfg := config{mode: mode, measurements: []string{testMRTD}}
+		if mode == "attest-pq" {
+			cfg.routeDigests = []string{hex.EncodeToString(testRouteDigest)}
+		}
 		oc := newOutcome(cfg, &evidence{platform: "tdx"}, tdxResult(testMRTD, matchingRTMRs()), nil, mustPlan(t, cfg))
 		if oc.Verified {
 			t.Errorf("mode %q: an MRTD-only TDX policy with no CA anchor must fail — the measurement pins are the entire trust anchor", mode)
@@ -368,7 +371,7 @@ func TestTDXMRTDOnlyRejectedWithoutCAAnchor(t *testing.T) {
 	t.Run("--mesh-ca pinned", func(t *testing.T) {
 		plan := mustPlan(t, config{measurements: []string{testMRTD}})
 		plan.meshCA = x509.NewCertPool()
-		cfg := config{mode: "attest-pq", measurements: []string{testMRTD}}
+		cfg := config{mode: "attest-pq", measurements: []string{testMRTD}, routeDigests: []string{hex.EncodeToString(testRouteDigest)}}
 		oc := newOutcome(cfg, &evidence{platform: "tdx"}, tdxResult(testMRTD, matchingRTMRs()), nil, plan)
 		if !oc.Verified {
 			t.Fatalf("a pinned-anchor verdict must pass with a warning: %s", oc.Error)
@@ -379,7 +382,7 @@ func TestTDXMRTDOnlyRejectedWithoutCAAnchor(t *testing.T) {
 	})
 
 	t.Run("responder-committed chain is not an anchor", func(t *testing.T) {
-		cfg := config{mode: "attest-pq", measurements: []string{testMRTD}}
+		cfg := config{mode: "attest-pq", measurements: []string{testMRTD}, routeDigests: []string{hex.EncodeToString(testRouteDigest)}}
 		ev := &evidence{platform: "tdx", leafChainDerived: true}
 		oc := newOutcome(cfg, ev, tdxResult(testMRTD, matchingRTMRs()), nil, mustPlan(t, cfg))
 		if oc.Verified {
@@ -406,8 +409,7 @@ func TestRTMRPinFlagErrors(t *testing.T) {
 		{"rtmr3 too long", config{expectedRTMR3Hex: strings.Repeat("ab", 64)}, "want 48"},
 		// RTMR[3] records events extended into a guest whose image the
 		// untrusted host chose, so alone it reports "(matched)" while proving
-		// nothing about what booted. get-kubeconfig makes the manifest
-		// mandatory for the same reason.
+		// nothing about what booted, which is why the manifest is mandatory.
 		{"rtmr3 without an image pin", config{expectedRTMR3Hex: testRTMR3}, "requires --image-manifest"},
 		{"rtmr3 with only a measurement allowlist", config{expectedRTMR3Hex: testRTMR3, measurements: []string{testMRTD}}, "requires --image-manifest"},
 		{"manifest missing", config{imageManifest: filepath.Join(t.TempDir(), "absent.json")}, "read image manifest"},

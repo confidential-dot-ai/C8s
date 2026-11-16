@@ -1,0 +1,5 @@
+apiVersion: v2
+name: c8s-lib
+description: Shared C8s chart files and helpers.
+type: library
+version: 0.1.0

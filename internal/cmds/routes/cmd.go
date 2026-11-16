@@ -14,10 +14,12 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cdsconn"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 	pkgroutes "github.com/confidential-dot-ai/c8s/pkg/routes"
 	"github.com/confidential-dot-ai/c8s/pkg/routesclient"
@@ -59,23 +61,29 @@ revision carries, since the write re-authorizes them all.
 To sign writes, pass the operator key with --operator-key (or
 C8S_OPERATOR_KEY), as for 'c8s allowlist'. --operator-keys names the operator
 public keys you trust. 'show' verifies against them when given; 'add' and
-'rm' require them, since they re-sign the stored routes.
+'rm' require them once CDS stores a manifest, since they re-sign the stored
+routes.
 
 Point --url at CDS itself, with no path, because the router does not relay
-/routes. A port-forward to the CDS Service works; pin the CDS launch digest
-with --measurements.`,
+/routes, and pin CDS with --image-policy-file cds-pin.json, the pin
+'c8s cds config new' wrote.`,
 		SilenceUsage: true,
 	}
 	pf := cmd.PersistentFlags()
 	cdsconn.BindFlags(pf, &o.Options)
 	pf.StringVar(&o.operatorKeys, "operator-keys", "", "PEM file of trusted operator public keys; verifies the write token of every fetched route manifest")
 
+	digest := newDigestCmd()
+	cmdsutil.HideUnreadFlags(digest, pf)
+
 	cmd.AddCommand(
 		newShowCmd(o),
-		newDigestCmd(),
+		digest,
 		newPutCmd(o),
 		newAddCmd(o),
 		newRmCmd(o),
+		newAddPatternCmd(o),
+		newRmPatternCmd(o),
 	)
 	return cmd
 }
@@ -125,20 +133,33 @@ func (o *options) trustedKeys() ([]*ecdsa.PublicKey, error) {
 	return keys, nil
 }
 
-// put signs and writes manifest, sending ifMatch when not empty. On a 409 or
-// 412 it appends rebase, the recovery step for the calling command.
+// put signs and writes manifest, sending ifMatch when not empty. On a
+// revision 409 or a 412 it appends rebase, the recovery step for the calling
+// command.
 func put(ctx context.Context, c routesclient.Client, manifest []byte, signer operatorauth.Authorizer, ifMatch, rebase string) error {
 	err := c.Put(ctx, manifest, signer, ifMatch)
 	var se *operatorauth.StatusError
 	if errors.As(err, &se) {
-		switch se.Status {
-		case http.StatusConflict, http.StatusPreconditionFailed:
+		switch {
+		case SpentToken(err):
+			return fmt.Errorf("%w; re-run the command to mint a fresh token", err)
+		case se.Status == http.StatusServiceUnavailable && se.Body == operatorauth.ErrTokenNotRecorded.Error():
+			return fmt.Errorf("%w; nothing was stored, so re-running the command with a fresh token is safe", err)
+		case se.Status == http.StatusConflict, se.Status == http.StatusPreconditionFailed:
 			return fmt.Errorf("%w; %s", err, rebase)
-		case http.StatusUnauthorized:
+		case se.Status == http.StatusUnauthorized:
 			return fmt.Errorf("%w; check that the public key of --operator-key is in cds.operatorKeys", err)
 		}
 	}
 	return err
+}
+
+// SpentToken reports whether err is the CDS's 409 for a write token that
+// already authorized a write, which a fresh token fixes, unlike a stale
+// revision's 409.
+func SpentToken(err error) bool {
+	var se *operatorauth.StatusError
+	return errors.As(err, &se) && se.Status == http.StatusConflict && strings.Contains(se.Body, operatorauth.ErrTokenReused.Error())
 }
 
 func digestHex(manifest []byte) string {

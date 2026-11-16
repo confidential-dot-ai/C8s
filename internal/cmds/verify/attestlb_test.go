@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"io"
@@ -11,19 +12,36 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/confidential-dot-ai/c8s/pkg/overenc"
+	"github.com/confidential-dot-ai/c8s/pkg/routes"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
 // attestLBServer answers attest-lb with a transcript over bindLeaf, or over
 // its own serving leaf when bindLeaf is nil.
 func attestLBServer(t *testing.T, id *endpointIdentity, bindLeaf []byte) *httptest.Server {
+	return routedLBServer(t, id, bindLeaf, testRouteDigest, nil)
+}
+
+// routedLBServer is attestLBServer binding routeDigest. It serves publication
+// at the route publication path, or 404 when publication is nil.
+func routedLBServer(t *testing.T, id *endpointIdentity, bindLeaf, routeDigest, publication []byte) *httptest.Server {
 	var ts *httptest.Server
 	ts = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == routes.PublicationPath {
+			if publication == nil {
+				http.NotFound(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(publication)
+			return
+		}
 		nonce, err := base64.RawURLEncoding.DecodeString(r.URL.Query().Get("nonce"))
 		if err != nil {
 			http.Error(w, "bad nonce", http.StatusBadRequest)
@@ -33,18 +51,20 @@ func attestLBServer(t *testing.T, id *endpointIdentity, bindLeaf []byte) *httpte
 		if leaf == nil {
 			leaf = ts.Certificate().Raw
 		}
-		transcript, err := overenc.LBTranscriptHash(types.FrontDoorModeCDS, nonce, leaf, id.leaf.Raw, id.ca.Raw)
+		transcript, err := overenc.LBTranscriptHash(types.FrontDoorModeCDS, nonce, leaf, id.leaf.Raw, id.ca.Raw, routeDigest)
 		if err != nil {
 			t.Error(err)
 		}
 		json.NewEncoder(w).Encode(map[string]any{
-			"version":         types.BindingAttestLB,
-			"platform":        "snp",
-			"nonce":           base64.RawURLEncoding.EncodeToString(nonce),
-			"evidence":        map[string]any{"attestation_report": "AAAA"},
-			"front_door_mode": "cds",
-			"cds_cert_pem":    id.chainPEM,
-			"identity_proof":  id.proofJSON(t, transcript),
+			"version":           types.BindingAttestLB,
+			"platform":          "snp",
+			"nonce":             base64.RawURLEncoding.EncodeToString(nonce),
+			"evidence":          map[string]any{"attestation_report": "AAAA"},
+			"front_door_mode":   "cds",
+			"cds_cert_pem":      id.chainPEM,
+			"identity_proof":    id.proofJSON(t, transcript),
+			"measured_policies": []string{testPolicyP},
+			"route_digest":      hex.EncodeToString(routeDigest),
 		})
 	}))
 	return ts
@@ -55,17 +75,20 @@ func TestGatherFromAttestLB(t *testing.T) {
 
 	ts := attestLBServer(t, id, nil)
 	defer ts.Close()
-	ev, err := gatherFromAttestLB(context.Background(), ts.URL, "", 5*time.Second)
+	ev, err := gatherFromAttestLB(context.Background(), ts.URL, "", 5*time.Second, testRoute)
 	if err != nil {
 		t.Fatalf("gather: %v", err)
 	}
 	if !ev.fresh || ev.leaf == nil || !bytes.Equal(ev.leaf.Raw, id.leaf.Raw) {
 		t.Errorf("evidence = fresh %v, leaf %v; want a fresh verdict on the committed mesh leaf", ev.fresh, ev.leaf != nil)
 	}
+	if !slices.Equal(ev.measured, []string{testPolicyP}) {
+		t.Errorf("evidence.measured = %v, want the bundle's measured_policies", ev.measured)
+	}
 
 	relayed := attestLBServer(t, id, []byte("another serving leaf"))
 	defer relayed.Close()
-	if _, err := gatherFromAttestLB(context.Background(), relayed.URL, "", 5*time.Second); err == nil || !isSecurityError(err) {
+	if _, err := gatherFromAttestLB(context.Background(), relayed.URL, "", 5*time.Second, testRoute); err == nil || !isSecurityError(err) {
 		t.Fatalf("gather over a different serving leaf = %v, want a security error", err)
 	}
 }
@@ -90,7 +113,7 @@ func TestEvidenceFromAttestLBJSONRejects(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = evidenceFromAttestLBJSON(data, nonce, leaf, true, "test")
+		_, err = evidenceFromAttestLBJSON(data, nonce, leaf, true, testRoute, "test")
 		if err == nil || isSecurityError(err) != tc.security {
 			t.Errorf("%s: err = %v, want an error (security %v)", tc.name, err, tc.security)
 		}
@@ -122,7 +145,7 @@ func TestGatherAttestLBFromFile(t *testing.T) {
 	}
 	serving := writeCert("serving.pem", ts.Certificate().Raw)
 
-	ev, err := gatherAttestLBFromFile(receipt, serving, nonce, "test")
+	ev, err := gatherAttestLBFromFile(receipt, serving, nonce, testRoute, "test")
 	if err != nil {
 		t.Fatalf("gatherAttestLBFromFile: %v", err)
 	}
@@ -145,36 +168,43 @@ func TestGatherAttestLBFromFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := gatherAttestLBFromFile(mislabeled, serving, nonce, "test"); !isSecurityError(err) {
+	if _, err := gatherAttestLBFromFile(mislabeled, serving, nonce, testRoute, "test"); !isSecurityError(err) {
 		t.Errorf("receipt whose serving_leaf_sha256 names another leaf = %v, want a security error", err)
 	}
 
 	other := writeCert("other.pem", id.leaf.Raw)
-	if _, err := gatherAttestLBFromFile(receipt, other, nonce, "test"); !isSecurityError(err) {
+	if _, err := gatherAttestLBFromFile(receipt, other, nonce, testRoute, "test"); !isSecurityError(err) {
 		t.Errorf("receipt with another serving leaf = %v, want a security error", err)
 	}
 	otherNonce := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{0x08}, nonceSize))
-	if _, err := gatherAttestLBFromFile(receipt, serving, otherNonce, "test"); !isSecurityError(err) {
+	if _, err := gatherAttestLBFromFile(receipt, serving, otherNonce, testRoute, "test"); !isSecurityError(err) {
 		t.Errorf("receipt with another nonce = %v, want a security error", err)
 	}
-	if _, err := gatherAttestLBFromFile(receipt, serving, "short", "test"); err == nil || isSecurityError(err) {
+	if _, err := gatherAttestLBFromFile(receipt, serving, "short", testRoute, "test"); err == nil || isSecurityError(err) {
 		t.Errorf("malformed nonce = %v, want a usage error", err)
 	}
 }
 
 func TestRunAttestLBFromFileFlags(t *testing.T) {
+	// A route digest keeps parseRouteCheck from failing first, so the
+	// pairing check is what each case reaches.
+	digest := strings.Repeat("ab", 32)
+	const pairing = "--mode attest-lb --from-file requires --observed-serving-cert and --attestation-nonce"
 	for _, tc := range []struct {
 		name string
 		cfg  config
 	}{
-		{"missing nonce", config{mode: "attest-lb", fromFile: "r.json", observedServingCert: "c.pem"}},
-		{"missing serving cert", config{mode: "attest-lb", fromFile: "r.json", attestationNonce: "n"}},
-		{"live attest-lb", config{mode: "attest-lb", url: "x", observedServingCert: "c.pem", attestationNonce: "n"}},
+		{"missing nonce", config{mode: "attest-lb", fromFile: "r.json", observedServingCert: "c.pem", routeDigests: []string{digest}}},
+		{"missing serving cert", config{mode: "attest-lb", fromFile: "r.json", attestationNonce: "n", routeDigests: []string{digest}}},
+		{"live attest-lb", config{mode: "attest-lb", url: "x", observedServingCert: "c.pem", attestationNonce: "n", routeDigests: []string{digest}}},
 		{"other mode", config{fromFile: "r.json", observedServingCert: "c.pem", attestationNonce: "n"}},
 	} {
 		var out, errOut bytes.Buffer
 		if code := run(context.Background(), tc.cfg, &out, &errOut); code != exitUsage {
 			t.Errorf("%s: run = %d, want %d; stderr: %s", tc.name, code, exitUsage, errOut.String())
+		}
+		if !strings.Contains(errOut.String(), pairing) {
+			t.Errorf("%s: stderr = %q, want the pairing error", tc.name, errOut.String())
 		}
 	}
 }

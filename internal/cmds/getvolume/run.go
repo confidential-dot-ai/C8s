@@ -19,10 +19,8 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"os/signal"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/sidecar"
@@ -69,14 +67,11 @@ func parseVolumeSpec(spec string) (volumeRequest, error) {
 	return volumeRequest{Name: name, Path: canonical}, nil
 }
 
-func run(cfg config) error {
+func run(ctx context.Context, cfg config) error {
 	if err := validate(&cfg); err != nil {
 		return err
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
-	pins, err := cfg.ParsePins()
+	pins, err := cfg.ParsePins(ctx)
 	if err != nil {
 		return err
 	}
@@ -143,12 +138,14 @@ func closeWith(ctx context.Context, daemon *http.Client, base string) error {
 // openAll fetches and opens every requested volume in one pass. The daemon is
 // idempotent for a repeated identical request, so a pass that fails partway is
 // safe to run again.
-func openAll(ctx context.Context, cfg config, pins armtls.Pins) error {
+func openAll(ctx context.Context, cfg config, pins armtls.PinSource) error {
 	client, pub, err := sidecar.NewClient(cfg.Config, pins)
 	if err != nil {
 		return err
 	}
+	defer client.CloseIdleConnections()
 	daemon, base := daemonClient(cfg)
+	defer daemon.CloseIdleConnections()
 	return openAllWith(ctx, cfg, client, pub, cfg.Endpoint(), daemon, base)
 }
 

@@ -119,8 +119,15 @@ func TestRunStandbyReportsReadyOnceTheLeafExists(t *testing.T) {
 	if got := status(); got != http.StatusServiceUnavailable {
 		t.Fatalf("GET /readyz before the leaf = %d, want %d", got, http.StatusServiceUnavailable)
 	}
+	// The ACME names are not the credential volume's: nginx serves the leaf
+	// get-cert publishes, so only that pair reports ready.
 	writeFile(t, dir, certFile, "cert")
 	writeFile(t, dir, keyFile, "key")
+	if got := status(); got != http.StatusServiceUnavailable {
+		t.Fatalf("GET /readyz with the ACME names = %d, want %d", got, http.StatusServiceUnavailable)
+	}
+	writeFile(t, dir, standbyCertFile, "cert")
+	writeFile(t, dir, standbyKeyFile, "key")
 	if got := status(); got != http.StatusOK {
 		t.Fatalf("GET /readyz with the leaf = %d, want %d", got, http.StatusOK)
 	}

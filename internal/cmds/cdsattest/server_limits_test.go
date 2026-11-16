@@ -26,21 +26,12 @@ import (
 
 // countingEvidence reports how many attestation reports the endpoints minted.
 type countingEvidence struct {
-	inner FixtureEvidenceProvider
 	calls atomic.Int64
 }
 
 func (c *countingEvidence) Evidence(ctx context.Context, reportData []byte) (json.RawMessage, string, string, error) {
 	c.calls.Add(1)
-	return c.inner.Evidence(ctx, reportData)
-}
-
-func testFixture() FixtureEvidenceProvider {
-	return FixtureEvidenceProvider{
-		Raw:        json.RawMessage(`{"attestation_report":"AAAA","cert_chain":{"vcek":"BBBB"}}`),
-		Platform:   "snp",
-		Generation: "genoa",
-	}
+	return fixedEvidence{}.Evidence(ctx, reportData)
 }
 
 // newMeteredTestServer returns the sidecar, the httptest server in front of it
@@ -70,13 +61,15 @@ func newBurstTestServer(t *testing.T, burst int) (*Server, *httptest.Server, *co
 func newTestServerWith(t *testing.T, tune func(*Server)) (*Server, *httptest.Server, *countingEvidence) {
 	t.Helper()
 	identity := writeTestMeshIdentity(t)
-	evidence := &countingEvidence{inner: testFixture()}
+	evidence := &countingEvidence{}
 	srv := NewServer(Config{
+		Routes:               testRoutes(t),
 		Evidence:             evidence,
 		FrontDoorMode:        types.FrontDoorModeCDS,
 		MeshIdentityCertFile: identity.certFile,
 		MeshIdentityKeyFile:  identity.keyFile,
 		MeshIdentityCAFile:   identity.caFile,
+		Bindings:             NewBindings(),
 	})
 	tune(srv)
 	ts := httptest.NewServer(srv.Handler())
@@ -181,18 +174,21 @@ func TestAttestPQMetersEachClientSeparately(t *testing.T) {
 }
 
 // TestAttestLBIsMetered pins the other unauthenticated session-establishment
-// route onto the same budget.
+// route onto the same budget, set by EstablishRate and EstablishBurst.
 func TestAttestLBIsMetered(t *testing.T) {
 	identity := writeTestMeshIdentity(t)
 	srv := NewServer(Config{
-		Evidence:             testFixture(),
+		Routes:               testRoutes(t),
+		Evidence:             fixedEvidence{},
 		FrontDoorMode:        types.FrontDoorModeCDS,
 		ServingCertFile:      identity.certFile,
 		MeshIdentityCertFile: identity.certFile,
 		MeshIdentityKeyFile:  identity.keyFile,
 		MeshIdentityCAFile:   identity.caFile,
+		Bindings:             NewBindings(),
+		EstablishRate:        0.001,
+		EstablishBurst:       1,
 	})
-	srv.establishLimiter = newLimiter(0.001, 1, clientBuckets)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 
@@ -363,9 +359,9 @@ func TestTimingsMeetTheirStatedRequirements(t *testing.T) {
 	// through: five a second is a browser reloading a page, and a session
 	// costs one request.
 	const steadySessionsPerSecond = 5
-	if establishRateLimit < 2*steadySessionsPerSecond {
+	if defaultEstablishRate < 2*steadySessionsPerSecond {
 		t.Fatalf("establishment is limited to %v/s, under the %d requests headroom %d sessions a second need",
-			establishRateLimit, 2*steadySessionsPerSecond, steadySessionsPerSecond)
+			defaultEstablishRate, 2*steadySessionsPerSecond, steadySessionsPerSecond)
 	}
 }
 
@@ -1035,12 +1031,14 @@ func TestSessionIdIsNeverOverwritten(t *testing.T) {
 func TestReadyzIsCached(t *testing.T) {
 	identity := writeTestMeshIdentity(t)
 	srv := NewServer(Config{
-		Evidence:             testFixture(),
+		Routes:               testRoutes(t),
+		Evidence:             fixedEvidence{},
 		FrontDoorMode:        types.FrontDoorModeCDS,
 		ExpectedWorkload:     "some-workload",
 		MeshIdentityCertFile: identity.certFile,
 		MeshIdentityKeyFile:  identity.keyFile,
 		MeshIdentityCAFile:   identity.caFile,
+		Bindings:             NewBindings(),
 	})
 	handler := srv.Handler()
 
@@ -1285,7 +1283,9 @@ func TestServeRunsMaintenance(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	served := make(chan error, 1)
-	go func() { served <- srv.Serve(ctx, &http.Server{Addr: "127.0.0.1:0", Handler: srv.Handler()}) }()
+	go func() {
+		served <- srv.Serve(ctx, &http.Server{Addr: "127.0.0.1:0", Handler: srv.Handler()})
+	}()
 
 	waitFor(t, "the expired session to be swept while serving", func() bool {
 		srv.mu.Lock()

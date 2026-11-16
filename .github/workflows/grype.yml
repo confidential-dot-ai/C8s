@@ -10,15 +10,9 @@ on:
   # main red without any commit to blame; PRs and the weekly run cover it.
   pull_request:
     branches: [main, beta]
-    paths:
-      - "**.go"
-      - "go.mod"
-      - "go.sum"
-      - "go.work"
-      - "go.work.sum"
-      - "internal/helmchart/c8s/values.yaml"
-      - ".github/workflows/grype.yml"
-      - ".grype.yaml"
+  merge_group:
+    types: [checks_requested]
+    branches: [main, beta]
 
 permissions:
   contents: read
@@ -28,13 +22,44 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Relevant changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      relevant: ${{ steps.changes.outputs.relevant }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: changes
+        uses: ./.github/actions/relevant-changes
+        with:
+          filters: |
+            relevant:
+              - ".github/actions/relevant-changes/**"
+              - "**.go"
+              - "go.mod"
+              - "go.sum"
+              - "go.work"
+              - "go.work.sum"
+              - "charts/lib/files/components.yaml"
+              - ".github/workflows/grype.yml"
+              - ".grype.yaml"
+
   linux:
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
     - name: Set up Go
       uses: ./.github/actions/setup-go-c8s
+
+    - uses: ./.github/actions/setup-grype
 
     - name: Scan for vulnerabilities
       id: scan
@@ -56,10 +81,12 @@ jobs:
           echo '```'
         } >> $GITHUB_STEP_SUMMARY
 
-  # The router nginx image is a third-party pin (chart values router.nginx.image)
+  # The router nginx image is a third-party pin (c8s-lib components.yaml routerNginx.image)
   # that never goes through the scans of our own images.
   router-image:
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -67,12 +94,14 @@ jobs:
       id: image
       run: |
         set -euo pipefail
-        repo=$(yq -r '.router.nginx.image.repository' internal/helmchart/c8s/values.yaml)
-        digest=$(yq -r '.router.nginx.image.digest' internal/helmchart/c8s/values.yaml)
+        repo=$(yq -r '.routerNginx.image.repository' charts/lib/files/components.yaml)
+        digest=$(yq -r '.routerNginx.image.digest' charts/lib/files/components.yaml)
         if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-          echo "::error file=internal/helmchart/c8s/values.yaml::router.nginx.image.digest must be a sha256 pin, got '$digest'"; exit 1
+          echo "::error file=charts/lib/files/components.yaml::routerNginx.image.digest must be a sha256 pin, got '$digest'"; exit 1
         fi
         echo "ref=${repo}@${digest}" >> "$GITHUB_OUTPUT"
+
+    - uses: ./.github/actions/setup-grype
 
     - name: Scan for High/Critical vulnerabilities
       id: scan
@@ -92,3 +121,18 @@ jobs:
           cat "${{ steps.scan.outputs.table }}" 2>/dev/null || echo "(no report)"
           echo '```'
         } >> "$GITHUB_STEP_SUMMARY"
+
+  result:
+    name: Scan for vulnerabilities result
+    runs-on: ubuntu-latest
+    needs: [changes, linux, router-image]
+    if: always()
+    steps:
+      # A job skipped by a failed dependency also reports skipped, so the changes job is read on its own.
+      - name: Require every job to have succeeded or skipped
+        if: needs.changes.result != 'success' || contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS"
+          exit 1

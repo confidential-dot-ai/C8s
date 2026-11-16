@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/confidential-dot-ai/c8s/internal/readutil"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
@@ -47,23 +48,31 @@ func LoadLeaf(certPath, keyPath string) (tls.Certificate, crypto.PublicKey, erro
 }
 
 // NewClient builds the mTLS client to CDS and returns the leaf's public key,
-// which the sandbox token is bound to.
-func NewClient(cfg Config, pins armtls.Pins) (*http.Client, crypto.PublicKey, error) {
+// which the sandbox token is bound to. The client follows pins: where the
+// node's enforcer moves them to a new CDS image, this sidecar's next request
+// is made against that image.
+func NewClient(cfg Config, pins armtls.PinSource) (*http.Client, crypto.PublicKey, error) {
 	provider := leafProvider{certPath: cfg.CertPath, keyPath: cfg.KeyPath}
 	_, pub, err := LoadLeaf(cfg.CertPath, cfg.KeyPath)
 	if err != nil {
 		return nil, nil, err
 	}
-	tlsCfg, _, err := armtls.NewClientTLSConfig(&armtls.ClientConfig{
-		Policy:       pins.VerifyPolicy(cfg.AttestationApiURL),
-		CertProvider: provider,
+	transport, err := armtls.NewRefreshingTransport(pins, func(set armtls.Pins) (*http.Transport, error) {
+		tlsCfg, _, err := armtls.NewClientTLSConfig(&armtls.ClientConfig{
+			Policy:       set.VerifyPolicy(cfg.AttestationApiURL),
+			CertProvider: provider,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("build CDS client: %w", err)
+		}
+		return &http.Transport{TLSClientConfig: tlsCfg}, nil
 	})
 	if err != nil {
-		return nil, nil, fmt.Errorf("build CDS client: %w", err)
+		return nil, nil, err
 	}
 	return &http.Client{
 		Timeout:   cfg.RequestTimeout,
-		Transport: &http.Transport{TLSClientConfig: tlsCfg},
+		Transport: transport,
 	}, pub, nil
 }
 
@@ -95,10 +104,14 @@ func Do(ctx context.Context, cfg Config, client *http.Client, pub crypto.PublicK
 
 	switch resp.StatusCode {
 	case http.StatusOK, http.StatusCreated:
+		data, err := readutil.ReadAll(resp.Body, 1<<20)
+		if err != nil {
+			return nil, resp.StatusCode, fmt.Errorf("read secret response: %w", err)
+		}
 		var body struct {
 			Value string `json:"value"`
 		}
-		if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&body); err != nil {
+		if err := json.Unmarshal(data, &body); err != nil {
 			return nil, resp.StatusCode, fmt.Errorf("decode secret response: %w", err)
 		}
 		value, err := base64.StdEncoding.DecodeString(body.Value)
@@ -110,17 +123,20 @@ func Do(ctx context.Context, cfg Config, client *http.Client, pub crypto.PublicK
 		// The body is deliberately opaque; the reason is in the CDS log.
 		detail, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return nil, resp.StatusCode, &StatusError{
-			Code: envelopeCode(detail),
-			Err:  fmt.Errorf("%s %s: %s: %s", method, path, resp.Status, strings.TrimSpace(string(detail))),
+			Status: resp.StatusCode,
+			Code:   envelopeCode(detail),
+			Err:    fmt.Errorf("%s %s: %s: %s", method, path, resp.Status, strings.TrimSpace(string(detail))),
 		}
 	}
 }
 
-// StatusError is a non-2xx answer from CDS. Code is the C8s error-envelope code
-// its body named, and is empty for a body that is not an envelope.
+// StatusError is a non-2xx answer from CDS. Status is its HTTP status; Code is
+// the C8s error-envelope code its body named, and is empty for a body that is
+// not an envelope.
 type StatusError struct {
-	Code string
-	Err  error
+	Status int
+	Code   string
+	Err    error
 }
 
 func (e *StatusError) Error() string { return e.Err.Error() }
@@ -180,8 +196,12 @@ func FetchChallenge(ctx context.Context, client *http.Client, cdsURL string, tim
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("fetch challenge: %s", resp.Status)
 	}
+	data, err := readutil.ReadAll(resp.Body, 1<<16)
+	if err != nil {
+		return nil, fmt.Errorf("read challenge: %w", err)
+	}
 	var out types.ChallengeResponse
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(&out); err != nil {
+	if err := json.Unmarshal(data, &out); err != nil {
 		return nil, fmt.Errorf("decode challenge: %w", err)
 	}
 	challenge, err := base64.StdEncoding.DecodeString(out.Challenge)

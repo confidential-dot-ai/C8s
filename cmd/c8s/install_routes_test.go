@@ -9,6 +9,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -30,6 +31,7 @@ import (
 	pkgroutes "github.com/confidential-dot-ai/c8s/pkg/routes"
 	"github.com/confidential-dot-ai/c8s/pkg/routesclient"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 func TestRouteHosts(t *testing.T) {
@@ -40,8 +42,10 @@ func TestRouteHosts(t *testing.T) {
 		wantHosts   []string
 		wantSkipped []string
 	}{
-		{"default san", map[string]any{}, "c8s", []string{"c8s-router.c8s-system.svc"}, nil},
-		{"default san, long release", map[string]any{}, strings.Repeat("r", 60), []string{strings.Repeat("r", 60) + "-ro.c8s-system.svc"}, nil},
+		// The default is the router's own namespace, not the release's: the
+		// router refuses a manifest naming a host it does not serve.
+		{"default san", map[string]any{}, "c8s", []string{"c8s-router." + workloadclaims.RouterNamespace + ".svc"}, nil},
+		{"default san, long release", map[string]any{}, strings.Repeat("r", 60), []string{strings.Repeat("r", 60) + "-ro." + workloadclaims.RouterNamespace + ".svc"}, nil},
 		{"san list", map[string]any{"router": map[string]any{"san": []any{"App.Example.", "*.example.com", "192.0.2.1", "app.example."}}}, "c8s",
 			[]string{"app.example"}, []string{"*.example.com", "192.0.2.1"}},
 		{"numeric final label", map[string]any{"router": map[string]any{"san": []any{"app.example", "host.123", "host.0x1f"}}}, "c8s",
@@ -49,7 +53,7 @@ func TestRouteHosts(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			hosts, skipped := routeHosts(tc.values, tc.release, "c8s-system")
+			hosts, skipped := routeHosts(tc.values, tc.release)
 			if !reflect.DeepEqual(hosts, tc.wantHosts) || !reflect.DeepEqual(skipped, tc.wantSkipped) {
 				t.Fatalf("routeHosts() = %v, %v, want %v, %v", hosts, skipped, tc.wantHosts, tc.wantSkipped)
 			}
@@ -303,14 +307,15 @@ func TestWriteUpstreamRoutes(t *testing.T) {
 		{"write refused", stored, refused, 0, []string{add}, []string{"c8s routes put "}},
 		{"--routes-revision", nil, nil, 7, []string{addRevision, addRevision2}, nil},
 		{"--routes-revision refused", nil, storedManifestError{revisionError{refused}}, 7, []string{add}, []string{"--revision", "c8s routes put "}},
+		{"--routes-revision, token spent", nil, storedManifestError{&operatorauth.StatusError{Status: http.StatusConflict, Body: operatorauth.ErrTokenReused.Error()}}, 7, []string{addRevision}, []string{"c8s routes put "}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			resetCLIState(t)
 			installRoutesOut = filepath.Join(t.TempDir(), "routes.json")
-			installMeasurements = []string{"abcd"}
+			installCDS = &cdsPin{path: "cds-pin.json"}
 			installRoutesMaxAge, installRoutesRevision = 2*time.Hour, tc.revision
 			var out bytes.Buffer
-			if err := writeUpstreamRoutes(&out, testUpstream, cdsTarget{namespace: "c8s-system", service: "c8s-cds", port: 8443}, map[string]adoptedEntry{"web": {}}, tc.manifest, tc.cause); err != nil {
+			if err := writeUpstreamRoutes(&out, testUpstream, "https://10.9.9.9:8443", map[string]adoptedEntry{"web": {}}, tc.manifest, tc.cause); err != nil {
 				t.Fatalf("writeUpstreamRoutes() = %v", err)
 			}
 			b, err := os.ReadFile(installRoutesOut)
@@ -326,9 +331,8 @@ func TestWriteUpstreamRoutes(t *testing.T) {
 				t.Errorf("output leads with put:\n%s", got)
 			}
 			for _, want := range append(tc.want,
-				"kubectl -n c8s-system port-forward svc/c8s-cds 8443:8443",
-				"--url https://127.0.0.1:8443 --measurements abcd",
-				"c8s allowlist list --url https://127.0.0.1:8443 --measurements abcd",
+				"--url https://10.9.9.9:8443 --image-policy-file cds-pin.json",
+				"c8s allowlist list --url https://10.9.9.9:8443 --image-policy-file cds-pin.json",
 			) {
 				if !strings.Contains(got, want) {
 					t.Errorf("output lacks %q:\n%s", want, got)
@@ -350,7 +354,7 @@ func TestWriteUpstreamRoutesKeyPaths(t *testing.T) {
 	installRoutesOut = filepath.Join(t.TempDir(), "routes.json")
 	installOperatorKey, installOperatorKeys = "/keys/op.key", "/keys/op-pub.pem"
 	var out bytes.Buffer
-	if err := writeUpstreamRoutes(&out, testUpstream, cdsTarget{namespace: "c8s-system", service: "c8s-cds", port: 8443}, nil, nil, errors.New("refused")); err != nil {
+	if err := writeUpstreamRoutes(&out, testUpstream, "https://10.9.9.9:8443", nil, nil, errors.New("refused")); err != nil {
 		t.Fatalf("writeUpstreamRoutes() = %v", err)
 	}
 	got := out.String()
@@ -373,7 +377,7 @@ func TestWriteUpstreamRoutesExistingFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	err := writeUpstreamRoutes(&out, testUpstream, cdsTarget{namespace: "c8s-system", service: "c8s-cds", port: 8443}, nil, nil, nil)
+	err := writeUpstreamRoutes(&out, testUpstream, "https://10.9.9.9:8443", nil, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "--routes-out") {
 		t.Fatalf("writeUpstreamRoutes() = %v, want the --routes-out refusal", err)
 	}
@@ -419,7 +423,6 @@ func TestPreflightUpstreamRoutes(t *testing.T) {
 	if err := os.WriteFile(values, []byte("cds:\n  operatorKeys: |\n    "+strings.ReplaceAll(strings.TrimSpace(string(pubPEM)), "\n", "\n    ")+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	pinned := []string{strings.Repeat("ab", 48)}
 	emptied := filepath.Join(dir, "emptied.yaml")
 	if err := os.WriteFile(emptied, []byte("cds:\n  operatorKeys: \"\"\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -430,7 +433,7 @@ func TestPreflightUpstreamRoutes(t *testing.T) {
 		outSet, maxAgeSet           bool
 		revision                    uint64
 		values                      []string
-		measurements, rtmrs         []string
+		pinned                      bool
 		wantErr                     string
 	}{
 		{name: "no upstream, no key"},
@@ -438,24 +441,26 @@ func TestPreflightUpstreamRoutes(t *testing.T) {
 		{name: "--routes-out without upstream", outSet: true, wantErr: "--routes-out applies"},
 		{name: "--routes-max-age without upstream", maxAgeSet: true, wantErr: "--routes-max-age applies"},
 		{name: "--routes-revision without upstream", revision: 9, wantErr: "--routes-revision applies"},
-		{name: "malformed --rtmrs", upstream: "web", key: key, keys: pub, measurements: pinned, rtmrs: []string{"1=zz"}, wantErr: "--rtmrs"},
 		{name: "upstream without key", upstream: "web"},
 		{name: "max age below a second", upstream: "web", maxAge: "500ms", wantErr: "--routes-max-age"},
 		{name: "max age above D4", upstream: "web", maxAge: "600000h", wantErr: "--routes-max-age"},
-		{name: "unpinned CDS", upstream: "web", key: key, keys: pub, wantErr: "unpinned CDS"},
-		{name: "key in --operator-keys", upstream: "web", key: key, keys: pub, measurements: pinned},
-		{name: "key in cds.operatorKeys", upstream: "web", key: key, values: []string{values}, measurements: pinned},
-		{name: "no keys for CDS", upstream: "web", key: key, measurements: pinned, wantErr: "pass --operator-keys"},
-		{name: "a later file empties cds.operatorKeys", upstream: "web", key: key, values: []string{values, emptied}, measurements: pinned, wantErr: "pass --operator-keys"},
-		{name: "key CDS does not trust", upstream: "web", key: key, keys: otherPub, measurements: pinned, wantErr: "not among the operator keys"},
+		{name: "unpinned CDS", upstream: "web", key: key, keys: pub, wantErr: "unpinned endpoint"},
+		{name: "key in --operator-keys", upstream: "web", key: key, keys: pub, pinned: true},
+		{name: "key in cds.operatorKeys", upstream: "web", key: key, values: []string{values}, pinned: true},
+		{name: "no keys for CDS", upstream: "web", key: key, pinned: true, wantErr: "pass --operator-keys"},
+		{name: "a later file empties cds.operatorKeys", upstream: "web", key: key, values: []string{values, emptied}, pinned: true, wantErr: "pass --operator-keys"},
+		{name: "key CDS does not trust", upstream: "web", key: key, keys: otherPub, pinned: true, wantErr: "not among the operator keys"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			resetCLIState(t)
 			installUpstream, installOperatorKey, installOperatorKeys = tc.upstream, tc.key, tc.keys
-			installValues, installMeasurements = tc.values, tc.measurements
+			installValues = tc.values
+			if tc.pinned {
+				installCDS = &cdsPin{path: cdsPinFile(t, []string{"app"}, "192.0.2.0/24")}
+			}
 			installRoutesOutSet, installRoutesMaxAgeSet = tc.outSet, tc.maxAgeSet
-			installRoutesRevision, installRegisters = tc.revision, tc.rtmrs
+			installRoutesRevision = tc.revision
 			if tc.maxAge != "" {
 				d, err := time.ParseDuration(tc.maxAge)
 				if err != nil {
@@ -489,7 +494,8 @@ func webEntry(t *testing.T, digest string) (pkgallowlist.Workload, []pkgallowlis
 // images are pinned by digest.
 func adoptedEntryFor(t *testing.T, tmpl corev1.PodTemplateSpec) adoptedEntry {
 	t.Helper()
-	_, entries, err := buildWorkloadImageArgs(nil, []adoptedWorkload{{workloadAdoption: workloadAdoption{cwID: "web"}, template: tmpl}}, "", io.Discard, nil)
+	workloadAllowlist, err := buildWorkloadImageValues([]adoptedWorkload{{workloadAdoption: workloadAdoption{cwID: "web"}, template: tmpl}}, "", io.Discard, nil)
+	entries := workloadAllowlist.entries
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -581,7 +587,7 @@ func TestPutUpstreamRoutesReturnsARefusedManifest(t *testing.T) {
 		t.Fatal(err)
 	}
 	signer := authorizerFunc(func(string, string, []byte) (string, error) { return "Bearer x", nil })
-	manifest, err := putUpstreamRoutes(context.Background(), io.Discard, c, signer, testUpstream)
+	manifest, _, err := putUpstreamRoutes(context.Background(), io.Discard, c, signer, testUpstream)
 	if err == nil || !strings.Contains(err.Error(), "409") {
 		t.Fatalf("putUpstreamRoutes() = %v, want the 409", err)
 	}
@@ -619,12 +625,12 @@ func TestPutUpstreamRoutesLostRace(t *testing.T) {
 	installOperatorKeys = pub
 	installRoutesOut = filepath.Join(t.TempDir(), "routes.json")
 	signer := authorizerFunc(func(string, string, []byte) (string, error) { return "Bearer x", nil })
-	manifest, err := putUpstreamRoutes(context.Background(), io.Discard, c, signer, testUpstream)
+	manifest, _, err := putUpstreamRoutes(context.Background(), io.Discard, c, signer, testUpstream)
 	if err == nil || !strings.Contains(err.Error(), "412") || !errors.As(err, new(storedManifestError)) {
 		t.Fatalf("putUpstreamRoutes() = %v, want the 412 as a storedManifestError", err)
 	}
 	var out bytes.Buffer
-	if err := writeUpstreamRoutes(&out, testUpstream, cdsTarget{namespace: "c8s-system", service: "c8s-cds", port: 8443}, nil, manifest, err); err != nil {
+	if err := writeUpstreamRoutes(&out, testUpstream, "https://10.9.9.9:8443", nil, manifest, err); err != nil {
 		t.Fatalf("writeUpstreamRoutes() = %v", err)
 	}
 	if b, err := os.ReadFile(installRoutesOut); err != nil || !bytes.Equal(b, manifest) {
@@ -661,12 +667,12 @@ func TestPutUpstreamRoutesRevisionBelowStored(t *testing.T) {
 	installRoutesOut = filepath.Join(t.TempDir(), "routes.json")
 	installRoutesRevision = 7
 	signer := authorizerFunc(func(string, string, []byte) (string, error) { return "Bearer x", nil })
-	manifest, err := putUpstreamRoutes(context.Background(), io.Discard, c, signer, testUpstream)
+	manifest, _, err := putUpstreamRoutes(context.Background(), io.Discard, c, signer, testUpstream)
 	if err == nil || !errors.As(err, new(storedManifestError)) || !errors.As(err, new(revisionError)) {
 		t.Fatalf("putUpstreamRoutes() = %v, want a stored-manifest revision error", err)
 	}
 	var out bytes.Buffer
-	if err := writeUpstreamRoutes(&out, testUpstream, cdsTarget{namespace: "c8s-system", service: "c8s-cds", port: 8443}, nil, manifest, err); err != nil {
+	if err := writeUpstreamRoutes(&out, testUpstream, "https://10.9.9.9:8443", nil, manifest, err); err != nil {
 		t.Fatalf("writeUpstreamRoutes() = %v", err)
 	}
 	got := out.String()
@@ -679,15 +685,16 @@ func TestPutUpstreamRoutesRevisionBelowStored(t *testing.T) {
 // after the release changed the cluster, the manifest still lands in
 // --routes-out with the command that stores it.
 func TestDeliverUpstreamRoutesKeepsTheManifest(t *testing.T) {
-	f := newFakeBin(t)
-	f.tool(t, "kubectl", `echo "unable to forward" >&2; exit 1`)
 	resetCLIState(t)
 	installOperatorKey = "operator.key"
 	installRoutesOut = filepath.Join(t.TempDir(), "routes.json")
 	var out bytes.Buffer
-	err := deliverUpstreamRoutes(context.Background(), &out, testUpstream, cdsTarget{namespace: "c8s-system", service: "c8s-cds", port: 8443}, nil)
-	if err == nil || !strings.Contains(err.Error(), "unable to forward") || !strings.Contains(err.Error(), "add the route as printed above") {
-		t.Fatalf("deliverUpstreamRoutes() = %v, want the port-forward failure and the fallback", err)
+	digest, err := deliverUpstreamRoutes(context.Background(), &out, testUpstream, "https://127.0.0.1:1", nil)
+	if err == nil || !strings.Contains(err.Error(), "add the route as printed above") {
+		t.Fatalf("deliverUpstreamRoutes() = %v, want the unreachable CDS and the fallback", err)
+	}
+	if digest != "" {
+		t.Errorf("deliverUpstreamRoutes() digest = %q, want none: CDS stores no manifest", digest)
 	}
 	b, err := os.ReadFile(installRoutesOut)
 	if err != nil {
@@ -698,6 +705,70 @@ func TestDeliverUpstreamRoutesKeepsTheManifest(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "c8s routes add ") || !strings.Contains(out.String(), "c8s routes put "+installRoutesOut) {
 		t.Fatalf("output lacks the add and put commands:\n%s", out.String())
+	}
+}
+
+// The digest install hands a client names the bytes CDS stored, not another
+// encoding of the same routes.
+func TestPutUpstreamRoutesPinsTheStoredBytes(t *testing.T) {
+	resetCLIState(t)
+	var stored []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		stored, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(srv.Close)
+	c, err := routesclient.New(srv.URL, srv.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer := authorizerFunc(func(string, string, []byte) (string, error) { return "Bearer x", nil })
+
+	_, pin, err := putUpstreamRoutes(context.Background(), io.Discard, c, signer, testUpstream)
+	if err != nil {
+		t.Fatalf("putUpstreamRoutes() = %v", err)
+	}
+	digest := pkgroutes.Digest(stored)
+	if want := hex.EncodeToString(digest[:]); pin != want {
+		t.Errorf("pin = %q, want the stored bytes' digest %q", pin, want)
+	}
+}
+
+// A revision staged for later leaves the router on the manifest it applied, so
+// install hands a client no digest to pin.
+func TestPutUpstreamRoutesStagedRevisionPinsNothing(t *testing.T) {
+	staged, err := testUpstream.apply(&pkgroutes.Manifest{MaxAge: time.Hour, NotBefore: time.Now().Add(time.Hour)}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	env, pub := signedEnvelope(t, staged)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(env)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(srv.Close)
+	c, err := routesclient.New(srv.URL, srv.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	resetCLIState(t)
+	installOperatorKeys = pub
+	signer := authorizerFunc(func(string, string, []byte) (string, error) { return "Bearer x", nil })
+
+	_, pin, err := putUpstreamRoutes(context.Background(), io.Discard, c, signer, testUpstream)
+	if err != nil {
+		t.Fatalf("putUpstreamRoutes() = %v", err)
+	}
+	if pin != "" {
+		t.Errorf("pin = %q, want none while the revision is staged", pin)
 	}
 }
 

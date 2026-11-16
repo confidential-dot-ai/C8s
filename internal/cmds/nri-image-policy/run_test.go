@@ -23,9 +23,12 @@ import (
 	"github.com/containerd/nri/pkg/stub"
 
 	"github.com/confidential-dot-ai/c8s/internal/audit"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	ctrdresolver "github.com/confidential-dot-ai/c8s/internal/containerd"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 // bindDeadResolver points the plugin at a real *ctrdresolver.Resolver on a socket
@@ -95,9 +98,8 @@ func TestRemoveContainer_EvictsFromInventory(t *testing.T) {
 	}
 }
 
-func TestConfigure_InventoryAddsRemoveContainerMask(t *testing.T) {
+func TestConfigureEventMask(t *testing.T) {
 	p := newTestPlugin(&config{Policy: policyConfig{Mode: ModeFailClosed}})
-	p.inventory = newAdmissionInventory(t.TempDir())
 
 	mask, err := p.Configure(context.Background(), "", "containerd", "1.7")
 	if err != nil {
@@ -109,9 +111,9 @@ func TestConfigure_InventoryAddsRemoveContainerMask(t *testing.T) {
 	want.Set(api.Event_VALIDATE_CONTAINER_ADJUSTMENT)
 	want.Set(api.Event_STOP_CONTAINER)
 	want.Set(api.Event_REMOVE_CONTAINER)
-	// The inventory also needs the pod-sandbox lifecycle for its sandbox set.
 	want.Set(api.Event_RUN_POD_SANDBOX)
 	want.Set(api.Event_REMOVE_POD_SANDBOX)
+	want.Set(api.Event_UPDATE_CONTAINER)
 	if mask != want {
 		t.Fatalf("mask = %v, want %v", mask, want)
 	}
@@ -178,7 +180,7 @@ func writeConfigYAML(t *testing.T, yaml string) string {
 func runWithDeadline(t *testing.T, timeout time.Duration, args []string) error {
 	t.Helper()
 	done := make(chan error, 1)
-	go func() { done <- Run(args) }()
+	go func() { done <- Run(t.Context(), args) }()
 	select {
 	case err := <-done:
 		return err
@@ -216,7 +218,7 @@ policy:
   enforce_existing: false
 logging:
   level: error
-`, dir, dir, pushDigestA)
+`+meshYAML, dir, dir, pushDigestA)
 }
 
 // --- Run: startup plumbing --------------------------------------------------
@@ -227,6 +229,76 @@ func TestRun_MissingConfigFileErrors(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "load config") {
 		t.Fatalf("err = %v, want a load-config failure", err)
+	}
+}
+
+// The daemon and every helper verb take flags only, so a mistyped verb or a
+// stray word is refused instead of ignored.
+func TestRunRefusesAWordThatIsNotAFlag(t *testing.T) {
+	absent := filepath.Join(t.TempDir(), "absent.yaml")
+	running := fakeProc(t, kubeadmTree)
+	for _, tc := range []struct {
+		name      string
+		args      []string
+		firstWord string
+		status    int
+	}{
+		{
+			name:      "a mistyped verb",
+			args:      []string{"bogus-verb", "--config", absent},
+			firstWord: "bogus-verb",
+			status:    1,
+		},
+		{
+			name:      "a word after the daemon's flags",
+			args:      []string{"--config", absent, "extra", "more"},
+			firstWord: "extra",
+			status:    1,
+		},
+		{
+			name:      "a word after check-config's flags",
+			args:      []string{checkConfigVerb, "--config=" + absent, "extra", "more"},
+			firstWord: "extra",
+			status:    1,
+		},
+		{
+			name:      "a word in place of check-containerd-config's flags",
+			args:      []string{checkContainerdConfigVerb, "extra", "more"},
+			firstWord: "extra",
+			status:    1,
+		},
+		{
+			name:      "a word after plugin-ready's flags",
+			args:      []string{pluginReadyVerb, "--check", "--plugin-path", testPluginPath, "--proc-root", running, "extra", "more"},
+			firstWord: "extra",
+			status:    1,
+		},
+		{
+			name:      "a word after plugin-running's flags",
+			args:      []string{pluginRunningVerb, "--proc-root=" + running, "extra", "more"},
+			firstWord: "extra",
+			status:    pluginUnknownStatus,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := runWithDeadline(t, 10*time.Second, tc.args)
+			want := fmt.Sprintf("unknown command %q", tc.firstWord)
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("Run(%q) = %v, want an error containing %s", tc.args, err, want)
+			}
+			if got := cmdsutil.ExitStatus(err); got != tc.status {
+				t.Errorf("Run(%q) exits %d, want %d", tc.args, got, tc.status)
+			}
+		})
+	}
+}
+
+// The removers read 1 as "not running", so an argv plugin-running cannot parse
+// answers unknown, which they count as running.
+func TestRunPluginRunningAnswersUnknownToAnUnknownFlag(t *testing.T) {
+	err := Run(t.Context(), []string{pluginRunningVerb, "--bogus-flag"})
+	if got := cmdsutil.ExitStatus(err); got != pluginUnknownStatus {
+		t.Fatalf("plugin-running --bogus-flag = %v (status %d), want status %d", err, got, pluginUnknownStatus)
 	}
 }
 
@@ -270,7 +342,7 @@ policy:
   enforce_existing: false
 logging:
   level: error
-`, dir, pushDigestA)
+`+meshYAML, dir, pushDigestA)
 	err := runWithDeadline(t, 10*time.Second, []string{"-config", writeConfigYAML(t, cfgYAML)})
 	if err == nil || !strings.Contains(err.Error(), "start health server") {
 		t.Fatalf("err = %v, want a health server start failure on the config address", err)
@@ -282,6 +354,16 @@ logging:
 func TestRun_WorkloadClaimsListenFailureSurfaces(t *testing.T) {
 	t.Setenv("NRI_PLUGIN_NAME", "")
 	dir := t.TempDir()
+	// A directory where the socket belongs: the node can still hand an
+	// injected client its endpoint, and only the listen fails.
+	if err := os.WriteFile(filepath.Join(dir, NodeIPFile), []byte("10.0.0.7\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "cds-address"), []byte("10.9.9.9:8443\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	occupySocketPath(t, dir)
+	renderInTempDir(t)
 	cfgYAML := fmt.Sprintf(`
 plugin:
   health_addr: unix://%s/health.sock
@@ -298,17 +380,36 @@ allowlist:
             image: image-a
             command: {policy: any}
             args: {policy: any}
+  pull:
+    cds_address_file: %s/cds-address
+    attestation_api_url: http://127.0.0.1:1
+    cds_measurements_config: %s
 policy:
   mode: fail-closed
   enforce_existing: false
 workload_claims:
-  socket_dir: %s/absent/deeper
+  socket_dir: %s
 logging:
   level: error
-`, dir, dir, pushDigestA, dir)
+`+meshYAML, dir, dir, pushDigestA, dir, testCDSPinFile(t), dir)
 	err := runWithDeadline(t, 10*time.Second, []string{"-config", writeConfigYAML(t, cfgYAML)})
-	if err == nil || !strings.Contains(err.Error(), "start admission inventory") {
-		t.Fatalf("err = %v, want an admission-inventory start failure", err)
+	if err == nil || !strings.Contains(err.Error(), "start admission inventory") || !errors.Is(err, syscall.EADDRINUSE) {
+		t.Fatalf("err = %v, want an admission-inventory listen failure", err)
+	}
+}
+
+// occupySocketPath puts a non-empty directory where the inventory's socket
+// belongs, so the listen fails and nothing else does. An empty one would not
+// do: the listener unlinks whatever is at the path first, and os.Remove takes
+// an empty directory.
+func occupySocketPath(t *testing.T, socketDir string) {
+	t.Helper()
+	dir := filepath.Join(socketDir, workloadclaims.SocketName)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "occupied"), nil, 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -345,13 +446,13 @@ allowlist:
   pull:
     url: https://127.0.0.1:1/
     attestation_api_url: http://127.0.0.1:1
-    cds_measurements: ["%s"]
+    cds_measurements_config: %s
 policy:
   mode: fail-closed
   enforce_existing: false
 logging:
   level: error
-`, dir, dir, pushDigestA, strings.Repeat("ab", 48))
+`+meshYAML, dir, dir, pushDigestA, testCDSPinFile(t))
 	err := runWithDeadline(t, 20*time.Second, []string{"-config", writeConfigYAML(t, cfgYAML)})
 	if !errors.Is(err, errPluginDied) {
 		t.Fatalf("err = %v, want errPluginDied", err)
@@ -408,7 +509,7 @@ allowlist:
   pull:
     url: https://%s/
     attestation_api_url: %s
-    cds_measurements: ["%s"]
+    cds_measurements_config: %s
     interval: 30s
     timeout: 300ms
 policy:
@@ -416,7 +517,7 @@ policy:
   enforce_existing: false
 logging:
   level: error
-`, dir, dir, pushDigestA, stalledCDS, stalledAttestation.URL, strings.Repeat("ab", 48))
+`+meshYAML, dir, dir, pushDigestA, stalledCDS, stalledAttestation.URL, testCDSPinFile(t))
 
 	// Hand the stub a connected socket so the plugin cannot die while the pull
 	// is running: without it the NRI dial fails instantly, pullInitial's first
@@ -459,13 +560,18 @@ func holdNRISocket(t *testing.T) {
 
 // --- allowlistPullHTTPClient ------------------------------------------------
 
-func TestAllowlistPullHTTPClient_ValidMeasurements(t *testing.T) {
+func TestAllowlistPullHTTPClient_ValidPin(t *testing.T) {
 	timeout := 7 * time.Second
-	client, err := allowlistPullHTTPClient(pullConfig{
-		CDSMeasurements:   []string{strings.Repeat("ab", 48)},
-		AttestationApiURL: "http://127.0.0.1:30840",
-		Timeout:           timeout,
-	})
+	pulled := pullConfig{
+		CDSMeasurementsConfig: testCDSPinFile(t),
+		AttestationApiURL:     "http://127.0.0.1:30840",
+		Timeout:               timeout,
+	}
+	set, err := pulled.policySet()
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := allowlistPullHTTPClient(pulled, armtls.FixedPins(set), testClusterDNS)
 	if err != nil {
 		t.Fatalf("allowlistPullHTTPClient: %v", err)
 	}
@@ -474,35 +580,15 @@ func TestAllowlistPullHTTPClient_ValidMeasurements(t *testing.T) {
 	}
 }
 
-// The accept-any-measurement warning is a security signal: it must fire
-// exactly when no measurement is pinned.
-func TestAllowlistPullHTTPClient_WarnsOnlyWithoutPins(t *testing.T) {
-	const warning = "accepts any armTLS-attested CDS measurement"
-	var buf bytes.Buffer
-	orig := slog.Default()
-	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
-	defer slog.SetDefault(orig)
-
-	if _, err := allowlistPullHTTPClient(pullConfig{
-		CDSMeasurements:   []string{strings.Repeat("ab", 48)},
+// The plugin pulls its allowlist from a pinned CDS: with no pin document the
+// node has no pin source, so no client is built against any attested peer.
+func TestTheNodePinSourceRefusesWithoutPins(t *testing.T) {
+	_, _, err := pullConfig{
 		AttestationApiURL: "http://127.0.0.1:30840",
 		Timeout:           time.Second,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(buf.String(), warning) {
-		t.Fatal("pinned measurements must not warn about accepting any measurement")
-	}
-
-	buf.Reset()
-	if _, err := allowlistPullHTTPClient(pullConfig{
-		AttestationApiURL: "http://127.0.0.1:30840",
-		Timeout:           time.Second,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(buf.String(), warning) {
-		t.Fatal("missing warning when no measurements are pinned")
+	}.cdsPinSource(discardLogger())
+	if !errors.Is(err, cmdsutil.ErrCDSPinUnbound) {
+		t.Fatalf("err = %v, want errors.Is cmdsutil.ErrCDSPinUnbound", err)
 	}
 }
 
@@ -525,8 +611,9 @@ func TestPullInitial_BacksOffBetweenAttempts(t *testing.T) {
 
 	start := time.Now()
 	_, err := pullInitial(context.Background(), pullArgs{
+		pull:        quietPull(),
 		client:      client,
-		store:       store,
+		target:      nodeTarget{store: store},
 		timeout:     time.Second,
 		pluginErrCh: make(chan error, 1),
 		logger:      discardLogger(),
@@ -560,6 +647,7 @@ func TestNewPlugin_WorkloadClaimsWiring(t *testing.T) {
 			cfg := &config{
 				Policy:         policyConfig{Mode: ModeFailClosed},
 				WorkloadClaims: workloadClaimsConfig{SocketDir: tc.socketDir, ProcRoot: tc.procRoot},
+				Mesh:           meshRoles(),
 			}
 			p, err := newPlugin(cfg, &fakeContainerd{}, store, audit.NewLogger(), discardLogger())
 			if err != nil {
@@ -780,14 +868,14 @@ func TestStartHealthServer_InvalidAddr(t *testing.T) {
 	}
 }
 
-func TestAllowlistPullHTTPClient_InvalidMeasurements(t *testing.T) {
-	_, err := allowlistPullHTTPClient(pullConfig{
-		CDSMeasurements:   []string{"not-hex"},
-		AttestationApiURL: "http://localhost:30840",
-		Timeout:           time.Second,
-	})
+func TestTheNodePinSourceRefusesAnInvalidPin(t *testing.T) {
+	_, _, err := pullConfig{
+		CDSMeasurementsConfig: cdsPinFile(t, `{"schema_version":"1","tee":"sev-snp"}`),
+		AttestationApiURL:     "http://localhost:30840",
+		Timeout:               time.Second,
+	}.cdsPinSource(discardLogger())
 	if err == nil {
-		t.Fatal("expected error for invalid CDS measurements")
+		t.Fatal("expected error for an unparseable CDS pin")
 	}
 }
 
@@ -835,5 +923,37 @@ func TestLogNodeRootLevel(t *testing.T) {
 		if got := buf.String(); tc.want == "" && got != "" || !strings.Contains(got, tc.want) {
 			t.Fatalf("logNodeRoot(enabled=%t, declared=%t) logged %q, want %q", tc.enabled, tc.declared, got, tc.want)
 		}
+	}
+}
+
+func TestCreateSocketDir(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "run", "nri-image-policy")
+	// The umask the chmod has to beat.
+	restore := syscall.Umask(0o077)
+	err := createSocketDir(dir)
+	syscall.Umask(restore)
+	if err != nil {
+		t.Fatalf("createSocketDir: %v", err)
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o711 {
+		t.Errorf("mode = %o, want 711", info.Mode().Perm())
+	}
+
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := createSocketDir(dir); err != nil {
+		t.Fatalf("createSocketDir on an existing directory: %v", err)
+	}
+	if info, err = os.Stat(dir); err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o755 {
+		t.Errorf("mode of an existing directory = %o, want the 755 its owner set", info.Mode().Perm())
 	}
 }

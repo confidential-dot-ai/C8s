@@ -76,15 +76,32 @@ func OpenComponent(c pkgallowlist.Container) (openArgs, openMounts, openEnv bool
 	return c.Args.Policy == pkgallowlist.PolicyAny && !sidecar, c.Mounts.Policy == pkgallowlist.PolicyAny, openEnv
 }
 
+// overrideKey is the GeneratedKey of an operator override, an entry named
+// <image>-<12 hex> as the chart's component shapes are less their policy hash,
+// or "" for any other name. The chart generates no such name, so one in the
+// seed replaces every generated entry for that image digest.
+func overrideKey(name string) string {
+	m := generatedName.FindStringSubmatch(name)
+	if m == nil || m[4] == "" {
+		return ""
+	}
+	return trimBase(m[4]) + "-" + m[5]
+}
+
 // retiredBySeed reports whether a stored entry is one an earlier chart
 // generated and seed replaces: a generated name seed lacks, for an image seed
 // still generates an entry for, that admits a component with open args,
-// mounts or env (the entries before each component shape was pinned). An exact stale
-// shape is kept, since a pod of the previous release may still restart under
-// it; an operator's entry under another name is never touched.
-func retiredBySeed(name string, w pkgallowlist.Workload, seedKeys map[string]bool) bool {
-	if !seedKeys[GeneratedKey(name)] {
+// mounts or env (the entries before each component shape was pinned), or any
+// generated shape of an image the seed overrides (overrideKeys). Otherwise an
+// exact stale shape is kept, since a pod of the previous release may still
+// restart under it; an operator's entry under another name is never touched.
+func retiredBySeed(name string, w pkgallowlist.Workload, seedKeys, overrideKeys map[string]bool) bool {
+	key := GeneratedKey(name)
+	if !seedKeys[key] {
 		return false
+	}
+	if overrideKeys[key] && overrideKey(name) == "" {
+		return true
 	}
 	return slices.ContainsFunc(slices.Concat(w.InitContainers, w.Containers), func(c pkgallowlist.Container) bool {
 		args, mounts, env := OpenComponent(c)

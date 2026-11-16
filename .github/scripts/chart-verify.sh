@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Lint and render the C8s Helm chart for .github/workflows/chart.yml. Runs two
+# Lint and render the C8s cloud chart for actionlint.yml and semver-tag.yml. Runs two
 # checks in sequence (they always ran together, unconditionally):
 #   1. helm lint
 #   2. helm template                       (renders cleanly)
@@ -10,42 +10,66 @@
 # repeated across three near-identical workflow steps.
 #
 # Inputs (env):
-#   CHART_DIR   chart directory to lint/template.
+#   CHART_DIR   chart directory to lint/template, once per stock values file.
 
 set -euo pipefail
 
 : "${CHART_DIR:?CHART_DIR must be set}"
 
+# The CDS this release names: a VM outside the cluster, pinned by a document
+# the operator passes as a file.
+cds_pin=$(mktemp)
+trap 'rm -f "$cds_pin"' EXIT
+cat > "$cds_pin" <<'CDS_PIN'
+{
+  "schema_version": "2",
+  "tee": "sev-snp",
+  "measurements": [
+    {
+      "name": "cds",
+      "measurement": "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001",
+      "launch_file": "clusterID: ci\n"
+    }
+  ]
+}
+CDS_PIN
+
 # Shared --set flags for every check below. The digests are well-formed but
 # arbitrary sha256 placeholders (lint/template only need them to parse).
 common_set=(
   --set image.tag=ci
-  # The default install pins no CDS, which the router refuses without this.
-  --set router.routing.allowUnpinnedCDS=true
   --set attestationApi.image.tag=ci
-  --set cds.image.tag=ci
   --set armtlsMesh.image.tag=ci
   --set nriImagePolicy.image.tag=ci
   --set nriImagePolicy.image.digest=sha256:aaaa000000000000000000000000000000000000000000000000000000000000
-  --set cds.image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000001
-  # The default policy mode is fail-closed, which requires every digest-pinned
-  # C8s component to be covered in the allowlist floor or the plugin would deny
-  # it on its own node. deriveComponents auto-covers the C8s images from their
-  # digests (what `c8s install --resolve-digests` turns on) — the representative
-  # way to render a valid fail-closed config without hand-listing CI placeholders.
-  --set nriImagePolicy.bootstrapAllowlist.deriveComponents=true
+  # The chart refuses to render a release that names no CDS.
+  --set-string cds.address=10.9.9.9:8443
+  --set-file "cds.measurementsConfig=$cds_pin"
+  # A mesh policy needs the resolver a member pod may reach, and the router's
+  # egress exception needs this cluster's pod and Service ranges. kind's
+  # cluster DNS and the kubeadm defaults are the representative values.
+  --set-string nriImagePolicy.mesh.resolver=10.96.0.10
+  --set 'nriImagePolicy.mesh.clusterRanges={10.244.0.0/16,10.96.0.0/12}'
 )
 
-echo "::group::helm lint"
-helm lint "$CHART_DIR" "${common_set[@]}"
-echo "::endgroup::"
+# Each stock values file sets the platform keys the chart requires.
+shopt -s nullglob
+stocks=("$CHART_DIR"/values-*.yaml)
+[ ${#stocks[@]} -gt 0 ] || { echo "$CHART_DIR holds no values-<platform>.yaml to render" >&2; exit 1; }
 
-# --kube-version: the chart's kubeVersion floor (1.30) is above helm 3.14's
-# default simulated capability (1.29), so template needs it pinned explicitly.
-echo "::group::helm template"
-helm template c8s "$CHART_DIR" \
-  --kube-version v1.30.0 \
-  --namespace c8s-system \
-  "${common_set[@]}" \
-  > /dev/null
-echo "::endgroup::"
+for stock in "${stocks[@]}"; do
+  echo "::group::helm lint -f ${stock##*/}"
+  helm lint "$CHART_DIR" -f "$stock" "${common_set[@]}"
+  echo "::endgroup::"
+
+  # --kube-version: the chart's kubeVersion floor (1.30) is above helm 3.14's
+  # default simulated capability (1.29), so template needs it pinned explicitly.
+  echo "::group::helm template -f ${stock##*/}"
+  helm template c8s "$CHART_DIR" \
+    --kube-version v1.30.0 \
+    --namespace c8s-system \
+    -f "$stock" \
+    "${common_set[@]}" \
+    > /dev/null
+  echo "::endgroup::"
+done

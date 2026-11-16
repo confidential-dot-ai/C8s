@@ -1,0 +1,22 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "router.fullname" . }}
+  namespace: {{ include "c8s.routerMeshNamespace" . }}
+  labels:
+    {{- include "router.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    {{- /* Two pods on a node would collide on nginx's host ports; on a
+           single worker a surge pod could never schedule. */}}
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "router.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "router.selectorLabels" . | nindent 8 }}
+    spec:
+{{- include "router.podSpec" . | nindent 6 }}

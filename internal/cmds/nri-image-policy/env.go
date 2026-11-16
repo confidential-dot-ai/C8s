@@ -2,6 +2,7 @@ package nriimagepolicy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -16,19 +17,124 @@ import (
 // StartContainer notification, a failed/disconnected validator rejects creation.
 // Together with containerd's required_plugins configuration this prevents a
 // plugin disconnect between creation and start from bypassing launch admission.
-func (p *plugin) ValidateContainerAdjustment(ctx context.Context, req *api.ValidateContainerAdjustmentRequest) error {
+//
+// A refused creation releases the container's fs-verity staging.
+func (p *plugin) ValidateContainerAdjustment(ctx context.Context, req *api.ValidateContainerAdjustmentRequest) (err error) {
+	defer func() {
+		if err != nil {
+			releaseVerifiedMounts(p.logger, req.GetContainer().GetId())
+		}
+	}()
+	defer p.cvm().lockAdmission()()
+	if err := p.cvm().refuseLapsedRuntime(); err != nil {
+		return err
+	}
 	if req.GetContainer() == nil || req.GetPod() == nil {
 		return fmt.Errorf("missing container or sandbox in NRI validation")
 	}
-	ctr, env := adjustedLaunchContainer(req)
-	verdict, reason := p.checkContainerObserved(ctx, p.cfg, req.GetPod(), ctr, ctr.GetAnnotations()[annotationImageName], launchFinal, env, adjustedMounts(req, ctr, p.cfg.WorkloadClaims.SocketDir))
-	if verdict == verdictDeny && p.cfg.Policy.Mode != ModeAudit {
-		releaseVerifiedMounts(p.logger, ctr.GetId())
-		return fmt.Errorf("%s", reason)
+	if err := refuseSourceEdit(req.GetAdjust()); err != nil {
+		return p.denyContainerCreation(req.GetPod().GetId(), req.GetContainer().GetName(), err)
 	}
+	ctr, env := adjustedLaunchContainer(req)
+	imageRef, err := p.cvm().imageOf(req.GetPod(), ctr)
+	if err != nil {
+		return p.denyContainerCreation(req.GetPod().GetId(), ctr.GetName(), err)
+	}
+	observed := observedContainer{
+		pod:      req.GetPod(),
+		ctr:      ctr,
+		imageRef: imageRef,
+		env:      env,
+		mounts:   p.adjustedMounts(req, ctr),
+	}
+	// The gate runs ahead of the admission check and independently of
+	// policy.mode: a protected pod's container runs only once it is verified.
+	if err := p.gateMesh(ctx, req, observed); err != nil {
+		// A pre-existing pod recovery has not yet reached is off the gate's
+		// record: refuse the create, but transiently, so the retry after
+		// recovery is not met by a denial recorded for the pod's life. A
+		// sandbox still off the record once recovery has run is unknown, and
+		// its refusal stands.
+		if errors.Is(err, errSandboxOffRecord) && !p.mesh.recoveryDone() {
+			return err
+		}
+		return p.denyContainer(req.GetPod().GetId(), err)
+	}
+	if err := p.unpinnedStaticPod(ctx, p.cfg, observed); err != nil {
+		return p.denyContainerCreation(req.GetPod().GetId(), ctr.GetName(), err)
+	}
+	verdict, reason := p.checkContainerObserved(ctx, p.cfg, observed, launchFinal)
+	if verdict == verdictDeny && p.cfg.Policy.Mode != ModeAudit {
+		return p.denyContainerCreation(req.GetPod().GetId(), ctr.GetName(), fmt.Errorf("%s", reason))
+	}
+	p.noteCapabilityGrant(ctx, observed)
 	// No inventory record here: later validators can still reject creation, and
 	// CDI transformations under an any policy have not happened yet.
 	return nil
+}
+
+// noteCapabilityGrant records what the allowlists declare for this launch, for
+// the runtime wrapper to hold the container's create to (capabilitygrants.go).
+// The record belongs to this hook: a validator that does not answer fails the
+// create, and the wrapper reads the record before the start check runs.
+func (p *plugin) noteCapabilityGrant(ctx context.Context, observed observedContainer) {
+	launch := p.observedLaunch(ctx, observed)
+	id := observed.ctr.GetId()
+	if err := p.capGrants.note(id, p.policy.declaredCapabilities(launch)); err != nil {
+		p.logger.Error("cannot record the container's capability grant; the runtime wrapper refuses it every capability beyond the node's default set", "container", id, "error", err)
+	}
+}
+
+// refuseSourceEdit refuses an NRI edit setting or removing the kubelet's
+// static pod mark, which c8s-runc's floor reads from the bundle.
+func refuseSourceEdit(adjust *api.ContainerAdjustment) error {
+	for key := range adjust.GetAnnotations() {
+		if name, _ := api.IsMarkedForRemoval(key); name == configSourceAnnotation {
+			return fmt.Errorf("an NRI plugin edits the %s annotation", configSourceAnnotation)
+		}
+	}
+	return nil
+}
+
+// unpinnedStaticPod refuses, on a worker, a static pod's container whose launch
+// no base entry pins: c8s-runc's floor leaves a static pod to its template.
+func (p *plugin) unpinnedStaticPod(ctx context.Context, cfg *config, observed observedContainer) error {
+	if !cfg.Worker || !staticPod(observed.pod) {
+		return nil
+	}
+	if p.policy.baseAdmitsPinned(p.observedLaunch(ctx, observed)) {
+		return nil
+	}
+	return errors.New("a worker runs a static pod only on a launch a base entry pins")
+}
+
+// gateMesh applies the mesh startup gate at the one hook whose error always
+// rejects a creation: a create notification can time out and a closed plugin
+// lets the create proceed, while a validator's refusal is the answer.
+func (p *plugin) gateMesh(ctx context.Context, req *api.ValidateContainerAdjustmentRequest, observed observedContainer) error {
+	pod, ctr := observed.pod, observed.ctr
+	if !p.mesh.hosts(pod) {
+		return nil
+	}
+	launch := p.observedLaunch(ctx, observed)
+	adjusted := req.GetAdjust().GetLinux()
+	// The role, and the mount set a declaration pins, are read from the mounts
+	// the pod itself asks for: a credential client of any pod also carries the
+	// binds this enforcer adds (credentialMounts), which no declaration names.
+	declared := launch
+	declared.Mounts = p.observedMounts(pod, req.GetContainer())
+	role, err := p.cvm().adjustmentRole(pod, ctr, launch, declared, observed.mounts)
+	if err != nil {
+		return err
+	}
+	return p.mesh.admit(pod, ctr, gatedContainer{
+		role:         role,
+		mountsPinned: p.bindsRoleMounts(declared, role),
+		digest:       launch.Digest,
+		argv:         launch.Argv,
+		namespaces:   adjusted.GetNamespaces(),
+		netDevices:   adjusted.GetNetDevices(),
+	})
 }
 
 // adjustedLaunchContainer applies the env/argv part of cumulative NRI edits.
@@ -78,7 +184,7 @@ func adjustedLaunchContainer(req *api.ValidateContainerAdjustmentRequest) (*api.
 }
 
 // adjustedMounts observes cumulative edits; deferred CDI leaves evidence unavailable.
-func adjustedMounts(req *api.ValidateContainerAdjustmentRequest, ctr *api.Container, socketDir string) []allowlist.ObservedMount {
+func (p *plugin) adjustedMounts(req *api.ValidateContainerAdjustmentRequest, ctr *api.Container) []allowlist.ObservedMount {
 	if len(req.GetAdjust().GetCDIDevices()) > 0 {
 		return nil
 	}
@@ -94,5 +200,5 @@ func adjustedMounts(req *api.ValidateContainerAdjustmentRequest, ctr *api.Contai
 			ctr.Mounts = append(ctr.Mounts, proto.Clone(edit).(*api.Mount))
 		}
 	}
-	return newMountObserver(nil, socketDir).Observe(req.GetPod(), ctr)
+	return p.observedMounts(req.GetPod(), ctr)
 }

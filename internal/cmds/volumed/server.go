@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -122,6 +123,10 @@ func (s *Server) handleOpen(w http.ResponseWriter, r *http.Request) {
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if dec.Decode(new(any)) != io.EOF {
+		http.Error(w, "invalid trailing data", http.StatusBadRequest)
 		return
 	}
 

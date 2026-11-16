@@ -2,14 +2,17 @@ package allowlist
 
 import (
 	"bytes"
+	"crypto/ecdsa"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
 
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cdsconn"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
@@ -29,7 +32,7 @@ func servingAllowlistCDS(t *testing.T, al *pkgallowlist.Allowlist) (url string, 
 		mu.Unlock()
 		if r.Method == http.MethodGet {
 			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set("ETag", `W/"3"`)
+			w.Header().Set(pkgallowlist.VersionHeader, "3")
 			_, _ = w.Write(body)
 			return
 		}
@@ -54,6 +57,13 @@ func runCmdIn(stdin string, args ...string) (string, string, error) {
 // ctrJSON renders one canonical exact-command container entry.
 func ctrJSON(digest, argv string) string {
 	return `{"digest":"` + digest + `","command":{"policy":"exact","argv":["` + argv + `"]},"args":{"policy":"deny"}}`
+}
+
+// oneContainerEntry is an entry admitting digest under one exact command.
+func oneContainerEntry(t *testing.T, digest string) pkgallowlist.Workload {
+	t.Helper()
+	doc := `{"schema":"c8s.allowlist/v1","workloads":{"e":{"containers":[` + ctrJSON(digest, "/app") + `]}}}`
+	return mustParseAllowlist(t, doc).Workloads["e"]
 }
 
 // mustParseAllowlist parses a JSON allowlist document or fails the test.
@@ -308,31 +318,94 @@ func TestWorkloadEditEditorFails(t *testing.T) {
 	}
 }
 
-// --- workload delete ---
+// TestWorkloadEditKeepsTheEditWhenTheWriteFails proves an edit whose write
+// fails after the editor exits is saved in a file that apply then writes.
+func TestWorkloadEditKeepsTheEditWhenTheWriteFails(t *testing.T) {
+	dir := t.TempDir()
+	keyPath, pub := newOperatorKeypair(t, dir, "op.key")
+	unpinnedKeyPath, _ := newOperatorKeypair(t, dir, "unpinned.key")
+	t.Setenv(cdsconn.EnvOperatorKey, "")
 
-func TestWorkloadDelete(t *testing.T) {
-	url, methods := servingCDS(t, nil)
-	keyPath := writeOperatorKey(t, t.TempDir())
-
-	_, _, err := runCmd("delete", "web", "old", "--url", url, "--insecure", "--operator-key", keyPath)
-	if err != nil {
-		t.Fatalf("workload delete: %v", err)
+	cases := []struct {
+		name     string
+		keyFlags []string
+	}{
+		{name: "CDS refuses the write", keyFlags: []string{"--operator-key", unpinnedKeyPath}},
+		{name: "no operator key to sign it"},
 	}
-	if !contains(*methods, http.MethodDelete) {
-		t.Fatalf("expected a DELETE, saw %v", *methods)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, cds := cdsTestServer(t, []*ecdsa.PublicKey{pub})
+			cds.seedWorkload("web", mustParseAllowlist(t, `{"schema":"c8s.allowlist/v1","workloads":{
+				"web":{"containers":[`+ctrJSON(digA, "/app")+`]}}}`).Workloads["web"])
+			setEditor(t, `{"label":"v2","containers":[`+ctrJSON(digA, "/app")+`]}`)
+
+			args := append([]string{"edit", "web", "--url", srv.URL, "--insecure"}, tc.keyFlags...)
+			_, errOut, err := runCmdIn("y\n", args...)
+			if err == nil {
+				t.Fatal("expected the write to fail")
+			}
+			saved := savedEditPath(t, errOut)
+
+			if _, _, err := runCmd("apply", saved, "--url", srv.URL, "--insecure", "--operator-key", keyPath); err != nil {
+				t.Fatalf("apply the saved edit: %v", err)
+			}
+			if wl, _ := cds.workload("web"); wl.Label != "v2" {
+				t.Fatalf("label after applying the saved edit = %q, want v2", wl.Label)
+			}
+		})
 	}
 }
 
-func TestWorkloadDeleteNotFound(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "no such workload", http.StatusNotFound)
-	}))
-	t.Cleanup(srv.Close)
-	keyPath := writeOperatorKey(t, t.TempDir())
+// savedEditPath returns the file edit's stderr names as holding the edit.
+func savedEditPath(t *testing.T, stderr string) string {
+	t.Helper()
+	m := regexp.MustCompile(`your edit is saved in (\S+);`).FindStringSubmatch(stderr)
+	if m == nil {
+		t.Fatalf("stderr names no saved edit:\n%s", stderr)
+	}
+	t.Cleanup(func() { os.Remove(m[1]) })
+	return m[1]
+}
 
-	_, _, err := runCmd("delete", "ghost", "--url", srv.URL, "--insecure", "--operator-key", keyPath)
+// --- workload delete ---
+
+// Every named entry goes in one write, and an entry the command does not name
+// stays.
+func TestWorkloadDelete(t *testing.T) {
+	dir := t.TempDir()
+	keyPath, pub := newOperatorKeypair(t, dir, "op.key")
+	srv, cds := cdsTestServer(t, []*ecdsa.PublicKey{pub})
+	for _, name := range []string{"web", "old", "keep"} {
+		cds.seedWorkload(name, oneContainerEntry(t, digA))
+	}
+
+	if _, _, err := runCmd("delete", "web", "old", "--url", srv.URL, "--insecure", "--operator-key", keyPath); err != nil {
+		t.Fatalf("workload delete: %v", err)
+	}
+	for _, name := range []string{"web", "old"} {
+		if _, ok := cds.workload(name); ok {
+			t.Fatalf("entry %q survived the delete", name)
+		}
+	}
+	if _, ok := cds.workload("keep"); !ok {
+		t.Fatal("an entry the delete did not name was lost")
+	}
+}
+
+// A name the allowlist does not hold stops the whole delete before it writes.
+func TestWorkloadDeleteNotFound(t *testing.T) {
+	dir := t.TempDir()
+	keyPath, pub := newOperatorKeypair(t, dir, "op.key")
+	srv, cds := cdsTestServer(t, []*ecdsa.PublicKey{pub})
+	cds.seedWorkload("web", oneContainerEntry(t, digA))
+
+	_, _, err := runCmd("delete", "web", "ghost", "--url", srv.URL, "--insecure", "--operator-key", keyPath)
 	if err == nil || !strings.Contains(err.Error(), `no workload entry named "ghost"`) {
-		t.Fatalf("expected a mapped 404 error, got %v", err)
+		t.Fatalf("expected the absent name to be refused, got %v", err)
+	}
+	if _, ok := cds.workload("web"); !ok {
+		t.Fatal("the refused delete removed an entry")
 	}
 }
 

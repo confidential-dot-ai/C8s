@@ -91,7 +91,7 @@ func TestBuildProducesDecryptableConcatenation(t *testing.T) {
 	}
 
 	var plain bytes.Buffer
-	if err := Decrypt(&plain, bytes.NewReader(ct), key); err != nil {
+	if err := decrypt(&plain, bytes.NewReader(ct), key); err != nil {
 		t.Fatalf("decrypt: %v", err)
 	}
 	want := append(bytes.Repeat([]byte{0xA5}, f.dataBytes), bytes.Repeat([]byte{0x5A}, f.treeBytes)...)
@@ -125,7 +125,7 @@ func TestBuildEncryptsTreeAsContinuationOfData(t *testing.T) {
 
 	var whole bytes.Buffer
 	plain := append(bytes.Repeat([]byte{0xA5}, f.dataBytes), bytes.Repeat([]byte{0x5A}, f.treeBytes)...)
-	if err := Encrypt(&whole, bytes.NewReader(plain), key); err != nil {
+	if err := encrypt(&whole, bytes.NewReader(plain), key); err != nil {
 		t.Fatalf("encrypt: %v", err)
 	}
 	if !bytes.Equal(ct, whole.Bytes()) {
@@ -317,7 +317,7 @@ func TestBuildMutableProducesSizedDecryptableImage(t *testing.T) {
 	// Every sector is real ciphertext, free space included: the whole image
 	// must decrypt, to the zeroed plaintext the fake left behind.
 	var plain bytes.Buffer
-	if err := Decrypt(&plain, bytes.NewReader(ct), key); err != nil {
+	if err := decrypt(&plain, bytes.NewReader(ct), key); err != nil {
 		t.Fatalf("decrypt: %v", err)
 	}
 	if !bytes.Equal(plain.Bytes(), make([]byte, size)) {

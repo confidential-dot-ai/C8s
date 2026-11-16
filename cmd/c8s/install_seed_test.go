@@ -22,20 +22,32 @@ import (
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
+// chartCDSValues point a rendered release at a placeholder CDS outside the
+// cluster: the chart refuses a release that names none.
+func chartCDSValues() map[string]any {
+	pin := `{"schema_version":"2","tee":"sev-snp","measurements":[{"name":"cds","measurement":"` + strings.Repeat("ab", 48) + `","launch_file":"clusterID: test\n"}]}`
+	return map[string]any{
+		"cds": map[string]any{
+			"address":            "10.9.9.9:8443",
+			"measurementsConfig": pin,
+		},
+	}
+}
+
 // TestSeedWorkloadsMatchesTheChart: the seed install checks adoptions
 // against is the one the chart renders, less its entries that pin args, and in
 // that seed the entry install writes names the adopted pod alone.
 func TestSeedWorkloadsMatchesTheChart(t *testing.T) {
 	if _, err := exec.LookPath("helm"); err != nil {
-		t.Skip("helm not on PATH")
+		t.Fatal("helm CLI not found")
 	}
 	resetCLIState(t)
-	dir, err := extractChart()
+	dir, err := helmchart.ExtractTemp()
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	chart := filepath.Join(dir, helmchart.ChartRoot)
+	chart := filepath.Join(dir, helmchart.CloudChartFSPath)
 	ctx := context.Background()
 	components, err := chartComponents(ctx, chart)
 	if err != nil {
@@ -56,42 +68,44 @@ func TestSeedWorkloadsMatchesTheChart(t *testing.T) {
 			{Name: "tools", Image: "busybox@sha256:" + strings.Repeat("b", 64)},
 		},
 	}}
-	adoptArgs, entries, err := buildWorkloadImageArgs(nil, []adoptedWorkload{{
+	workloadAllowlist, err := buildWorkloadImageValues([]adoptedWorkload{{
 		workloadAdoption: workloadAdoption{cwID: "web", ref: workloadRef{kind: "deployment", name: "web", namespace: "ws"}},
 		template:         tmpl,
 	}}, "", io.Discard, nil)
+	adoptValues, entries := workloadAllowlist.values, workloadAllowlist.entries
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	for _, router := range []bool{true, false} {
-		t.Run(fmt.Sprintf("router.enabled=%t", router), func(t *testing.T) {
-			set := []string{"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true", "--set", fmt.Sprintf("router.enabled=%t", router)}
-			for i, c := range components {
-				set = append(set, "--set-string", fmt.Sprintf("%s.digest=sha256:%064x", c.valuePrefix, i+1))
-			}
-			set, err := appendCvmModeInstallArgs(set, "bare-metal", "sev-snp")
-			if err != nil {
-				t.Fatal(err)
-			}
-			set = append(set, adoptArgs...)
-			values, err := effectiveValues(ctx, chart, set)
-			if err != nil {
-				t.Fatal(err)
-			}
-			model, err := seedWorkloads(values)
-			if err != nil {
-				t.Fatal(err)
-			}
-			rendered := renderedSeed(t, chart, set)
-			checkSeedModel(t, model, rendered)
-			if name, _, err := rendered.MatchWorkload(entries["web"].pod); err != nil || name != "web" {
-				t.Fatalf("rendered seed matches the adopted pod as %q, %v, want web", name, err)
-			}
-			if err := checkAdoptedEntries(entries, values); err != nil {
-				t.Fatalf("checkAdoptedEntries() = %v", err)
-			}
-		})
+	computed := map[string]any{
+		"nriImagePolicy": map[string]any{
+			"mesh": map[string]any{
+				"resolver":      "10.43.0.10",
+				"clusterRanges": []any{"10.42.0.0/16"},
+			},
+		},
+	}
+	for i, c := range components {
+		helmchart.MergeValues(computed, valuesAtPath(c.valuesPath+".digest", fmt.Sprintf("sha256:%064x", i+1)))
+	}
+	helmchart.MergeValues(computed, chartCDSValues())
+	helmchart.MergeValues(computed, adoptValues)
+	valuesFiles := append(orderedValuesFiles(chart, "aks-snp", nil), computedValuesFile(t, computed))
+	values, err := effectiveValues(ctx, chart, valuesFiles)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model, err := seedWorkloads(values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rendered := renderedSeed(t, chart, "-f", valuesFiles[0], "-f", valuesFiles[1])
+	checkSeedModel(t, model, rendered)
+	if name, _, err := rendered.MatchWorkload(entries["web"].pod); err != nil || name != "web" {
+		t.Fatalf("rendered seed matches the adopted pod as %q, %v, want web", name, err)
+	}
+	if err := checkAdoptedEntries(entries, values); err != nil {
+		t.Fatalf("checkAdoptedEntries() = %v", err)
 	}
 }
 
@@ -120,15 +134,12 @@ func checkSeedModel(t *testing.T, model map[string]pkgallowlist.Workload, render
 }
 
 // renderedSeed is the allowlist seed the chart renders with set.
-func renderedSeed(t *testing.T, chart string, set []string) *pkgallowlist.Allowlist {
+func renderedSeed(t *testing.T, chart string, set ...string) *pkgallowlist.Allowlist {
 	t.Helper()
-	args := append([]string{"template", "c8s", chart, "--skip-tests", "--kube-version", "v1.34.5", "--set", "router.routing.allowUnpinnedCDS=true"}, set...)
-	out, err := exec.Command("helm", args...).CombinedOutput()
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
+	args := append([]string{"template", "c8s", chart, "--skip-tests", "--kube-version", "v1.34.5", "--namespace", "c8s-system"}, set...)
+	out := helmRenderOnly(t, args...)
 	var cm corev1.ConfigMap
-	if err := yaml.Unmarshal(nodeImageDocuments(t, out)["ConfigMap/c8s-cds-allowlist-seed"], &cm); err != nil {
+	if err := yaml.Unmarshal(nodeImageDocuments(t, out)["c8s-system/ConfigMap/c8s-allowlist-seed"], &cm); err != nil {
 		t.Fatal(err)
 	}
 	al, err := pkgallowlist.ParseJSON([]byte(cm.Data["allowlist-seed.json"]))

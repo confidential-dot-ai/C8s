@@ -180,7 +180,7 @@ func TestReservedVolumePrefixMustBeMemoryBacked(t *testing.T) {
 			Name:     name,
 			HostPath: &corev1.HostPathVolumeSource{Path: "/tmp/exfil"},
 		}}
-		if err := rejectReservedVolumeVolume(pod); err == nil {
+		if err := rejectReservedVolumeShapes(pod); err == nil {
 			t.Errorf("%s: a hostPath under the reserved prefix was accepted", name)
 		}
 	}
@@ -188,10 +188,10 @@ func TestReservedVolumePrefixMustBeMemoryBacked(t *testing.T) {
 	// The shape the webhook itself injects is fine, as is omitting it.
 	pod := podWithApp()
 	pod.Spec.Volumes = []corev1.Volume{openedVolume("weights")}
-	if err := rejectReservedVolumeVolume(pod); err != nil {
+	if err := rejectReservedVolumeShapes(pod); err != nil {
 		t.Errorf("the injected shape was rejected: %v", err)
 	}
-	if err := rejectReservedVolumeVolume(podWithApp()); err != nil {
+	if err := rejectReservedVolumeShapes(podWithApp()); err != nil {
 		t.Errorf("an absent volume was rejected: %v", err)
 	}
 }
@@ -205,7 +205,7 @@ func TestEphemeralContainerMayNotMountAnOpenedVolume(t *testing.T) {
 		Name:         "debug",
 		VolumeMounts: []corev1.VolumeMount{{Name: volume.KubeVolumeName("weights")}},
 	}}
-	if err := rejectEphemeralReservedMounts(pod); err == nil {
+	if err := rejectEphemeralReach(pod); err == nil {
 		t.Fatal("an ephemeral container mounted an opened volume")
 	}
 }
@@ -215,7 +215,7 @@ func TestEphemeralContainerMayNotTakeTheFetcherName(t *testing.T) {
 	pod.Spec.EphemeralContainers = []corev1.EphemeralContainer{{
 		Name: reservedVolumeContainerName,
 	}}
-	if err := rejectEphemeralReservedMounts(pod); err == nil {
+	if err := rejectEphemeralReach(pod); err == nil {
 		t.Fatal("an ephemeral container took the reserved fetcher name")
 	}
 }
@@ -263,8 +263,6 @@ func TestVolumeDirMustBePinnable(t *testing.T) {
 		{"/run/c8s/volumes", true},
 		{"/mnt/c8s-data-models", true},
 		{"/mnt/c8s-data/../etc", true},
-		{"/mnt/c8s-data/c8s-reload-watch", true},
-		{"/mnt/c8s-data/c8s-reload-watch/models", true},
 	} {
 		inj := &injection{WorkloadID: "api", Volumes: volumesSpec{
 			Specs: []string{"weights=/tenant-a/volumes/weights"},
@@ -283,7 +281,7 @@ func TestVolumeDirMustBePinnable(t *testing.T) {
 func TestVolumesAnnotationRequiresOptIn(t *testing.T) {
 	pod := podWithApp()
 	pod.Annotations = map[string]string{AnnotationVolumes: "weights=/tenant-a/volumes/weights"}
-	if _, err := parseAnnotations(pod); err == nil {
+	if _, err := parseAnnotations(pod, ""); err == nil {
 		t.Fatal("volumes were requested without the workload annotation")
 	}
 }
@@ -295,7 +293,7 @@ func TestVolumesAnnotationParsing(t *testing.T) {
 		AnnotationVolumes:   "weights=/tenant-a/volumes/weights, datasets=/tenant-a/volumes/ds",
 		AnnotationVolumeDir: "/mnt/c8s-data/models",
 	}
-	inj, err := parseAnnotations(pod)
+	inj, err := parseAnnotations(pod, "")
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -333,7 +331,7 @@ func TestOpenedVolumeMediumFollowsTheShape(t *testing.T) {
 	{
 		pod := podWithApp()
 		pod.Spec.Volumes = []corev1.Volume{openedVolume("weights")}
-		if err := rejectReservedVolumeVolume(pod); err != nil {
+		if err := rejectReservedVolumeShapes(pod); err != nil {
 			t.Errorf("the injected shape was rejected: %v", err)
 		}
 	}

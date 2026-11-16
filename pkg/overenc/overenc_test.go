@@ -403,6 +403,7 @@ type channelVectors struct {
 	CADER             string              `json:"ca_der_hex"`
 	Nonce             string              `json:"nonce_hex"`
 	SessionID         string              `json:"session_id_hex"`
+	RouteDigest       string              `json:"route_digest_hex"`
 	TranscriptHash    string              `json:"transcript_hash_hex"`
 	C2SKey            string              `json:"c2s_key_hex"`
 	S2CKey            string              `json:"s2c_key_hex"`
@@ -453,7 +454,7 @@ func TestChannelGoldenVectors(t *testing.T) {
 	}
 
 	th, err := IdentityTranscriptHash(v.FrontDoorMode, ck.EncapsulationKey(), mustHex(t, v.XWingCT),
-		mustHex(t, v.SessionID), mustHex(t, v.Nonce), mustHex(t, v.LeafDER), mustHex(t, v.CADER))
+		mustHex(t, v.SessionID), mustHex(t, v.Nonce), mustHex(t, v.LeafDER), mustHex(t, v.CADER), mustHex(t, v.RouteDigest))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -514,25 +515,37 @@ func TestChannelGoldenVectors(t *testing.T) {
 }
 
 // writeChannelVectors regenerates the vector file. Only the server-side
-// encapsulation draws randomness; everything else is derived.
+// encapsulation draws randomness, so an existing file's seed and ciphertext
+// are kept and a contract change re-derives only what depends on it.
 func writeChannelVectors(t *testing.T) {
 	t.Helper()
 	seed := make([]byte, 32)
-	if _, err := rand.Read(seed); err != nil {
+	var ct, ss []byte
+	if raw, err := os.ReadFile(channelVectorsPath); err == nil {
+		var old channelVectors
+		if err := json.Unmarshal(raw, &old); err != nil {
+			t.Fatal(err)
+		}
+		seed, ct = mustHex(t, old.XWingSeed), mustHex(t, old.XWingCT)
+	} else if _, err := rand.Read(seed); err != nil {
 		t.Fatal(err)
 	}
 	ck, err := NewClientKeyFromSeed(seed)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ct, ss, err := Encapsulate(ck.EncapsulationKey())
-	if err != nil {
+	if ct == nil {
+		if ct, ss, err = Encapsulate(ck.EncapsulationKey()); err != nil {
+			t.Fatal(err)
+		}
+	} else if ss, err = ck.Decapsulate(ct); err != nil {
 		t.Fatal(err)
 	}
 	leafDER, caDER := []byte("leaf-der"), []byte("ca-der")
 	nonce := bytes.Repeat([]byte{0x33}, 32)
 	sessionID := bytes.Repeat([]byte{0x44}, SessionIDBytes)
-	th, err := IdentityTranscriptHash("cds", ck.EncapsulationKey(), ct, sessionID, nonce, leafDER, caDER)
+	routeDigest := bytes.Repeat([]byte{0x55}, RouteDigestBytes)
+	th, err := IdentityTranscriptHash("cds", ck.EncapsulationKey(), ct, sessionID, nonce, leafDER, caDER, routeDigest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -558,7 +571,7 @@ func writeChannelVectors(t *testing.T) {
 		t.Fatal(err)
 	}
 	v := channelVectors{
-		Description:       "c8s attest-pq v1 channel golden vector: X-Wing decapsulation from seed, identity transcript, HKDF schedule, one record per direction. Shared verbatim with c8s-verify-js.",
+		Description:       "c8s attest-pq channel golden vector: X-Wing decapsulation from seed, identity transcript, HKDF schedule, one record per direction. Shared verbatim with c8s-verify-js.",
 		FrontDoorMode:     "cds",
 		XWingSeed:         hex.EncodeToString(seed),
 		XWingEK:           hex.EncodeToString(ck.EncapsulationKey()),
@@ -568,6 +581,7 @@ func writeChannelVectors(t *testing.T) {
 		CADER:             hex.EncodeToString(caDER),
 		Nonce:             hex.EncodeToString(nonce),
 		SessionID:         hex.EncodeToString(sessionID),
+		RouteDigest:       hex.EncodeToString(routeDigest),
 		TranscriptHash:    hex.EncodeToString(th),
 		C2SKey:            hex.EncodeToString(keys.c2sKey),
 		S2CKey:            hex.EncodeToString(keys.s2cKey),

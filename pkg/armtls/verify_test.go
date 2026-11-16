@@ -4,47 +4,18 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"errors"
+	"fmt"
+	"slices"
 	"testing"
+
+	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
+	"github.com/confidential-dot-ai/attestation-go/remote"
 )
 
-// A sandbox-ID pin rests on CDS's signature over the leaf. Neither path that
-// verifies hardware evidence alone can establish that, so both refuse the pin
-// rather than silently ignoring it and reporting success.
-func TestSandboxPinFailsClosedOnEvidenceOnlyPaths(t *testing.T) {
-	policy := &VerifyPolicy{AttestationApiURL: "http://127.0.0.1:1", SandboxID: "abc123"}
-
-	if _, err := VerifyAttestation(nil, &Attestation{Family: TEETypeSEVSNP}, policy, nil); err == nil {
-		t.Fatal("VerifyAttestation accepted a sandbox-ID pin it cannot authenticate")
-	} else if !errors.Is(err, ErrPolicyViolation) {
-		t.Fatalf("err = %v, want ErrPolicyViolation", err)
-	}
-
-	cert := &x509.Certificate{}
-	if _, err := VerifyCert(cert, policy, nil); err == nil {
-		t.Fatal("VerifyCert accepted a sandbox-ID pin it cannot authenticate")
-	}
-}
-
-// A workload pin is CA-vouched exactly like the sandbox ID, so the same two
-// evidence-only paths refuse it rather than silently ignoring it.
-func TestWorkloadPinFailsClosedOnEvidenceOnlyPaths(t *testing.T) {
-	policy := &VerifyPolicy{AttestationApiURL: "http://127.0.0.1:1", WorkloadName: "api"}
-
-	if _, err := VerifyAttestation(nil, &Attestation{Family: TEETypeSEVSNP}, policy, nil); err == nil {
-		t.Fatal("VerifyAttestation accepted a workload pin it cannot authenticate")
-	} else if !errors.Is(err, ErrPolicyViolation) {
-		t.Fatalf("err = %v, want ErrPolicyViolation", err)
-	}
-
-	if _, err := VerifyCert(&x509.Certificate{}, policy, nil); err == nil {
-		t.Fatal("VerifyCert accepted a workload pin it cannot authenticate")
-	}
-}
-
-// Both paths also require an attestation-api: there is no in-process verifier,
+// Both evidence paths require an attestation-api: there is no in-process verifier,
 // so without one they must fail rather than accept unverified evidence.
 func TestVerifyRequiresAttestationApi(t *testing.T) {
-	if _, err := VerifyAttestation(nil, &Attestation{Family: TEETypeSEVSNP}, &VerifyPolicy{}, nil); err == nil {
+	if _, err := VerifyAttestation(nil, &Attestation{Family: TEETypeSEVSNP}, pinnedPolicy(""), nil); err == nil {
 		t.Fatal("VerifyAttestation ran with no attestation-api URL")
 	} else if !errors.Is(err, ErrInvalidReport) {
 		t.Fatalf("err = %v, want ErrInvalidReport", err)
@@ -79,4 +50,84 @@ func certWithSandboxID(t *testing.T, id string) (*x509.Certificate, error) {
 		return nil, err
 	}
 	return &x509.Certificate{Extensions: []pkix.Extension{ext}}, nil
+}
+
+// A guest image is its launch digest plus the registers its platform measures
+// into, which is one table every pin path reads.
+func TestImageRegistersIdentifyAGuestImage(t *testing.T) {
+	if registers, identified := ImageRegisters(teetypes.FamilyTDX); !identified || !slices.Equal(registers, []int{1, 2}) {
+		t.Fatalf("TDX registers = %v (identified %v), want RTMR[1] and RTMR[2]", registers, identified)
+	}
+	if registers, identified := ImageRegisters(teetypes.FamilySNP); !identified || len(registers) != 0 {
+		t.Fatalf("SEV-SNP registers = %v (identified %v), want none", registers, identified)
+	}
+	if _, identified := ImageRegisters(teetypes.FamilyUnknown); identified {
+		t.Fatal("a family with no verification rules identifies a guest image")
+	}
+}
+
+// An evidence refusal is terminal; other statuses and transport failures
+// must not carry a terminal sentinel.
+func TestMapVerifyError(t *testing.T) {
+	sentinels := []error{ErrSignatureInvalid, ErrKeyBinding, ErrPolicyViolation, ErrInvalidReport, ErrUnsupportedTEE}
+	tests := []struct {
+		name string
+		err  error
+		want error // nil: no sentinel
+	}{
+		{"signature invalid", remote.ErrSignatureInvalid, ErrSignatureInvalid},
+		{"report data mismatch", remote.ErrReportDataMismatch, ErrKeyBinding},
+		{"measurement not allowed", remote.ErrMeasurementNotAllowed, ErrPolicyViolation},
+		{"registers not allowed", remote.ErrRegistersNotAllowed, ErrPolicyViolation},
+		{"anchor not allowed", remote.ErrAnchorNotAllowed, ErrPolicyViolation},
+		{"launch file not allowed", remote.ErrLaunchFileNotAllowed, ErrPolicyViolation},
+		{"min TCB not allowed", remote.ErrMinTcbNotAllowed, ErrPolicyViolation},
+		{"PCR not allowed", remote.ErrPCRNotAllowed, ErrPolicyViolation},
+		{"init data mismatch", remote.ErrInitDataMismatch, ErrPolicyViolation},
+		{"platform mismatch", remote.ErrPlatformMismatch, nil},
+		{"unsupported platform", remote.ErrUnsupportedPlatform, ErrUnsupportedTEE},
+		{"invalid launch digest", remote.ErrInvalidLaunchDigest, ErrInvalidReport},
+		{"api 400", &remote.APIError{Status: 400}, ErrInvalidReport},
+		{"api 422", &remote.APIError{Status: 422}, ErrInvalidReport},
+		{"wrapped api 422", fmt.Errorf("verify: %w", &remote.APIError{Status: 422}), ErrInvalidReport},
+		{"api 413", &remote.APIError{Status: 413}, nil},
+		{"api 415", &remote.APIError{Status: 415}, ErrInvalidReport},
+		{"api 401", &remote.APIError{Status: 401}, nil},
+		{"api 403", &remote.APIError{Status: 403}, nil},
+		{"api 404", &remote.APIError{Status: 404}, nil},
+		{"api 405", &remote.APIError{Status: 405}, nil},
+		{"api 408", &remote.APIError{Status: 408}, nil},
+		{"api 429", &remote.APIError{Status: 429}, nil},
+		{"api 503", &remote.APIError{Status: 503}, nil},
+		{"unexpected 422 with body", &remote.UnexpectedError{Status: 422, Text: "bad json"}, nil},
+		{"unexpected 415 with body", &remote.UnexpectedError{Status: 415, Text: "unsupported"}, nil},
+		{"unexpected 400 without body", &remote.UnexpectedError{Status: 400}, nil},
+		{"unexpected 404 with body", &remote.UnexpectedError{Status: 404, Text: "not found"}, nil},
+		{"unexpected 502 with body", &remote.UnexpectedError{Status: 502, Text: "bad gateway"}, nil},
+		{"transport", &remote.RequestError{Err: errors.New("connection refused")}, nil},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := mapVerifyError(TEETypeTDX, tc.err)
+			for _, s := range sentinels {
+				if is := errors.Is(got, s); is != (s == tc.want) {
+					t.Errorf("errors.Is(mapVerifyError(%v), %v) = %t, want %t", tc.err, s, is, !is)
+				}
+			}
+			// Response and transport errors stay reachable for errors.As.
+			if !isRemoteSentinel(tc.err) && !errors.Is(got, tc.err) {
+				t.Errorf("mapVerifyError(%v) = %v, want it to wrap the original error", tc.err, got)
+			}
+		})
+	}
+}
+
+func isRemoteSentinel(err error) bool {
+	for _, s := range []error{remote.ErrSignatureInvalid, remote.ErrReportDataMismatch, remote.ErrMeasurementNotAllowed, remote.ErrRegistersNotAllowed, remote.ErrAnchorNotAllowed, remote.ErrLaunchFileNotAllowed, remote.ErrInvalidLaunchDigest,
+		remote.ErrMinTcbNotAllowed, remote.ErrPCRNotAllowed, remote.ErrInitDataMismatch, remote.ErrPlatformMismatch, remote.ErrUnsupportedPlatform} {
+		if errors.Is(err, s) {
+			return true
+		}
+	}
+	return false
 }

@@ -18,12 +18,11 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/confidential-dot-ai/c8s/internal/readutil"
+	"github.com/confidential-dot-ai/c8s/internal/routerdiscovery"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
-
-// defaultDiscoveryPath is the path the router serves its discovery document on.
-const defaultDiscoveryPath = "/v1/discovery"
 
 // frontDoorObservation is what a discovery gather's live TLS handshake showed
 // about the serving key the front door actually speaks.
@@ -65,9 +64,9 @@ func gatherFromDiscovery(ctx context.Context, base, path, serverName string, tim
 	client := insecureClient(serverName, timeout)
 	var conn *tls.Conn
 	if u.Scheme == "https" {
-		conn, err = dialFrontDoor(ctx, u.Host, serverName, timeout)
+		conn, err = routerdiscovery.DialFrontDoor(ctx, u.Host, serverName, timeout)
 		if err != nil {
-			return nil, err
+			return nil, &connectError{err: fmt.Errorf("dial %s: %w", u.Host, err)}
 		}
 		defer conn.Close()
 		client = singleConnClient(conn, timeout)
@@ -85,30 +84,11 @@ func gatherFromDiscovery(ctx context.Context, base, path, serverName string, tim
 	return evidenceFromDiscovery(data, src, trust, observed)
 }
 
-// dialFrontDoor opens the TLS connection the discovery document is fetched
-// over. PKI is intentionally not verified — the trust anchor is the
-// attestation in the document, checked downstream, and the handshake leaf is
-// compared against the document's attested certificate after the fetch.
-func dialFrontDoor(ctx context.Context, addr, serverName string, timeout time.Duration) (*tls.Conn, error) {
-	dialer := &tls.Dialer{
-		NetDialer: &net.Dialer{Timeout: timeout},
-		Config:    &tls.Config{InsecureSkipVerify: true, ServerName: serverName}, //nolint:gosec
-	}
-	conn, err := dialer.DialContext(ctx, "tcp", addr)
-	if err != nil {
-		return nil, &connectError{err: fmt.Errorf("dial %s: %w", addr, err)}
-	}
-	// tls.Dialer.DialContext always returns a *tls.Conn.
-	return conn.(*tls.Conn), nil
-}
-
 // singleConnClient serves requests over the one dialed connection and never
 // redials: the handshake leaf the gather compares is this connection's, so a
 // second dial could reach a different router replica serving a different cert.
 // Redirects are not followed for the same reason — a non-200, including a
 // redirect, is a fetch failure (connectError).
-// dialFrontDoor + this guard are a sibling of internal/routerdiscovery's
-// dialFrontDoor + newSingleConnClient — port fixes both ways.
 func singleConnClient(conn *tls.Conn, timeout time.Duration) *http.Client {
 	var dialed atomic.Bool
 	return &http.Client{
@@ -129,7 +109,7 @@ func singleConnClient(conn *tls.Conn, timeout time.Duration) *http.Client {
 // raw bytes plus a human-readable source string.
 func fetchDiscoveryDoc(ctx context.Context, client *http.Client, base *url.URL, path string) ([]byte, string, error) {
 	if path == "" {
-		path = defaultDiscoveryPath
+		path = routerdiscovery.DefaultPath
 	}
 	u := *base
 	u.Path = path
@@ -148,7 +128,7 @@ func fetchDiscoveryDoc(ctx context.Context, client *http.Client, base *url.URL, 
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		return nil, "", &connectError{err: fmt.Errorf("GET %s returned %d: %s", u.String(), resp.StatusCode, strings.TrimSpace(string(body)))}
 	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	data, err := readutil.ReadAll(resp.Body, 1<<20)
 	if err != nil {
 		return nil, "", &connectError{err: fmt.Errorf("read discovery: %w", err)}
 	}
@@ -161,15 +141,14 @@ func fetchDiscoveryDoc(ctx context.Context, client *http.Client, base *url.URL, 
 // gets the same body authentication as every other cert-sourced path, and is
 // retained as the evidence leaf so the --mesh-ca / --sandbox-id / --workload
 // pins work against discovery targets too. A CDS-issued (CA-vouched) cert in
-// the document is authenticated by a --mesh-ca chain check, or by the live
-// handshake below; with neither the document is rejected rather than verified
-// against a body nothing signed for (authorizeLeafBody).
+// the document is authenticated by a --mesh-ca chain check; without one the
+// document is rejected rather than verified against a body nothing signed for
+// (authorizeLeafBody).
 //
 // observed is the leaf the target connection's TLS handshake presented (nil
 // when no handshake was made). Byte-identical to the attested cert, the
-// completed handshake proves the peer holds the attestation-bound key — the
-// same possession backstop as the armTLS path — and the verdict may stand on
-// the front door speaking the attested key (applyFrontDoorPolicy).
+// verdict may stand on the front door speaking the attested key
+// (applyFrontDoorPolicy).
 //
 // An unknown public_tls.mode fails closed here — a securityError, so auto
 // mode cannot fall through to the serving cert past a document it cannot
@@ -181,7 +160,7 @@ func evidenceFromDiscovery(data []byte, source string, trust leafTrust, observed
 		return nil, fmt.Errorf("parse discovery document: %w", err)
 	}
 	switch d.PublicTLS.Mode {
-	case "", "cds", "webpki", "acme":
+	case "", types.FrontDoorModeCDS, types.FrontDoorModeWebPKI, types.FrontDoorModeACME:
 	default:
 		return nil, &securityError{err: fmt.Errorf(
 			"unknown public_tls.mode %q in discovery document (this build knows cds, webpki, and acme) — failing closed on a document it cannot classify", d.PublicTLS.Mode)}
@@ -197,10 +176,6 @@ func evidenceFromDiscovery(data []byte, source string, trust leafTrust, observed
 		observedSHA256 = hex.EncodeToString(sum[:])
 		if bytes.Equal(observed.Raw, cert.Raw) {
 			frontDoor = frontDoorAttested
-			// The possession backstop admits the body only where no pinned CA
-			// authenticates it instead: with --mesh-ca the chain check is the
-			// stronger authentication, and authorizeLeafBody reports it.
-			trust.keyProven = trust.meshCA == nil
 		} else {
 			frontDoor = frontDoorOther
 		}
@@ -225,6 +200,7 @@ func evidenceFromDiscovery(data []byte, source string, trust leafTrust, observed
 	return &evidence{
 		platform:            platformOrDefault(d.Attestation.Platform),
 		rawEvidence:         d.Attestation.Evidence,
+		measured:            d.Attestation.RuntimeExtensions,
 		erd:                 keyAnchor(rd),
 		fresh:               false,
 		source:              source,
@@ -233,7 +209,6 @@ func evidenceFromDiscovery(data []byte, source string, trust leafTrust, observed
 		leaf:                cert,
 		leafBody:            body,
 		leafChainVerified:   chainVerified,
-		leafKeyProven:       trust.keyProven,
 		frontDoor:           frontDoor,
 		frontDoorCertSHA256: observedSHA256,
 		sandboxID:           sandboxID,

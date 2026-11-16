@@ -1,0 +1,7 @@
+# The pod network: the bridge template node-services prepare stages with the
+# guest uplink's MTU, and the plugins this profile's sync bakes beside the
+# worker's portmap.
+version = 4
+[plugins."io.containerd.cri.v1.runtime".cni]
+  bin_dirs = ["/opt/cni/bin"]
+  conf_dir = "/run/c8s-pod/cni"

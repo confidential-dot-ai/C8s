@@ -49,6 +49,7 @@ func gatedPlugin(t *testing.T, marker string) (*plugin, *fatalRecorder) {
 func gatedConfig(marker string) *config {
 	return &config{
 		Allowlist: allowlistConfig{Base: anyAllowlist(map[string]string{pushDigestA: "image-a"})},
+		Mesh:      meshRoles(),
 		Policy: policyConfig{
 			Mode:                  ModeFailClosed,
 			EnforceExisting:       true,
@@ -68,6 +69,7 @@ func unpulledPlugin(cfg *config) *plugin {
 		audit:      audit.NewLogger(),
 		logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 		containerd: &fakeContainerd{},
+		mesh:       newMeshGate(*meshRoles(), discardLogger()),
 	}
 	p.boot = newBootGate(cfg, p.logger)
 	return p

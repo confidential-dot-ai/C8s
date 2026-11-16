@@ -2,55 +2,28 @@
 
 package main
 
-import (
-	"os"
-	"path/filepath"
-	"reflect"
-	"strings"
-	"testing"
+import "testing"
 
-	"github.com/confidential-dot-ai/attestation-go/refvalues"
-)
-
-func TestOperatorMeasurementsPolicyPreservesCompleteIdentities(t *testing.T) {
-	path := filepath.Join("..", "..", "internal", "testdata", "node-identities.json")
-	want, err := refvalues.Load(path)
-	if err != nil {
-		t.Fatal(err)
+// A worker control plane runs the operator with nothing but --webhook-host,
+// --get-cert-image and --mesh-image; everything else must already match the
+// worker image and the document c8s worker control-plane render writes.
+func TestOperatorFlagDefaults(t *testing.T) {
+	flagDefaults := map[string]string{
+		"workload-claims-host-dir": "/run/nri-image-policy",
+		"webhook-config-name":      "c8s-pod-injector",
+		"webhook-host":             "",
+		"kubeconfig":               "",
+		"get-cert-image":           "",
+		"mesh-image":               "",
+		"attestation-api-url":      "",
 	}
-	policy, err := operatorMeasurementsPolicy(path, nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := refvalues.Parse([]byte(policy))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(got, want) || !got.HasAnchors() {
-		t.Fatalf("operator lost image/operator-key identities: %+v", got)
-	}
-	for _, flat := range []struct{ digests, rtmrs []string }{
-		{digests: []string{strings.Repeat("ab", 48)}},
-		{rtmrs: []string{"1=" + strings.Repeat("cd", 48)}},
-	} {
-		if _, err := operatorMeasurementsPolicy(path, flat.digests, flat.rtmrs); err == nil {
-			t.Fatal("accepted policy with conflicting flat pins")
+	for name, want := range flagDefaults {
+		flag := operatorCmd.Flags().Lookup(name)
+		if flag == nil {
+			t.Fatalf("no --%s flag registered", name)
 		}
-	}
-	if got, err := operatorMeasurementsPolicy("", []string{strings.Repeat("ab", 48)}, nil); err != nil || got != "" {
-		t.Fatalf("legacy flags require no JSON policy: %q, %v", got, err)
-	}
-}
-
-func TestOperatorMeasurementsPolicyFailsClosed(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "policy.json")
-	if _, err := operatorMeasurementsPolicy(path, nil, nil); err == nil {
-		t.Fatal("accepted missing policy")
-	}
-	if err := os.WriteFile(path, []byte(`{"not_a_policy":true}`), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := operatorMeasurementsPolicy(path, nil, nil); err == nil {
-		t.Fatal("accepted malformed policy")
+		if flag.DefValue != want {
+			t.Errorf("--%s default = %q, want %q", name, flag.DefValue, want)
+		}
 	}
 }

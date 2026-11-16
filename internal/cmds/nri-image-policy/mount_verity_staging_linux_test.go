@@ -239,7 +239,7 @@ func TestUnstagedVerityMountMatchesEntryWithoutProvenance(t *testing.T) {
 	if err := f.validate(t, adjust); err != nil {
 		t.Fatalf("ValidateContainerAdjustment denied a mount the path-only entry admits: %v", err)
 	}
-	mounts := adjustedMounts(&api.ValidateContainerAdjustmentRequest{Pod: f.pod, Container: f.ctr, Adjust: adjust}, f.ctr, "")
+	mounts := f.p.adjustedMounts(&api.ValidateContainerAdjustmentRequest{Pod: f.pod, Container: f.ctr, Adjust: adjust}, f.ctr)
 	if len(mounts) != 1 || mounts[0].Provenance != "" || mounts[0].VerityDigest != "" {
 		t.Fatalf("observed %+v, want no provenance for an unstaged mount", mounts)
 	}
@@ -415,7 +415,7 @@ func TestRestartRestoresStaging(t *testing.T) {
 	if got := registeredMounts(f.ctr.Id); !slices.Equal(got, []string{path}) {
 		t.Fatalf("restored %v, want [%s]", got, path)
 	}
-	observed := newMountObserver(nil, "").Observe(f.pod, f.ctr)
+	observed := newMountObserver(nil, enforcerMounts{}).Observe(f.pod, f.ctr)
 	if len(observed) != 1 || observed[0].Provenance != allowlist.ProvenanceFSVerity || observed[0].VerityDigest != testVerityDigest {
 		t.Fatalf("observed %+v after restart, want fs-verity evidence", observed)
 	}
@@ -753,7 +753,7 @@ func TestNodeRootFileIsNeverStaged(t *testing.T) {
 	if err != nil || adjust != nil || pinned.Load() != 0 {
 		t.Fatalf("CreateContainer = %v, %v after %d pins, want no staging", adjust, err, pinned.Load())
 	}
-	mounts := adjustedMounts(&api.ValidateContainerAdjustmentRequest{Pod: f.pod, Container: f.ctr}, f.ctr, "")
+	mounts := f.p.adjustedMounts(&api.ValidateContainerAdjustmentRequest{Pod: f.pod, Container: f.ctr}, f.ctr)
 	if len(mounts) != 1 || mounts[0].Provenance != allowlist.ProvenanceNodeRoot || mounts[0].VerityDigest != "" {
 		t.Fatalf("observed %+v, want node-root evidence only", mounts)
 	}
@@ -1067,7 +1067,7 @@ func TestNewPluginLeavesStagingAlone(t *testing.T) {
 	if err := os.Mkdir(staged, 0700); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := newPlugin(&config{Policy: policyConfig{Mode: ModeFailClosed}}, &fakeContainerd{}, newPolicyStore(nil), audit.NewLogger(), discardLogger()); err != nil {
+	if _, err := newPlugin(&config{Policy: policyConfig{Mode: ModeFailClosed}, Mesh: meshRoles()}, &fakeContainerd{}, newPolicyStore(nil), audit.NewLogger(), discardLogger()); err != nil {
 		t.Fatal(err)
 	}
 	if !fileExists(staged) {

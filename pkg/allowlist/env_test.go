@@ -198,3 +198,29 @@ func TestObserveLaunchEnvMatchesObserveEnvWithoutDuplicates(t *testing.T) {
 		t.Error("duplicate-free environments must observe identically")
 	}
 }
+
+// An image ENV and a pod env setting the same name to the same value reach the
+// runtime as two entries; either one the process reads gives the same value.
+func TestObserveEnvCollapsesRepeatsWithTheSameValue(t *testing.T) {
+	repeated, err := ObserveEnv([]string{"HOME=/tmp", "PATH=/usr/bin", "HOME=/tmp"})
+	if err != nil {
+		t.Fatalf("same-value repeat refused: %v", err)
+	}
+	once, err := ObserveEnv([]string{"PATH=/usr/bin", "HOME=/tmp"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(repeated, once) {
+		t.Error("a same-value repeat must observe as the variable set once")
+	}
+}
+
+func TestObserveEnvNamesARepeatWithDifferentValues(t *testing.T) {
+	_, err := ObserveEnv([]string{"HOME=/tmp", "HOME=/root-secret"})
+	if err == nil {
+		t.Fatal("a repeat with different values was accepted")
+	}
+	if !strings.Contains(err.Error(), "HOME") || strings.Contains(err.Error(), "/root-secret") || strings.Contains(err.Error(), "/tmp") {
+		t.Errorf("error must name the variable and no value: %q", err)
+	}
+}

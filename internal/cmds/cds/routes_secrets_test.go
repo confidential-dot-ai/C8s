@@ -22,6 +22,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/c8s/pkg/secretbroker"
 )
 
 func secretsRouter(t *testing.T, enabled bool) http.Handler {
@@ -30,11 +31,14 @@ func secretsRouter(t *testing.T, enabled bool) http.Handler {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cs := attestation.NewChallengeStore(time.Minute)
-	secretsCS := attestation.NewChallengeStore(time.Minute)
+	cs := attestation.NewLocalChallenges(time.Minute)
+	secretsCS := attestation.NewLocalChallenges(time.Minute)
+	mesh := testMeshCA(t)
 	deps := dependencies{
-		AttestHandler:    AttestHandler{Challenges: &cs},
+		AttestHandler:    AttestHandler{Challenges: cs},
 		ReadyFn:          func() bool { return true },
+		MeshCA:           mesh,
+		NodeImages:       certifying(),
 		RateLimiter:      limiter,
 		ChallengeLimiter: newTestRateLimiter(t),
 		MaxRequestSize:   65536,
@@ -43,8 +47,8 @@ func secretsRouter(t *testing.T, enabled bool) http.Handler {
 		// A bare handler: routing is what is under test, so every request that
 		// reaches it is refused for want of a client certificate.
 		deps.SecretsHandler = &secrets.Handler{}
-		deps.SecretsChallenges = &secretsCS
-		deps.SecretsOperator = &secrets.OperatorHandler{Store: secrets.NewMemoryStore(8, 7, 64)}
+		deps.SecretsChallenges = secretsCS
+		deps.SecretsOperator = &secrets.OperatorHandler{Store: secrets.NewMemoryStore(8, 7, 64).Local()}
 		deps.SecretsExplain = &secrets.ExplainHandler{}
 	}
 	return newRouter(deps)
@@ -92,38 +96,6 @@ func TestRouter_SecretsUnroutedWhenDisabled(t *testing.T) {
 	}
 }
 
-// The issuance and secrets challenge pools are distinct, so a nonce minted for
-// one endpoint is not redeemable at the other.
-func TestRouter_SecretsChallengePoolIsSeparate(t *testing.T) {
-	limiter, err := issuer.NewIPRateLimiter(rate.Limit(1000), 1000, 100)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cs := attestation.NewChallengeStore(time.Minute)
-	secretsCS := attestation.NewChallengeStore(time.Minute)
-	deps := dependencies{
-		AttestHandler:     AttestHandler{Challenges: &cs},
-		ReadyFn:           func() bool { return true },
-		RateLimiter:       limiter,
-		ChallengeLimiter:  newTestRateLimiter(t),
-		MaxRequestSize:    65536,
-		SecretsHandler:    &secrets.Handler{},
-		SecretsChallenges: &secretsCS,
-		SecretsOperator:   &secrets.OperatorHandler{Store: secrets.NewMemoryStore(8, 7, 64)},
-		SecretsExplain:    &secrets.ExplainHandler{},
-	}
-	_ = newRouter(deps)
-
-	issued := cs.Create()
-	if secretsCS.Consume(issued[:]) {
-		t.Fatal("an issuance challenge was redeemable against the secrets pool")
-	}
-	secretsIssued := secretsCS.Create()
-	if cs.Consume(secretsIssued[:]) {
-		t.Fatal("a secrets challenge was redeemable against the issuance pool")
-	}
-}
-
 // PUT is the operator's door onto the same paths, so it is authorized by the
 // pinned operator key rather than by a mesh leaf and sandbox token. With no
 // authorizer wired, it refuses.
@@ -141,20 +113,23 @@ func TestRouter_SecretsPutUsesTheAllowlistWriteCap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cs := attestation.NewChallengeStore(time.Minute)
-	secretsCS := attestation.NewChallengeStore(time.Minute)
+	cs := attestation.NewLocalChallenges(time.Minute)
+	secretsCS := attestation.NewLocalChallenges(time.Minute)
+	mesh := testMeshCA(t)
 	var seen int
 	deps := dependencies{
-		AttestHandler:     AttestHandler{Challenges: &cs},
+		AttestHandler:     AttestHandler{Challenges: cs},
 		ReadyFn:           func() bool { return true },
+		MeshCA:            mesh,
+		NodeImages:        certifying(),
 		RateLimiter:       limiter,
 		ChallengeLimiter:  newTestRateLimiter(t),
 		MaxRequestSize:    8,
 		SecretsHandler:    &secrets.Handler{},
-		SecretsChallenges: &secretsCS,
+		SecretsChallenges: secretsCS,
 		SecretsExplain:    &secrets.ExplainHandler{},
 		SecretsOperator: &secrets.OperatorHandler{
-			Store:        secrets.NewMemoryStore(8, 7, 4096),
+			Store:        secrets.NewMemoryStore(8, 7, 4096).Local(),
 			MaxBodyBytes: allowlistWriteBodyCap,
 			Authorize:    func(_ *http.Request, body []byte) error { seen = len(body); return nil },
 		},
@@ -231,17 +206,20 @@ func TestRouter_SecretRoutesRateLimitPerSandbox(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cs := attestation.NewChallengeStore(time.Minute)
-	secretsCS := attestation.NewChallengeStore(time.Minute)
+	cs := attestation.NewLocalChallenges(time.Minute)
+	secretsCS := attestation.NewLocalChallenges(time.Minute)
+	mesh := testMeshCA(t)
 	r := newRouter(dependencies{
-		AttestHandler:     AttestHandler{Challenges: &cs},
+		AttestHandler:     AttestHandler{Challenges: cs},
 		ReadyFn:           func() bool { return true },
+		MeshCA:            mesh,
+		NodeImages:        certifying(),
 		RateLimiter:       limiter,
 		ChallengeLimiter:  newTestRateLimiter(t),
 		MaxRequestSize:    65536,
 		SecretsHandler:    &secrets.Handler{},
-		SecretsChallenges: &secretsCS,
-		SecretsOperator:   &secrets.OperatorHandler{Store: secrets.NewMemoryStore(8, 7, 64)},
+		SecretsChallenges: secretsCS,
+		SecretsOperator:   &secrets.OperatorHandler{Store: secrets.NewMemoryStore(8, 7, 64).Local()},
 		SecretsExplain:    &secrets.ExplainHandler{},
 	})
 
@@ -272,5 +250,36 @@ func TestRouter_SecretRoutesRateLimitPerSandbox(t *testing.T) {
 	// The co-tenant on the same address still gets through.
 	if code := send(victim); code == http.StatusTooManyRequests {
 		t.Fatal("one pod exhausted a co-tenant's bucket: the limiter is keyed on the address")
+	}
+}
+
+func TestRouter_PodSecretRouteServedOnlyWithAKMS(t *testing.T) {
+	limiter, err := issuer.NewIPRateLimiter(rate.Limit(1000), 1000, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name    string
+		handler *PodSecretHandler
+		want    int
+	}{
+		{"no KMS", nil, http.StatusNotFound},
+		{"KMS", &PodSecretHandler{}, http.StatusForbidden},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRouter(dependencies{
+				AttestHandler:    AttestHandler{Challenges: attestation.NewLocalChallenges(time.Minute)},
+				ReadyFn:          func() bool { return true },
+				MeshCA:           testMeshCA(t),
+				NodeImages:       certifying(),
+				RateLimiter:      limiter,
+				ChallengeLimiter: newTestRateLimiter(t),
+				MaxRequestSize:   65536,
+				PodSecrets:       tc.handler,
+			})
+			if code := get(t, r, http.MethodPost, secretbroker.PodRoute); code != tc.want {
+				t.Fatalf("POST %s = %d, want %d", secretbroker.PodRoute, code, tc.want)
+			}
+		})
 	}
 }

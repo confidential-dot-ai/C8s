@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -20,7 +19,7 @@ const maxBody = 4096
 // client certificate yet: the client's Finished goes first, so a server that
 // rejects the certificate alerts afterwards, on the first read; only Bytes
 // above zero says the proxy relayed anything. The conformance steps mirror
-// this struct (test/conformance/steps/mesh.go, dialReport).
+// this struct (test/conformance/steps/peerverify.go, dialReport).
 type report struct {
 	TLS    bool   `json:"tls"`
 	Error  string `json:"error"`
@@ -29,17 +28,27 @@ type report struct {
 	Body   string `json:"body"`
 }
 
-// dial connects to the inbound proxy at nodeAddr, presents cert, names dest
-// (internal/cmds/armtlsmesh/proxy.go handleInbound: one "<host:port>\n"
-// header, then the relayed stream) and sends GET /. timeout bounds the
-// whole exchange. Every failure is reported, none returned.
-func dial(ctx context.Context, nodeAddr, dest string, cert tls.Certificate, timeout time.Duration) report {
+// dialTarget is where a dial goes and what it says first. A node inbound
+// proxy takes one "<host:port>\n" destination header before the relayed
+// stream (internal/cmds/armtlsmesh/proxy.go handleInbound); a pod's mesh
+// endpoint reads the destination from the redirect and takes no header, but
+// requires the mesh ALPN. An empty dest writes no header.
+type dialTarget struct {
+	addr       string
+	dest       string
+	nextProtos []string
+}
+
+// dial connects to t.addr, presents cert, names t.dest when set and sends
+// GET /. timeout bounds the whole exchange. Every failure is reported, none
+// returned.
+func dial(ctx context.Context, t dialTarget, cert tls.Certificate, timeout time.Duration) report {
 	var r report
 	deadline := time.Now().Add(timeout)
 	ctx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 
-	raw, err := (&net.Dialer{}).DialContext(ctx, "tcp", nodeAddr)
+	raw, err := (&net.Dialer{}).DialContext(ctx, "tcp", t.addr)
 	if err != nil {
 		r.Error = err.Error()
 		return r
@@ -56,6 +65,7 @@ func dial(ctx context.Context, nodeAddr, dest string, cert tls.Certificate, time
 		// it. Under TLS 1.2 a rejected client certificate would fail the
 		// handshake itself and change the report shape, hence the pin.
 		InsecureSkipVerify: true,
+		NextProtos:         t.nextProtos,
 		GetClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
 			return &cert, nil
 		},
@@ -66,11 +76,17 @@ func dial(ctx context.Context, nodeAddr, dest string, cert tls.Certificate, time
 	}
 	r.TLS = true
 
-	// Header and request in one write; a rejecting server has sent its alert
+	// Header (if any) and request in one write; a rejecting server has sent its alert
 	// by now and the write may fail with EPIPE, but the alert still waits in
 	// the receive buffer, so read regardless. A clean EOF before any byte is
 	// still named, so the report says why nothing came.
-	_, werr := fmt.Fprintf(conn, "%s\nGET / HTTP/1.0\r\nHost: %s\r\nConnection: close\r\n\r\n", dest, dest)
+	var req string
+	host := t.addr
+	if t.dest != "" {
+		req, host = t.dest+"\n", t.dest
+	}
+	req += "GET / HTTP/1.0\r\nHost: " + host + "\r\nConnection: close\r\n\r\n"
+	_, werr := io.WriteString(conn, req)
 	data, rerr := io.ReadAll(conn)
 	if len(data) == 0 && rerr == nil {
 		rerr = io.EOF

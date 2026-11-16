@@ -21,7 +21,7 @@ sentences needs no change in this repo.
 | Variable | Meaning |
 |---|---|
 | `CONFORMANCE_FEATURES` | the directory of `.feature` files to run |
-| `CONFORMANCE_BACKEND` | the backend, `kind` or `metal` |
+| `CONFORMANCE_BACKEND` | the backend, `kind` |
 
 godog's own flags are bound under `--godog.`: `--godog.format=cucumber:report.json`
 writes the report the runner records, `--godog.tags=@area:enforcement` selects.
@@ -36,8 +36,9 @@ run with `kubectl exec -c c8s-cert <pod> -- /c8s secret-probe --cds-url URL
 --attestation-api-url URL --cert FILE --key FILE <action>` inside the injected
 certificate sidecar, it performs one workload secret request with every input
 under the caller's control. It verifies the CDS as the sidecars do, through
-armTLS against the pins it is given; the steps give it the attestation API and
-pins the webhook gave that container. `challenge` fetches a fresh CDS challenge and prints it base64;
+armTLS against the node's CDS pins where the enforcer mounts them, otherwise
+the pins it is given; the steps give it the attestation API and any pins the
+webhook gave that container. `challenge` fetches a fresh CDS challenge and prints it base64;
 `token` redeems a sandbox token for the pod's sandbox from the node's
 inventory socket, bound to the leaf's key and to a given challenge, and prints
 the JSON the Authorization header carries; `request <GET|POST> <path>` sends the
@@ -57,6 +58,23 @@ sidecar's image is the c8s image, with nothing else in it) is a hidden `c8s`
 subcommand; one that is a peer in a pod of its own is an image under
 [`tools/`](tools).
 
+Where a backend cannot exec into a pod whose argv and mounts a scenario pins,
+it reads the pod's files from the pod's log instead. The reporter image
+([`images/reporter`](images/reporter)) is `image_ref`'s model-server with the
+reporter as its `sleep`: it sleeps as asked and, while it does, prints each
+file of the certificate volume but the key, of the secret client's output
+directory, as `c8s-report file <path> <base64>` when it appears or changes, and that
+directory's filesystem type, as `c8s-report fstype <dir> <type>`.
+The tenant-app image ([`images/tenant-app`](images/tenant-app)) is Alpine's
+python with the programs the steps run in a tenant pod on its `PATH`: the
+hello API, the echo API a workload backend serves, and a UDP listener and
+sender. The steps run them by name and pass no program as a string, so a
+backend that can put no file in a pod runs them too.
+[`conformance-images.yml`](../../.github/workflows/conformance-images.yml)
+builds the suite's images on dispatch; `CONFORMANCE_IMAGES` in
+[`common.sh`](backends/common.sh) pins those every backend uses, and a
+backend adds its own.
+
 ## Running
 
 [`run.sh`](run.sh) is what the suite's judge runs as its test command. It sets
@@ -65,13 +83,16 @@ backend down, reading:
 
 | Variable | Meaning |
 |---|---|
-| `CONFORMANCE_BACKEND` | the backend, `kind` or `metal`, plus whatever that backend requires |
+| `CONFORMANCE_BACKEND` | the backend, `kind`, plus whatever it requires |
 | `CONFORMANCE_FEATURES` | the directory of `.feature` files to run |
 | `CONFORMANCE_REPORT` | where to write the Cucumber JSON report |
 | `GODOG_TAGS` | optional tag expression, such as `@area:enforcement` |
 
 It exits with godog's status, so a failed step fails the command; undefined
-and pending steps are the judge's backlog and do not.
+and pending steps are the judge's backlog and do not. A failed step carries,
+for each pod the scenario deployed, its containers' states and the logs of
+its `c8s-mesh` endpoint and first container, since the scenario namespace is
+deleted before the cluster's logs are collected.
 
 ## Backends
 
@@ -84,18 +105,22 @@ names a digest, which containers a node's runtime holds for a digest, and a
 Restricted-compatible pod manifest to deploy. It also acts for the operator:
 when a scenario says the plugin has applied the served allowlist, the entries
 it described are written through the backend's signed path, and they are
-undone after the scenario. The steps then poll the allowlist version the
-plugin reports on its health endpoint until it is the served one, within three
-pull intervals of the write; where the backend cannot reach the plugin, or the
-plugin is meant to ignore what is served, they wait two intervals out instead.
+undone after the scenario. A write takes effect on nodes the CDS's node delay
+after it is written, so the steps then wait for the CDS to serve nodes the
+document the write left, and poll the allowlist version the plugin reports on
+its health endpoint until it reaches the version nodes are served it at,
+within the node delay and three pull intervals of the write; where the
+backend cannot reach the plugin, or the plugin is meant to ignore what is
+served, they wait the node delay and two intervals out instead. A step that
+starts a plugin first waits for the write to take effect on nodes.
 
 A backend also acts on the node and the CDS where a scenario asks: it stops
 and starts a node's plugin, makes the CDS unreachable for the plugins' pulls
 and undoes that, and restarts the CDS. Each is undone after the scenario, and
 a plugin is started again wherever the CDS was restarted, since a plugin only
 accepts the versions a restarted CDS serves after a start of its own. The
-mesh is restarted after a CDS restart too: a restarted CDS mints a new mesh
-CA, which only a proxy started after it accepts.
+mesh members a controller owns, such as the router, are recreated too, since
+a member stays bound to the CA key of its first leaf.
 
 Where a scenario is about the CDS's own API, the backend sends the request as
 the scenario says rather than through its signed path: a write with the
@@ -109,39 +134,33 @@ For scenarios about issuance, the backend renders two more pods: one carrying
 a workload ID, whose requester the webhook injects and which the steps watch
 through the files of its certificate volume and its requester's log, and a
 requester the steps drive themselves, a pod that relays HTTP from inside the
-cluster so the CDS sees the pod's own source address, and that can reach the
+cluster to the one address an injected client dials: the CDS is outside the
+cluster, so every client of it has the same one. The
+requester can also reach the
 node's sandbox inventory and local attestation service over the socket
-directory the admission plugin binds into it. The backend also fetches
-evidence over chosen report data (and, where the attestation is mocked, over
-a chosen launch digest), reads the CDS's flags, restarts it with IP SAN
-binding or an inventory address range changed, names a pod's runtime sandbox,
-and runs the operator's verifier as a relying party on a saved leaf.
+directory the admission plugin binds into it. It runs in the namespace the
+mesh exempts where the backend has one (`exempt_namespace`), outside the
+mesh, where the inventory signs no token for it; where the backend has none,
+or once a scenario asks the inventory for a token, it runs in the scenario's
+namespace as a mesh member, the inventory signs for its sandbox, and the
+backend sends its CDS requests from outside the pod (`cds_pod_request`),
+since the node drops a member pod's own TCP to the CDS. The backend also fetches
+evidence over chosen report data, and says whether the CDS checks its
+signature: the steps edit its launch measurement into evidence that does not
+verify, or, where the attestation is mocked, into evidence for another
+launch digest. It reads the CDS's flags, restarts it with IP SAN binding
+changed, names a pod's runtime sandbox, and runs the operator's verifier as a
+relying party on a saved leaf.
 
 For scenarios about the CDS itself, the backend reads its documents and its
 serving certificate as any client would, says what it was started with,
 restarts it with one parameter changed and restores it, stops the local
 attestation service of its node, searches the cluster for private keys and
-performs one issuance against it; `common.sh` lists each function. The kind
-backend reaches the CDS through a port-forward to its pod, so a CDS that is
-not ready, and so has no Service endpoint, is still read.
-
-For scenarios about the armTLS mesh, the backend reads the node's mesh proxy:
-whether it is running, whether a pod address is in the node's interception or
-guard membership, its connection and guard-drop counters (scraped from the
-proxy's health port by a long-lived pod the backend keeps in its own
-namespace, torn down with the backend), its listener ports, the UIDs and
-namespaces it excepts, whether each role presents a CDS-issued leaf, and
-whether its verify set has taken the mesh CA. It renders pods with the options
-the mesh scenarios need (the node's network namespace, a chosen UID, a
-capability, a label, an init container), serves a hello API at an address
-outside the cluster, and blocks the node's local attestation service. Every
-pod it renders may ping: the pod carries the `net.ipv4.ping_group_range`
-sysctl, and the tenant image's ping (Alpine's) uses an ICMP datagram socket
-under it, which the library busybox image's does not. A peer that connects to the inbound
-proxy itself, presenting a certificate the scenario shaped, is
-[`tools/armtls-dial`](tools/armtls-dial/README.md), which the backend builds
-for the node's architecture and the steps copy into a pod of the logical
-image `mesh-dialer`.
+performs one issuance against it; `common.sh` lists each function. The CDS
+runs outside the cluster, pinned to the configuration its launch binds it to,
+so a parameter that configuration carries — the node pins it serves, its
+operator key, the subnets it dials an inventory in — answers unsupported: a
+CDS restarted with one of those changed is a CDS every client refuses.
 
 For scenarios about secret release, the backend sends one request to the CDS
 as the scenario shaped it (`cds_request`: a method, a route, a body, an
@@ -156,22 +175,42 @@ ID that a secrets scenario (one tagged `@area:secrets`) deploys renews its
 leaf every two hours rather than the ten seconds an issuance scenario's pod
 does, so the leaf it obtained stays the one it holds.
 
+Route manifest scenarios write `PUT /routes` through `cds_request`, with an
+`If-Match` header where the scenario names a route digest, and reach the
+router through `router_request` with a `Host` header. Their hosts are logical:
+`app` is a name under the scenario's namespace. A manifest the router is to
+apply also routes a probe host named for its revision to a closed address
+backend, and the steps wait until the probe answers 502, which no earlier
+manifest gives it. The CDS removes no manifest, so after the scenario the
+steps write the one stored before it again, or an empty one, under a later
+revision. A workload backend is a pod of `tenant-app` running
+[`c8s-echo-api`](images/tenant-app/c8s-echo-api) in plaintext behind its mesh endpoint,
+which holds the pod's leaf and terminates the router's armTLS: it answers
+every request with the request target and headers it received.
+
+The Pod CVM sentences drive the operator's provider against a cloud API the
+backend scripts: `cloud_behaviour` sets how it answers, and `cloud_calls` and
+`cloud_instances` are what the steps judge the provider by. The steps create
+these pods themselves, without `pod_manifest`, which pins a pod to a node. On
+kind the cloud API is [`test/mock-cloud`](../mock-cloud), which starts no VM,
+so every scenario ends before a guest is verified.
+
 [`backends/common.sh`](backends/common.sh) states the interface: every
-function, its arguments, what it prints, and the exit status that means "this
-environment cannot express that", which the steps turn into a skip. It also
+function, its arguments, what it prints, and when it answers *unsupported*:
+exit status 77 (`UNSUPPORTED`), meaning "this environment cannot express
+that", which the steps turn into a skip, never a pass. It also
 implements the functions that are the same everywhere. A backend sources it,
 sets `PLATFORM`, defines what differs, and ends with `dispatch "$@"`, which
 rejects unknown names.
 
 | Backend | Environment | Requires |
 |---|---|---|
-| [`kind.sh`](backends/kind.sh) | the kept kind cluster of [`test/integration/cluster/run.sh`](../integration/cluster/run.sh) (`C8S_IT_KEEP=1 C8S_IT_SETUP_ONLY=1`); mocked attestation, node shell via `docker exec`; the mock signs nothing and verifies only at the mock, so `evidence_unsigned` and `relying_party` answer 77 | `C8S_IT_WORKDIR`; `go` for `dialer_bin` |
-| [`metal.sh`](backends/metal.sh) | the attested node image a metal lane booted (`snp-metal-e2e`, `tdx-metal-e2e`), from its `extra-suite` hook; no node shell and no TEE on the harness host, so `image_alias`, `node_containers`, `plugin_stop`, `plugin_start`, `cds_restart`, `cds_restart_with`, `attestation_service_stop`, `private_keys`, `attest_direct`, `pod_sandbox_id` and `evidence` over a chosen launch digest answer 77; the node image holds the seed, so `seed_add` answers 77; the node's own c8s image is out of the harness's reach, so `image_ref secret-client` answers 77, and its scratch is encrypted, so `scratch_encrypted` answers yes; the operator's credential may neither exec, port-forward nor write in the c8s namespace, so the CDS is reached only through the router's allowlist route at `C8S_ALLOWLIST_URL`, `operator_keys` answers yes from the launch, and `cds_request` to any route but the allowlist's, `cds_read` of any document but the allowlist, `cds_plain_url`, `cds_serving_cert`, `cds_block`, `cds_relay_block`, `node_refuses` and their undoing answer 77; `base_declares` answers from the node image's image policy alone, since c8s's component entries pin their entrypoints; `image_entrypoint` and `image_env` answer 77 without `crane`, `write_token` without Go; the node image closes pod exec for every principal, so `pod_exec`, `pod_cert_file`, `requester_request`, `mesh_member` and `mesh_metrics` answer 77; the node image holds the router's nginx configuration, so `router_nginx_conf`, and `router_tls_mode` where a launch file names the mode, answer 77; the router admits one allowlist write a second per client, so a 429 to the harness's writes is waited out; "nginx" is another build of the router's nginx, since the served allowlist pins the router's digest and lint refuses an any-argv entry beside that pin; no external address and no mock, so `external_endpoint` and `attestation_endpoint` answer 77 | `KUBECONFIG`, `C8S_ALLOWLIST_URL`, `C8S_OPERATOR_KEY`, the `c8s` CLI on `PATH`; `go` for the write-token functions and `dialer_bin`, `crane` for `image_entrypoint` and `image_env` |
+| [`kind.sh`](backends/kind.sh) | the kept kind cluster of [`test/integration/cluster/run.sh`](../integration/cluster/run.sh) (`C8S_IT_KEEP=1 C8S_IT_SETUP_ONLY=1`); its CDS is two containers on the kind network, so the backend starts and stops it with `docker`; mocked attestation, node shell via `docker exec`; the mock signs nothing and verifies only at the mock, so `evidence_signed` answers no and `relying_party` unsupported; the Pod CVM provider runs against the harness's mock Cloud | `C8S_IT_WORKDIR` |
 
 The backends source the kind harness's `lib.sh`, render pods with
 `pod-fixture.py`, and name components (the NRI DaemonSet, its socket) that
-change with c8s. The tools under [`tools/`](tools) are built by the backends,
-copied into pods by the steps, and may import c8s packages: they stand in for
+change with c8s. The tools under [`tools/`](tools) are built into the suite's
+images or by the backends, and may import c8s packages: they stand in for
 peers the cluster does not have, not for the steps' judgement. A change to any of those updates the backend in
 the same PR.
 `shellcheck` runs over them and `run.sh` in the node-guest-image lint workflow.
@@ -184,5 +223,4 @@ and `TestFeatures` read is a coordinated change with the suite's judge
 configuration. Adding a step or a backend function is not.
 
 Nothing here runs a scenario in this repo's CI: `make test` compiles the steps
-and `TestFeatures` skips. The suite's own CI runs the steps on kind and on both
-metal lanes.
+and `TestFeatures` skips. The suite's own CI runs the steps on kind.

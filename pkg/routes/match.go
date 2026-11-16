@@ -14,6 +14,7 @@ import (
 // immutable and safe for concurrent use. A nil Table selects nothing.
 type Table struct {
 	hosts    map[string]hostTable
+	patterns map[string]Pattern // by host suffix
 	reserved []string
 }
 
@@ -36,9 +37,12 @@ func Compile(m *Manifest, reserved []string) *Table {
 			panic(fmt.Sprintf("routes: reserved path %q is not normalized", r))
 		}
 	}
-	t := &Table{hosts: map[string]hostTable{}, reserved: slices.Clone(reserved)}
+	t := &Table{hosts: map[string]hostTable{}, patterns: map[string]Pattern{}, reserved: slices.Clone(reserved)}
 	if m == nil {
 		return t
+	}
+	for _, p := range m.Patterns {
+		t.patterns[p.HostSuffix] = p
 	}
 	for name, h := range m.Hosts {
 		ht := hostTable{exact: map[string]Route{}}
@@ -60,7 +64,8 @@ func Compile(m *Manifest, reserved []string) *Table {
 // Select returns the route for the server request r and the URL to forward
 // it to: the normalized path (M4) with r's original query (B6). The caller
 // sets the URL's Scheme and Host; its RequestURI is the upstream request
-// target. Select reports false when no route matches, and the router then
+// target. A route a Pattern gives has an empty Backend.Address, which the
+// caller resolves from Backend.AgentLabel. Select reports false when no route matches, and the router then
 // answers 404 (M5).
 //
 // Select matches r.Host (M1) and the raw path bytes of r.RequestURI, never
@@ -95,9 +100,10 @@ func (t *Table) lookup(host, rawPath string) (Route, string, bool) {
 			return Route{}, "", false // M6
 		}
 	}
-	ht, ok := t.hosts[canonicalHost(host)] // M1
+	host = canonicalHost(host)
+	ht, ok := t.hosts[host] // M1
 	if !ok {
-		return Route{}, "", false
+		return t.pattern(host, path)
 	}
 	if r, ok := ht.exact[path]; ok { // M2 step 1
 		return r, path, true
@@ -108,6 +114,23 @@ func (t *Table) lookup(host, rawPath string) (Route, string, bool) {
 		}
 	}
 	return Route{}, "", false
+}
+
+// pattern selects the route a Pattern gives host: its first label is the
+// agent label, and the rest is the Pattern's host suffix. An exact host in the
+// manifest shadows the Pattern. Whether an agent has the label is the
+// router's to resolve.
+func (t *Table) pattern(host, path string) (Route, string, bool) {
+	label, suffix, ok := strings.Cut(host, ".")
+	p, found := t.patterns[suffix]
+	if !ok || !found || label == "" {
+		return Route{}, "", false
+	}
+	return Route{
+		Path:    "/",
+		Match:   MatchPrefix,
+		Backend: Backend{Workload: p.Workload, AgentLabel: label, AgentPort: p.Port},
+	}, path, true
 }
 
 // prefixMatches implements M3: /admin matches /admin and /admin/users but

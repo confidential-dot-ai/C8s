@@ -5,10 +5,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 
+	"github.com/confidential-dot-ai/c8s/internal/readutil"
 	intsecrets "github.com/confidential-dot-ai/c8s/internal/secrets"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
@@ -58,14 +58,17 @@ func (c client) put(ctx context.Context, path string, value []byte, overwrite bo
 	}
 	defer resp.Body.Close()
 
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	raw, err := readutil.ReadAll(resp.Body, maxResponseBytes)
 	if err != nil {
 		return result{}, fmt.Errorf("read response: %w", err)
 	}
 
+	// A refused write answers 409 with a JSON body; a spent token answers 409
+	// with a plain-text error.
+	refused := resp.StatusCode == http.StatusConflict && strings.HasPrefix(resp.Header.Get("Content-Type"), "application/json")
 	switch {
 	case resp.StatusCode == http.StatusCreated,
-		resp.StatusCode == http.StatusConflict,
+		refused,
 		resp.StatusCode == http.StatusOK && overwrite:
 		var pr intsecrets.PutResponse
 		if err := json.Unmarshal(raw, &pr); err != nil {
@@ -74,7 +77,7 @@ func (c client) put(ctx context.Context, path string, value []byte, overwrite bo
 		return result{
 			Created:  pr.Created,
 			Existing: pr.Existing,
-			Refused:  resp.StatusCode == http.StatusConflict,
+			Refused:  refused,
 		}, nil
 	case resp.StatusCode == http.StatusOK:
 		// 200 answers a replacement. Reading it as anything else would let the
@@ -100,7 +103,7 @@ func (c client) explain(ctx context.Context, sandboxID string, auth authorizer) 
 	}
 	defer resp.Body.Close()
 
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	raw, err := readutil.ReadAll(resp.Body, maxResponseBytes)
 	if err != nil {
 		return out, fmt.Errorf("read response: %w", err)
 	}

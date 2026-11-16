@@ -3,8 +3,10 @@
 package main
 
 import (
+	"bytes"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -73,6 +75,13 @@ func mustNotContainPrefix(t *testing.T, lines []string, prefix string) {
 	}
 }
 
+func mustContainPrefix(t *testing.T, lines []string, prefix string) {
+	t.Helper()
+	if lineIndex(lines, prefix) < 0 {
+		t.Errorf("call log has no %q; got:\n%s", prefix, strings.Join(lines, "\n"))
+	}
+}
+
 // lineIndex returns the index of the first logged line with the prefix, or -1.
 func lineIndex(lines []string, prefix string) int {
 	return slices.IndexFunc(lines, func(l string) bool { return strings.HasPrefix(l, prefix) })
@@ -95,83 +104,89 @@ func writeChart(t *testing.T, values string) string {
 	return dir
 }
 
-// resetCLIState pins every install/uninstall/render-values flag global to its
+// helmRenderOnly runs helm and returns its stdout alone: helm reports the
+// chart's symlinked c8s-lib subchart on stderr, which must stay out of the
+// rendered YAML.
+func helmRenderOnly(t *testing.T, args ...string) []byte {
+	t.Helper()
+	cmd := exec.Command("helm", args...)
+	var diagnostics bytes.Buffer
+	cmd.Stderr = &diagnostics
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("helm %s: %v\n%s", strings.Join(args, " "), err, diagnostics.Bytes())
+	}
+	return out
+}
+
+// resetCLIState pins every install/uninstall flag global to its
 // registered default and restores the prior values afterwards, so rootCmd runs
 // cannot leak state across tests.
 func resetCLIState(t *testing.T) {
 	t.Helper()
 	saved := struct {
-		installNamespace, installRelease, installCvmMode                             string
-		installHardwarePlatform, installImagePullSecret, installImageTag             string
-		installOperatorKeys, installUpstream, renderValuesDistro                     string
-		uninstallNamespace, uninstallRelease                                         string
-		installValues, installWorkloadRefs, installMeasurements                      []string
-		installInventoryCIDRs                                                        []string
-		installWait, installCRDs, installGetCertRunAsNonRoot                         bool
-		installSingleNode, installForce, installResolveDigests, installAttestEnabled bool
-		uninstallWait, uninstallHostSweep, uninstallHostSweepOnly, uninstallForce    bool
-		uninstallDeleteCRDs, uninstallDeleteNamespace, installVolumes                bool
-		installCertFSGroup, installGetCertRunAsUser, installGetCertRunAsGroup        int64
-		installGetCertRenewInterval                                                  time.Duration
-		installOperatorKey, installRoutesOut                                         string
-		installRoutesMaxAge                                                          time.Duration
+		installNamespace, installRelease, installPlatform                         string
+		installImagePullSecret, installChartDir                                   string
+		installOperatorKeys, installUpstream                                      string
+		uninstallNamespace, uninstallRelease                                      string
+		installCDSAddress, installCDSPin, installSeedOut                          string
+		installValues, installWorkloadRefs                                        []string
+		installWait, installForce                                                 bool
+		uninstallWait, uninstallHostSweep, uninstallHostSweepOnly, uninstallForce bool
+		uninstallDeleteCRDs, uninstallDeleteNamespace, installVolumes             bool
+		installOperatorKey, installRoutesOut                                      string
+		installRoutesMaxAge                                                       time.Duration
+		installCDS                                                                *cdsPin
 	}{
-		installNamespace, installRelease, installCvmMode,
-		installHardwarePlatform, installImagePullSecret, installImageTag,
-		installOperatorKeys, installUpstream, renderValuesDistro,
+		installNamespace, installRelease, installPlatform,
+		installImagePullSecret, installChartDir,
+		installOperatorKeys, installUpstream,
 		uninstallNamespace, uninstallRelease,
-		slices.Clone(installValues), slices.Clone(installWorkloadRefs), slices.Clone(installMeasurements),
-		slices.Clone(installInventoryCIDRs),
-		installWait, installCRDs, installGetCertRunAsNonRoot,
-		installSingleNode, installForce, installResolveDigests, installAttestEnabled,
+		installCDSAddress, installCDSPin, installSeedOut,
+		slices.Clone(installValues), slices.Clone(installWorkloadRefs),
+		installWait, installForce,
 		uninstallWait, uninstallHostSweep, uninstallHostSweepOnly, uninstallForce,
 		uninstallDeleteCRDs, uninstallDeleteNamespace, installVolumes,
-		installCertFSGroup, installGetCertRunAsUser, installGetCertRunAsGroup,
-		installGetCertRenewInterval,
 		installOperatorKey, installRoutesOut,
 		installRoutesMaxAge,
+		installCDS,
 	}
 	t.Cleanup(func() {
-		installNamespace, installRelease, installCvmMode = saved.installNamespace, saved.installRelease, saved.installCvmMode
-		installHardwarePlatform, installImagePullSecret, installImageTag = saved.installHardwarePlatform, saved.installImagePullSecret, saved.installImageTag
-		installOperatorKeys, installUpstream, renderValuesDistro = saved.installOperatorKeys, saved.installUpstream, saved.renderValuesDistro
+		installNamespace, installRelease, installPlatform = saved.installNamespace, saved.installRelease, saved.installPlatform
+		installImagePullSecret, installChartDir = saved.installImagePullSecret, saved.installChartDir
+		installOperatorKeys, installUpstream = saved.installOperatorKeys, saved.installUpstream
 		uninstallNamespace, uninstallRelease = saved.uninstallNamespace, saved.uninstallRelease
-		installValues, installWorkloadRefs, installMeasurements = saved.installValues, saved.installWorkloadRefs, saved.installMeasurements
-		installInventoryCIDRs = saved.installInventoryCIDRs
-		installWait, installCRDs, installGetCertRunAsNonRoot = saved.installWait, saved.installCRDs, saved.installGetCertRunAsNonRoot
-		installSingleNode, installForce, installResolveDigests, installAttestEnabled = saved.installSingleNode, saved.installForce, saved.installResolveDigests, saved.installAttestEnabled
+		installCDSAddress, installCDSPin, installSeedOut = saved.installCDSAddress, saved.installCDSPin, saved.installSeedOut
+		installValues, installWorkloadRefs = saved.installValues, saved.installWorkloadRefs
+		installWait, installForce = saved.installWait, saved.installForce
 		uninstallWait, uninstallHostSweep, uninstallHostSweepOnly, uninstallForce = saved.uninstallWait, saved.uninstallHostSweep, saved.uninstallHostSweepOnly, saved.uninstallForce
 		uninstallDeleteCRDs, uninstallDeleteNamespace = saved.uninstallDeleteCRDs, saved.uninstallDeleteNamespace
 		installVolumes = saved.installVolumes
-		installCertFSGroup, installGetCertRunAsUser, installGetCertRunAsGroup = saved.installCertFSGroup, saved.installGetCertRunAsUser, saved.installGetCertRunAsGroup
-		installGetCertRenewInterval = saved.installGetCertRenewInterval
 		installOperatorKey, installRoutesOut, installRoutesMaxAge = saved.installOperatorKey, saved.installRoutesOut, saved.installRoutesMaxAge
+		installCDS = saved.installCDS
 	})
 
 	installNamespace, installRelease = "c8s-system", "c8s"
-	installValues, installWait, installCRDs = nil, true, true
-	installCertFSGroup = 65532
-	installGetCertRenewInterval = 6 * time.Hour
-	installGetCertRunAsUser, installGetCertRunAsGroup, installGetCertRunAsNonRoot = 65532, 65532, true
-	installCvmMode, installHardwarePlatform = "", "sev-snp"
-	installSingleNode, installImagePullSecret, installImageTag = false, "", ""
+	installValues, installWait = nil, true
+	installPlatform = ""
+	installImagePullSecret, installChartDir = "", ""
 	installVolumes = false
 	installOperatorKeys, installForce = "", false
 	installUpstream, installWorkloadRefs = "", nil
-	installResolveDigests, installAttestEnabled, installMeasurements = true, true, nil
+	installCDSAddress, installCDSPin, installSeedOut = "", "", ""
+	installCDS = nil
 	uninstallNamespace, uninstallRelease = "c8s-system", "c8s"
 	uninstallWait, uninstallHostSweep, uninstallHostSweepOnly = true, true, false
 	uninstallForce, uninstallDeleteCRDs, uninstallDeleteNamespace = false, false, false
-	renderValuesDistro = ""
 	installOperatorKey, installRoutesOut, installRoutesMaxAge = "", "routes.json", 24*time.Hour
 	prevOutSet, prevMaxAgeSet := installRoutesOutSet, installRoutesMaxAgeSet
-	prevRevision, prevRegisters := installRoutesRevision, installRegisters
+	prevRevision := installRoutesRevision
 	t.Cleanup(func() {
 		installRoutesOutSet, installRoutesMaxAgeSet = prevOutSet, prevMaxAgeSet
-		installRoutesRevision, installRegisters = prevRevision, prevRegisters
+		installRoutesRevision = prevRevision
 	})
 	installRoutesOutSet, installRoutesMaxAgeSet = false, false
-	installRoutesRevision, installRegisters = 0, nil
+	installRoutesRevision = 0
 	// cobra keeps a flag's Changed across Execute calls on the shared tree.
 	installCmd.Flags().VisitAll(func(f *pflag.Flag) { f.Changed = false })
 	t.Setenv("C8S_OPERATOR_KEY", "")
@@ -221,7 +236,7 @@ config)
   *cds*) echo '{"config":{"Entrypoint":["/c8s","cds"],"Env":["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin","SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"]}}' ;;
   *armtls-mesh*) echo '{"config":{"Entrypoint":["/app/c8s","armtls-mesh"],"Env":["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"]}}' ;;
   *volumed*) echo '{"config":{"Entrypoint":["/app/c8s","volumed"],"Env":["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"]}}' ;;
-  *nginx*) echo '{"config":{"Entrypoint":["/docker-entrypoint.sh"],"Cmd":["nginx","-g","daemon off;"],"Env":["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin","NGINX_VERSION=1.30.5","PKG_RELEASE=1","DYNPKG_RELEASE=1"]}}' ;;
+  *nginx*) echo '{"config":{"Entrypoint":["/docker-entrypoint.sh"],"Cmd":["nginx","-g","daemon off;"],"Env":["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin","NGINX_VERSION=1.30.6","PKG_RELEASE=1","DYNPKG_RELEASE=1"]}}' ;;
   *attestation-api*) echo '{"config":{"Entrypoint":["/attestation-api"],"Env":["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"]}}' ;;
   *) echo '{"config":{"Entrypoint":["/c8s"],"Env":["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin","SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"]}}' ;;
   esac ;;

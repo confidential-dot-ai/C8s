@@ -119,10 +119,10 @@ func TestEvidenceFromEndpointJSON_Malformed(t *testing.T) {
 		return data
 	}
 
-	if _, err := evidenceFromEndpointJSON([]byte("not json"), nonce, sess.ek, "t"); err == nil {
+	if _, err := evidenceFromEndpointJSON([]byte("not json"), nonce, sess.ek, testRoute, "t"); err == nil {
 		t.Error("non-JSON must fail")
 	}
-	if _, err := evidenceFromEndpointJSON([]byte(`{"nonce":"AA"}`), nonce, sess.ek, "t"); err == nil {
+	if _, err := evidenceFromEndpointJSON([]byte(`{"nonce":"AA"}`), nonce, sess.ek, testRoute, "t"); err == nil {
 		t.Error("missing evidence must fail")
 	}
 	// "!!!" is outside the base64url alphabet in every position.
@@ -132,7 +132,7 @@ func TestEvidenceFromEndpointJSON_Malformed(t *testing.T) {
 		"xwing_ct":   "decode xwing_ct",
 		"session_id": "decode session_id",
 	} {
-		if _, err := evidenceFromEndpointJSON(mutate(field, "!!!"), nonce, sess.ek, "t"); err == nil || !strings.Contains(err.Error(), want) {
+		if _, err := evidenceFromEndpointJSON(mutate(field, "!!!"), nonce, sess.ek, testRoute, "t"); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("bad %s base64 should fail decoding, got %v", field, err)
 		}
 	}
@@ -153,7 +153,7 @@ func TestJoinAttestationURL(t *testing.T) {
 }
 
 func TestGatherFromEndpoint_BadBaseURL(t *testing.T) {
-	if _, err := gatherFromEndpoint(context.Background(), "https://\x7f", "", time.Second); err == nil {
+	if _, err := gatherFromEndpoint(context.Background(), "https://\x7f", "", time.Second, testRoute); err == nil {
 		t.Fatal("unparseable base URL must fail before any dial")
 	}
 }
@@ -162,7 +162,7 @@ func TestGatherFromFile(t *testing.T) {
 	t.Run("attested certificate PEM", func(t *testing.T) {
 		cert := attestedCert(t, "")
 		pemBytes := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw})
-		ev, err := gatherFromFile(pemBytes, nil, "file", leafTrust{})
+		ev, err := gatherFromFile(pemBytes, nil, nil, "file", leafTrust{})
 		if err != nil {
 			t.Fatalf("gatherFromFile: %v", err)
 		}
@@ -174,20 +174,20 @@ func TestGatherFromFile(t *testing.T) {
 
 	t.Run("unparseable certificate DER", func(t *testing.T) {
 		pemBytes := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: []byte("garbage")})
-		if _, err := gatherFromFile(pemBytes, nil, "file", leafTrust{}); err == nil || !strings.Contains(err.Error(), "parse certificate") {
+		if _, err := gatherFromFile(pemBytes, nil, nil, "file", leafTrust{}); err == nil || !strings.Contains(err.Error(), "parse certificate") {
 			t.Errorf("expected a parse error, got %v", err)
 		}
 	})
 
-	t.Run("override falls through to endpoint parsing", func(t *testing.T) {
-		// Not bare evidence (no evidence object), so the bare path fails and the
-		// endpoint parser reports its own error. The version tag has to be the
-		// attest-pq binding or the parser stops at the version check instead.
-		payload := []byte(`{"version":"` + types.BindingAttestPQ + `"}`)
-		if _, err := gatherFromFile(payload, []byte{0x01}, "file", leafTrust{}); err == nil || !strings.Contains(err.Error(), "no evidence") {
-			t.Errorf("expected the endpoint parser's error, got %v", err)
-		}
-	})
+	for _, version := range []string{types.BindingAttestPQ, types.BindingAttestLB} {
+		t.Run("override refuses "+version, func(t *testing.T) {
+			payload := []byte(`{"version":"` + version + `","evidence":{"attestation_report":"AAAA"}}`)
+			_, err := gatherFromFile(payload, []byte{0x01}, nil, "file", leafTrust{})
+			if err == nil || !strings.Contains(err.Error(), "drop --expected-report-data and pass --route-digest") {
+				t.Errorf("gatherFromFile(%s response, override) = %v, want the drop-override error", version, err)
+			}
+		})
+	}
 }
 
 func TestEvidenceFromBareJSON_Errors(t *testing.T) {

@@ -39,6 +39,8 @@ func TestReinjectSweepDeletesOnlyOwnedUninjectedWorkloadPods(t *testing.T) {
 	cw := map[string]string{webhook.AnnotationWorkload: "wl"}
 	cwInjected := map[string]string{webhook.AnnotationWorkload: "wl", webhook.AnnotationInjected: "true"}
 
+	routed := pod("pod-cvm", "tenant", "ReplicaSet", map[string]string{webhook.AnnotationWorkload: "wl", webhook.AnnotationPodCVM: "true"})
+	routed.Spec.NodeSelector = map[string]string{webhook.AnnotationPodCVM: "true"}
 	pods := []client.Object{
 		// Deleted: owned, cw, never injected, covered namespace.
 		pod("needs", "tenant", "ReplicaSet", cw),
@@ -47,16 +49,21 @@ func TestReinjectSweepDeletesOnlyOwnedUninjectedWorkloadPods(t *testing.T) {
 		pod("injected", "tenant", "ReplicaSet", cwInjected),
 		// Kept: no cw annotation (not opted in).
 		pod("no-cw", "tenant", "ReplicaSet", nil),
+		// Guest-owned injection must not trigger deletion and recreation on operator restart.
+		routed,
+		// Deleted: opted into the guest but admitted while the webhook was absent, so never routed to it.
+		pod("pod-cvm-unrouted", "tenant", "ReplicaSet", map[string]string{webhook.AnnotationWorkload: "wl", webhook.AnnotationPodCVM: "true"}),
 		// Kept: bare pod (no controller would recreate it).
 		pod("bare", "tenant", "", cw),
 		// Kept: excluded namespace (webhook never injects there).
 		pod("in-release", "c8s-system", "ReplicaSet", cw),
 		pod("in-kube", "kube-system", "ReplicaSet", cw),
+		pod("in-provisioner", "local-path-storage", "ReplicaSet", cw),
 		pod("in-extra", "skip-me", "ReplicaSet", cw),
 	}
 
 	c := fake.NewClientBuilder().WithObjects(pods...).Build()
-	excluded := excludedNamespaceSet("c8s-system", []string{"skip-me"})
+	excluded := excludedNamespaceSet("c8s-system", []string{"skip-me", "local-path-storage"})
 
 	if err := reinjectSweep(context.Background(), c, excluded); err != nil {
 		t.Fatalf("reinjectSweep: %v", err)
@@ -72,7 +79,7 @@ func TestReinjectSweepDeletesOnlyOwnedUninjectedWorkloadPods(t *testing.T) {
 	}
 	sort.Strings(got)
 
-	want := []string{"bare", "in-extra", "in-kube", "in-release", "injected", "no-cw"}
+	want := []string{"bare", "in-extra", "in-kube", "in-provisioner", "in-release", "injected", "no-cw", "pod-cvm"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("surviving pods = %v, want %v", got, want)
 	}

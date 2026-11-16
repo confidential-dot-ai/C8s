@@ -3,7 +3,11 @@ package cds
 import (
 	"bytes"
 	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/hex"
 	"net/http"
+	"reflect"
+	"regexp"
 	"testing"
 	"time"
 
@@ -50,7 +54,7 @@ func issueWithInventory(t *testing.T, store policyStore, digests []string, conta
 
 func leafFromInventory(t *testing.T, store policyStore, digests []string, containers []workloadclaims.SandboxContainer, tune func(*AttestHandler)) *x509.Certificate {
 	t.Helper()
-	stub := newStubAttestationApi(t, "deadbeef")
+	stub := newStubAttestationApi(t, testLaunchDigest)
 	h, signer := newSandboxTestEnv(t, stub.URL())
 	h.AllowlistStore = store
 	h.SandboxDigests = fakeDigests{
@@ -61,7 +65,7 @@ func leafFromInventory(t *testing.T, store policyStore, digests []string, contai
 	if tune != nil {
 		tune(&h)
 	}
-	csrPEM, _ := generateCSR(t)
+	csrPEM := sandboxCSR(t)
 	challenge := issueChallenge(t, h)
 	w := postAttestSandbox(t, h, challenge, csrPEM, signedSandboxToken(t, signer, csrPEM, challenge, testSandboxID))
 	if w.Code != http.StatusOK {
@@ -104,16 +108,33 @@ func TestAttest_MatchedWorkload_StampsUniqueMatch(t *testing.T) {
 	}
 }
 
-// The platform's injected sidecar (any-argv entry + injected entrypoint) is
-// dropped before matching — the same drop set secrets release uses — so a pod
-// running its workload plus the cert sidecar still matches its entry.
-func TestAttest_MatchedWorkload_DropsInjectedContainers(t *testing.T) {
+// The platform's own containers are dropped before matching on the role the
+// reporting node binds to them — the same drop set secrets release uses — so a
+// pod running its workload, its mesh endpoint and the cert sidecar is stamped
+// with its own entry rather than one of theirs.
+func TestAttest_MatchedWorkload_DropsPlatformContainers(t *testing.T) {
 	store := completeAPIStore(t)
+	store.workloads["c8s-mesh-endpoint"] = pkgallowlist.Workload{
+		Containers: []pkgallowlist.Container{{
+			Digest:  wlDigest(t, wlDigestB),
+			Command: pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyExact, Argv: []string{"/app/c8s", "armtls-mesh"}},
+			Args:    anyPolicy,
+		}},
+	}
 	containers := []workloadclaims.SandboxContainer{
 		{Digest: wlDigestA, Mounts: []pkgallowlist.ObservedMount{}},
-		{Digest: wlDigestC, Argv: []string{"/c8s", "get-cert", "--renew-interval=6h"}, Mounts: []pkgallowlist.ObservedMount{}},
+		{
+			Digest: wlDigestC,
+			Argv:   []string{"/c8s", "get-cert", "--renew-interval=6h"},
+			Role:   "credentials",
+		},
+		{
+			Digest: wlDigestB,
+			Argv:   []string{"/app/c8s", "armtls-mesh", "--cert-path=/etc/c8s/certs/tls.crt"},
+			Role:   "mesh",
+		},
 	}
-	matched := issueWithInventory(t, store, []string{wlDigestA, wlDigestC}, containers, nil)
+	matched := issueWithInventory(t, store, []string{wlDigestA, wlDigestB, wlDigestC}, containers, nil)
 	if matched == nil || matched.Name != "api" {
 		t.Fatalf("matched = %+v, want api", matched)
 	}
@@ -159,10 +180,14 @@ func TestAttest_MatchedWorkload_UnnamedCases(t *testing.T) {
 			digests:    []string{wlDigestA},
 			containers: containersView(wlDigestA),
 		},
-		"only injected containers": {
-			store:      completeAPIStore(t),
-			digests:    []string{wlDigestC},
-			containers: []workloadclaims.SandboxContainer{{Digest: wlDigestC, Argv: []string{"/c8s", "get-cert"}, Mounts: []pkgallowlist.ObservedMount{}}},
+		"only platform containers": {
+			store:   completeAPIStore(t),
+			digests: []string{wlDigestC},
+			containers: []workloadclaims.SandboxContainer{{
+				Digest: wlDigestC,
+				Argv:   []string{"/c8s", "get-cert"},
+				Role:   "credentials",
+			}},
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -240,6 +265,86 @@ func TestAttest_MatchedWorkload_NamedLeafTTL(t *testing.T) {
 	unnamed := leafFromInventory(t, store, []string{wlDigestA}, nil, tune)
 	if got := unnamed.NotAfter.Sub(unnamed.NotBefore); got < 11*time.Hour {
 		t.Fatalf("unnamed leaf validity = %v, want the ordinary ~12h", got)
+	}
+}
+
+// A sandbox the inventory reports a router-role container in gets the router
+// TTL; the same pod without the role keeps the named one.
+func TestAttest_RouterLeafTTL(t *testing.T) {
+	store := completeAPIStore(t)
+	tune := func(h *AttestHandler) {
+		h.CertTTL = 12 * time.Hour
+		h.NamedCertTTL = 2 * time.Hour
+		h.RouterCertTTL = 20 * time.Second
+	}
+	router := containersView(wlDigestA)
+	router[0].Role = workloadclaims.RouterRole
+	if got := time.Until(leafFromInventory(t, store, []string{wlDigestA}, router, tune).NotAfter); got > 20*time.Second {
+		t.Fatalf("router leaf expires in %v, want at most 20s", got)
+	}
+	if got := time.Until(leafFromInventory(t, store, []string{wlDigestA}, containersView(wlDigestA), tune).NotAfter); got < time.Hour {
+		t.Fatalf("non-router leaf expires in %v, want the named ~2h", got)
+	}
+}
+
+// RouterCertTTL caps a router leaf, so a router cap longer than the configured
+// TTL leaves it where it was.
+func TestAttest_RouterTTLOnlyShortens(t *testing.T) {
+	router := containersView(wlDigestA)
+	router[0].Role = workloadclaims.RouterRole
+	leaf := leafFromInventory(t, completeAPIStore(t), []string{wlDigestA}, router, func(h *AttestHandler) {
+		h.CertTTL = 30 * time.Minute
+		h.RouterCertTTL = 12 * time.Hour
+	})
+	if got := leaf.NotAfter.Sub(leaf.NotBefore); got > 35*time.Minute {
+		t.Fatalf("router leaf validity = %v, want the configured ~30m", got)
+	}
+}
+
+// A disputed name reconstructs from the issuance record alone, so a named
+// sandbox leaf's record carries every value it was granted under.
+func TestAttest_IssuanceRecordNamesTheGrantedIdentity(t *testing.T) {
+	stub := newStubAttestationApi(t, testLaunchDigest)
+	h, signer := newSandboxTestEnv(t, stub.URL())
+	store := completeAPIStore(t)
+	h.AllowlistStore = store
+	h.SandboxDigests = fakeDigests{
+		digests:    map[string][]string{testSandboxID: {wlDigestA}},
+		containers: map[string][]workloadclaims.SandboxContainer{testSandboxID: containersView(wlDigestA)},
+		key:        signer.PublicKey(),
+	}
+	h.Policy.DNSSANPatterns = []*regexp.Regexp{regexp.MustCompile(`^[a-z]+\.mesh\.svc$`)}
+	h.CertTTL = 30 * time.Minute
+	csrPEM, _ := generateCSRWith(t, pkix.Name{}, []string{"api.mesh.svc"}, nil)
+
+	logs := captureSlog(t)
+	challenge := issueChallenge(t, h)
+	w := postAttestSandbox(t, h, challenge, csrPEM, signedSandboxToken(t, signer, csrPEM, challenge, testSandboxID))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	al, _, err := store.LoadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	allowlistDigest, err := al.CanonicalDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	record := logRecord(t, logs, issuanceRecordMsg)
+	for key, want := range map[string]any{
+		"sans":              []any{"api.mesh.svc"},
+		"ttl":               float64(30 * time.Minute),
+		"sandbox_id":        testSandboxID,
+		"inventory_addr":    testInventoryHost,
+		"workload":          "api",
+		"allowlist_version": "1",
+		"allowlist_digest":  hex.EncodeToString(allowlistDigest),
+	} {
+		if got := record[key]; !reflect.DeepEqual(got, want) {
+			t.Errorf("issuance record %s = %#v, want %#v", key, got, want)
+		}
 	}
 }
 

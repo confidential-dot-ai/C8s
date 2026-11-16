@@ -1,4 +1,15 @@
 ignore:
+  # CVE-2026-4738 affects optional Deflate64 code in contrib/infback9/inftree9.c.
+  # Alpine's shared-libz build excludes it; the pinned amd64/arm64 libz exports
+  # neither inflateBack9* nor inflate_table9.
+  # Upstream: https://github.com/madler/zlib/releases/tag/v1.4
+  # Remove when the router image ships zlib >= 1.4-r0.
+  - vulnerability: CVE-2026-4738
+    reason: The affected contrib/infback9 code is absent from this zlib package.
+    package:
+      name: zlib
+      version: 1.3.2-r0
+      type: apk
   # Remove when the router image includes a patched zlib package.
   - vulnerability: CVE-2026-85091
     reason: Router nginx uses only zlib's deflate/inflate APIs.
@@ -6,11 +17,16 @@ ignore:
       name: zlib
       version: 1.3.2-r0
       type: apk
-  # Remove when the router image includes pcre2 >= 10.49 (no nginx-unprivileged
-  # alpine-slim tag carries it as of 2026-10-02).
-  - vulnerability: CVE-2026-103111
-    reason: Needs an attacker-controlled regex pattern. Router nginx compiles only patterns from its chart-rendered, image-measured config; request data is a subject, never a pattern.
+  # Remove when the router image includes musl >= 1.2.6-r3.
+  - vulnerability: CVE-2026-107891
+    reason: Needs an untrusted pattern passed to musl regcomp. Router nginx compiles its regexes with pcre2 and imports no regcomp; only the image's entrypoint scripts reach it, with their own fixed patterns.
     package:
-      name: pcre2
-      version: 10.48-r0
+      name: musl
+      version: 1.2.6-r2
+      type: apk
+  - vulnerability: CVE-2026-107891
+    reason: Same musl build as the musl rule above.
+    package:
+      name: musl-utils
+      version: 1.2.6-r2
       type: apk

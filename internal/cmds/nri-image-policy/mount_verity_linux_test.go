@@ -178,7 +178,7 @@ func TestFSVerityPinnedInodeIntegration(t *testing.T) {
 	if err := os.WriteFile(snapshot, []byte("smuggled executable"), 0600); err == nil {
 		t.Fatal("snapshot writable")
 	}
-	mounts := adjustedMounts(&api.ValidateContainerAdjustmentRequest{Pod: pod, Container: ctr, Adjust: adjust}, ctr, "")
+	mounts := (&plugin{cfg: &config{}}).adjustedMounts(&api.ValidateContainerAdjustmentRequest{Pod: pod, Container: ctr, Adjust: adjust}, ctr)
 	if len(mounts) != 1 || mounts[0].Provenance != allowlist.ProvenanceFSVerity || mounts[0].VerityDigest != digest {
 		t.Fatalf("lost kernel evidence: %+v, want digest %s", mounts, digest)
 	}
@@ -218,19 +218,19 @@ func TestFSVerityPinnedInodeIntegration(t *testing.T) {
 	// Provenance checks run while the pin is registered: the rejected
 	// validation below releases it.
 	last := len(ctr.Mounts) - 1
-	if got := newMountObserver(nil, "").Observe(pod, ctr); got[last].Provenance != allowlist.ProvenanceFSVerity {
+	if got := newMountObserver(nil, enforcerMounts{}).Observe(pod, ctr); got[last].Provenance != allowlist.ProvenanceFSVerity {
 		t.Fatal("staged bind lost provenance")
 	}
 	overlay = proto.Clone(staged).(*api.Mount)
 	overlay.Type, overlay.Options = "overlay", []string{"ro", "lowerdir=" + root}
 	ctr.Mounts[last] = overlay
-	if got := newMountObserver(nil, "").Observe(pod, ctr); got[last].Provenance != "" {
+	if got := newMountObserver(nil, enforcerMounts{}).Observe(pod, ctr); got[last].Provenance != "" {
 		t.Fatal("overlay naming the snapshot kept provenance")
 	}
 	ctr.Mounts[last] = staged
 	another := proto.Clone(ctr).(*api.Container)
 	another.Id = "another-container"
-	if got := newMountObserver(nil, "").Observe(pod, another); got[last].Provenance != "" {
+	if got := newMountObserver(nil, enforcerMounts{}).Observe(pod, another); got[last].Provenance != "" {
 		t.Fatal("another container borrowed provenance")
 	}
 	substituted := proto.Clone(staged).(*api.Mount)

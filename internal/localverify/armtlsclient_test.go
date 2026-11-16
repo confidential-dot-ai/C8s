@@ -23,11 +23,15 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
+// serverAuthOnly is the TLS purpose an armTLS serving leaf carries.
+var serverAuthOnly = []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}
+
 // armtlsServingCert mints a self-signed serving cert carrying an az-snp
-// evidence envelope in the armTLS extension, with the given validity window.
-func armtlsServingCert(t *testing.T, notBefore, notAfter time.Time) tls.Certificate {
+// evidence envelope in the armTLS extension, with the given key curve,
+// purpose and validity window.
+func armtlsServingCert(t *testing.T, curve elliptic.Curve, usages []x509.ExtKeyUsage, notBefore, notAfter time.Time) tls.Certificate {
 	t.Helper()
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	key, err := ecdsa.GenerateKey(curve, rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,6 +53,7 @@ func armtlsServingCert(t *testing.T, notBefore, notAfter time.Time) tls.Certific
 		NotBefore:       notBefore,
 		NotAfter:        notAfter,
 		DNSNames:        []string{"127.0.0.1", "localhost"},
+		ExtKeyUsage:     usages,
 		ExtraExtensions: []pkix.Extension{ext},
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
@@ -86,7 +91,7 @@ func TestNewARMTLSHTTPClientEnforcesPeerCertValidity(t *testing.T) {
 	}
 
 	t.Run("expired peer refused before evidence verification", func(t *testing.T) {
-		srv := tlsServer(t, armtlsServingCert(t, now.Add(-2*time.Hour), now.Add(-time.Hour)))
+		srv := tlsServer(t, armtlsServingCert(t, elliptic.P256(), serverAuthOnly, now.Add(-2*time.Hour), now.Add(-time.Hour)))
 		hc := NewARMTLSHTTPClient(nil, approve, time.Second)
 		_, err := hc.Get(srv.URL)
 		if err == nil || !strings.Contains(err.Error(), "expired") {
@@ -98,7 +103,7 @@ func TestNewARMTLSHTTPClientEnforcesPeerCertValidity(t *testing.T) {
 	})
 
 	t.Run("valid attested peer accepted", func(t *testing.T) {
-		srv := tlsServer(t, armtlsServingCert(t, now.Add(-time.Hour), now.Add(time.Hour)))
+		srv := tlsServer(t, armtlsServingCert(t, elliptic.P256(), serverAuthOnly, now.Add(-time.Hour), now.Add(time.Hour)))
 		hc := NewARMTLSHTTPClient(nil, approve, time.Second)
 		resp, err := hc.Get(srv.URL)
 		if err != nil {
@@ -139,7 +144,7 @@ func caSignedARMTLSCert(t *testing.T) tls.Certificate {
 		t.Fatal(err)
 	}
 
-	leaf := armtlsServingCert(t, now.Add(-time.Hour), now.Add(time.Hour))
+	leaf := armtlsServingCert(t, elliptic.P256(), serverAuthOnly, now.Add(-time.Hour), now.Add(time.Hour))
 	tmpl := leaf.Leaf
 	tmpl.ExtraExtensions = tmpl.Extensions
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, ca, tmpl.PublicKey, caKey)
@@ -175,6 +180,46 @@ func TestNewARMTLSHTTPClientRejectsCAVouchedPeer(t *testing.T) {
 	}
 	if got := verifyCalls.Load(); got != 0 {
 		t.Fatalf("a CA-vouched peer consumed %d evidence verification(s), want 0", got)
+	}
+}
+
+// A peer leaf must carry what the in-cluster armTLS path requires of a
+// server: the serverAuth purpose and an ECDSA P-256/P-384 key.
+func TestNewARMTLSHTTPClientRequiresServerAuthAndSupportedCurve(t *testing.T) {
+	now := time.Now()
+	for _, tc := range []struct {
+		name   string
+		curve  elliptic.Curve
+		usages []x509.ExtKeyUsage
+		want   string
+	}{
+		{"clientAuth only", elliptic.P256(), []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, "does not permit serverAuth"},
+		{"P-521 key", elliptic.P521(), serverAuthOnly, "want P-256 or P-384"},
+		{"P-256 serverAuth peer", elliptic.P256(), serverAuthOnly, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var verifyCalls atomic.Int32
+			approve := func(context.Context, string, json.RawMessage, Params) (*teetypes.VerificationResult, error) {
+				verifyCalls.Add(1)
+				match := true
+				return &teetypes.VerificationResult{SignatureValid: true, ReportDataMatch: &match}, nil
+			}
+			srv := tlsServer(t, armtlsServingCert(t, tc.curve, tc.usages, now.Add(-time.Hour), now.Add(time.Hour)))
+			resp, err := NewARMTLSHTTPClient(nil, approve, time.Second).Get(srv.URL)
+			if tc.want == "" {
+				if err != nil {
+					t.Fatalf("want accept, got %v", err)
+				}
+				resp.Body.Close()
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("want %q, got %v", tc.want, err)
+			}
+			if got := verifyCalls.Load(); got != 0 {
+				t.Fatalf("a refused peer consumed %d evidence verification(s), want 0", got)
+			}
+		})
 	}
 }
 

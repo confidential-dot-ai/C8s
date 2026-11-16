@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/confidential-dot-ai/c8s/internal/httputil"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 	pkgroutes "github.com/confidential-dot-ai/c8s/pkg/routes"
 )
@@ -39,6 +40,8 @@ type fakeCDS struct {
 	ifMatch []string // If-Match of each PUT, "" when absent
 	// beforePut, when set, runs at the start of each PUT, as another writer.
 	beforePut func(*fakeCDS)
+	// refuse, when set, answers each verified PUT as CDS refusing its token.
+	refuse error
 }
 
 func (f *fakeCDS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -60,6 +63,10 @@ func (f *fakeCDS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		if err := (operatorauth.Verifier{Keys: f.keys}).Authorize(r, body); err != nil {
 			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if f.refuse != nil {
+			httputil.RefuseOperatorToken(w, f.refuse)
 			return
 		}
 		m, err := pkgroutes.Parse(body)
@@ -170,6 +177,14 @@ func (h *harness) mustRun(t *testing.T, args ...string) string {
 	return out
 }
 
+// storeManifest stores a first manifest the harness key signed and forgets the
+// write, so a later writes-reached-CDS count is the test's own.
+func (h *harness) storeManifest(t *testing.T) {
+	t.Helper()
+	h.mustRun(t, "add", "--new", "--host", "app.example", "--path", "/", "--address", "a:1", "--workload", "a")
+	h.cds.puts = 0
+}
+
 // C6: a new manifest starts at the Unix time.
 func TestAddStartsAtUnixTime(t *testing.T) {
 	h := newHarness(t)
@@ -275,6 +290,31 @@ func TestPutStaleRevisionGuidance(t *testing.T) {
 	}
 }
 
+// A refused token asks for a fresh one, not a rebase.
+func TestPutRefusedTokenGuidance(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "routes.json")
+	if err := os.WriteFile(file, []byte(`{"schema":"c8s.routes/v1","revision":1,"notBefore":"2026-09-01T00:00:00Z","maxAgeSeconds":60,"hosts":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name   string
+		refuse error
+		want   string
+	}{
+		{"spent", operatorauth.ErrTokenReused, "mint a fresh token"},
+		{"not recorded", operatorauth.ErrTokenNotRecorded, "with a fresh token is safe"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.cds.refuse = tc.refuse
+			_, err := h.run(t, "put", file)
+			if err == nil || !strings.Contains(err.Error(), tc.want) || strings.Contains(err.Error(), "raise the file's revision") {
+				t.Fatalf("put with refused token: error = %v, want %q and no rebase hint", err, tc.want)
+			}
+		})
+	}
+}
+
 // put stores the file's bytes verbatim, and show and digest report the same
 // route digest.
 func TestPutShowDigest(t *testing.T) {
@@ -337,11 +377,11 @@ func TestPutRejectsInvalidFileLocally(t *testing.T) {
 	}
 }
 
-// add and rm re-sign what they fetch, so they refuse to run unverified, and
-// refuse a stored manifest no trusted key signed.
 func TestEditRequiresVerifiedManifest(t *testing.T) {
 	h := newHarness(t)
 	add := []string{"add", "--new", "--host", "app.example", "--path", "/", "--address", "a:1", "--workload", "a"}
+	h.storeManifest(t)
+
 	if _, err := h.runUnverified(t, add...); err == nil || !strings.Contains(err.Error(), "pass --operator-keys") {
 		t.Fatalf("add without --operator-keys: error = %v", err)
 	}
@@ -370,6 +410,27 @@ func TestEditRequiresVerifiedManifest(t *testing.T) {
 	}
 	if h.cds.puts != 0 {
 		t.Fatalf("CDS saw %d writes, want none", h.cds.puts)
+	}
+}
+
+// --new on an empty store signs only the route named on the command line, so
+// there is nothing for --operator-keys to verify.
+func TestAddNewRunsUnverifiedOnAnEmptyStore(t *testing.T) {
+	h := newHarness(t)
+	add := []string{"add", "--new", "--host", "app.example", "--path", "/", "--address", "a:1", "--workload", "a"}
+	if _, err := h.runUnverified(t, add...); err != nil {
+		t.Fatalf("add --new on an empty store without --operator-keys: %v", err)
+	}
+	m := h.cds.stored(t)
+	if len(m.Hosts) != 1 {
+		t.Fatalf("stored hosts = %+v, want app.example alone", m.Hosts)
+	}
+	rs := m.Hosts["app.example"].Routes
+	if len(rs) != 1 {
+		t.Fatalf("stored routes of app.example = %+v, want the one named on the command line", rs)
+	}
+	if rs[0].Backend.Address != "a:1" {
+		t.Errorf("stored backend = %+v, want the address named on the command line", rs[0].Backend)
 	}
 }
 
@@ -564,8 +625,8 @@ func TestDryRunRequiresPinnedEndpoint(t *testing.T) {
 		cmd.SetOut(io.Discard)
 		cmd.SetErr(io.Discard)
 		cmd.SetArgs(append(args, "--dry-run", "--operator-keys", pubFile, "--url", "https://127.0.0.1:1"))
-		if err := cmd.ExecuteContext(context.Background()); err == nil || !strings.Contains(err.Error(), "unpinned CDS") {
-			t.Errorf("%s --dry-run without --measurements: error = %v", args[0], err)
+		if err := cmd.ExecuteContext(context.Background()); err == nil || !strings.Contains(err.Error(), "unpinned endpoint") {
+			t.Errorf("%s --dry-run without a pin: error = %v", args[0], err)
 		}
 	}
 }

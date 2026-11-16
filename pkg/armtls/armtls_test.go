@@ -162,7 +162,7 @@ func TestSentinelErrors(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		_, err = VerifyCert(cert, nil, nil)
+		_, err = VerifyCert(cert, pinnedPolicy(""), nil)
 		if !errors.Is(err, ErrNoAttestation) {
 			t.Errorf("got %v, want errors.Is ErrNoAttestation", err)
 		}
@@ -391,6 +391,9 @@ func TestVerifyCertEmbeddedAzureNegativePaths(t *testing.T) {
 		var apiErr *remote.APIError
 		if !errors.As(err, &apiErr) || apiErr.Status != http.StatusUnprocessableEntity {
 			t.Fatalf("got %v, want a 422 *remote.APIError", err)
+		}
+		if !errors.Is(err, ErrInvalidReport) {
+			t.Fatalf("got %v, want ErrInvalidReport", err)
 		}
 	})
 
@@ -681,7 +684,7 @@ func TestVerifyCertBareSNPUsesAttestationApi(t *testing.T) {
 	})
 }
 
-func TestPublicKeyFromCertCurves(t *testing.T) {
+func TestCheckPeerKeyTypeCurves(t *testing.T) {
 	makeCert := func(t *testing.T, curve elliptic.Curve) *x509.Certificate {
 		t.Helper()
 		key, err := ecdsa.GenerateKey(curve, rand.Reader)
@@ -711,9 +714,9 @@ func TestPublicKeyFromCertCurves(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := publicKeyFromCert(makeCert(t, tt.curve))
+			err := checkPeerKeyType(makeCert(t, tt.curve))
 			if (err != nil) != tt.wantErr {
-				t.Fatalf("publicKeyFromCert err = %v, wantErr %v", err, tt.wantErr)
+				t.Fatalf("checkPeerKeyType err = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
 	}
@@ -723,7 +726,7 @@ func TestVerifyAttestationUnsupportedKey(t *testing.T) {
 	_, att := testKeyAndAttestation(t)
 	stub := mockapi.New(t)
 
-	_, err := VerifyAttestation("not-a-key", att, &VerifyPolicy{AttestationApiURL: stub.URL()}, nil)
+	_, err := VerifyAttestation("not-a-key", att, pinnedPolicy(stub.URL()), nil)
 	if err == nil || !strings.Contains(err.Error(), "compute expected REPORTDATA") {
 		t.Fatalf("got %v, want REPORTDATA computation error", err)
 	}

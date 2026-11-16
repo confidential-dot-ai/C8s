@@ -124,3 +124,11 @@ func envPolicyAdmits(p allowlist.EnvPolicy, obs *allowlist.EnvObservation) bool 
 	}
 	return a.BuildIndex().AdmitsContainer(allowlist.RunningContainer{Digest: digest, Env: obs})
 }
+
+// The image sets HOME and the pod sets it again to the same value: one variable.
+func TestSameValueDuplicateEnvWithoutCDIIsObservable(t *testing.T) {
+	ctr := &api.Container{Args: []string{"/bin/server"}, Env: []string{"HOME=/tmp", "PATH=/usr/bin", "HOME=/tmp"}}
+	if containerEnv(ctr) == nil {
+		t.Error("a name repeated with the same value must stay observable")
+	}
+}

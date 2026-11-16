@@ -11,13 +11,11 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/signal"
 	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
@@ -47,15 +45,15 @@ var errPluginNotRunning = errors.New("plugin not running")
 // processes through hostPID, while reaching the socket would take a host mount
 // that this container's argv-pinned allowlist entry does not admit. So a plugin
 // that is alive but hung still reads as ready. An HTTP endpoint rather than an
-// exec probe because the locked node image denies every runc exec
+// exec probe because the locked node image denies every runc exec it was not granted
 // (docs/node-exec-mode.md).
-func runPluginReady(args []string) error {
+func runPluginReady(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("nri-image-policy "+pluginReadyVerb, flag.ContinueOnError)
 	pluginPath := fs.String("plugin-path", "", "absolute path containerd launches the plugin from (its argv[0])")
 	addr := fs.String("addr", ":8080", "readiness listen address (host:port)")
 	check := fs.Bool("check", false, "scan once and exit non-zero if the plugin is not running, instead of serving")
 	procRoot := fs.String("proc-root", "/proc", "procfs to scan; the pod must share the host PID namespace")
-	if err := cmdsutil.ParseFlags(fs, args); err != nil {
+	if err := parseOnlyFlags(fs, args); err != nil {
 		return err
 	}
 	if !path.IsAbs(*pluginPath) || path.Clean(*pluginPath) != *pluginPath {
@@ -74,9 +72,6 @@ func runPluginReady(args []string) error {
 	if _, _, err := net.SplitHostPort(*addr); err != nil {
 		return fmt.Errorf("--addr %q must be host:port: %w", *addr, err)
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 	return servePluginReady(ctx, *addr, *procRoot, *pluginPath)
 }
 
@@ -147,15 +142,11 @@ func cachedPluginScan(procRoot, pluginPath string, ttl time.Duration, now func()
 // A process that exits mid-scan is skipped, and one awaiting reaping has an
 // empty cmdline, so neither counts.
 func pluginRunning(procRoot, argv0 string) (bool, error) {
-	entries, err := os.ReadDir(procRoot)
+	pids, err := processIDs(procRoot)
 	if err != nil {
 		return false, err
 	}
-	for _, e := range entries {
-		pid, err := strconv.Atoi(e.Name())
-		if err != nil || pid <= 0 {
-			continue
-		}
+	for _, pid := range pids {
 		if argv0Is(procRoot, pid, argv0) && launchedByContainerd(procRoot, pid) {
 			return true, nil
 		}

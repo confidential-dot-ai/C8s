@@ -1,0 +1,16 @@
+# A standalone kubelet that runs the one assigned static pod. Not enabled:
+# podcvm-status starts it last, once the admission plugin reports the
+# assigned pod registered and the manifest is published.
+[Unit]
+Description=Standalone kubelet for the assigned pod
+ConditionPathExists=/run/confos/role-pod
+Requires=podcvm-containerd.service
+After=podcvm-containerd.service
+
+[Service]
+Type=simple
+# KUBELET_HOSTNAME is the signed node.name (c8s node-services prepare).
+EnvironmentFile=/run/c8s-pod/kubelet.env
+ExecStart=/usr/lib/c8s/worker/bin/kubelet --config=/usr/lib/c8s/pod-runtime/kubelet.yaml --hostname-override=${KUBELET_HOSTNAME}
+Restart=always
+RestartSec=2

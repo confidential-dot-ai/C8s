@@ -3,14 +3,15 @@ package routing
 import (
 	"context"
 	"crypto/ecdsa"
-	"crypto/x509"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"os"
 
-	"github.com/confidential-dot-ai/c8s/pkg/certutil"
+	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 	"github.com/confidential-dot-ai/c8s/pkg/routes"
 	"github.com/confidential-dot-ai/c8s/pkg/routesclient"
@@ -43,25 +44,14 @@ func (f KeyFile) OperatorKeys(context.Context) ([]*ecdsa.PublicKey, error) {
 	return operatorauth.ParsePublicKeysPEM(b)
 }
 
-// CAFile returns a CASource that reads a PEM CA bundle from path on every
-// call, so a bundle get-cert rewrites after a CDS restart takes effect.
-func CAFile(path string) CASource {
-	return func() ([]*x509.Certificate, error) {
-		b, err := os.ReadFile(path)
-		if err != nil {
-			return nil, err
-		}
-		return certutil.ParsePEMCertificates(b)
-	}
-}
-
 // CDSClient reads the route manifest and the operator keys from the CDS. It
 // is a Fetcher and a KeySource. The caller supplies an HTTP client that
 // verifies the CDS (A1).
 type CDSClient struct {
-	routes routesclient.Client
-	base   string
-	http   *http.Client
+	routes    routesclient.Client
+	allowlist allowlistclient.Client
+	base      string
+	http      *http.Client
 }
 
 // NewCDSClient returns a client for the CDS at base, an https origin.
@@ -77,7 +67,13 @@ func NewCDSClient(base string, client *http.Client) (*CDSClient, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &CDSClient{routes: rc, base: u.Scheme + "://" + u.Host, http: client}, nil
+	origin := u.Scheme + "://" + u.Host
+	return &CDSClient{routes: rc, allowlist: allowlistclient.NewClientWithHTTP(origin, client), base: origin, http: client}, nil
+}
+
+// Object implements AllowlistHistory.
+func (c *CDSClient) Object(ctx context.Context, digest [sha256.Size]byte) (*allowlist.Allowlist, error) {
+	return c.allowlist.Object(ctx, digest)
 }
 
 // Routes implements Fetcher.

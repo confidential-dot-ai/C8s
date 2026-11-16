@@ -53,12 +53,19 @@ func pluginStops(ctx context.Context, node string) error {
 }
 
 // pluginStarts starts the plugin and waits until it is ready, so the next
-// sentence observes a plugin that has run its startup check.
+// sentence observes a plugin that has run its startup check. Where the CDS is
+// reachable it first waits for the last write to take effect on nodes, so
+// the plugin's first pull is served it.
 func pluginStarts(ctx context.Context, node string) error {
 	w := getWorld(ctx)
 	k8sNode, err := w.node(node)
 	if err != nil {
 		return err
+	}
+	if !w.cdsBlocked {
+		if _, _, err := w.awaitInEffect(); err != nil {
+			return err
+		}
 	}
 	if _, err := w.be.call("plugin_start", k8sNode); err != nil {
 		return err
@@ -84,11 +91,10 @@ func cdsUnreachable(ctx context.Context, node string) error {
 	if _, err := w.node(node); err != nil {
 		return err
 	}
-	if _, err := w.be.call("cds_block"); err != nil {
-		return err
-	}
+	// Set first: a block that never settles may still have taken hold.
 	w.cdsBlocked = true
-	return nil
+	_, err := w.be.call("cds_block")
+	return err
 }
 
 func pluginStartedSinceBlock(ctx context.Context, node string) error {
@@ -125,13 +131,15 @@ func pluginPulls(ctx context.Context, node string) error {
 	return w.awaitApplied()
 }
 
+// cdsVolatile skips where a CDS restart keeps the allowlist and its version
+// (allowlist S4).
 func cdsVolatile(ctx context.Context) error {
 	answer, err := getWorld(ctx).be.call("cds_volatile")
 	if err != nil {
 		return err
 	}
 	if answer != "yes" {
-		return godog.ErrSkip
+		return skipf("a CDS restart keeps the allowlist here (cds_volatile)")
 	}
 	return nil
 }
@@ -152,7 +160,10 @@ func cdsRestarted(ctx context.Context) error {
 // means starting the plugin again.
 func (w *world) noteCDSRestart() {
 	w.cdsRestarted = true
-	lastMutation = time.Now()
+	// The restart replaced the document wholesale, so no write of this
+	// process's is waiting to take effect on nodes.
+	lastMutation.at = time.Now()
+	lastMutation.documentTag = ""
 }
 
 func versionBelowApplied(ctx context.Context, node string) error {
@@ -182,8 +193,8 @@ func versionBelowApplied(ctx context.Context, node string) error {
 // it, or on every node it addressed and on node "one" if the CDS was
 // restarted, since only a start lets a plugin accept the versions a
 // restarted CDS serves, whether or not the scenario spoke of its node. After
-// a CDS restart the mesh is restarted too: only a proxy started after the
-// CDS accepts the mesh CA it minted.
+// a CDS restart the mesh members are recreated too: only a member started
+// after the CDS holds a leaf under the mesh CA it minted.
 func (w *world) restoreNode() error {
 	var errs []error
 	if w.cdsBlocked {
@@ -203,9 +214,8 @@ func (w *world) restoreNode() error {
 		errs = append(errs, err)
 	}
 	if w.cdsRestarted {
-		if _, err := w.be.call("mesh_restart"); !errors.Is(err, godog.ErrSkip) {
-			errs = append(errs, err)
-		}
+		_, err := w.be.call("mesh_restart")
+		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
 }

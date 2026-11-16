@@ -1,0 +1,24 @@
+{{- /*
+GKE configures ResourceQuota admission to reject a critical-priority pod in a
+namespace whose quotas do not cover its PriorityClass, so the node agents of
+this release need one here to be created at all. Harmless elsewhere: the scope
+admits that class alone and the limit never binds.
+*/ -}}
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: {{ include "c8s.fullname" . }}-critical-pods
+  namespace: {{ .Release.Namespace }}
+  labels:
+{{ include "c8s.commonLabels" . | indent 4 }}
+    app.kubernetes.io/component: critical-pods-quota
+spec:
+  hard:
+    # Above any cluster's pod count: this limit must never bind.
+    pods: "1G"
+  scopeSelector:
+    matchExpressions:
+      - scopeName: PriorityClass
+        operator: In
+        values:
+          - {{ include "c8s.criticalPriorityClass" . | quote }}

@@ -1,69 +1,103 @@
 # get-cert
 
-A CLI tool for obtaining TLS certificates through the CDS (Certificate Distribution Service) TEE attestation flow. It generates (or loads) an ECDSA P-256 key pair, creates a CSR with a specified Subject Alternative Name (SAN), and runs the full attestation-verification-certification flow via cds.
+A CLI tool for obtaining TLS certificates through the CDS (Certificate Distribution Service) TEE attestation flow. It generates an ECDSA P-256 key pair for every certificate it requests, creates a CSR with the selected Subject Alternative Name (SAN), runs the full attestation-verification-certification flow via cds, and publishes the key and the certificate as one credential generation.
 
-Designed to run as a Kubernetes init container or renewal sidecar alongside a workload that uses the obtained certificate.
+Designed to run as a native sidecar alongside the credential consumers that read that volume.
+
+A Pod CVM instead uses `internal/cmds/getcert.RunGuest` from its measured guest
+broker. It reuses generation validation and renewal with fresh Pod claims;
+there is no get-cert container or node-service socket in that Pod. See
+[Pod CVM issuance](../../docs/armtls.md#pod-cvm-issuance) and
+[operator setup](../../docs/operator.md).
 
 ## Usage
 
 These pod examples use the node attestation socket mounted at
-`/run/c8s/workload-claims/attestation-api.sock` and a memory-backed `/tls` volume.
+`/run/c8s/workload-claims/attestation-api.sock` and a memory-backed `/tls`
+volume. get-cert also needs the node inventory's socket in that directory,
+unless `--no-workload-claims` says the node runs none.
 
 Obtain a certificate with a DNS SAN:
 
 ```bash
 get-cert \
   --cds-url https://cds:8443 \
+  --image-policy-file cds-pin.json \
   --attestation-api-url unix:///run/c8s/workload-claims/attestation-api.sock \
   --san api.example.com \
-  --out /tls/cert.pem \
-  --key-out /tls/key.pem
+  --cert-path /tls/cert.pem \
+  --key-path /tls/key.pem \
+  --ca-path /tls/ca.pem
 ```
 
-Obtain a certificate with an IP SAN:
+The example names CDS and pins it with `cds-pin.json`, the pin
+`c8s cds config new` wrote, for a pod whose node supplies neither. The node's
+admission plugin mounts the CDS address at `/run/c8s/cds-address` and its pins
+at `/run/c8s/cds-pins.json` into an injected sidecar. get-cert then reads each
+from its mount and refuses the flag that would also supply it:
+`--cds-url` for the address, `--image-policy-file` or `--image-policy-json`
+for the pins. While the pins and the node's attestation-api socket are both
+mounted, `--attestation-api-url` must be
+`unix:///run/c8s/workload-claims/attestation-api.sock`.
 
-```bash
-get-cert \
-  --cds-url https://cds:8443 \
-  --attestation-api-url unix:///run/c8s/workload-claims/attestation-api.sock \
-  --san 10.0.0.1 \
-  --out /tls/cert.pem \
-  --key-out /tls/key.pem
-```
+`--san 10.0.0.1` requests an IP SAN instead, and `--no-san` requests none at
+all — CDS then takes the subject from the verified workload identity.
 
-Use an existing private key:
+## Credential generations
 
-```bash
-get-cert \
-  --cds-url https://cds:8443 \
-  --attestation-api-url unix:///run/c8s/workload-claims/attestation-api.sock \
-  --san api.example.com \
-  --key /tls/key.pem \
-  --out /tls/cert.pem
-```
+The leaf, key and CA are stored together under `generations/` in the directory
+the three paths share. Resolve `current` once, then read all three files from
+that directory for a consistent generation. The stable paths above are hard
+links replaced independently, key first, then CA, then leaf; readers of those
+paths can span generations during renewal. The leaf appears last so initial
+readiness requires the key and CA paths too.
+
+Every certificate request generates a fresh key. On a sidecar restart, a valid
+stored generation remains available until a replacement is published. Every
+response is validated first: matching key, chain to its own CA, this pod's
+workload instance.
+
+Replacing the CDS CA key requires recreating the pod. CA-watch renewal accepts
+a changed CA certificate only under the pod's bound issuer key.
 
 ## Flags
 
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
-| `--cds-url` | | *(required)* | URL of the running cds service |
-| `--cds-measurements` | | *(empty)* | Comma-separated SHA-384 hex launch measurements for CDS armTLS verification; empty accepts any attested CDS |
-| `--attestation-api-url` | | *(required)* | URL of the node attestation-api; pods use its mounted Unix socket |
-| `--san` | | *(required)* | Subject Alternative Name — IP address or hostname |
-| `--out` | `-o` | *(stdout)* | Path to write the signed certificate chain PEM |
-| `--key` | | *(ephemeral)* | Path to an existing PEM private key for the CSR |
-| `--key-out` | | | Path to write the private key PEM with mode `0600` (`0640` in shared setgid directories); must be on a memory-backed filesystem |
+| `--cds-url` | | *(empty)* | URL of the running cds service; required unless the node hands this client a CDS endpoint, and refused in an injected sidecar |
+| `--image-policy-file` | | *(empty)* | JSON pin document for the CDS endpoint, every entry bound to the launch file CDS runs on; required unless the node pins CDS |
+| `--image-policy-json` | | *(empty)* | The same pin document inline; excludes `--image-policy-file` |
+| `--attestation-api-url` | | *(required)* | URL of the node attestation-api; pods use its mounted Unix socket. A literal `$(NODE_IP)` is replaced by the address in `/run/c8s/node-ip` and `$(HOST_IP)` by the `HOST_IP` environment variable; startup fails when that source is missing or not an IP address |
+| `--san` | | | Subject Alternative Name — IP address or hostname; one of `--san`, `--san-file` or `--no-san` is required |
+| `--san-file` | | *(empty)* | Path to a file containing the certificate SAN |
+| `--no-san` | | `false` | Request a certificate with no SAN, for a pod without the `confidential.ai/cw` annotation |
+| `--cert-path` | | *(required)* | Path where the certificate chain PEM of the published generation is read |
+| `--key-path` | | *(required)* | Path where the private key PEM is read, mode `0600` (`0640` in shared setgid directories); must be in the `--cert-path` directory, on a memory-backed filesystem |
+| `--ca-path` | | *(required)* | Path where the mesh CA PEM is read; must be in the `--cert-path` directory |
 | `--renew-interval` | | `0` | Re-obtain the certificate at this interval; `0` runs once and exits |
-| `--ca-watch-interval` | | `1m` | Poll CDS and renew early when the mesh CA at `--ca-out` or the allowlist policy stamped by `--workload-claims` goes stale; applies only with `--renew-interval` and one of those flags, `0` disables |
-| `--reload-nginx` | | `true` | SIGHUP nginx after certificate renewal or watched file changes |
-| `--continue-on-initial-error` | | `false` | In renewal mode, keep running when the first certificate request fails |
+| `--renew-jitter-percent` | | `20` | Shorten each renewal delay by a random fraction of itself, up to this percent; `0` disables |
+| `--ca-watch-interval` | | `1m` | With `--renew-interval`, poll CDS at this interval. Renew at once when CDS serves a renewed CA certificate under the pod's bound CA key; with a workload identity assertion, also renew after a random delay of up to half the interval when CDS serves another allowlist policy than the one the leaf was stamped under. Replacing the CA key requires pod recreation. `0` disables; otherwise at least `1s` |
+| `--unnamed-renew-interval` | | `30s` | With `--renew-interval`, fast-poll renewal while the leaf carries no matched-workload stamp, starting at 2s and doubling up to this value; `0` disables |
+| `--expected-workload` | | *(empty)* | Allowlist entry this pod should be stamped with; a leaf stamped otherwise stays on the fast poll. Requires `--renew-interval` and a workload identity assertion |
+| `--initial-retry-timeout` | | `2m` | Retry the first certificate request for up to this long before failing; `0` tries once |
+| `--initial-retry-interval` | | `2s` | Delay between those retries; a refusal (403) or rate limit (429) backs off from here, doubling with jitter up to 5m |
+| `--continue-on-initial-error` | | `false` | In renewal mode, keep running when the first certificate request fails, retrying until a certificate is issued |
+| `--no-workload-claims` | | `false` | Request certificates without a workload identity assertion, for a pod whose node runs no admission inventory; the leaf then names no workload instance |
+| `--workload-claims-timeout` | | `5s` | Timeout for the admission inventory request |
+| `--measured-policies-file` | | `/run/c8s/workload-claims/measured-policies` | The node's journal of allowlist policies extended into TDX RTMR[3]; a TDX certificate request lists the policies it holds. Empty lists none |
+| `--discovery-out` | | *(empty)* | Path to write JSON discovery metadata for the issued certificate and attestation evidence |
+| `--discovery-cds-cert-url` | | *(empty)* | Public URL path where the CDS certificate PEM is served |
+| `--discovery-mesh-ca-url` | | *(empty)* | Public URL path where the mesh CA PEM is served |
+| `--discovery-public-tls-mode` | | `cds` | Public TLS mode to report in discovery metadata: `cds`, `webpki` or `acme` |
+| `--discovery-public-tls-mode-file` | | *(empty)* | File holding the public TLS mode, read at start; replaces `--discovery-public-tls-mode` |
+| `--discovery-public-tls-hostnames-file` | | *(empty)* | File holding launch-selected public hostnames; discovery reports the first without changing the CDS certificate SAN |
 | `--verbose` | `-v` | `false` | Enable debug logging |
 
 ## Output path validation
 
-Before generating keys or contacting cds, get-cert verifies that the output directories for `--out` and `--key-out` exist and are writable. This prevents requesting certificates that can't be saved.
+Before generating keys or contacting cds, get-cert verifies that the output directories exist and are writable. This prevents requesting certificates that can't be saved.
 
-The `--key-out` directory must additionally sit on a memory-backed filesystem (tmpfs or ramfs): the private key must never reach storage the host can read. In Kubernetes the injected cert volume is already a Memory-medium emptyDir, so this holds automatically; for manual runs point `--key-out` at a tmpfs such as `/dev/shm`. The cert and CA outputs are public and carry no such restriction.
+`--cert-path`, `--key-path` and `--ca-path` must name three distinct files in one directory: one pointer covers a generation only if it covers all three. That directory must sit on a memory-backed filesystem (tmpfs or ramfs), because the private key is published in it and must never reach storage the host can read. In Kubernetes the injected cert volume is already a Memory-medium emptyDir, so this holds automatically; for manual runs point the paths at a tmpfs such as `/dev/shm`.
 
 ## SAN detection
 
@@ -74,6 +108,6 @@ The `--san` flag accepts either an IP address or a hostname. get-cert automatica
 
 ## Certificate TTL
 
-Certificate lifetime is controlled server-side by cds's `--cert-ttl` flag (default 24h). get-cert does not set the TTL — configure it on the cds server.
+Certificate lifetime is set server-side by cds: `--cert-ttl` (default and cap 24h) for a leaf with no matched-workload stamp, and `--named-cert-ttl` (default and cap 6h) for a named leaf. get-cert does not set the TTL.
 
-For long-running pods, set `--renew-interval` shorter than the server-side TTL. When the workload is not nginx, pass `--reload-nginx=false` and have the workload reload the refreshed cert files using its own mechanism.
+For long-running pods, set `--renew-interval` shorter than the server-side TTL. The workload reads each republished generation as [Credential generations](#credential-generations) describes.

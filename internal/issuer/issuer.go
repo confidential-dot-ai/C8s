@@ -60,12 +60,6 @@ type CA struct {
 
 // NewCA generates a fresh self-signed ECDSA P-256 CA.
 func NewCA(commonName string, validity time.Duration) (*CA, error) {
-	return NewCAWithCurve(commonName, validity, elliptic.P256())
-}
-
-// NewCAWithCurve generates a fresh self-signed ECDSA CA on the given curve.
-// Use NewCA for the default P-256 mesh CA.
-func NewCAWithCurve(commonName string, validity time.Duration, curve elliptic.Curve) (*CA, error) {
 	commonName = strings.TrimSpace(commonName)
 	if commonName == "" {
 		commonName = DefaultCACommonName
@@ -74,7 +68,7 @@ func NewCAWithCurve(commonName string, validity time.Duration, curve elliptic.Cu
 		validity = DefaultCAValidity
 	}
 
-	key, err := ecdsa.GenerateKey(curve, rand.Reader)
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, fmt.Errorf("generate ca key: %w", err)
 	}
@@ -94,112 +88,6 @@ func NewCAWithCurve(commonName string, validity time.Duration, curve elliptic.Cu
 		return nil, fmt.Errorf("parse freshly-signed ca: %w", err)
 	}
 	return &CA{Cert: cert, Key: key}, nil
-}
-
-// NewCAWithParent generates a fresh ECDSA CA certificate on the given curve,
-// signed by parentCert/parentKey. This is used for rolling CA rotation: clients
-// that already trust the parent can authenticate the replacement CA before
-// adding it as a trust anchor.
-func NewCAWithParent(commonName string, validity time.Duration, curve elliptic.Curve, parentCert *x509.Certificate, parentKey *ecdsa.PrivateKey) (*CA, error) {
-	if parentCert == nil {
-		return nil, fmt.Errorf("parent ca certificate is required")
-	}
-	if parentKey == nil {
-		return nil, fmt.Errorf("parent ca key is required")
-	}
-	parentPub, ok := parentCert.PublicKey.(*ecdsa.PublicKey)
-	if !ok {
-		return nil, fmt.Errorf("parent ca certificate has non-ECDSA public key: %T", parentCert.PublicKey)
-	}
-	if !parentKey.PublicKey.Equal(parentPub) {
-		return nil, fmt.Errorf("parent ca key does not match certificate")
-	}
-	commonName = strings.TrimSpace(commonName)
-	if commonName == "" {
-		commonName = DefaultCACommonName
-	}
-	if validity <= 0 {
-		validity = DefaultCAValidity
-	}
-
-	key, err := ecdsa.GenerateKey(curve, rand.Reader)
-	if err != nil {
-		return nil, fmt.Errorf("generate ca key: %w", err)
-	}
-
-	serial, err := certutil.GenerateSerial()
-	if err != nil {
-		return nil, fmt.Errorf("generate ca serial: %w", err)
-	}
-
-	tmpl := certutil.NewCATemplate(serial, commonName, time.Now().Add(validity))
-	certDER, err := x509.CreateCertificate(rand.Reader, tmpl, parentCert, &key.PublicKey, parentKey)
-	if err != nil {
-		return nil, fmt.Errorf("sign ca with parent: %w", err)
-	}
-	cert, err := x509.ParseCertificate(certDER)
-	if err != nil {
-		return nil, fmt.Errorf("parse freshly-signed ca: %w", err)
-	}
-	return &CA{Cert: cert, Key: key}, nil
-}
-
-// WrapCA wraps a pre-parsed certificate and private key as a CA suitable for
-// SignCSR. It verifies the certificate is currently usable for CA signing and
-// that the key matches the cert's public key so a misconfigured bundle surfaces
-// here rather than producing an unverifiable leaf on the first signing request.
-// Prefer this constructor over &CA{...} so any future field that participates
-// in signing is propagated in one place.
-func WrapCA(cert *x509.Certificate, key *ecdsa.PrivateKey) (*CA, error) {
-	if cert == nil {
-		return nil, fmt.Errorf("wrap ca: cert is required")
-	}
-	if key == nil {
-		return nil, fmt.Errorf("wrap ca: key is required")
-	}
-	certPub, ok := cert.PublicKey.(*ecdsa.PublicKey)
-	if !ok {
-		return nil, fmt.Errorf("wrap ca: cert has non-ECDSA public key: %T", cert.PublicKey)
-	}
-	if !key.PublicKey.Equal(certPub) {
-		return nil, fmt.Errorf("wrap ca: key does not match cert public key")
-	}
-	if err := validateUsableCA(cert, time.Now()); err != nil {
-		return nil, err
-	}
-	return &CA{Cert: cert, Key: key}, nil
-}
-
-func validateUsableCA(cert *x509.Certificate, now time.Time) error {
-	if !cert.IsCA {
-		return fmt.Errorf("wrap ca: certificate is not a CA")
-	}
-	if !cert.BasicConstraintsValid {
-		return fmt.Errorf("wrap ca: CA certificate basic constraints are invalid")
-	}
-	if cert.NotBefore.After(now) {
-		return fmt.Errorf("wrap ca: CA certificate is not valid before %s", cert.NotBefore.Format(time.RFC3339))
-	}
-	if cert.NotAfter.Before(now) {
-		return fmt.Errorf("wrap ca: CA certificate expired at %s", cert.NotAfter.Format(time.RFC3339))
-	}
-	if cert.KeyUsage != 0 && cert.KeyUsage&x509.KeyUsageCertSign == 0 {
-		return fmt.Errorf("wrap ca: CA certificate key usage does not allow certificate signing")
-	}
-	return nil
-}
-
-// LoadCA reconstructs a CA from PEM-encoded cert and key bytes.
-func LoadCA(certPEM, keyPEM []byte) (*CA, error) {
-	cert, err := certutil.ParseCertificatePEM(certPEM)
-	if err != nil {
-		return nil, fmt.Errorf("parse ca cert: %w", err)
-	}
-	key, err := certutil.ParseECPrivateKey(keyPEM)
-	if err != nil {
-		return nil, fmt.Errorf("parse ca key: %w", err)
-	}
-	return WrapCA(cert, key)
 }
 
 // PEM returns the CA cert and key as PEM bytes.

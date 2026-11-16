@@ -1,7 +1,6 @@
 package cmdsutil
 
 import (
-	"bytes"
 	"context"
 	"flag"
 	"io"
@@ -20,7 +19,7 @@ import (
 
 func TestRunMainSuccess(t *testing.T) {
 	called := false
-	RunMain(func(args []string) error {
+	RunMain(func(context.Context, []string) error {
 		called = true
 		return nil
 	})
@@ -31,15 +30,24 @@ func TestRunMainSuccess(t *testing.T) {
 
 func TestRunMainHelpDoesNotExit(t *testing.T) {
 	// flag.ErrHelp must be swallowed (return, not os.Exit).
-	RunMain(func(args []string) error {
+	RunMain(func(context.Context, []string) error {
 		return flag.ErrHelp
 	})
+}
+
+func ramBacked(dir string) error {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	return fileutil.RequireRAMBackedRoot(root)
 }
 
 func TestRequireRAMBackedDir(t *testing.T) {
 	dir := t.TempDir()
 	err := RequireRAMBackedDir("--out-dir", dir)
-	if fileutil.RequireRAMBacked(dir) == nil {
+	if ramBacked(dir) == nil {
 		if err != nil {
 			t.Fatalf("RAM-backed dir refused: %v", err)
 		}
@@ -53,7 +61,7 @@ func TestRequireRAMBackedDir(t *testing.T) {
 func TestOpenRAMBackedDir(t *testing.T) {
 	dir := t.TempDir()
 	root, err := OpenRAMBackedDir("--out-dir", dir)
-	if fileutil.RequireRAMBacked(dir) == nil {
+	if ramBacked(dir) == nil {
 		if err != nil {
 			t.Fatalf("RAM-backed dir refused: %v", err)
 		}
@@ -206,21 +214,6 @@ func TestValidateAttestationAPIURL(t *testing.T) {
 	}
 }
 
-func TestWarnIfCDSUnpinned(t *testing.T) {
-	var logs bytes.Buffer
-	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
-	t.Cleanup(func() { slog.SetDefault(previous) })
-	for _, count := range []int{0, 1, 2} {
-		logs.Reset()
-		WarnIfCDSUnpinned(count, "unpinned development configuration")
-		warned := strings.Contains(logs.String(), "unpinned development configuration")
-		if warned != (count == 0) {
-			t.Errorf("measurement count %d: warning=%t", count, warned)
-		}
-	}
-}
-
 func TestExpandHostIP(t *testing.T) {
 	for _, tc := range []struct {
 		name, hostIP, in, want string
@@ -278,3 +271,29 @@ func TestExpandNodeIP(t *testing.T) {
 }
 
 func ptr(s string) *string { return &s }
+
+// An interrupted prompt is a no, though nothing was typed.
+func TestConfirmRefusesOnceItsContextEnds(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	terminal, typing := io.Pipe()
+	defer typing.Close()
+	if Confirm(ctx, terminal, io.Discard, "sign it?") {
+		t.Fatal("Confirm accepted after its context ended")
+	}
+}
+
+func TestConfirmAcceptsOnlyYes(t *testing.T) {
+	for answer, want := range map[string]bool{
+		"y\n": true, "yes\n": true, " YES \n": true, "Y": true,
+		"n\n": false, "\n": false, "": false, "yes please\n": false, "sure\n": false,
+	} {
+		var prompt strings.Builder
+		if got := Confirm(t.Context(), strings.NewReader(answer), &prompt, "sign it?"); got != want {
+			t.Errorf("Confirm(%q) = %v, want %v", answer, got, want)
+		}
+		if prompt.String() != "sign it? [y/N] " {
+			t.Errorf("prompt = %q", prompt.String())
+		}
+	}
+}

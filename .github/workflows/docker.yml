@@ -4,56 +4,39 @@ on:
   # Publish component images on EVERY push to main.
   #
   # NO paths filter on the push trigger, deliberately. This workflow is the head
-  # of the post-merge chain: confidential-e2e fires off its completion via
-  # workflow_run, so a path gate here does not just skip an image build, it
-  # deletes that merge's SEV-SNP integration run. Its comment says "run the
-  # c8s e2e ... for every main merge", which was silently false for 25 of the
-  # last 100 merges. Verified: 0e3a876 and a7eb195 have ZERO Docker runs, their
-  # confidential-e2e workflow_run instances were skipped, and the only green
-  # runs on those shas came from a human pressing workflow_dispatch.
+  # of the post-merge chain: c8s-image-publish.yml fires off its completion via
+  # workflow_run, so a path gate here does not just skip a component build, it
+  # deletes that merge's measured image build.
   #
   # A push that changes no buildable source is cheap AND is the correct thing to
   # publish: paths-filter reports every component unchanged, docker-build-matrix.sh
   # emits has_images=false with all five components in retag_matrix, `images`
   # skips, and retag-unchanged aliases each component's current :main manifest to
   # :<short-sha> (`oras tag` writes the registry tag index only, no layer upload).
-  # That alias IS what the commit deploys, so e2e-c8s.yml's resolve_tag() hits
-  # :<short-sha> on its first probe instead of walking ancestry. This exact shape
-  # already runs green end to end: run 30024702633 (45cd7a0) took 18s, and its
-  # cascade produced a successful SEV-SNP e2e (30024734575).
+  # That alias is what the worker image bakes at that C8S_REF.
   #
   # The protected beta branch runs the same chain and publishes prereleases.
   push:
     branches: [main, beta]
-  # PRs stay path-gated: a PR run builds and scans but publishes nothing (see the
-  # push/dispatch gates on the login and build-push steps), so a docs-only PR has
-  # nothing to gain from it. The list is inlined because the YAML anchor it used
-  # to alias (&docker-paths) lived on the push trigger above.
+  # A pull request run builds and scans but publishes nothing (see the
+  # push/dispatch gates on the login and build-push steps). The per-component
+  # filter in `changes` below decides what it builds.
   pull_request:
     branches: [main, beta]
-    paths:
-      - "**.go"
-      - "go.mod"
-      - "go.sum"
-      - "go.work"
-      - "go.work.sum"
-      - "cmd/**/Dockerfile"
-      - "cmd/nri-image-policy/enable-nri.sh"
-      - "internal/helmchart/c8s/**"
-      - "Makefile"
-      - ".github/workflows/docker.yml"
+  # Queued commits get the PR run's build and scan; publication stays on push.
+  merge_group:
+    types: [checks_requested]
+    branches: [main, beta]
   # Manual rebuild escape hatch, for a rebuild with NO new commit behind it: a
   # base-image refresh or a registry re-push. workflow_dispatch publishes EVERY
   # component image at this commit's tags (the matrix fans out to all of them,
-  # see docker-build-matrix.sh). NOTE: dispatching this workflow just to give
-  # a docs-only merge its images and its TEE run is no
-  # longer necessary; the unfiltered push trigger above covers that.
+  # see docker-build-matrix.sh). Dispatching it to give a docs-only merge its
+  # images is unnecessary: the unfiltered push trigger above covers that.
   workflow_dispatch:
 
 permissions:
   contents: read
   packages: write
-  pull-requests: read   # dorny/paths-filter calls the PR files API on PR events
 
 env:
   REGISTRY: ghcr.io
@@ -61,7 +44,7 @@ env:
 jobs:
   # Per-image jobs run only when the component's own cmd/<X> or
   # internal/cmds/<X> changed (this applies to both PR events and
-  # pushes to main). Shared code (pkg/**, root internal/** minus
+  # pushes to main). Shared code (api/**, pkg/**, root internal/** minus
   # cmds/helmchart, go.mod/sum, Makefile, this workflow) fans out to
   # every image. The final release job rebuilds the complete component set from
   # this exact revision before applying its SemVer aliases.
@@ -73,6 +56,10 @@ jobs:
   changes:
     name: Detect changed components
     runs-on: ubuntu-latest
+    # dorny/paths-filter reads a pull request's files from the API.
+    permissions:
+      contents: read
+      pull-requests: read
     outputs:
       matrix: ${{ steps.docker-matrix.outputs.matrix }}
       has_images: ${{ steps.docker-matrix.outputs.has_images }}
@@ -84,6 +71,8 @@ jobs:
       has_retag: ${{ steps.docker-matrix.outputs.has_retag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       # A component filter that names a directory which does not exist matches
       # NOTHING, so paths-filter reports that component unchanged, the build is
       # skipped, and retag-unchanged aliases :main onto the new sha anyway. The
@@ -112,6 +101,7 @@ jobs:
       # this step skipped its outputs read empty downstream, which the matrix
       # script correctly sees as "no per-component filter" before falling through
       # to the fan-out.
+      # v4 reads a merge group's base from the event; an older pin would not.
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
         if: github.event_name != 'workflow_dispatch'
@@ -119,7 +109,7 @@ jobs:
           predicate-quantifier: every
           filters: |
             shared-core:
-              - '{pkg/**,internal/**}'
+              - '{api/**,pkg/**,internal/**}'
               - '!internal/cmds/**'
               - '!internal/helmchart/**'
               - '!**/*_test.go'
@@ -136,10 +126,9 @@ jobs:
             c8s:
               # cmd/c8s is the multi-mode binary used by the operator image;
               # it imports every internal/cmds subcommand, including get-cert.
-              # internal/helmchart/c8s is embedded into the binary (see
-              # internal/helmchart's //go:embed), so a chart-only change must
-              # rebuild it too.
-              - '{cmd/c8s/**,internal/cmds/**,internal/helmchart/c8s/**}'
+              # charts/ is embedded into the binary (see charts/embed.go), so
+              # a chart-only change must rebuild it too.
+              - '{charts/**,cmd/c8s/**,internal/cmds/**,internal/helmchart/**}'
             cds:
               - '{cmd/cds/**,internal/cmds/cds/**}'
             get-cert:
@@ -154,8 +143,9 @@ jobs:
         id: docker-matrix
         env:
           # A beta push rebuilds every component: retag-unchanged copies :main,
-          # which does not describe a beta commit.
-          SHARED: ${{ github.ref == 'refs/heads/beta' || steps.filter.outputs['shared-core'] == 'true' || steps.filter.outputs['shared-cmdsutil'] == 'true' || steps.filter.outputs['shared-root'] == 'true' }}
+          # which does not describe a beta commit. Every image ships the same
+          # multi-command build/c8s binary, so a change to it rebuilds them all.
+          SHARED: ${{ github.ref == 'refs/heads/beta' || steps.filter.outputs['shared-core'] == 'true' || steps.filter.outputs['shared-cmdsutil'] == 'true' || steps.filter.outputs['shared-root'] == 'true' || steps.filter.outputs.c8s == 'true' }}
           C8S: ${{ steps.filter.outputs.c8s }}
           CDS: ${{ steps.filter.outputs.cds }}
           GET_CERT: ${{ steps.filter.outputs['get-cert'] }}
@@ -171,6 +161,8 @@ jobs:
     if: needs.changes.outputs.has_images == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/setup-go-c8s
       - name: Download Go modules
         run: go mod download
@@ -187,6 +179,8 @@ jobs:
       matrix: ${{ fromJSON(needs.changes.outputs.matrix) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - uses: ./.github/actions/setup-go-c8s
 
@@ -198,7 +192,7 @@ jobs:
 
       - name: Log in to GHCR
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -241,6 +235,8 @@ jobs:
           # PR runs read :main and, not pushing, write nothing.
           cache-from: type=registry,ref=${{ matrix.image }}:main
           cache-to: type=inline
+
+      - uses: ./.github/actions/setup-grype
 
       - name: Scan Docker image
         id: container-scan
@@ -324,13 +320,13 @@ jobs:
             echo "::warning::proceeding after a 15m wait; :main may lag an older in-flight build"
           fi
       - name: Log in to GHCR
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Setup ORAS
-        uses: oras-project/setup-oras@005458ad77f1c8facd38a094e4af2e69e5607ff4 # v2.0.2
+        uses: oras-project/setup-oras@5e2f2482b30b0cb3e14e67f89a80c88c659a7c63 # v2.0.3
       - name: Retag :main -> :${{ github.sha }} (short)
         env:
           IMAGE: ${{ matrix.image }}
@@ -378,3 +374,20 @@ jobs:
       packages: write # Alias component images and publish the Helm chart.
     with:
       target-sha: ${{ github.sha }}
+
+  result:
+    name: Docker result
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    needs: [changes, go-modules, images, retag-unchanged, release-tag]
+    if: always()
+    steps:
+      # A job skipped by a failed dependency also reports skipped, so the changes job is read on its own.
+      - name: Require every job to have succeeded or skipped
+        if: needs.changes.result != 'success' || contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS"
+          exit 1

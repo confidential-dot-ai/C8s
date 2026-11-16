@@ -24,33 +24,20 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	sigsyaml "sigs.k8s.io/yaml"
 
+	"github.com/confidential-dot-ai/c8s/charts"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cdsca"
+	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/routes"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/verify"
 	"github.com/confidential-dot-ai/c8s/internal/helmchart"
 	"github.com/confidential-dot-ai/c8s/internal/webhook"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 var errTestResolve = errors.New("simulated resolve failure")
 
-func TestOperatorKeysPreflight(t *testing.T) {
-	// Keys provided → no gate, no warning.
-	if warn, err := operatorKeysPreflight("operator.pub", nil, false); err != nil || warn != "" {
-		t.Fatalf("keys provided: want no error/warn, got warn=%q err=%v", warn, err)
-	}
-	// Default path, no keys, no force → hard error (must acknowledge).
-	if _, err := operatorKeysPreflight("", nil, false); err == nil {
-		t.Fatal("no keys + no force: expected an error requiring --operator-keys or --force")
-	}
-	// Default path, no keys, --force → allowed, but warns.
-	if warn, err := operatorKeysPreflight("", nil, true); err != nil || warn == "" {
-		t.Fatalf("no keys + force: want warn and no error, got warn=%q err=%v", warn, err)
-	}
-	// -f supplied → operator owns cds.operatorKeys in their values file; no gate.
-	if warn, err := operatorKeysPreflight("", []string{"custom.yaml"}, false); err != nil || warn != "" {
-		t.Fatalf("-f supplied: want no error/warn, got warn=%q err=%v", warn, err)
-	}
-}
-
-func TestRouteSourcePreflight(t *testing.T) {
+func TestCDSPinPreflight(t *testing.T) {
 	dir := t.TempDir()
 	file := func(name, body string) string {
 		path := filepath.Join(dir, name)
@@ -59,77 +46,50 @@ func TestRouteSourcePreflight(t *testing.T) {
 		}
 		return path
 	}
-	optIn := file("opt-in.yaml", "router:\n  routing:\n    allowUnpinnedCDS: true\n")
-	optOut := file("opt-out.yaml", "router:\n  routing:\n    allowUnpinnedCDS: false\n")
+	named := file("named.yaml", "cds:\n  address: 10.9.9.9:8443\n  measurementsConfig: '{}'\n")
+	addressOnly := file("address.yaml", "cds:\n  address: 10.9.9.9:8443\n")
+	emptied := file("emptied.yaml", "cds:\n  address: \"\"\n")
 	for _, tc := range []struct {
-		name               string
-		measurements       []string
-		measurementsConfig string
-		operatorKeys       string
-		values             []string
-		wantErr            bool
+		name         string
+		address, pin string
+		values       []string
+		wantErr      bool
 	}{
-		{name: "nothing pinned", wantErr: true},
-		{name: "--measurements", measurements: []string{"ab"}},
-		{name: "--image-policy-file", measurementsConfig: "server.json"},
-		{name: "--operator-keys", operatorKeys: "operator-pub.pem"},
-		{name: "opt-in", values: []string{optIn}},
-		{name: "later file opts out", values: []string{optIn, optOut}, wantErr: true},
-		{name: "cds.measurements", values: []string{file("m.yaml", "cds:\n  measurements: [ab]\n")}},
-		{name: "empty cds.measurements", values: []string{file("e.yaml", "cds:\n  measurements: []\n")}, wantErr: true},
-		{name: "cds.operatorKeys", values: []string{file("k.yaml", "cds:\n  operatorKeys: pem\n")}},
-		{name: "router disabled", values: []string{file("r.yaml", "router:\n  enabled: false\n")}},
-		{name: "baked node", values: []string{file("b.yaml", "node:\n  baked: true\n")}},
+		{name: "nothing named", wantErr: true},
+		{name: "address and pin", address: "10.9.9.9:8443", pin: "cds-pin.json"},
+		{name: "address alone", address: "10.9.9.9:8443", wantErr: true},
+		{name: "pin alone", pin: "cds-pin.json", wantErr: true},
+		{name: "cds.address and cds.measurementsConfig", values: []string{named}},
+		{name: "cds.address alone", values: []string{addressOnly}, wantErr: true},
+		{name: "later file keeps the CDS", values: []string{addressOnly, named}},
+		{name: "later file drops the address", values: []string{named, emptied}, wantErr: true},
+		{name: "cds.operatorKeys names no CDS", values: []string{file("k.yaml", "cds:\n  operatorKeys: pem\n")}, wantErr: true},
+		{name: "router disabled still needs a CDS", values: []string{file("r.yaml", "router:\n  enabled: false\n")}, wantErr: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := routeSourcePreflight(tc.measurements, tc.measurementsConfig, tc.operatorKeys, tc.values)
+			err := cdsPreflight(tc.address, tc.pin, tc.values)
 			if (err != nil) != tc.wantErr {
-				t.Fatalf("routeSourcePreflight() = %v, want error %v", err, tc.wantErr)
+				t.Fatalf("cdsPreflight() = %v, want error %v", err, tc.wantErr)
 			}
 		})
 	}
 }
 
-func TestDefaultInstallImageTag(t *testing.T) {
-	tests := []struct {
-		name         string
-		buildVersion string
-		want         string
-	}{
-		{name: "release tag used verbatim", buildVersion: "v0.1.0", want: "v0.1.0"},
-		{name: "empty falls back", buildVersion: "", want: "main"},
-		{name: "unstamped default falls back", buildVersion: "dev", want: "main"},
-		{name: "git describe derivative falls back", buildVersion: "v0.1.0-5-gabc1234", want: "main"},
-		{name: "dirty tree falls back", buildVersion: "v0.1.0-dirty", want: "main"},
-		{name: "bare commit sha falls back", buildVersion: "abc1234", want: "main"},
-		{name: "branch name falls back", buildVersion: "feat-phase5-chart-docs", want: "main"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := defaultInstallImageTag(tt.buildVersion)
-			if got != tt.want {
-				t.Fatalf("defaultInstallImageTag(%q) = %q, want %q", tt.buildVersion, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestResolveImageTag(t *testing.T) {
-	prev := installImageTag
-	defer func() { installImageTag = prev }()
-
-	// --image-tag set wins over the build-version default.
-	installImageTag = "v9.9.9"
-	if got := resolveImageTag(); got != "v9.9.9" {
-		t.Errorf("with --image-tag set: got %q, want v9.9.9", got)
-	}
-
-	// Unset falls back to the build-version default. An unstamped test build is
-	// not a release tag, so that default is the fallback tag.
-	installImageTag = ""
-	if got := resolveImageTag(); got != fallbackImageTag {
-		t.Errorf("unset: got %q, want the fallback tag %q", got, fallbackImageTag)
+func TestReleaseChartVersion(t *testing.T) {
+	for cliVersion, want := range map[string]string{
+		"":                       "",
+		"abc1234":                "",
+		"dev":                    "",
+		"v0.1.0":                 "0.1.0",
+		"v0.1.0-5-gabc1234":      "",
+		"v0.1.0-dirty":           "",
+		"v0.92.0-beta.2":         "0.92.0-beta.2",
+		"v0.92.0-beta.2-1-gabc1": "",
+	} {
+		got, ok := releaseChartVersion(cliVersion)
+		if got != want || ok != (want != "") {
+			t.Errorf("releaseChartVersion(%q) = %q, %v, want %q", cliVersion, got, ok, want)
+		}
 	}
 }
 
@@ -161,98 +121,79 @@ func TestNamespaceManifestSetsPrivilegedPodSecurityLabels(t *testing.T) {
 	}
 }
 
-func TestAppendInstallCRDArgsDisablesStatusMirrorWhenSkippingCRDs(t *testing.T) {
-	// Emits the value only; helm's --skip-crds invocation flag is added at the
-	// install call site, not here (these args become a values tree).
-	got := appendInstallCRDArgs([]string{"--set", "image.tag=main"}, false)
-	want := []string{"--set", "image.tag=main", "--set", "statusMirror.enabled=false"}
-	if len(got) != len(want) {
-		t.Fatalf("args length = %d, want %d: %v", len(got), len(want), got)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("args[%d] = %q, want %q; got %v", i, got[i], want[i], got)
-		}
-	}
-}
-
-func TestAppendInstallCRDArgsLeavesStatusMirrorEnabledWithCRDs(t *testing.T) {
-	got := appendInstallCRDArgs([]string{"--set", "image.tag=main"}, true)
-	want := []string{"--set", "image.tag=main"}
-	if len(got) != len(want) {
-		t.Fatalf("args length = %d, want %d: %v", len(got), len(want), got)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("args[%d] = %q, want %q; got %v", i, got[i], want[i], got)
-		}
-	}
-}
-
 // The helm argv ordering is load-bearing: operator -f files before the computed
-// file (last -f wins, so computed values win on the keys they set), and
-// --skip-crds present iff CRDs are skipped.
+// file (last -f wins, so computed values win on the keys they set).
 func TestBuildInstallHelmArgsOrdering(t *testing.T) {
 	prevRel, prevNs := installRelease, installNamespace
 	defer func() { installRelease, installNamespace = prevRel, prevNs }()
 	installRelease, installNamespace = "c8s", "c8s-system"
 
-	// CRDs installed, two operator -f files, wait on: computed file is LAST -f.
-	assertArgsEqual(t, buildInstallHelmArgs("/chart", "/tmp/computed.yaml", []string{"a.yaml", "b.yaml"}, true, true), []string{
+	// Two operator -f files, wait on: computed file is LAST -f.
+	assertArgsEqual(t, buildInstallHelmArgs("/chart", "/tmp/computed.yaml", []string{"a.yaml", "b.yaml"}, true), []string{
 		"upgrade", "--install", "c8s", "/chart", "--namespace", "c8s-system",
 		"-f", "a.yaml", "-f", "b.yaml", "-f", "/tmp/computed.yaml",
 		"--wait", "--timeout=5m",
 	})
 
-	// CRDs skipped, no operator -f, wait off: --skip-crds present, computed file
-	// still the last (only) -f, no --wait.
-	assertArgsEqual(t, buildInstallHelmArgs("/chart", "/tmp/computed.yaml", nil, false, false), []string{
+	// No operator -f, wait off: computed file the only -f, no --wait.
+	assertArgsEqual(t, buildInstallHelmArgs("/chart", "/tmp/computed.yaml", nil, false), []string{
 		"upgrade", "--install", "c8s", "/chart", "--namespace", "c8s-system",
-		"--skip-crds", "-f", "/tmp/computed.yaml",
+		"-f", "/tmp/computed.yaml",
 	})
 
 }
 
-// --cvm-mode is required: empty or unknown must error.
-func TestValidateCvmModeRequiresKnownValue(t *testing.T) {
-	if err := validateCvmMode(""); err == nil {
-		t.Fatal("empty --cvm-mode: want error, got nil")
-	}
-	if err := validateCvmMode("bogus"); err == nil {
-		t.Fatal("unknown --cvm-mode: want error, got nil")
-	}
-	for _, mode := range allowedCvmModes {
-		if err := validateCvmMode(mode); err != nil {
-			t.Errorf("mode %q: unexpected error: %v", mode, err)
+// --platform is one of the stock values files, or empty for -f to set the
+// platform keys.
+func TestValidatePlatform(t *testing.T) {
+	for _, platform := range append([]string{""}, cloudPlatforms...) {
+		if err := validatePlatform(platform); err != nil {
+			t.Errorf("validatePlatform(%q) = %v, want nil", platform, err)
 		}
 	}
+	if err := validatePlatform("aks"); err == nil {
+		t.Error("validatePlatform(aks) = nil, want error")
+	}
 }
 
-func TestAppendSingleNodeInstallArgsDisabledIsNoOp(t *testing.T) {
-	got := appendSingleNodeInstallArgs([]string{"upgrade"}, false)
-	assertArgsEqual(t, got, []string{"upgrade"})
-}
-
-func TestAppendSingleNodeInstallArgsClearsCDSNodePinning(t *testing.T) {
-	// --single-node must null both the selector (drops the role=cds pin and
-	// collapses the installer split) and the tolerations (the dedicated-node
-	// taint is meaningless without a dedicated node).
-	got := appendSingleNodeInstallArgs([]string{"upgrade"}, true)
-	assertArgsEqual(t, got, []string{
-		"upgrade",
-		"--set", "cds.node.selector=null",
-		"--set", "cds.node.tolerations=null",
-	})
+// Every --platform names a stock file the embedded chart carries, and the
+// operator's own -f files come after it, as helm's precedence needs.
+func TestCloudPlatformsHaveStockFiles(t *testing.T) {
+	for _, platform := range cloudPlatforms {
+		files := orderedValuesFiles(helmchart.CloudChartFSPath, platform, []string{"own.yaml"})
+		if _, err := charts.FS.ReadFile(files[0]); err != nil {
+			t.Errorf("--platform %s: %v", platform, err)
+		}
+		if want := []string{filepath.Join(helmchart.CloudChartFSPath, "values-"+platform+".yaml"), "own.yaml"}; !reflect.DeepEqual(files, want) {
+			t.Errorf("--platform %s selects %v, want %v", platform, files, want)
+		}
+	}
+	if files := orderedValuesFiles(helmchart.CloudChartFSPath, "", []string{"own.yaml"}); !reflect.DeepEqual(files, []string{"own.yaml"}) {
+		t.Errorf("no --platform selects %v, want the -f files alone", files)
+	}
 }
 
 func TestAppendVolumedInstallArgsDisabledIsNoOp(t *testing.T) {
-	got := appendVolumedInstallArgs([]string{"upgrade"}, false)
-	assertArgsEqual(t, got, []string{"upgrade"})
+	resetCLIState(t)
+	got, err := buildComputedValues(map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if volumed, ok := got["volumed"]; ok {
+		t.Fatalf("computed volumed = %v without --volumes, want no volumed key", volumed)
+	}
 }
 
 func TestAppendVolumedInstallArgsEnablesTheNodeAgent(t *testing.T) {
-	got := appendVolumedInstallArgs([]string{"upgrade"}, true)
-	assertArgsEqual(t, got, []string{"upgrade", "--set", "volumed.enabled=true"})
+	resetCLIState(t)
+	installVolumes = true
+	got, err := buildComputedValues(map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := map[string]any{"enabled": true}; !reflect.DeepEqual(got["volumed"], want) {
+		t.Fatalf("computed volumed = %v, want %v", got["volumed"], want)
+	}
 }
 
 func TestParseWorkloadRef(t *testing.T) {
@@ -374,7 +315,8 @@ func TestValidateWorkloadAdoptionFlags(t *testing.T) {
 	}{
 		{name: "no ref is valid", wait: false},
 		{name: "adopt in a separate namespace is valid", releaseNS: "c8s-system", refs: []string{"router=workloads/deployment/vllm"}, wait: true},
-		{name: "ref rejects release namespace", releaseNS: "c8s-system", refs: []string{"router=c8s-system/deployment/vllm"}, wait: true, wantErr: []string{"--workload-ref", "release namespace", "excluded"}},
+		{name: "ref rejects release namespace", releaseNS: "c8s-system", refs: []string{"router=c8s-system/deployment/vllm"}, wait: true, wantErr: []string{"--workload-ref", "c8s-system", "excluded"}},
+		{name: "ref rejects the router namespace", releaseNS: "c8s-system", refs: []string{"router=c8s-router/deployment/vllm"}, wait: true, wantErr: []string{"--workload-ref", workloadclaims.RouterNamespace, "excluded"}},
 		{name: "ref requires wait", releaseNS: "c8s-system", refs: []string{"router=workloads/deployment/vllm"}, wait: false, wantErr: []string{"--workload-ref", "--wait=true"}},
 	}
 	for _, tt := range tests {
@@ -608,7 +550,7 @@ func TestBuildWorkloadImageArgsWritesOneEntryPerWorkload(t *testing.T) {
 		return "", nil
 	}
 	scratch := corev1.VolumeMount{Name: "scratch", MountPath: "/scratch/"}
-	got, entries, err := buildWorkloadImageArgs([]string{"upgrade"}, []adoptedWorkload{
+	workloadAllowlist, err := buildWorkloadImageValues([]adoptedWorkload{
 		{
 			workloadAdoption: workloadAdoption{cwID: "infer", ref: workloadRef{kind: "deployment", name: "vllm", namespace: "ws"}},
 			template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
@@ -623,40 +565,50 @@ func TestBuildWorkloadImageArgsWritesOneEntryPerWorkload(t *testing.T) {
 			}},
 		},
 	}, "", io.Discard, resolve)
+	got, entries := workloadAllowlist.values, workloadAllowlist.entries
 	if err != nil {
-		t.Fatalf("buildWorkloadImageArgs: %v", err)
+		t.Fatalf("buildWorkloadImageValues: %v", err)
 	}
-	container := func(field string, i int, digest, ref string, mounts ...string) []string {
-		p := fmt.Sprintf("nriImagePolicy.bootstrapAllowlist.workloads.infer.%s[%d].", field, i)
-		args := []string{
-			"--set-string", p + "digest=" + digest,
-			"--set-string", p + "image=" + ref,
-			"--set-string", p + "command.policy=any",
-			"--set-string", p + "args.policy=any",
-			"--set-string", p + "env.policy=any",
-			"--set-string", p + "mounts.policy=exact",
+	container := func(digest, ref string, mounts ...string) map[string]any {
+		c := map[string]any{
+			"digest":  digest,
+			"image":   ref,
+			"command": map[string]any{"policy": "any"},
+			"args":    map[string]any{"policy": "any"},
+			"env":     map[string]any{"policy": "any"},
+			"mounts":  map[string]any{"policy": "deny"},
 		}
-		for i, m := range mounts {
-			r := fmt.Sprintf("%smounts.rules[%d].", p, i)
-			args = append(args, "--set-string", r+"destination="+m, "--set-string", r+"kind=emptyDir")
+		if len(mounts) > 0 {
+			var rules []any
+			for _, m := range mounts {
+				rules = append(rules, map[string]any{"destination": m, "kind": "emptyDir"})
+			}
+			c["mounts"] = map[string]any{"policy": "exact", "rules": rules}
 		}
-		return args
+		return c
 	}
-	want := []string{"upgrade", "--set-string", "nriImagePolicy.bootstrapAllowlist.workloads.infer.label=ws/deployment/vllm"}
-	want = append(want, container("containers", 0, dB, "ghcr.io/acme/router@"+dB, "/etc/c8s/certs")...)
-	want = append(want, container("containers", 1, dA, "ghcr.io/acme/engine@"+dA, "/etc/c8s/certs", "/scratch")...)
-	want = append(want, container("initContainers", 0, dC, "docker.io/library/busybox@"+dC, "/etc/c8s/certs")...)
-	assertArgsEqual(t, got, want)
-	if slices.ContainsFunc(got, func(a string) bool { return strings.HasSuffix(a, "mounts.policy=any") }) {
-		t.Fatal("an adopted workload's entry admits any mount")
+	want := map[string]any{
+		"nriImagePolicy": map[string]any{
+			"bootstrapAllowlist": map[string]any{
+				"workloads": map[string]any{
+					"infer": map[string]any{
+						"label": "ws/deployment/vllm",
+						"containers": []any{
+							container(dB, "ghcr.io/acme/router@"+dB),
+							container(dA, "ghcr.io/acme/engine@"+dA, "/scratch"),
+						},
+						"initContainers": []any{container(dC, "docker.io/library/busybox@"+dC)},
+					},
+				},
+			},
+		},
 	}
-	// install hands these args to helm as a values file, so they must build
-	// one, and the entry in it must be one CDS accepts.
-	tree, err := valueArgsToTree(got[1:])
-	if err != nil {
-		t.Fatalf("valueArgsToTree: %v", err)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("buildWorkloadImageValues() = %#v, want %#v", got, want)
 	}
-	workloads, _ := nestedMap(tree, "nriImagePolicy", "bootstrapAllowlist", "workloads")
+	// install hands these values to helm as a values file, so the entry in
+	// them must be one CDS accepts.
+	workloads, _ := nestedMap(got, "nriImagePolicy", "bootstrapAllowlist", "workloads")
 	raw, err := json.Marshal(workloads["infer"])
 	if err != nil {
 		t.Fatal(err)
@@ -669,8 +621,8 @@ func TestBuildWorkloadImageArgsWritesOneEntryPerWorkload(t *testing.T) {
 	if i < 0 {
 		t.Fatalf("parsed entry %+v lacks the engine image", w)
 	}
-	if m := w.Containers[i].Mounts; m.Policy != pkgallowlist.PolicyExact || len(m.Rules) != 2 {
-		t.Fatalf("engine mounts = %+v, want exact /etc/c8s/certs and /scratch", m)
+	if m := w.Containers[i].Mounts; m.Policy != pkgallowlist.PolicyExact || len(m.Rules) != 1 {
+		t.Fatalf("engine mounts = %+v, want exact /scratch", m)
 	}
 	e := entries["infer"]
 	if got, want := normalized(t, e.workload), normalized(t, *w); got != want {
@@ -704,12 +656,13 @@ func TestBuildWorkloadImageArgsKeepsRoles(t *testing.T) {
 		},
 		Containers: []corev1.Container{{Name: "app", Image: busybox}},
 	}}
-	_, entries, err := buildWorkloadImageArgs(nil, []adoptedWorkload{{workloadAdoption: workloadAdoption{cwID: "web"}, template: tmpl}}, "", io.Discard, nil)
+	workloadAllowlist, err := buildWorkloadImageValues([]adoptedWorkload{{workloadAdoption: workloadAdoption{cwID: "web"}, template: tmpl}}, "", io.Discard, nil)
+	entries := workloadAllowlist.entries
 	if err != nil {
-		t.Fatalf("buildWorkloadImageArgs() = %v, want an entry", err)
+		t.Fatalf("buildWorkloadImageValues() = %v, want an entry", err)
 	}
 	e := entries["web"]
-	if len(e.workload.Containers) != 1 || len(e.workload.InitContainers) != 2 || len(e.workload.InitContainers[0].Mounts.Rules) != 2 {
+	if len(e.workload.Containers) != 1 || len(e.workload.InitContainers) != 2 || len(e.workload.InitContainers[0].Mounts.Rules) != 1 {
 		t.Fatalf("entry = %+v, want main busybox, init busybox with /scratch, init proxy", e.workload)
 	}
 	if len(e.pod) != 2 || e.pod[1].Digest != "sha256:"+strings.Repeat("e", 64) {
@@ -748,9 +701,9 @@ func TestBuildWorkloadImageArgsRefusesUnmodelledMounts(t *testing.T) {
 		"secrets":                 secrets,
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, _, err := buildWorkloadImageArgs(nil, []adoptedWorkload{{workloadAdoption: workloadAdoption{cwID: "web"}, template: tmpl}}, "web", io.Discard, nil)
+			_, err := buildWorkloadImageValues([]adoptedWorkload{{workloadAdoption: workloadAdoption{cwID: "web"}, template: tmpl}}, "web", io.Discard, nil)
 			if err == nil || !strings.Contains(err.Error(), `write one named "web" yourself`) {
-				t.Fatalf("buildWorkloadImageArgs() = %v, want the refusal", err)
+				t.Fatalf("buildWorkloadImageValues() = %v, want the refusal", err)
 			}
 		})
 	}
@@ -769,9 +722,10 @@ func TestBuildWorkloadImageArgsUnmodelledMountsOffUpstream(t *testing.T) {
 		{workloadAdoption: workloadAdoption{cwID: "infer"}, template: templateRunning("example/infer@sha256:" + strings.Repeat("d", 64))},
 	}
 	var warn bytes.Buffer
-	args, entries, err := buildWorkloadImageArgs(nil, adopted, "infer", &warn, nil)
+	workloadAllowlist, err := buildWorkloadImageValues(adopted, "infer", &warn, nil)
+	values, entries := workloadAllowlist.values, workloadAllowlist.entries
 	if err != nil {
-		t.Fatalf("buildWorkloadImageArgs(upstream infer) = %v, want nil", err)
+		t.Fatalf("buildWorkloadImageValues(upstream infer) = %v, want nil", err)
 	}
 	if !strings.Contains(warn.String(), "warning: adopted workload web") || !strings.Contains(warn.String(), "a route to it trusts those mounts") {
 		t.Fatalf("warning = %q, want one warning that a route to web trusts its mounts", warn.String())
@@ -782,36 +736,14 @@ func TestBuildWorkloadImageArgsUnmodelledMountsOffUpstream(t *testing.T) {
 	if _, ok := entries["infer"]; !ok {
 		t.Fatalf("entries = %v, want infer", slices.Sorted(maps.Keys(entries)))
 	}
-	web := "nriImagePolicy.bootstrapAllowlist.workloads.web.containers[0]."
-	if !slices.Contains(args, web+"digest=sha256:"+strings.Repeat("c", 64)) || !slices.Contains(args, web+"mounts.policy=any") {
-		t.Fatalf("args = %q, want a web container admitting any mounts", args)
+	workloads, _ := nestedMap(values, "nriImagePolicy", "bootstrapAllowlist", "workloads")
+	web, _ := nestedMap(workloads, "web")
+	container, _ := web["containers"].([]any)[0].(map[string]any)
+	if container["digest"] != "sha256:"+strings.Repeat("c", 64) || !reflect.DeepEqual(container["mounts"], map[string]any{"policy": "any"}) {
+		t.Fatalf("values = %#v, want a web container admitting any mounts", values)
 	}
-	if _, _, err := buildWorkloadImageArgs(nil, adopted, "web", io.Discard, nil); err == nil || !strings.Contains(err.Error(), `write one named "web" yourself`) {
-		t.Fatalf("buildWorkloadImageArgs(upstream web) = %v, want the refusal", err)
-	}
-}
-
-// TestInjectedMountRulesCertDir: the cert dir annotation becomes a clean
-// mount destination, and a relative one is refused.
-func TestInjectedMountRulesCertDir(t *testing.T) {
-	for _, tc := range []struct {
-		dir, want, wantErr string
-	}{
-		{dir: "/etc/certs/./x/", want: "/etc/certs/x"},
-		{dir: "certs", wantErr: webhook.AnnotationCertDir},
-	} {
-		tmpl := templateRunning("busybox@sha256:" + strings.Repeat("c", 64))
-		tmpl.Annotations = map[string]string{webhook.AnnotationCertDir: tc.dir}
-		got, err := injectedMountRules(tmpl, tmpl.Spec.Containers[0])
-		if tc.wantErr != "" {
-			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-				t.Errorf("injectedMountRules(cert dir %q) = %v, %v, want an error naming %s", tc.dir, got, err, tc.wantErr)
-			}
-			continue
-		}
-		if err != nil || !slices.Equal(got, []string{tc.want}) {
-			t.Errorf("injectedMountRules(cert dir %q) = %v, %v, want [%s]", tc.dir, got, err, tc.want)
-		}
+	if _, err := buildWorkloadImageValues(adopted, "web", io.Discard, nil); err == nil || !strings.Contains(err.Error(), `write one named "web" yourself`) {
+		t.Fatalf("buildWorkloadImageValues(upstream web) = %v, want the refusal", err)
 	}
 }
 
@@ -840,12 +772,16 @@ func TestAdoptMeFixtureGetsAnEntry(t *testing.T) {
 		t.Fatal(err)
 	}
 	adoption := workloadAdoption{cwID: "web", ref: workloadRef{namespace: "adopted", kind: "deployment", name: "web"}}
-	got, entries, err := buildWorkloadImageArgs(nil, []adoptedWorkload{{workloadAdoption: adoption, template: tmpl}}, "", io.Discard, nil)
+	workloadAllowlist, err := buildWorkloadImageValues([]adoptedWorkload{{workloadAdoption: adoption, template: tmpl}}, "", io.Discard, nil)
+	got, entries := workloadAllowlist.values, workloadAllowlist.entries
 	if err != nil {
-		t.Fatalf("buildWorkloadImageArgs(adopt-me) = %v", err)
+		t.Fatalf("buildWorkloadImageValues(adopt-me) = %v", err)
 	}
-	if !slices.Contains(got, "nriImagePolicy.bootstrapAllowlist.workloads.web.containers[0].mounts.rules[0].destination=/etc/c8s/certs") || slices.Contains(got, "nriImagePolicy.bootstrapAllowlist.workloads.web.containers[0].mounts.rules[1].destination") {
-		t.Fatalf("adopt-me entry = %v, want exactly the injected cert mount", got)
+	workloads, _ := nestedMap(got, "nriImagePolicy", "bootstrapAllowlist", "workloads")
+	web, _ := nestedMap(workloads, "web")
+	container, _ := web["containers"].([]any)[0].(map[string]any)
+	if !reflect.DeepEqual(container["mounts"], map[string]any{"policy": "deny"}) {
+		t.Fatalf("adopt-me entry = %#v, want empty mounts", got)
 	}
 	// The NRI plugin's tests match this entry against the mounts it observes
 	// on the injected container.
@@ -899,7 +835,7 @@ func TestCheckAdoptedEntries(t *testing.T) {
 		}
 		v := map[string]any{
 			"router":         map[string]any{"enabled": true, "nginx": map[string]any{"image": map[string]any{"repository": "nginxinc/nginx-unprivileged", "digest": dN}}},
-			"nriImagePolicy": map[string]any{"bootstrapAllowlist": map[string]any{"deriveComponents": true, "workloads": workloads}},
+			"nriImagePolicy": map[string]any{"bootstrapAllowlist": map[string]any{"workloads": workloads}},
 		}
 		return helmchart.MergeValues(v, extra)
 	}
@@ -930,11 +866,8 @@ func TestCheckAdoptedEntries(t *testing.T) {
 			for _, id := range slices.Sorted(maps.Keys(tc.adopt)) {
 				adopted = append(adopted, adoptedWorkload{workloadAdoption: workloadAdoption{cwID: id}, template: tc.adopt[id]})
 			}
-			args, entries, err := buildWorkloadImageArgs(nil, adopted, "", io.Discard, nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			computed, err := valueArgsToTree(args)
+			workloadAllowlist, err := buildWorkloadImageValues(adopted, "", io.Discard, nil)
+			computed, entries := workloadAllowlist.values, workloadAllowlist.entries
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -953,7 +886,7 @@ func TestCheckAdoptedEntries(t *testing.T) {
 }
 
 func TestBuildWorkloadImageArgsFailsClosedOnResolveError(t *testing.T) {
-	_, _, err := buildWorkloadImageArgs(nil, []adoptedWorkload{{template: templateRunning("ghcr.io/acme/router:v1")}}, "", io.Discard, func(string) (string, error) {
+	_, err := buildWorkloadImageValues([]adoptedWorkload{{template: templateRunning("ghcr.io/acme/router:v1")}}, "", io.Discard, func(string) (string, error) {
 		return "", errTestResolve
 	})
 	if err == nil {
@@ -966,7 +899,7 @@ func TestBuildWorkloadImageArgsFailsClosedOnResolveError(t *testing.T) {
 // since the NRI allowlist keys on sha256 only.
 func TestBuildWorkloadImageArgsRejectsNonSHA256Digest(t *testing.T) {
 	sha512Image := "busybox@sha512:ee26b0dd4af7e749aa1a8ee3c10ae9923f618980772e473f8819a5d4940e0db27ac185f8a0e1d5f84f88bc887fd67b143732c304cc5fa9ad8e6f57f50028a8ff"
-	_, _, err := buildWorkloadImageArgs(nil, []adoptedWorkload{{template: templateRunning(sha512Image)}}, "", io.Discard, func(string) (string, error) {
+	_, err := buildWorkloadImageValues([]adoptedWorkload{{template: templateRunning(sha512Image)}}, "", io.Discard, func(string) (string, error) {
 		t.Fatal("resolve must not run for an already-digested image")
 		return "", nil
 	})
@@ -1036,163 +969,46 @@ func TestCheckImagePullSecret(t *testing.T) {
 	}
 }
 
-func TestAppendDistroInstallArgsSetsNRI(t *testing.T) {
-	for _, distro := range []string{"k8s", "rke2"} {
-		t.Run(distro, func(t *testing.T) {
-			got := appendDistroInstallArgs([]string{"upgrade"}, distro)
-			assertArgsEqual(t, got, []string{
-				"upgrade",
-				"--set-string", "nriImagePolicy.distro=" + distro,
-			})
-		})
-	}
-}
-
-// classifyDistroNodes splits "name\tkubeletVersion" lines by the "+rke2"
-// build-metadata suffix RKE2's kubelet build carries. Anything else (vanilla
-// upstream, k3s, future distros) lands in the "other" bucket — detection
-// only owns the rke2 vs not-rke2 split.
-func TestClassifyDistroNodesByKubeletVersionSuffix(t *testing.T) {
-	lines := []string{
+// The only distro signal kubectl can see is the build metadata a bundled
+// kubelet stamps onto its version. A node reporting none is upstream's as far
+// as the install can tell, and one reporting no version at all is skipped.
+func TestBundledKubeletNodes(t *testing.T) {
+	got := bundledKubeletNodes([]string{
 		"node-a\tv1.29.5+rke2r1",
-		"node-b\tv1.29.5",        // vanilla upstream
-		"node-c\tv1.30.1+rke2r2", // newer RKE2 build
-		"node-d\tv1.30.0+k3s1",   // k3s lands in "other"
-		"",                       // a trailing blank line from kubectl is ignored
-		"malformed-no-tab",       // a line with no tab can't be classified, ignored
-	}
-	rke2, other := classifyDistroNodes(lines)
-	wantRke2 := []string{"node-a", "node-c"}
-	wantOther := []string{"node-b", "node-d"}
-	if !reflect.DeepEqual(rke2, wantRke2) {
-		t.Errorf("rke2 nodes = %v, want %v", rke2, wantRke2)
-	}
-	if !reflect.DeepEqual(other, wantOther) {
-		t.Errorf("other nodes = %v, want %v", other, wantOther)
-	}
-}
-
-// chooseDistro powers distro detection: the kubelet classification must map to
-// the distro value the chart needs.
-func TestChooseDistroHomogeneousClusters(t *testing.T) {
-	got, err := chooseDistro([]string{"node-a", "node-b"}, nil)
-	if err != nil || got != "rke2" {
-		t.Errorf("all-RKE2 cluster: got (%q, %v), want (rke2, nil)", got, err)
-	}
-	got, err = chooseDistro(nil, []string{"node-a", "node-b"})
-	if err != nil || got != "k8s" {
-		t.Errorf("vanilla cluster: got (%q, %v), want (k8s, nil)", got, err)
-	}
-	// No classifiable nodes: fall back to the chart default rather than fail
-	// an install on which nothing could schedule anyway.
-	got, err = chooseDistro(nil, nil)
-	if err != nil || got != "k8s" {
-		t.Errorf("no classifiable nodes: got (%q, %v), want (k8s, nil)", got, err)
-	}
-}
-
-// A mixed cluster has no single right distro — the installers patch a
-// distro-specific containerd path on every selected node — so detection must
-// demand explicit per-component values via -f instead of guessing.
-func TestChooseDistroRejectsMixedClusters(t *testing.T) {
-	_, err := chooseDistro([]string{"rke2-node"}, []string{"vanilla-node"})
-	if err == nil {
-		t.Fatal("mixed cluster: want error, got nil")
-	}
-	for _, want := range []string{"nriImagePolicy.distro", "rke2-node", "vanilla-node"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error %q missing %q (should name the fix and both node sets)", err.Error(), want)
-		}
-	}
-}
-
-// A -f file suppresses distro auto-detection only when it actually sets a
-// distro; passing -f for any other value must leave detection in force (the
-// bug: any -f used to silently drop the CLI to the chart's k8s default).
-func TestValuesFilesSetDistro(t *testing.T) {
-	write := func(t *testing.T, body string) string {
-		t.Helper()
-		p := filepath.Join(t.TempDir(), "values.yaml")
-		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
-			t.Fatalf("write values: %v", err)
-		}
-		return p
-	}
-	for _, tc := range []struct {
-		name string
-		body string
-		want bool
-	}{
-		{"nri distro set", "nriImagePolicy:\n  distro: rke2\n", true},
-		{"unrelated value only", "router:\n  enabled: false\n", false},
-		{"distro key absent under section", "nriImagePolicy:\n  enabled: true\n", false},
-		{"empty distro string is not a choice", "nriImagePolicy:\n  distro: \"\"\n", false},
-		{"empty file", "", false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := valuesFilesSetDistro([]string{write(t, tc.body)})
-			if err != nil {
-				t.Fatalf("valuesFilesSetDistro: %v", err)
-			}
-			if got != tc.want {
-				t.Errorf("valuesFilesSetDistro(%q) = %v, want %v", tc.body, got, tc.want)
-			}
-		})
-	}
-
-	t.Run("no files means detect", func(t *testing.T) {
-		got, err := valuesFilesSetDistro(nil)
-		if err != nil || got {
-			t.Errorf("valuesFilesSetDistro(nil) = (%v, %v), want (false, nil)", got, err)
-		}
+		"node-b\tv1.29.5",
+		"node-c\tv1.30.0+k3s1",
+		"",
+		"malformed-no-tab",
 	})
-
-	t.Run("one of several files sets it", func(t *testing.T) {
-		a := write(t, "router:\n  enabled: false\n")
-		b := write(t, "nriImagePolicy:\n  distro: rke2\n")
-		got, err := valuesFilesSetDistro([]string{a, b})
-		if err != nil || !got {
-			t.Errorf("valuesFilesSetDistro(two files) = (%v, %v), want (true, nil)", got, err)
-		}
-	})
+	if want := []string{"node-a", "node-c"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("bundledKubeletNodes = %v, want %v", got, want)
+	}
+	if got := bundledKubeletNodes(nil); got != nil {
+		t.Errorf("bundledKubeletNodes(nil) = %v, want none", got)
+	}
 }
 
-func TestRouterHostPort(t *testing.T) {
-	hp := func(https any) map[string]any {
-		return map[string]any{"router": map[string]any{"hostPort": map[string]any{"https": https}}}
+// Nodes are named with the runtime they report, since that is what the
+// operator has to raise. The comparison reads the version numbers alone, so a
+// build suffix is not a verdict, and a node reporting no runtime version is
+// skipped.
+func TestNodesWithoutNRIUser(t *testing.T) {
+	got := nodesWithoutNRIUser([]string{
+		"node-a\tcontainerd://2.2.7",
+		"node-b\tcontainerd://2.3.3+azure",
+		"node-c\tcontainerd://1.7.33",
+		"node-d\tcontainerd://2.4.1",
+		"node-e\tcri-o://1.33.0",
+		"node-f\tcontainerd://2.3.0",
+		"node-g\t",
+		"",
+	})
+	want := []string{"node-a (containerd://2.2.7)", "node-c (containerd://1.7.33)", "node-e (cri-o://1.33.0)"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("nodesWithoutNRIUser = %v, want %v", got, want)
 	}
-	for _, tc := range []struct {
-		name string
-		tree map[string]any
-		want int32
-	}{
-		{"empty string derives 443", hp(""), 443},
-		{"no hostPort map", map[string]any{"router": map[string]any{}}, 443},
-		{"string override", hp("8443"), 8443},
-		{"int override", hp(9443), 9443},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := routerHostPort(tc.tree)
-			if err != nil || got != tc.want {
-				t.Fatalf("routerHostPort = (%d, %v), want (%d, nil)", got, err, tc.want)
-			}
-		})
-	}
-	for _, tc := range []struct {
-		name  string
-		https any
-	}{
-		{"non-numeric string", "https"},
-		{"string overflows int32", "4294967297"}, // 2^32 + 1 — would wrap to 1 on a bare int32 cast
-		{"string above port range", "70000"},
-		{"int above port range", 70000},
-		{"zero is not a port", 0},
-	} {
-		t.Run(tc.name+" errors", func(t *testing.T) {
-			if _, err := routerHostPort(hp(tc.https)); err == nil {
-				t.Fatalf("want error for %v", tc.https)
-			}
-		})
+	if got := nodesWithoutNRIUser(nil); got != nil {
+		t.Errorf("nodesWithoutNRIUser(nil) = %v, want none", got)
 	}
 }
 
@@ -1217,17 +1033,10 @@ func TestHostPortConflict(t *testing.T) {
 	}{
 		{
 			name:        "single node, ingress holds 443",
-			pods:        []corev1.Pod{pod("kube-system", "rke2-ingress-nginx-abc", "node-a", 443)},
+			pods:        []corev1.Pod{pod("kube-system", "ingress-nginx-controller-abc", "node-a", 443)},
 			nodes:       []string{"node-a"},
 			wantBlocked: true,
-			wantHolder:  "kube-system/rke2-ingress-nginx-abc",
-		},
-		{
-			name:        "single node, traefik holds 443 (rke2 v1.36+ default ingress)",
-			pods:        []corev1.Pod{pod("kube-system", "rke2-traefik-abc", "node-a", 443)},
-			nodes:       []string{"node-a"},
-			wantBlocked: true,
-			wantHolder:  "kube-system/rke2-traefik-abc",
+			wantHolder:  "kube-system/ingress-nginx-controller-abc",
 		},
 		{
 			name: "two nodes, ingress on both",
@@ -1282,436 +1091,31 @@ func TestHostPortConflict(t *testing.T) {
 	}
 }
 
-func TestAppendCvmModeInstallArgsSetsAttestationApiValue(t *testing.T) {
-	// The attestation sidecar is on by default; the arg-builder reads the
-	// package flag, which cobra would set. Mirror that default here.
-	prevAttest := installAttestEnabled
-	installAttestEnabled = true
-	t.Cleanup(func() { installAttestEnabled = prevAttest })
-
-	// Two orthogonal axes:
-	//  --cvm-mode: bare-metal (node-as-CVM) / gke (managed) / aks (vTPM)
-	//  --hardware-platform: sev-snp (/dev/sev-guest) / tdx (/dev/tdx-guest)
-	// node+gke all take either hardware-platform; aks always emits the vTPM
-	// device and rides the Azure vTPM HCL report for both SNP (az-snp) and TDX
-	// (az-tdx).
-	build := func(mode, platform, sevGuest, tdxGuest, tpm string) []string {
-		out := []string{
-			"upgrade",
-			"--set-string", "attestationApi.cvmMode=" + mode,
-			"--set", "attestationApi.teeDevices.sevGuest=" + sevGuest,
-			"--set", "attestationApi.teeDevices.tdxGuest=" + tdxGuest,
-			"--set", "attestationApi.teeDevices.tpm=" + tpm,
-		}
-		// Any TDX shape — native (/dev/tdx-guest) or Azure vTPM (az-tdx) —
-		// propagates the CPU TEE to the components that name their armTLS
-		// platform, or CDS parses the TDX quote as an SNP report.
-		if platform == "tdx" {
-			out = append(out,
-				"--set-string", "cds.armtlsPlatform=tdx",
-				"--set-string", "armtlsMesh.platform=tdx",
-			)
-		}
-		// The attest sidecar's platform names the evidence shape the sidecar
-		// requests from the attestation-api: az-snp/az-tdx under aks (Azure
-		// vTPM HCL report — bare snp/tdx would probe guest devices AKS nodes
-		// do not expose), bare tdx on native TDX. sev-snp outside aks keeps
-		// the chart default (snp). Every override blanks the AMD-only
-		// generation.
-		switch {
-		case mode == "aks" && platform == "tdx":
-			out = append(out,
-				"--set-string", "router.attest.platform=az-tdx",
-				"--set-string", "router.attest.generation=",
-			)
-		case mode == "aks":
-			out = append(out,
-				"--set-string", "router.attest.platform=az-snp",
-				"--set-string", "router.attest.generation=",
-			)
-		case platform == "tdx":
-			out = append(out,
-				"--set-string", "router.attest.platform=tdx",
-				"--set-string", "router.attest.generation=",
-			)
-		}
-		// node: the node image bakes attestation-api + nri-image-policy, so the
-		// attestation-api copy is skipped and the NRI installer switches to its
-		// baked form — the only path that reaches the baked plugin's CDS pins.
-		// armtlsMesh is not baked, stays on.
-		if mode == "bare-metal" {
-			out = append(out,
-				"--set", "attestationApi.enabled=false",
-				"--set", "nriImagePolicy.baked=true",
-			)
-		}
-		return out
-	}
-	cases := map[string]struct {
-		cvmMode          string
-		hardwarePlatform string
-		want             []string
-	}{
-		"gke + sev-snp":        {"gke", "sev-snp", build("gke", "sev-snp", "true", "false", "false")},
-		"bare-metal + sev-snp": {"bare-metal", "sev-snp", build("bare-metal", "sev-snp", "true", "false", "false")},
-		"gke + tdx":            {"gke", "tdx", build("gke", "tdx", "false", "true", "false")},
-		"bare-metal + tdx":     {"bare-metal", "tdx", build("bare-metal", "tdx", "false", "true", "false")},
-		"aks + sev-snp":        {"aks", "sev-snp", build("aks", "sev-snp", "false", "false", "true")},
-		// az-tdx: Azure vTPM (tpm=true, no guest device) + TDX armTLS platform.
-		"aks + tdx (az-tdx)": {"aks", "tdx", build("aks", "tdx", "false", "false", "true")},
-	}
-	for name, tc := range cases {
-		t.Run(name, func(t *testing.T) {
-			got, err := appendCvmModeInstallArgs([]string{"upgrade"}, tc.cvmMode, tc.hardwarePlatform)
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			assertArgsEqual(t, got, tc.want)
-		})
-	}
-}
-
-func TestAppendCvmModeInstallArgsRejectsUnknownMode(t *testing.T) {
-	if _, err := appendCvmModeInstallArgs([]string{"upgrade"}, "bare-metal", ""); err == nil || !strings.Contains(err.Error(), "--hardware-platform is required") {
-		t.Fatalf("empty --hardware-platform: err = %v, want required error", err)
-	}
-	if _, err := appendCvmModeInstallArgs([]string{"upgrade"}, "azure", "sev-snp"); err == nil {
-		t.Fatal("appendCvmModeInstallArgs accepted an unknown --cvm-mode, want error")
-	}
-}
-
-// --measurements fans each M into both mesh pin points, indexed, so the operator
-// pins the internal mesh on the install itself. A blank entry (e.g. from a
-// trailing comma) is dropped, not emitted as an empty index, and the emitted
-// indices are contiguous over the validated list.
-func TestAppendCvmModeInstallArgsMeasurements(t *testing.T) {
-	prev := installMeasurements
-	defer func() { installMeasurements = prev }()
-	m0, m1 := strings.Repeat("aa", 48), strings.Repeat("bb", 48)
-	installMeasurements = []string{m0, "", m1} // blank middle entry
-
-	got, err := appendCvmModeInstallArgs([]string{"upgrade"}, "bare-metal", "tdx")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	for _, want := range []string{
-		"cds.measurements[0]=" + m0, "armtlsMesh.measurements[0]=" + m0,
-		"cds.measurements[1]=" + m1, "armtlsMesh.measurements[1]=" + m1,
-	} {
-		if !slices.Contains(got, want) {
-			t.Errorf("args missing %q; got %v", want, got)
-		}
-	}
-	// The blank must not produce an empty index-2 pin.
-	for _, bad := range []string{"cds.measurements[2]=", "armtlsMesh.measurements[2]="} {
-		if slices.Contains(got, bad) {
-			t.Errorf("blank entry leaked an empty pin %q; got %v", bad, got)
-		}
-	}
-}
-
-func TestAppendCvmModeInstallArgsRejectsBadMeasurement(t *testing.T) {
-	prev := installMeasurements
-	defer func() { installMeasurements = prev }()
-	installMeasurements = []string{"not-hex"}
-	if _, err := appendCvmModeInstallArgs([]string{"upgrade"}, "bare-metal", "tdx"); err == nil {
-		t.Fatal("appendCvmModeInstallArgs accepted a malformed measurement, want error")
-	}
-}
-
-func TestAppendCvmModeInstallArgsRejectsUnknownHardwarePlatform(t *testing.T) {
-	if _, err := appendCvmModeInstallArgs([]string{"upgrade"}, "bare-metal", "sgx"); err == nil {
-		t.Fatal("appendCvmModeInstallArgs accepted an unknown --hardware-platform, want error")
-	}
-}
-
-func TestAppendCvmModeInstallArgsAcceptsAksWithTdx(t *testing.T) {
-	// aks + tdx is the Azure-vTPM TDX (az-tdx) shape: the node's vTPM HCL report
-	// wraps a TD quote, so it needs the vTPM device (tpm=true, no guest device)
-	// and the TDX armTLS platform on CDS/mesh — not a refusal.
-	got, err := appendCvmModeInstallArgs([]string{"upgrade"}, "aks", "tdx")
-	if err != nil {
-		t.Fatalf("appendCvmModeInstallArgs(aks, tdx): unexpected error %v", err)
-	}
-	joined := strings.Join(got, " ")
-	for _, want := range []string{
-		"attestationApi.cvmMode=aks",
-		"attestationApi.teeDevices.tpm=true",
-		"attestationApi.teeDevices.tdxGuest=false",
-		"cds.armtlsPlatform=tdx",
-		"armtlsMesh.platform=tdx",
-	} {
-		if !strings.Contains(joined, want) {
-			t.Errorf("aks+tdx args missing %q; got %v", want, got)
-		}
-	}
-}
-
-// testComponents mirrors the chart's c8sComponents for the resolver tests,
-// which exercise buildDigestArgs without reading a real chart. The chart-read
-// path (chartComponents) is covered separately by TestChartComponentsFromValues.
-var testComponents = []c8sComponent{
-	{valuePrefix: "image", repository: "ghcr.io/confidential-dot-ai/c8s-operator"},
-	{valuePrefix: "attestationApi.image", repository: "ghcr.io/confidential-dot-ai/attestation-api", enabledPath: "attestationApi.enabled"},
-	{valuePrefix: "cds.image", repository: "ghcr.io/confidential-dot-ai/cds"},
-	{valuePrefix: "armtlsMesh.image", repository: "ghcr.io/confidential-dot-ai/armtls-mesh", enabledPath: "armtlsMesh.enabled"},
-	{valuePrefix: "nriImagePolicy.image", repository: "ghcr.io/confidential-dot-ai/nri-image-policy", enabledPath: "nriImagePolicy.enabled"},
-}
-
-// allEnabled is the buildDigestArgs predicate for tests that resolve every
-// component (the skip path is covered by TestBuildDigestArgsSkipsDisabledComponent).
-func allEnabled(string) (bool, error) { return true, nil }
-
-func TestBuildDigestArgsPinsEveryComponent(t *testing.T) {
-	// Deterministic fake resolver: digest derived from the ref so each
-	// component gets a distinct, predictable value.
-	resolve := func(ref string) (string, error) {
-		switch ref {
-		case "ghcr.io/confidential-dot-ai/c8s-operator:v1":
-			return "sha256:00000000000000000000000000000000000000000000000000000000000000aa", nil
-		case "ghcr.io/confidential-dot-ai/attestation-api:v1":
-			return "sha256:00000000000000000000000000000000000000000000000000000000000000bb", nil
-		case "ghcr.io/confidential-dot-ai/cds:v1":
-			return "sha256:00000000000000000000000000000000000000000000000000000000000000cc", nil
-		case "ghcr.io/confidential-dot-ai/armtls-mesh:v1":
-			return "sha256:00000000000000000000000000000000000000000000000000000000000000dd", nil
-		case "ghcr.io/confidential-dot-ai/nri-image-policy:v1":
-			return "sha256:00000000000000000000000000000000000000000000000000000000000000ee", nil
-		}
-		t.Fatalf("unexpected ref resolved: %q", ref)
-		return "", nil
-	}
-
-	got, err := buildDigestArgs([]string{"upgrade"}, "v1", testComponents, resolve, allEnabled)
-	if err != nil {
-		t.Fatalf("buildDigestArgs: %v", err)
-	}
-	assertArgsEqual(t, got, []string{
-		"upgrade",
-		// Each component pins both repository and digest so an -f repository
-		// override cannot diverge from the digest resolved against it.
-		"--set-string", "image.repository=ghcr.io/confidential-dot-ai/c8s-operator",
-		"--set-string", "image.digest=sha256:00000000000000000000000000000000000000000000000000000000000000aa",
-		"--set-string", "attestationApi.image.repository=ghcr.io/confidential-dot-ai/attestation-api",
-		"--set-string", "attestationApi.image.digest=sha256:00000000000000000000000000000000000000000000000000000000000000bb",
-		"--set-string", "cds.image.repository=ghcr.io/confidential-dot-ai/cds",
-		"--set-string", "cds.image.digest=sha256:00000000000000000000000000000000000000000000000000000000000000cc",
-		"--set-string", "armtlsMesh.image.repository=ghcr.io/confidential-dot-ai/armtls-mesh",
-		"--set-string", "armtlsMesh.image.digest=sha256:00000000000000000000000000000000000000000000000000000000000000dd",
-		"--set-string", "nriImagePolicy.image.repository=ghcr.io/confidential-dot-ai/nri-image-policy",
-		"--set-string", "nriImagePolicy.image.digest=sha256:00000000000000000000000000000000000000000000000000000000000000ee",
-		// Resolving component digests enables their derivation into the NRI allowlist.
-		"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
-	})
-}
-
-// Each component repository is resolved at most once per install (no wasted
-// registry round-trips).
-func TestBuildDigestArgsResolvesEachComponentOnce(t *testing.T) {
-	calls := map[string]int{}
-	resolve := func(ref string) (string, error) {
-		calls[ref]++
-		return "sha256:1111111111111111111111111111111111111111111111111111111111111111", nil
-	}
-	if _, err := buildDigestArgs(nil, "v1", testComponents, resolve, allEnabled); err != nil {
-		t.Fatalf("buildDigestArgs: %v", err)
-	}
-	for ref, n := range calls {
-		if n != 1 {
-			t.Errorf("ref %q resolved %d times, want 1", ref, n)
-		}
-	}
-}
-
-// A component whose enabledPath resolves to false never renders, so its tag
-// must not be resolved (that image may be unpublished at the install tag — e.g.
-// attestationApi under --cvm-mode=bare-metal) and it must contribute no --set args.
-// Enabled components still resolve and pin.
-func TestBuildDigestArgsSkipsDisabledComponent(t *testing.T) {
-	resolved := map[string]bool{}
-	resolve := func(ref string) (string, error) {
-		resolved[ref] = true
-		return "sha256:3333333333333333333333333333333333333333333333333333333333333333", nil
-	}
-	disabled := map[string]bool{"attestationApi.enabled": true, "nriImagePolicy.enabled": true}
-	enabled := func(path string) (bool, error) { return !disabled[path], nil }
-
-	args, err := buildDigestArgs(nil, "v1", testComponents, resolve, enabled)
-	if err != nil {
-		t.Fatalf("buildDigestArgs: %v", err)
-	}
-	for _, ref := range []string{
-		"ghcr.io/confidential-dot-ai/attestation-api:v1",
-		"ghcr.io/confidential-dot-ai/nri-image-policy:v1",
-	} {
-		if resolved[ref] {
-			t.Errorf("disabled component %q was resolved, want skipped", ref)
-		}
-	}
-	joined := strings.Join(args, " ")
-	for _, prefix := range []string{"attestationApi.image", "nriImagePolicy.image"} {
-		if strings.Contains(joined, prefix+".repository") || strings.Contains(joined, prefix+".digest") {
-			t.Errorf("disabled component %q emitted --set args: %v", prefix, args)
-		}
-	}
-	// Enabled components still pin both repository and digest.
-	for _, want := range []string{
-		"cds.image.repository=ghcr.io/confidential-dot-ai/cds",
-		"armtlsMesh.image.repository=ghcr.io/confidential-dot-ai/armtls-mesh",
-		"image.repository=ghcr.io/confidential-dot-ai/c8s-operator",
-	} {
-		if !slices.Contains(args, want) {
-			t.Errorf("enabled component arg %q missing from %v", want, args)
-		}
-	}
-	if !resolved["ghcr.io/confidential-dot-ai/cds:v1"] {
-		t.Error("enabled component cds was not resolved")
-	}
-}
-
-// A predicate error (the effective-enabled read failed) must abort rather than
-// silently resolve or skip the component.
-func TestBuildDigestArgsFailsClosedOnEnabledError(t *testing.T) {
-	resolve := func(string) (string, error) {
-		return "sha256:4444444444444444444444444444444444444444444444444444444444444444", nil
-	}
-	enabled := func(string) (bool, error) { return false, errTestResolve }
-	if _, err := buildDigestArgs(nil, "v1", testComponents, resolve, enabled); err == nil {
-		t.Fatal("buildDigestArgs ignored an enabled-predicate error, want fail-closed")
-	}
-}
-
-// A resolution failure for any component must abort: a partially pinned floor
-// would pass the render guard while the served allowlist pointed at a wrong or
-// missing digest.
-func TestBuildDigestArgsFailsClosedOnResolveError(t *testing.T) {
-	resolve := func(ref string) (string, error) {
-		if ref == "ghcr.io/confidential-dot-ai/cds:v1" {
-			return "", errTestResolve
-		}
-		return "sha256:2222222222222222222222222222222222222222222222222222222222222222", nil
-	}
-	if _, err := buildDigestArgs(nil, "v1", testComponents, resolve, allEnabled); err == nil {
-		t.Fatal("buildDigestArgs ignored a resolver error, want fail-closed")
-	}
-}
-
-// A missing tag (registry MANIFEST_UNKNOWN) must abort with the tag-coupling
-// guidance explaining the lockstep publish model while preserving the cause.
-func TestBuildDigestArgsExplainsTagCouplingOnMissingTag(t *testing.T) {
-	notFound := errors.New(`crane digest "ghcr.io/confidential-dot-ai/c8s-operator:gpu-test": exit status 1: MANIFEST_UNKNOWN: manifest unknown`)
-	resolve := func(string) (string, error) { return "", notFound }
-	_, err := buildDigestArgs(nil, "gpu-test", testComponents, resolve, allEnabled)
-	if err == nil {
-		t.Fatal("buildDigestArgs accepted a missing tag, want fail-closed")
-	}
-	if !errors.Is(err, notFound) {
-		t.Errorf("wrapped error must preserve the cause, got: %v", err)
-	}
-	// The hint must be self-contained (end users don't have the repo, so no
-	// docs/ paths) and explain how to check the component tag.
-	for _, want := range []string{"lockstep"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error must mention %q, got: %v", want, err)
-		}
-	}
-	if strings.Contains(err.Error(), "docs/") {
-		t.Errorf("user-facing hint must not reference in-repo docs paths, got: %v", err)
-	}
-}
-
-// A component released on another repository's cadence has no image at a C8s
-// release tag, so its chart-declared pinnedDigest must be used verbatim and the
-// resolver must never be asked for it — asking is what aborted the whole
-// install, since a C8s tag can only 404 against that repository.
-func TestBuildDigestArgsUsesPinnedDigestWithoutResolving(t *testing.T) {
-	const pinned = "sha256:00000000000000000000000000000000000000000000000000000000000000ff"
-	comps := []c8sComponent{
-		{valuePrefix: "cds.image", repository: "ghcr.io/confidential-dot-ai/cds"},
-		{valuePrefix: "attestationApi.image", repository: "ghcr.io/confidential-dot-ai/attestation-api", pinnedDigest: pinned},
-	}
-	resolve := func(ref string) (string, error) {
-		if strings.Contains(ref, "attestation-api") {
-			return "", fmt.Errorf("resolver must not be called for a pinned component, got %q", ref)
-		}
-		return "sha256:1111111111111111111111111111111111111111111111111111111111111111", nil
-	}
-	got, err := buildDigestArgs(nil, "v0.1.15", comps, resolve, allEnabled)
-	if err != nil {
-		t.Fatalf("buildDigestArgs: %v", err)
-	}
-	for _, want := range []string{
-		"attestationApi.image.repository=ghcr.io/confidential-dot-ai/attestation-api",
-		"attestationApi.image.digest=" + pinned,
-	} {
-		if !slices.Contains(got, want) {
-			t.Errorf("args missing %q; got %v", want, got)
-		}
-	}
-}
-
-// A pinned component that the effective config disables must not be pinned
-// either: the enabled check has to run first, or the install would carry a
-// floor entry for a DaemonSet it never renders.
-func TestBuildDigestArgsSkipsDisabledPinnedComponent(t *testing.T) {
-	comps := []c8sComponent{{
-		valuePrefix:  "attestationApi.image",
-		repository:   "ghcr.io/confidential-dot-ai/attestation-api",
-		enabledPath:  "attestationApi.enabled",
-		pinnedDigest: "sha256:00000000000000000000000000000000000000000000000000000000000000ff",
-	}}
-	resolve := func(string) (string, error) { return "", errTestResolve }
-	got, err := buildDigestArgs(nil, "v0.1.15", comps, resolve, func(string) (bool, error) { return false, nil })
-	if err != nil {
-		t.Fatalf("buildDigestArgs: %v", err)
-	}
-	for _, arg := range got {
-		if strings.Contains(arg, "attestationApi.image") {
-			t.Errorf("disabled pinned component was still pinned: %v", got)
-		}
-	}
-}
-
-// Auth/network resolve failures must pass through without the tag-coupling
-// hint — advising a tag change for a 401 would send the operator down the
-// wrong path.
-func TestBuildDigestArgsLeavesOtherResolveErrorsUnhinted(t *testing.T) {
-	resolve := func(string) (string, error) { return "", errTestResolve }
-	_, err := buildDigestArgs(nil, "v1", testComponents, resolve, allEnabled)
-	if err == nil {
-		t.Fatal("buildDigestArgs ignored a resolver error, want fail-closed")
-	}
-	if strings.Contains(err.Error(), "lockstep") {
-		t.Errorf("non-not-found error must not carry the tag-coupling hint: %v", err)
-	}
-}
-
-// chartComponents reads the component set from the chart's values.yaml; this
-// asserts the parse against the embedded chart so the install-time list cannot
-// silently diverge from what the chart declares.
-func TestChartComponentsFromValues(t *testing.T) {
+// chartComponents reads the component set from the chart's c8s-lib table;
+// this asserts the parse against the embedded chart so the install-time list
+// cannot silently diverge from what the chart declares.
+func TestChartComponentsFromEmbeddedChart(t *testing.T) {
 	if _, err := exec.LookPath("helm"); err != nil {
-		t.Skip("helm not on PATH")
+		t.Fatal("helm CLI not found")
 	}
-	dir, err := extractChart()
+	dir, err := helmchart.ExtractTemp()
 	if err != nil {
-		t.Fatalf("extractChart: %v", err)
+		t.Fatalf("extract the chart: %v", err)
 	}
 	defer os.RemoveAll(dir)
 
-	comps, err := chartComponents(context.Background(), filepath.Join(dir, helmchart.ChartRoot))
+	comps, err := chartComponents(context.Background(), filepath.Join(dir, helmchart.CloudChartFSPath))
 	if err != nil {
 		t.Fatalf("chartComponents: %v", err)
 	}
 
 	got := map[string]string{}
 	for _, c := range comps {
-		got[c.valuePrefix] = c.repository
+		got[c.valuesPath] = c.repository
 	}
 	want := map[string]string{
 		"image":                "ghcr.io/confidential-dot-ai/c8s-operator",
 		"attestationApi.image": "ghcr.io/confidential-dot-ai/attestation-api",
-		"cds.image":            "ghcr.io/confidential-dot-ai/cds",
 		"armtlsMesh.image":     "ghcr.io/confidential-dot-ai/armtls-mesh",
 		"nriImagePolicy.image": "ghcr.io/confidential-dot-ai/nri-image-policy",
 		"volumed.image":        "ghcr.io/confidential-dot-ai/volumed",
@@ -1719,39 +1123,20 @@ func TestChartComponentsFromValues(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("chart components = %v, want %v", got, want)
 	}
-
-	// Exactly the components released outside the C8s train may carry a
-	// pinnedDigest. Pinning one that does publish at the install tag would
-	// freeze it there silently, and unpinning attestation-api puts back the
-	// abort that made `--image-tag <release>` uninstallable.
-	pinned := map[string]string{}
-	for _, c := range comps {
-		if c.pinnedDigest != "" {
-			pinned[c.valuePrefix] = c.pinnedDigest
-		}
-	}
-	if len(pinned) != 1 || pinned["attestationApi.image"] == "" {
-		t.Errorf("pinnedDigest components = %v, want only attestationApi.image", pinned)
-	}
-	if !strings.HasPrefix(pinned["attestationApi.image"], "sha256:") || len(pinned["attestationApi.image"]) != len("sha256:")+64 {
-		t.Errorf("attestationApi pinnedDigest is not a sha256 digest: %q", pinned["attestationApi.image"])
-	}
 }
 
 // effectiveValues must honor a -f values file, not just chart
-// defaults and --set. volumed defaults to disabled; a -f file that enables it
-// has to make the resolver see it as enabled, or its digest is never pinned and
-// the render fails with no image ref.
+// defaults and --set.
 func TestEffectiveValuesHonorsValuesFile(t *testing.T) {
 	if _, err := exec.LookPath("helm"); err != nil {
-		t.Skip("helm not on PATH")
+		t.Fatal("helm CLI not found")
 	}
-	dir, err := extractChart()
+	dir, err := helmchart.ExtractTemp()
 	if err != nil {
-		t.Fatalf("extractChart: %v", err)
+		t.Fatalf("extract the chart: %v", err)
 	}
 	defer os.RemoveAll(dir)
-	chartPath := filepath.Join(dir, helmchart.ChartRoot)
+	chartPath := filepath.Join(dir, helmchart.CloudChartFSPath)
 
 	vf := filepath.Join(t.TempDir(), "enable-volumed.yaml")
 	if err := os.WriteFile(vf, []byte("volumed:\n  enabled: true\n"), 0o600); err != nil {
@@ -1759,7 +1144,6 @@ func TestEffectiveValuesHonorsValuesFile(t *testing.T) {
 	}
 
 	// Default (no -f): volumed reads as disabled.
-	installValues = nil
 	tree, err := effectiveValues(context.Background(), chartPath, nil)
 	if err != nil {
 		t.Fatalf("effectiveValues (defaults): %v", err)
@@ -1769,22 +1153,18 @@ func TestEffectiveValuesHonorsValuesFile(t *testing.T) {
 	}
 
 	// With the -f file: volumed reads as enabled.
-	installValues = []string{vf}
-	defer func() { installValues = nil }()
-	tree, err = effectiveValues(context.Background(), chartPath, nil)
+	tree, err = effectiveValues(context.Background(), chartPath, []string{vf})
 	if err != nil {
 		t.Fatalf("effectiveValues (-f): %v", err)
 	}
 	if !boolAtPath(tree, "volumed.enabled") {
-		t.Fatal("volumed.enabled false despite a -f file enabling it; the resolver would skip pinning its digest")
+		t.Fatal("volumed.enabled false despite a -f file enabling it")
 	}
 }
 
 // helmchart.MergeValues must deep-merge a -f overlay the way helm coalesces
 // it: a nested map merges key-by-key (so enabling volumed via -f does not
-// wipe its sibling image/hostPaths defaults), while a scalar replaces. This
-// is the fix for the resolver treating a -f-enabled, default-disabled
-// component as still off.
+// wipe its sibling image/hostPaths defaults), while a scalar replaces.
 func TestMergeValuesDeepMergesOverlay(t *testing.T) {
 	base := map[string]any{
 		"volumed": map[string]any{
@@ -1822,19 +1202,6 @@ func assertArgsEqual(t *testing.T, got, want []string) {
 		if got[i] != want[i] {
 			t.Fatalf("args[%d] = %q, want %q; got %v", i, got[i], want[i], got)
 		}
-	}
-}
-
-func TestValuesFilesSetDistroErrorPaths(t *testing.T) {
-	if _, err := valuesFilesSetDistro([]string{filepath.Join(t.TempDir(), "missing.yaml")}); err == nil {
-		t.Fatal("want the read error surfaced")
-	}
-	bad := filepath.Join(t.TempDir(), "bad.yaml")
-	if err := os.WriteFile(bad, []byte("\t"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := valuesFilesSetDistro([]string{bad}); err == nil {
-		t.Fatal("want the parse error surfaced")
 	}
 }
 
@@ -1952,89 +1319,6 @@ func writeValuesFile(t *testing.T, body string) string {
 // A -f file that writes nriImagePolicy.policy.exemptNamespaces owns it, empty
 // list included: the computed values are helm's last -f, so a lane default
 // injected over it would silently replace a deliberate choice.
-func TestValuesFilesSetExemptNamespaces(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		body string
-		want bool
-	}{
-		{"list set", "nriImagePolicy:\n  policy:\n    exemptNamespaces: [gatekeeper-system]\n", true},
-		{"empty list is a choice", "nriImagePolicy:\n  policy:\n    exemptNamespaces: []\n", true},
-		{"null is a choice", "nriImagePolicy:\n  policy:\n    exemptNamespaces:\n", true},
-		{"sibling policy key only", "nriImagePolicy:\n  policy:\n    mode: audit\n", false},
-		{"wrong nesting level", "nriImagePolicy:\n  exemptNamespaces: [kube-system]\n", false},
-		{"unrelated value only", "router:\n  enabled: false\n", false},
-		{"empty file", "", false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := valuesFilesSetExemptNamespaces([]string{writeValuesFile(t, tc.body)})
-			if err != nil {
-				t.Fatalf("valuesFilesSetExemptNamespaces: %v", err)
-			}
-			if got != tc.want {
-				t.Errorf("valuesFilesSetExemptNamespaces(%q) = %v, want %v", tc.body, got, tc.want)
-			}
-		})
-	}
-
-	t.Run("no files means default", func(t *testing.T) {
-		got, err := valuesFilesSetExemptNamespaces(nil)
-		if err != nil || got {
-			t.Errorf("valuesFilesSetExemptNamespaces(nil) = (%v, %v), want (false, nil)", got, err)
-		}
-	})
-
-	t.Run("one of several files sets it", func(t *testing.T) {
-		a := writeValuesFile(t, "router:\n  enabled: false\n")
-		b := writeValuesFile(t, "nriImagePolicy:\n  policy:\n    exemptNamespaces: [kube-system]\n")
-		got, err := valuesFilesSetExemptNamespaces([]string{a, b})
-		if err != nil || !got {
-			t.Errorf("valuesFilesSetExemptNamespaces(two files) = (%v, %v), want (true, nil)", got, err)
-		}
-	})
-}
-
-func TestAppendExemptNamespacesInstallArgs(t *testing.T) {
-	want := []string{"--set-string", "nriImagePolicy.policy.exemptNamespaces[0]=kube-system"}
-	for _, mode := range hostedCvmModes {
-		got, err := appendExemptNamespacesInstallArgs(nil, mode, nil)
-		if err != nil {
-			t.Fatalf("--cvm-mode=%s: %v", mode, err)
-		}
-		assertArgsEqual(t, got, want)
-	}
-
-	// node bakes the system digests into its own floor, so the chart's empty
-	// default stands.
-	got, err := appendExemptNamespacesInstallArgs(nil, "bare-metal", nil)
-	if err != nil || got != nil {
-		t.Errorf("--cvm-mode=bare-metal = (%v, %v), want (nil, nil)", got, err)
-	}
-
-	t.Run("a -f file that sets it wins", func(t *testing.T) {
-		f := writeValuesFile(t, "nriImagePolicy:\n  policy:\n    exemptNamespaces: [gatekeeper-system]\n")
-		got, err := appendExemptNamespacesInstallArgs(nil, "aks", []string{f})
-		if err != nil || got != nil {
-			t.Errorf("with an exemptNamespaces -f = (%v, %v), want (nil, nil)", got, err)
-		}
-	})
-
-	t.Run("an unrelated -f file does not suppress the default", func(t *testing.T) {
-		f := writeValuesFile(t, "router:\n  enabled: false\n")
-		got, err := appendExemptNamespacesInstallArgs(nil, "aks", []string{f})
-		if err != nil {
-			t.Fatalf("appendExemptNamespacesInstallArgs: %v", err)
-		}
-		assertArgsEqual(t, got, want)
-	})
-
-	t.Run("an unreadable -f file is an error, not a silent default", func(t *testing.T) {
-		if _, err := appendExemptNamespacesInstallArgs(nil, "aks", []string{"/nonexistent/values.yaml"}); err == nil {
-			t.Error("want an error for an unreadable values file")
-		}
-	})
-}
-
 func TestImageDigest(t *testing.T) {
 	const digest = "sha256:ab12000000000000000000000000000000000000000000000000000000000000"
 	for _, tc := range []struct {
@@ -2049,6 +1333,7 @@ func TestImageDigest(t *testing.T) {
 		{"falls back to a pinned spec image", []string{"", "nginx@" + digest}, digest},
 		{"tag only carries no digest", []string{"", "nginx:1.27"}, ""},
 		{"nothing to read", []string{"", ""}, ""},
+		{"malformed digest", []string{"sha256:invalid"}, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := imageDigest(tc.refs...); got != tc.want {
@@ -2058,7 +1343,7 @@ func TestImageDigest(t *testing.T) {
 	}
 }
 
-func TestAdmissibleDigests(t *testing.T) {
+func TestAvailableImageDigests(t *testing.T) {
 	const (
 		componentDigest = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
 		bootDigest      = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
@@ -2077,10 +1362,10 @@ func TestAdmissibleDigests(t *testing.T) {
 			},
 		}},
 	}
-	got := admissibleDigests(values, []c8sComponent{{valuePrefix: "cds.image"}, {valuePrefix: "volumed.image"}})
+	got := availableImageDigests(values, []c8sComponent{{valuesPath: "cds.image"}, {valuesPath: "volumed.image"}}, nil)
 	want := map[string]bool{componentDigest: true, bootDigest: true, workloadDigest: true, initDigest: true}
 	if !reflect.DeepEqual(got, want) {
-		t.Errorf("admissibleDigests = %v, want %v", got, want)
+		t.Errorf("availableImageDigests = %v, want %v", got, want)
 	}
 }
 
@@ -2090,7 +1375,10 @@ func daemonSetPod(ns, name, image, imageID string) corev1.Pod {
 		Namespace:       ns,
 		Name:            name,
 		OwnerReferences: []metav1.OwnerReference{{Kind: "DaemonSet", Name: "ds"}},
-		Status:          corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{{Image: image, ImageID: imageID}}},
+		Spec:            corev1.PodSpec{Containers: []corev1.Container{{Name: "main", Image: image}}},
+		Status: corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{
+			{Name: "main", Image: image, ImageID: imageID},
+		}},
 	}
 }
 
@@ -2107,7 +1395,13 @@ func deploymentPod(ns, name, image, imageID string) corev1.Pod {
 	return p
 }
 
-func TestDeniedPlatformImages(t *testing.T) {
+func statefulSetPod(ns, name, image, imageID string) corev1.Pod {
+	p := daemonSetPod(ns, name, image, imageID)
+	p.OwnerReferences = []metav1.OwnerReference{{Kind: "StatefulSet", Name: "sts"}}
+	return p
+}
+
+func TestUncoveredPlatformImages(t *testing.T) {
 	const (
 		etcd    = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
 		cni     = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
@@ -2129,118 +1423,363 @@ func TestDeniedPlatformImages(t *testing.T) {
 	}
 	admitted := map[string]bool{pinned: true}
 
-	got := deniedPlatformImages(pods, release, nil, admitted)
+	got := uncoveredPlatformImages(pods, release, nil, admitted)
 	want := []string{
 		"calico-system/calico-node-a  docker.io/calico/node@" + cni,
 		"kube-system/etcd-node-a  docker.io/rancher/hardened-etcd@" + etcd,
 	}
 	if !slices.Equal(got, want) {
-		t.Errorf("deniedPlatformImages = %#v, want %#v", got, want)
+		t.Errorf("uncoveredPlatformImages = %#v, want %#v", got, want)
+	}
+	slices.Reverse(pods)
+	if got := uncoveredPlatformImages(pods, release, nil, admitted); !slices.Equal(got, want) {
+		t.Errorf("reordered pods changed the report: %v, want %v", got, want)
 	}
 
-	// Exempting a namespace admits everything in it by captured digest.
-	got = deniedPlatformImages(pods, release, []string{"kube-system", "calico-system"}, admitted)
+	// An exemption admits the repositories it names in the namespaces it names.
+	exempt := nriimagepolicy.ExemptRepositories{
+		"kube-system":   {"docker.io/rancher/"},
+		"calico-system": {"docker.io/calico/"},
+	}
+	got = uncoveredPlatformImages(pods, release, exempt, admitted)
 	if len(got) != 0 {
 		t.Errorf("with both namespaces exempt, denied = %#v, want none", got)
 	}
 }
 
+// A provider image pre-loaded on the node reports a bare image ID — the
+// node-local config digest — and names its repository on the spec reference
+// alone, which is what the exemption matches.
+func TestUncoveredPlatformImagesAdmitsAPreloadedProviderImage(t *testing.T) {
+	const localID = "sha256:9999999999999999999999999999999999999999999999999999999999999999"
+	pods := []corev1.Pod{daemonSetPod("kube-system", "kube-proxy-a", "gke.gcr.io/kube-proxy:v1.31.0-gke.1", localID)}
+	exempt := nriimagepolicy.ExemptRepositories{"kube-system": {"gke.gcr.io/"}}
+	if got := uncoveredPlatformImages(pods, "c8s-system", exempt, nil); len(got) != 0 {
+		t.Errorf("denied = %#v, want none for a pre-loaded image the exemption names", got)
+	}
+	if got := uncoveredPlatformImages(pods, "c8s-system", nil, nil); len(got) != 1 {
+		t.Errorf("denied = %#v, want the image reported without the exemption", got)
+	}
+}
+
 // A container that has not pulled reports no digest, so there is nothing to
 // evaluate — it must not be reported as denied on a guess.
-func TestDeniedPlatformImagesSkipsUnpulledContainers(t *testing.T) {
+func TestUncoveredPlatformImagesSkipsUnpulledContainers(t *testing.T) {
 	pod := daemonSetPod("kube-system", "kube-proxy-a", "kube-proxy:v1.31.0", "")
-	if got := deniedPlatformImages([]corev1.Pod{pod}, "c8s-system", nil, nil); len(got) != 0 {
+	if got := uncoveredPlatformImages([]corev1.Pod{pod}, "c8s-system", nil, nil); len(got) != 0 {
 		t.Errorf("denied = %#v, want none for a container with no resolved imageID", got)
 	}
 }
 
 // Init containers are admitted by the same policy as the main ones, so a
 // denied init image wedges the pod just as hard.
-func TestDeniedPlatformImagesCoversInitContainers(t *testing.T) {
+func TestUncoveredPlatformImagesCoversInitContainers(t *testing.T) {
 	const digest = "sha256:5555555555555555555555555555555555555555555555555555555555555555"
 	pod := daemonSetPod("kube-system", "cni-install-a", "main:v1", "")
-	pod.Status.InitContainerStatuses = []corev1.ContainerStatus{{Image: "install-cni:v3", ImageID: "install-cni@" + digest}}
-	got := deniedPlatformImages([]corev1.Pod{pod}, "c8s-system", nil, nil)
+	pod.Spec.InitContainers = []corev1.Container{{Name: "install", Image: "install-cni:v3"}}
+	pod.Status.InitContainerStatuses = []corev1.ContainerStatus{{Name: "install", Image: "install-cni:v3", ImageID: "install-cni@" + digest}}
+	got := uncoveredPlatformImages([]corev1.Pod{pod}, "c8s-system", nil, nil)
 	want := []string{"kube-system/cni-install-a  docker.io/library/install-cni@" + digest}
 	if !slices.Equal(got, want) {
 		t.Errorf("denied = %#v, want %#v", got, want)
 	}
 }
 
+// A denied container no platform pod runs — a provider add-on StatefulSet, a
+// tenant Deployment — is stopped by the containerd restart and refused after
+// it. The install reports those rather than refusing: the cluster survives
+// without them, and a tenant workload is denied by design.
+func TestUncoveredWorkloadImages(t *testing.T) {
+	const (
+		metrics = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+		vllm    = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+		proxy   = "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+		mesh    = "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+		exempt  = "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+		release = "c8s-system"
+	)
+	pods := []corev1.Pod{
+		statefulSetPod("gke-managed-cim", "kube-state-metrics-0", "gke.io/ksm:v2", "gke.io/ksm@"+metrics),
+		deploymentPod("tenant", "infer-abc", "example.test/vllm:v1", "example.test/vllm@"+vllm),
+		// A platform pod is the refusal's, not this list's.
+		daemonSetPod("kube-system", "kube-proxy-a", "kube-proxy:v1.31.0", "kube-proxy@"+proxy),
+		// The release's own pods are torn up and replaced by this install.
+		deploymentPod(release, "c8s-router-abc", "ghcr.io/confidential-dot-ai/router:main", "ghcr.io/confidential-dot-ai/router@"+mesh),
+		// An exempt namespace admits the repositories it names.
+		deploymentPod("kube-system", "coredns-abc", "coredns:1.11", "coredns@"+exempt),
+	}
+	kubeSystem := nriimagepolicy.ExemptRepositories{"kube-system": {"docker.io/library/"}}
+	got := uncoveredWorkloadImages(pods, release, kubeSystem, nil)
+	want := []string{
+		"gke-managed-cim/kube-state-metrics-0  gke.io/ksm@" + metrics,
+		"tenant/infer-abc  example.test/vllm@" + vllm,
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("uncoveredWorkloadImages = %#v, want %#v", got, want)
+	}
+
+	admitted := map[string]bool{metrics: true, vllm: true}
+	if got := uncoveredWorkloadImages(pods, release, kubeSystem, admitted); len(got) != 0 {
+		t.Errorf("with both digests admitted, denied = %#v, want none", got)
+	}
+}
+
+// The report names what will be stopped and both ways to admit it, and prints
+// nothing when the policy denies nothing.
+func TestReportUncoveredWorkloads(t *testing.T) {
+	var buf bytes.Buffer
+	reportUncoveredWorkloads(&buf, []string{"gke-managed-cim/kube-state-metrics-0  gke.io/ksm@sha256:" + strings.Repeat("1", 64)})
+	out := buf.String()
+	for _, want := range []string{"gke-managed-cim/kube-state-metrics-0", "nriImagePolicy.bootstrapAllowlist.workloads", exemptNamespacesPath} {
+		if !strings.Contains(out, want) {
+			t.Errorf("report does not mention %q:\n%s", want, out)
+		}
+	}
+
+	buf.Reset()
+	reportUncoveredWorkloads(&buf, nil)
+	if buf.Len() != 0 {
+		t.Errorf("nothing denied must print nothing, got:\n%s", buf.String())
+	}
+}
+
 // A pod the kubelet has finished with has no container left for the containerd
 // restart to recreate, so its images are not the policy's to admit.
-func TestDeniedPlatformImagesSkipsTerminalPods(t *testing.T) {
+func TestUncoveredPlatformImagesSkipsTerminalPods(t *testing.T) {
 	const digest = "sha256:6666666666666666666666666666666666666666666666666666666666666666"
 	for _, phase := range []corev1.PodPhase{corev1.PodSucceeded, corev1.PodFailed} {
 		pod := daemonSetPod("kube-system", "cni-migrate-a", "migrate:v1", "migrate@"+digest)
 		pod.Status.Phase = phase
-		if got := deniedPlatformImages([]corev1.Pod{pod}, "c8s-system", nil, nil); len(got) != 0 {
+		if got := uncoveredPlatformImages([]corev1.Pod{pod}, "c8s-system", nil, nil); len(got) != 0 {
 			t.Errorf("phase %s: denied = %#v, want none", phase, got)
 		}
 	}
 }
 
-// The repository is reported for pasting into the floor, so a status that
-// carries the reference only on imageID must still name one.
-func TestImageRepositoryFallsBackToImageID(t *testing.T) {
+func TestImageReferenceUsesRequestedRepository(t *testing.T) {
 	const digest = "sha256:7777777777777777777777777777777777777777777777777777777777777777"
-	if got, want := imageRepository("", "docker-pullable://calico/node@"+digest), "docker.io/calico/node"; got != want {
-		t.Errorf("imageRepository = %q, want %q", got, want)
+	if got, want := imageReference("calico/node:v3", digest), "docker.io/calico/node@"+digest; got != want {
+		t.Errorf("imageReference = %q, want %q", got, want)
 	}
-	if got := imageRepository("", ""); got != "" {
-		t.Errorf("imageRepository with nothing parseable = %q, want empty", got)
+	if got := imageReference(digest, digest); got != digest {
+		t.Errorf("imageReference with a bare digest = %q, want %q", got, digest)
 	}
 }
 
-// The exemption admits by a digest set the plugin freezes per node under its
-// own cache dir, so the install is the one place an operator can review it.
-func TestExemptedPlatformImages(t *testing.T) {
+func TestPodImagesNameABareDigestAlone(t *testing.T) {
+	const digest = "sha256:8888888888888888888888888888888888888888888888888888888888888888"
+	pods := []corev1.Pod{daemonSetPod("kube-system", "fluentbit-a", digest, digest)}
+	got := imageLines(collectPodImages(pods, func(corev1.Pod, podImage) bool { return true }))
+	want := []string{"kube-system/fluentbit-a  " + digest}
+	if !slices.Equal(got, want) {
+		t.Errorf("podImages = %#v, want %#v", got, want)
+	}
+}
+
+// Only the namespaces the policy exempts carry an exemption, whatever other
+// namespace a prefix set names.
+func TestExemptRepositories(t *testing.T) {
+	values := map[string]any{"nriImagePolicy": map[string]any{"policy": map[string]any{
+		"exemptNamespaces": []any{"kube-system"},
+		"exemptRepositories": map[string]any{
+			"kube-system": []any{"mcr.microsoft.com/oss/kubernetes/"},
+			"gmp-system":  []any{"gke.gcr.io/"},
+		},
+	}}}
+	exempt := exemptRepositories(values)
+	if !exempt.Admits("kube-system", "mcr.microsoft.com/oss/kubernetes/kube-proxy:v1.31.0") {
+		t.Errorf("exemptRepositories = %#v, want kube-system to admit its prefix", exempt)
+	}
+	if exempt.Admits("gmp-system", "gke.gcr.io/kube-proxy:v1.31.0") {
+		t.Errorf("exemptRepositories = %#v, want no exemption for an unexempted namespace", exempt)
+	}
+}
+
+// Every pod of the namespace, an exited init container included.
+func TestExemptNamespaceImages(t *testing.T) {
 	const (
-		etcd  = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
-		proxy = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
-		gke   = "sha256:3333333333333333333333333333333333333333333333333333333333333333"
-		vllm  = "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+		etcd   = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+		proxy  = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+		cns    = "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+		dns    = "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+		gke    = "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+		vllm   = "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+		fluent = "sha256:7777777777777777777777777777777777777777777777777777777777777777"
 	)
+	cnsPod := daemonSetPod("kube-system", "azure-cns-a", "azure-cns:v1.6", "azure-cns@"+cns)
+	// Exited before the plugin connected; the pod runs it again after a reboot.
+	cnsPod.Spec.InitContainers = []corev1.Container{{Name: "init-cns", Image: "azure-cns-init:v1.6"}}
+	cnsPod.Status.InitContainerStatuses = []corev1.ContainerStatus{{
+		Name:    "init-cns",
+		Image:   "azure-cns-init:v1.6",
+		ImageID: "azure-cns-init@" + proxy,
+		State:   corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 0}},
+	}}
 	pods := []corev1.Pod{
 		mirrorPod("kube-system", "etcd-node-a", "rancher/hardened-etcd:v3.6.12", "rancher/hardened-etcd@"+etcd),
-		daemonSetPod("kube-system", "kube-proxy-a", "kube-proxy:v1.31.0", "kube-proxy@"+proxy),
-		// Same DaemonSet on a second node: one line, not two.
-		daemonSetPod("kube-system", "kube-proxy-b", "kube-proxy:v1.31.0", "kube-proxy@"+proxy),
+		cnsPod,
+		// Same DaemonSet on a second node: one entry.
+		daemonSetPod("kube-system", "azure-cns-b", "azure-cns:v1.6", "azure-cns@"+cns),
+		deploymentPod("kube-system", "coredns-abc", "coredns:1.11", "coredns@"+dns),
+		// In the exempt namespace, under no prefix.
+		daemonSetPod("kube-system", "fluentbit-a", "example.test/fluentbit:v1", "example.test/fluentbit@"+fluent),
 		// Outside the exempt set: not what this admits.
 		daemonSetPod("gke-system", "gke-agent-a", "gke/agent:v1", "gke/agent@"+gke),
 		deploymentPod("tenant", "infer-abc", "example.test/vllm:v1", "example.test/vllm@"+vllm),
 	}
-	got := exemptedPlatformImages(pods, []string{"kube-system"})
+	exempt := nriimagepolicy.ExemptRepositories{"kube-system": {"docker.io/library/", "docker.io/rancher/"}}
+	got := imageLines(exemptNamespaceImages(pods, exempt))
 	want := []string{
+		"kube-system/azure-cns-a  docker.io/library/azure-cns-init@" + proxy,
+		"kube-system/azure-cns-a  docker.io/library/azure-cns@" + cns,
+		"kube-system/coredns-abc  docker.io/library/coredns@" + dns,
 		"kube-system/etcd-node-a  docker.io/rancher/hardened-etcd@" + etcd,
-		"kube-system/kube-proxy-a  docker.io/library/kube-proxy@" + proxy,
 	}
 	if !slices.Equal(got, want) {
-		t.Errorf("exemptedPlatformImages = %#v, want %#v", got, want)
+		t.Errorf("exempt namespace images = %#v, want %#v", got, want)
 	}
 
-	if got := exemptedPlatformImages(pods, nil); len(got) != 0 {
+	if got := exemptNamespaceImages(pods, nil); len(got) != 0 {
 		t.Errorf("with no exempt namespace, got %#v, want none", got)
+	}
+
+	denied := "kube-system/fluentbit-a  example.test/fluentbit@" + fluent
+	if got := uncoveredPlatformImages(pods, "c8s-system", exempt, nil); !slices.Contains(got, denied) {
+		t.Errorf("denied platform images = %#v, want %q among them", got, denied)
 	}
 }
 
-// The report is the audit surface: it must carry every digest (never a
-// truncated list) and name the alternative posture.
+// Every flag the hint names must be a flag of the command it names, and an
+// install that stored no route manifest names the command that reads its
+// digest.
+func TestVerifyHintPrintsRunnableCommands(t *testing.T) {
+	const (
+		cdsURL = "https://cds.example:8443"
+		cdsPin = "/run/c8s/cds-pin.json"
+	)
+	var buf bytes.Buffer
+	printVerifyHint(&buf, cdsURL, cdsPin, "<operator-pub.pem>", "")
+
+	verifyArgs := hintCommandArgs(t, buf.String(), "c8s verify")
+	if slices.Contains(verifyArgs, cdsPin) {
+		t.Errorf("the front-door check names the CDS pin, which carries no node measurement:\n%s", buf.String())
+	}
+	if !slices.Contains(verifyArgs, "--route-digest") {
+		t.Errorf("the front-door check passes no --route-digest, which attest-lb requires:\n%s", buf.String())
+	}
+	if err := verify.NewCmd(verify.Defaults{}).ParseFlags(verifyArgs); err != nil {
+		t.Errorf("c8s verify %s: %v", strings.Join(verifyArgs, " "), err)
+	}
+
+	anchorArgs := hintCommandArgs(t, buf.String(), "c8s cds ca")
+	if err := cdsca.NewCmd().ParseFlags(anchorArgs); err != nil {
+		t.Errorf("c8s cds ca %s: %v", strings.Join(anchorArgs, " "), err)
+	}
+	for _, want := range []string{cdsURL, cdsPin} {
+		if !slices.Contains(anchorArgs, want) {
+			t.Errorf("the anchor command omits %q, which this install named:\n%s", want, buf.String())
+		}
+	}
+
+	show, _, err := routes.NewCmd().Find([]string{"show"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	digestArgs := hintCommandArgs(t, buf.String(), "c8s routes show")
+	if err := show.ParseFlags(digestArgs); err != nil {
+		t.Errorf("c8s routes show %s: %v", strings.Join(digestArgs, " "), err)
+	}
+	if !slices.Contains(digestArgs, "--operator-keys") {
+		t.Errorf("the digest the hint reads is not verified under the operator keys:\n%s", buf.String())
+	}
+}
+
+// An install that stored a route manifest names its digest, so the check runs
+// as printed.
+func TestVerifyHintNamesTheStoredRouteDigest(t *testing.T) {
+	const digest = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+	var buf bytes.Buffer
+	printVerifyHint(&buf, "https://cds.example:8443", "/run/c8s/cds-pin.json", "operator-pub.pem", digest)
+
+	verifyArgs := hintCommandArgs(t, buf.String(), "c8s verify")
+	i := slices.Index(verifyArgs, "--route-digest")
+	if i < 0 || i+1 == len(verifyArgs) || verifyArgs[i+1] != digest {
+		t.Errorf("the front-door check does not pass --route-digest %s:\n%s", digest, buf.String())
+	}
+	if strings.Contains(buf.String(), "c8s routes show") {
+		t.Errorf("the hint names how to read a digest it printed itself:\n%s", buf.String())
+	}
+}
+
+// hintCommandArgs is what the hint passes to the command named by prefix.
+func hintCommandArgs(t *testing.T, hint, prefix string) []string {
+	t.Helper()
+	for line := range strings.SplitSeq(hint, "\n") {
+		if i := strings.Index(line, prefix); i >= 0 {
+			return strings.Fields(line[i+len(prefix):])
+		}
+	}
+	t.Fatalf("the hint names no %q command:\n%s", prefix, hint)
+	return nil
+}
+
+// The preflight reads each platform file's exemption through the value paths
+// the chart renders a node's boot config from.
+func TestEveryPlatformExemptionReachesThePreflight(t *testing.T) {
+	if _, err := exec.LookPath("helm"); err != nil {
+		t.Fatal("helm CLI not found")
+	}
+	dir, err := helmchart.ExtractTemp()
+	if err != nil {
+		t.Fatalf("extract the chart: %v", err)
+	}
+	defer os.RemoveAll(dir)
+	chartPath := filepath.Join(dir, helmchart.CloudChartFSPath)
+
+	for _, platform := range cloudPlatforms {
+		t.Run(platform, func(t *testing.T) {
+			values, err := effectiveValues(context.Background(), chartPath, orderedValuesFiles(chartPath, platform, nil))
+			if err != nil {
+				t.Fatalf("read the platform's values: %v", err)
+			}
+			namespaces := stringsAtPath(values, exemptNamespacesPath)
+			if len(namespaces) == 0 {
+				t.Fatalf("%s exempts no namespace, so the install refuses the provider's own kube-system pods", platform)
+			}
+			exempt := exemptRepositories(values)
+			for _, namespace := range namespaces {
+				if len(exempt[namespace]) == 0 {
+					t.Errorf("the preflight reads no %s for %s, so it judges an exemption no node has", exemptRepositoriesPath, namespace)
+				}
+			}
+		})
+	}
+}
+
+// The report is the audit surface: it must name the prefixes every node
+// admits on, carry every image they admit (never a truncated list) and name
+// the alternative posture.
 func TestReportExemptedImages(t *testing.T) {
-	images := make([]string, 0, deniedImagesListed+5)
+	images := make([]podImage, 0, uncoveredImagesListed+5)
 	for i := range cap(images) {
-		images = append(images, fmt.Sprintf("kube-system/pod-%02d  example.test/img%02d@sha256:%064d", i, i, i))
+		digest := fmt.Sprintf("sha256:%064d", i)
+		images = append(images, podImage{
+			namespace: "kube-system",
+			pod:       fmt.Sprintf("pod-%02d", i),
+			reference: fmt.Sprintf("example.test/img%02d@%s", i, digest),
+			digest:    digest,
+		})
 	}
 	var buf bytes.Buffer
-	reportExemptedImages(&buf, []string{"kube-system"}, images)
+	reportExemptedImages(&buf, nriimagepolicy.ExemptRepositories{"kube-system": {"example.test/"}}, images)
 	out := buf.String()
 
 	for _, image := range images {
-		if !strings.Contains(out, image) {
-			t.Errorf("report omits %q — a truncated audit list is not one:\n%s", image, out)
+		if !strings.Contains(out, image.line()) {
+			t.Errorf("report omits %q — a truncated audit list is not one:\n%s", image.line(), out)
 		}
 	}
-	for _, want := range []string{"kube-system", "nriImagePolicy.bootstrapAllowlist.workloads", exemptNamespacesPath} {
+	for _, want := range []string{"kube-system", "example.test/", "nriImagePolicy.bootstrapAllowlist.workloads", exemptNamespacesPath} {
 		if !strings.Contains(out, want) {
 			t.Errorf("report does not mention %q:\n%s", want, out)
 		}
@@ -2253,66 +1792,22 @@ func TestReportExemptedImages(t *testing.T) {
 	}
 }
 
-// --rtmrs completes the TDX pin: the entries fan into cds.rtmrs and
-// armtlsMesh.rtmrs, normalized and in index order.
-func TestAppendCvmModeInstallArgsRTMRs(t *testing.T) {
-	prev := installRegisters
-	defer func() { installRegisters = prev }()
-	r1, r2 := strings.Repeat("11", 48), strings.Repeat("22", 48)
-	installRegisters = []string{"2=" + r2, "1=" + r1} // out of order on purpose
-
-	got, err := appendCvmModeInstallArgs([]string{"upgrade"}, "bare-metal", "tdx")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	for _, want := range []string{
-		"cds.rtmrs[0]=1=" + r1, "armtlsMesh.rtmrs[0]=1=" + r1,
-		"cds.rtmrs[1]=2=" + r2, "armtlsMesh.rtmrs[1]=2=" + r2,
-	} {
-		if !slices.Contains(got, want) {
-			t.Errorf("args missing %q; got %v", want, got)
+func TestConfidentialNodeSelector(t *testing.T) {
+	t.Run("labels become one sorted selector", func(t *testing.T) {
+		values := map[string]any{"confidentialNodeSelector": map[string]any{
+			"kubernetes.azure.com/security-type": "ConfidentialVM",
+			"c8s.example/pool":                   "cvm",
+		}}
+		got, err := confidentialNodeSelector(values)
+		if want := "c8s.example/pool=cvm,kubernetes.azure.com/security-type=ConfidentialVM"; err != nil || got != want {
+			t.Fatalf("confidentialNodeSelector = (%q, %v), want (%q, nil)", got, err, want)
 		}
-	}
+	})
 
-	installRegisters = []string{"0=" + r1}
-	if _, err := appendCvmModeInstallArgs([]string{"upgrade"}, "bare-metal", "tdx"); err == nil {
-		t.Fatal("RTMR[0] pin accepted; only RTMR[1] and RTMR[2] are supported")
-	}
-}
-
-// A TDX install without RTMR pins warns that the measurement pin covers TDVF
-// firmware only; SNP, pinned TDX, and values-file-pinned TDX stay quiet.
-func TestTDXRTMRPinWarning(t *testing.T) {
-	r1 := "1=" + strings.Repeat("11", 48)
-
-	if warn, err := tdxRTMRPinWarning("sev-snp", nil, nil); err != nil || warn != "" {
-		t.Fatalf("sev-snp: warn=%q err=%v, want quiet", warn, err)
-	}
-	if warn, err := tdxRTMRPinWarning("tdx", []string{r1}, nil); err != nil || warn != "" {
-		t.Fatalf("pinned tdx: warn=%q err=%v, want quiet", warn, err)
-	}
-	warn, err := tdxRTMRPinWarning("tdx", nil, nil)
-	if err != nil || warn == "" {
-		t.Fatalf("unpinned tdx: warn=%q err=%v, want a warning", warn, err)
-	}
-
-	pinned := filepath.Join(t.TempDir(), "values.yaml")
-	if err := os.WriteFile(pinned, []byte("cds:\n  rtmrs:\n    - \""+r1+"\"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if warn, err := tdxRTMRPinWarning("tdx", nil, []string{pinned}); err != nil || warn != "" {
-		t.Fatalf("values-file pinned tdx: warn=%q err=%v, want quiet", warn, err)
-	}
-
-	empty := filepath.Join(t.TempDir(), "values.yaml")
-	if err := os.WriteFile(empty, []byte("cds:\n  rtmrs: []\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if warn, err := tdxRTMRPinWarning("tdx", nil, []string{empty}); err != nil || warn == "" {
-		t.Fatalf("empty-list values file: warn=%q err=%v, want a warning", warn, err)
-	}
-
-	if _, err := tdxRTMRPinWarning("tdx", nil, []string{filepath.Join(t.TempDir(), "absent.yaml")}); err == nil {
-		t.Fatal("an unreadable values file was silently treated as unpinned")
-	}
+	t.Run("a value that is not a label map is refused", func(t *testing.T) {
+		values := map[string]any{"confidentialNodeSelector": "ConfidentialVM"}
+		if _, err := confidentialNodeSelector(values); err == nil {
+			t.Fatal("want a refusal when the key holds no label map")
+		}
+	})
 }

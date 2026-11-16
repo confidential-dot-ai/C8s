@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
@@ -19,8 +20,10 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cdsattest"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/routing"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
@@ -36,7 +39,7 @@ type e2eCDS struct {
 	client *http.Client // verifies the CDS like the router does
 }
 
-func startE2ECDS(t *testing.T, stub *mockapi.Stub, pin []byte, mesh *issuer.CA, key, published *ecdsa.PublicKey) *e2eCDS {
+func startE2ECDS(t *testing.T, stub *mockapi.Stub, pin []byte, mesh ownCA, key, published *ecdsa.PublicKey) *e2eCDS {
 	t.Helper()
 	der, err := x509.MarshalPKIXPublicKey(published)
 	if err != nil {
@@ -44,12 +47,13 @@ func startE2ECDS(t *testing.T, stub *mockapi.Stub, pin []byte, mesh *issuer.CA, 
 	}
 	router := newRouter(dependencies{
 		Routes: routeHandler{
-			Store:     inMemoryStore(t),
+			Allowlist: inMemoryStore(t),
 			Authorize: operatorauth.Verifier{Keys: []*ecdsa.PublicKey{key}, ClockSkew: 30 * time.Second}.Authorize,
-			MeshCA:    mesh.Cert,
 		},
 		OperatorKeysPEM:  pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}),
 		ReadyFn:          func() bool { return true },
+		MeshCA:           mesh,
+		NodeImages:       certifying(),
 		RateLimiter:      newTestRateLimiter(t),
 		ChallengeLimiter: newTestRateLimiter(t),
 		MaxRequestSize:   65536,
@@ -120,35 +124,71 @@ func newE2ERouter(t *testing.T, stub *mockapi.Stub, cdsURL string, pin []byte, m
 	if err != nil {
 		t.Fatal(err)
 	}
-	caFile := filepath.Join(t.TempDir(), "ca.pem")
-	if err := os.WriteFile(caFile, certutil.EncodeCertPEM(mesh.Cert.Raw), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	meshCAs := routing.CAFile(caFile)
-	leaf := e2eNamedLeaf(t, mesh, "router")
-	state := routing.NewState(routing.StateConfig{MeshCAs: meshCAs})
-	transports := routing.NewTransports(routing.TransportConfig{
-		MeshCAs:           meshCAs,
-		ClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) { return &leaf, nil },
-	})
+	identity := e2ePublishedIdentity(t, e2eNamedLeaf(t, mesh, "router"), mesh)
+	state := routing.NewState(routing.StateConfig{MeshCAs: identity.MeshCAs})
+	transports := routing.NewTransports(routing.TransportConfig{MeshIdentity: identity.Credential})
 	return &e2eRouter{
 		state: state,
 		poller: routing.NewPoller(routing.PollerConfig{
 			State: state, Fetcher: cds, Keys: cds, Transports: transports, Interval: time.Hour,
 		}),
-		proxy: routing.NewProxy(routing.ProxyConfig{State: state, Transports: transports, Timeout: 10 * time.Second}),
+		proxy: routing.NewProxy(routing.ProxyConfig{State: state, Transports: transports, Bindings: cdsattest.NewBindings(), Timeout: 10 * time.Second}),
 	}
 }
 
+// e2ePublishedIdentity publishes leaf and ca as one credential generation on a
+// volume shaped like the one get-cert publishes on, and reads the router's mesh
+// identity from it.
+func e2ePublishedIdentity(t *testing.T, leaf tls.Certificate, ca *issuer.CA) *routing.MeshIdentity {
+	t.Helper()
+	key, ok := leaf.PrivateKey.(*ecdsa.PrivateKey)
+	if !ok {
+		t.Fatalf("leaf key is %T, want an ECDSA key", leaf.PrivateKey)
+	}
+	keyPEM, err := certutil.MarshalECKeyPEM(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	generation := filepath.Join("generations", "1")
+	if err := os.MkdirAll(filepath.Join(dir, generation), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, data := range map[string][]byte{
+		"tls.crt": certutil.EncodeCertPEM(leaf.Certificate[0]),
+		"tls.key": keyPEM,
+		"ca.crt":  certutil.EncodeCertPEM(ca.Cert.Raw),
+	} {
+		if err := os.WriteFile(filepath.Join(dir, generation, name), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(generation, filepath.Join(dir, "current")); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := routing.NewMeshIdentity(
+		filepath.Join(dir, "tls.crt"),
+		filepath.Join(dir, "tls.key"),
+		filepath.Join(dir, "ca.crt"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return identity
+}
+
+// e2eSandboxID is the workload instance a member leaf names.
+const e2eSandboxID = "8d9f6c2b1a0e8d9f6c2b1a0e8d9f6c2b1a0e8d9f6c2b1a0e8d9f6c2b1a0e8d9f"
+
 func e2eNamedLeaf(t *testing.T, ca *issuer.CA, workload string) tls.Certificate {
 	t.Helper()
-	csrPEM, key := generateCSR(t)
+	csrPEM, key := generateCSRWith(t, pkix.Name{}, nil, nil)
 	block, _ := pem.Decode([]byte(csrPEM))
 	csr, err := x509.ParseCertificateRequest(block.Bytes)
 	if err != nil {
 		t.Fatal(err)
 	}
-	certPEM, _, err := ca.SignCSR(issuer.SignCSRParams{CSR: csr, TTL: 30 * time.Minute, MatchedWorkload: &armtls.MatchedWorkload{
+	certPEM, _, _, err := ca.SignCSR(issuer.SignCSRParams{CSR: csr, TTL: 30 * time.Minute, SandboxID: e2eSandboxID, MatchedWorkload: &armtls.MatchedWorkload{
 		Name: workload, AllowlistVersion: "1", AllowlistDigest: bytes.Repeat([]byte{0x42}, 32),
 	}})
 	if err != nil {
@@ -174,16 +214,17 @@ func TestRoutesEndToEnd(t *testing.T) {
 	measurement := bytes.Repeat([]byte{0x42}, 48)
 	stub := mockapi.New(t)
 	stub.SetVerdict(mockapi.PassingVerdict(hex.EncodeToString(measurement)))
-	mesh, err := issuer.NewCA("mesh ca", time.Hour)
-	if err != nil {
-		t.Fatal(err)
-	}
+	mesh := testMeshCA(t)
+	issuing, _ := mesh.Current()
+	meshCA := issuing.CA
 	signer, key := operatorSigner(t)
 
 	web := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, "web saw "+r.RequestURI)
 	}))
-	web.TLS = &tls.Config{Certificates: []tls.Certificate{e2eNamedLeaf(t, mesh, "web")}, ClientAuth: tls.RequireAnyClientCert}
+	// A member backend serves the mesh profile: its endpoint holds its leaf,
+	// answers the mesh protocol and carries plain HTTP inside it.
+	testutil.ServeMeshBackend(web, e2eNamedLeaf(t, meshCA, "web"))
 	web.StartTLS()
 	t.Cleanup(web.Close)
 	manifest := func(revision int) []byte {
@@ -203,7 +244,7 @@ func TestRoutesEndToEnd(t *testing.T) {
 	t.Run("routes by the stored manifest", func(t *testing.T) {
 		cds := startE2ECDS(t, stub, measurement, mesh, key, key)
 		cds.put(t, signer, manifest(1))
-		router := newE2ERouter(t, stub, cds.url, measurement, mesh)
+		router := newE2ERouter(t, stub, cds.url, measurement, meshCA)
 		if err := router.poller.Poll(t.Context()); err != nil {
 			t.Fatalf("Poll() = %v, want nil", err)
 		}
@@ -218,7 +259,7 @@ func TestRoutesEndToEnd(t *testing.T) {
 	t.Run("A1 wrong CDS pin", func(t *testing.T) {
 		cds := startE2ECDS(t, stub, measurement, mesh, key, key)
 		cds.put(t, signer, manifest(1))
-		router := newE2ERouter(t, stub, cds.url, bytes.Repeat([]byte{0x43}, 48), mesh)
+		router := newE2ERouter(t, stub, cds.url, bytes.Repeat([]byte{0x43}, 48), meshCA)
 		// The TLS stack flattens the verification error to text.
 		if err := router.poller.Poll(t.Context()); err == nil || !strings.Contains(err.Error(), remote.ErrMeasurementNotAllowed.Error()) {
 			t.Fatalf("Poll() under a wrong CDS pin = %v, want %q", err, remote.ErrMeasurementNotAllowed)
@@ -231,7 +272,7 @@ func TestRoutesEndToEnd(t *testing.T) {
 		_, other := operatorSigner(t)
 		cds := startE2ECDS(t, stub, measurement, mesh, key, other)
 		cds.put(t, signer, manifest(1))
-		router := newE2ERouter(t, stub, cds.url, measurement, mesh)
+		router := newE2ERouter(t, stub, cds.url, measurement, meshCA)
 		if err := router.poller.Poll(t.Context()); err == nil {
 			t.Fatal("Poll() under a substituted operator key set = nil, want an error")
 		}

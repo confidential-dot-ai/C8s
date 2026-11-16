@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
+	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
@@ -20,11 +22,11 @@ var (
 )
 
 // finalOutcome runs verifyEvidence's post-verification sequence: newOutcome,
-// the verdict policies, then applyInitDataNote on the final verdict.
+// the verdict policies, then applyFinalNotes on the final verdict.
 func finalOutcome(cfg config, ev *evidence, result *teetypes.VerificationResult, plan *verifyPlan) Outcome {
 	oc := newOutcome(cfg, ev, result, nil, plan)
-	applyVerdictPolicies(&oc, cfg, ev, nil, operatorKeysReport{}, &verifyPlan{}, measurementsReport{})
-	applyInitDataNote(&oc, result, plan)
+	applyVerdictPolicies(&oc, cfg, ev, nil, operatorKeysReport{}, plan, measurementsReport{})
+	applyFinalNotes(&oc, ev, result, plan)
 	return oc
 }
 
@@ -269,7 +271,7 @@ func TestVerifyEvidence_InitDataUnpinnedIsLabelled(t *testing.T) {
 	}
 }
 
-// applyInitDataNote is the single source of truth for the init-data fields: a
+// applyFinalNotes is the single source of truth for the init-data fields: a
 // plan carrying --init-data takes the pinned note, an unpinned plan the
 // unpinned one, and a hard failure (oc.Error set) carries neither — the gate
 // that keeps JSON and text from disagreeing. On az-* the claim is the inner
@@ -295,7 +297,7 @@ func TestApplyInitDataNote(t *testing.T) {
 	// A hard failure past newOutcome (here a pre-set oc.Error) carries no note,
 	// even with a matching pin — the leak the gate closes.
 	failed := Outcome{Platform: "snp", Error: "a later policy failed"}
-	applyInitDataNote(&failed, result, &verifyPlan{policy: &armtls.VerifyPolicy{}, initDataHash: make([]byte, 32)})
+	applyFinalNotes(&failed, ev, result, &verifyPlan{policy: &armtls.VerifyPolicy{}, initDataHash: make([]byte, 32)})
 	if failed.InitData != "" || failed.InitDataNote != "" {
 		t.Errorf("a failed verdict must carry no init-data fields, got %q / %q", failed.InitData, failed.InitDataNote)
 	}
@@ -322,7 +324,7 @@ func TestApplyInitDataNote(t *testing.T) {
 
 	// The az note leaks identically on a failed verdict without the gate.
 	azFailed := Outcome{Platform: "az-snp", Error: "a later policy failed"}
-	applyInitDataNote(&azFailed, azResult, &verifyPlan{policy: &armtls.VerifyPolicy{}, initDataHash: make([]byte, 32)})
+	applyFinalNotes(&azFailed, azEv, azResult, &verifyPlan{policy: &armtls.VerifyPolicy{}, initDataHash: make([]byte, 32)})
 	if azFailed.InitDataNote != "" {
 		t.Errorf("a failed az verdict must carry no init-data note, got %q", azFailed.InitDataNote)
 	}
@@ -330,5 +332,31 @@ func TestApplyInitDataNote(t *testing.T) {
 	azUnpinned := finalOutcome(config{}, azEv, azResult, &verifyPlan{policy: &armtls.VerifyPolicy{}})
 	if azUnpinned.InitData != "" || azUnpinned.InitDataNote != "" {
 		t.Errorf("an unpinned az verdict renders no init-data line, got %q / %q", azUnpinned.InitData, azUnpinned.InitDataNote)
+	}
+}
+
+// A CDS pin binds HOST_DATA to the launch file the VM boots on, which is the
+// field this note reports: a launch-bound policy must not read as compared
+// against nothing. On TDX that field is MR_CONFIG_ID, which no launch-file pin
+// touches, so the note stays unpinned there.
+func TestApplyInitDataNoteLaunchFilePin(t *testing.T) {
+	cfg := config{measurementsConfig: testutil.CDSPinFile(t)}
+	plan := mustPlan(t, cfg)
+	binding := runtimemeasure.HostData([]byte(testutil.CDSLaunchFile))
+	result := &teetypes.VerificationResult{
+		SignatureValid: true,
+		Platform:       teetypes.PlatformSNP,
+		Claims:         teetypes.Claims{LaunchDigest: testutil.TestMeasurement, InitData: binding[:]},
+	}
+
+	oc := finalOutcome(cfg, &evidence{platform: "snp", source: "test"}, result, plan)
+	if !oc.Verified {
+		t.Fatalf("the evidence satisfies the launch-bound pin: %s", oc.Error)
+	}
+	if !strings.Contains(oc.InitDataNote, "launch file") {
+		t.Errorf("init-data note = %q, want the enforced launch-file binding", oc.InitDataNote)
+	}
+	if launchBindingPinned(string(teetypes.PlatformTDX), plan.refValues.Images) {
+		t.Error("a launch-file pin binds RTMR[3] on TDX, not the reported MR_CONFIG_ID")
 	}
 }

@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/confidential-dot-ai/attestation-go/refvalues"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
@@ -46,14 +48,15 @@ func TestParseVolumeSpecAcceptsTheLongestServableName(t *testing.T) {
 
 func validConfig() config {
 	return config{
-		CDSURL:            "https://cds.example",
-		AttestationApiURL: "http://127.0.0.1:8400",
-		Attempts:          60,
-		RetryInterval:     5 * time.Second,
-		RequestTimeout:    10 * time.Second,
-		InventoryTimeout:  5 * time.Second,
-		SocketDir:         "/run/c8s/workload-claims",
-		Volumes:           []volumeRequest{{Name: "weights", Path: "/tenant-a/volumes/weights"}},
+		CDSURL:                 "https://cds.example",
+		AttestationApiURL:      "http://127.0.0.1:8400",
+		MeasurementsConfigJSON: testutil.CDSPinDocument(testutil.TestMeasurement, testutil.CDSLaunchFile),
+		Attempts:               0,
+		RetryInterval:          5 * time.Second,
+		RequestTimeout:         10 * time.Second,
+		InventoryTimeout:       5 * time.Second,
+		SocketDir:              "/run/c8s/workload-claims",
+		Volumes:                []volumeRequest{{Name: "weights", Path: "/tenant-a/volumes/weights"}},
 	}
 }
 
@@ -69,7 +72,7 @@ func TestValidate(t *testing.T) {
 		"attestation api":   func(c *config) { c.AttestationApiURL = "" },
 		"no volumes":        func(c *config) { c.Volumes = nil },
 		"socket dir":        func(c *config) { c.SocketDir = "" },
-		"attempts":          func(c *config) { c.Attempts = 0 },
+		"attempts":          func(c *config) { c.Attempts = -1 },
 		"retry interval":    func(c *config) { c.RetryInterval = 0 },
 		"request timeout":   func(c *config) { c.RequestTimeout = 0 },
 		"inventory timeout": func(c *config) { c.InventoryTimeout = 0 },
@@ -128,13 +131,13 @@ func TestDaemonClientSelectsCompiledShape(t *testing.T) {
 	}
 }
 
-// A malformed RTMR pin is a typo in rendered config; pinning nothing is not
-// an acceptable fallback for it.
-func TestRunRejectsBadRTMRs(t *testing.T) {
+// A pin that is not one CDS VM's identity is a typo in rendered config;
+// pinning nothing is not an acceptable fallback for it.
+func TestRunRejectsAPinWithoutALaunchBinding(t *testing.T) {
 	cfg := validConfig()
-	cfg.RTMRs = []string{"nope"}
-	if err := run(cfg); err == nil || !strings.Contains(err.Error(), "--rtmrs") {
-		t.Fatalf("err = %v, want an RTMR-parse failure", err)
+	cfg.MeasurementsConfigJSON = `{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"cds","measurement":"` + testutil.TestMeasurement + `"}]}`
+	if err := run(t.Context(), cfg); err == nil || !strings.Contains(err.Error(), "launch file") {
+		t.Fatalf("err = %v, want a launch-binding refusal", err)
 	}
 }
 
@@ -144,7 +147,7 @@ func TestOpenAllWithoutLeaf(t *testing.T) {
 	cfg := validConfig()
 	cfg.CertPath = filepath.Join(t.TempDir(), "absent.crt")
 	cfg.KeyPath = filepath.Join(t.TempDir(), "absent.key")
-	if err := openAll(context.Background(), cfg, armtls.Pins{}); err == nil {
+	if err := openAll(context.Background(), cfg, armtls.FixedPins(refvalues.ReferenceValues{})); err == nil {
 		t.Fatal("a missing leaf was accepted")
 	}
 }

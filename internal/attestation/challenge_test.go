@@ -18,17 +18,27 @@ func raceRounds() int {
 	return 200
 }
 
+// mustCreate mints one challenge.
+func mustCreate(t *testing.T, store Challenges) [32]byte {
+	t.Helper()
+	challenge, err := store.Create()
+	if err != nil {
+		t.Fatalf("create challenge: %v", err)
+	}
+	return challenge
+}
+
 func TestCreateReturns32Bytes(t *testing.T) {
-	store := NewChallengeStore(5 * time.Minute)
-	challenge := store.Create()
+	store := NewLocalChallenges(5 * time.Minute)
+	challenge := mustCreate(t, store)
 	if got := len(challenge[:]); got != 32 {
 		t.Fatalf("expected 32 bytes, got %d", got)
 	}
 }
 
 func TestConsumeValidChallenge(t *testing.T) {
-	store := NewChallengeStore(5 * time.Minute)
-	challenge := store.Create()
+	store := NewLocalChallenges(5 * time.Minute)
+	challenge := mustCreate(t, store)
 
 	if !store.Consume(challenge[:]) {
 		t.Fatal("expected Consume to return true for valid challenge")
@@ -36,7 +46,7 @@ func TestConsumeValidChallenge(t *testing.T) {
 }
 
 func TestConsumeUnknownChallenge(t *testing.T) {
-	store := NewChallengeStore(5 * time.Minute)
+	store := NewLocalChallenges(5 * time.Minute)
 
 	unknown := [32]byte{0xff}
 	if store.Consume(unknown[:]) {
@@ -45,8 +55,8 @@ func TestConsumeUnknownChallenge(t *testing.T) {
 }
 
 func TestConsumeReusedChallenge(t *testing.T) {
-	store := NewChallengeStore(5 * time.Minute)
-	challenge := store.Create()
+	store := NewLocalChallenges(5 * time.Minute)
+	challenge := mustCreate(t, store)
 
 	if !store.Consume(challenge[:]) {
 		t.Fatal("first consume should succeed")
@@ -59,13 +69,13 @@ func TestConsumeReusedChallenge(t *testing.T) {
 // TestCreateEvictsExpiredChallenges backdates a stored challenge past the TTL
 // and checks the next Create removes it, so the map cannot grow unbounded.
 func TestCreateEvictsExpiredChallenges(t *testing.T) {
-	store := NewChallengeStore(time.Hour)
-	old := store.Create()
+	store := NewLocalChallenges(time.Hour)
+	old := mustCreate(t, store)
 	store.mu.Lock()
 	store.challenges[old] = time.Now().Add(-2 * time.Hour)
 	store.mu.Unlock()
 
-	fresh := store.Create()
+	fresh := mustCreate(t, store)
 
 	store.mu.Lock()
 	_, oldKept := store.challenges[old]
@@ -112,10 +122,10 @@ func TestChallengeStoreStaysInsideItsBudget(t *testing.T) {
 // below it, a cluster-wide restart would have callers' challenges dropped
 // before they could redeem them.
 func TestAStoreHoldsAFleetsWorthOfChallenges(t *testing.T) {
-	store := NewChallengeStore(time.Minute)
-	first := store.Create()
+	store := NewLocalChallenges(time.Minute)
+	first := mustCreate(t, store)
 	for i := 1; i < entitledChallenges; i++ {
-		store.Create()
+		mustCreate(t, store)
 	}
 
 	store.mu.Lock()
@@ -133,11 +143,11 @@ func TestAStoreHoldsAFleetsWorthOfChallenges(t *testing.T) {
 // minting keeps working there, that the store stays at the bound, and that the
 // challenge dropped is the oldest.
 func TestCreateEvictsTheOldestAtCapacity(t *testing.T) {
-	store := NewChallengeStore(time.Hour)
-	oldest := store.Create()
-	second := store.Create()
+	store := NewLocalChallenges(time.Hour)
+	oldest := mustCreate(t, store)
+	second := mustCreate(t, store)
 	for i := 2; i < maxChallenges; i++ {
-		store.Create()
+		mustCreate(t, store)
 	}
 
 	store.mu.Lock()
@@ -147,7 +157,7 @@ func TestCreateEvictsTheOldestAtCapacity(t *testing.T) {
 		t.Fatalf("store holds %d challenges after filling, want %d", atCap, maxChallenges)
 	}
 
-	newest := store.Create()
+	newest := mustCreate(t, store)
 
 	store.mu.Lock()
 	held, queued := len(store.challenges), len(store.issued)
@@ -178,9 +188,9 @@ func TestCreateEvictsTheOldestAtCapacity(t *testing.T) {
 // free slot leaves the store over its bound for good.
 func TestCreateHoldsTheBoundUnderConcurrency(t *testing.T) {
 	const minters = 256
-	store := NewChallengeStore(time.Hour)
+	store := NewLocalChallenges(time.Hour)
 	for range maxChallenges {
-		store.Create()
+		mustCreate(t, store)
 	}
 
 	for round := 0; round < raceRounds(); round++ {
@@ -195,7 +205,7 @@ func TestCreateHoldsTheBoundUnderConcurrency(t *testing.T) {
 		for range minters {
 			wg.Go(func() {
 				<-start
-				store.Create()
+				mustCreate(t, store)
 			})
 		}
 		close(start)
@@ -218,18 +228,18 @@ func TestCreateHoldsTheBoundUnderConcurrency(t *testing.T) {
 // a live one. Deciding that on a count read before the reclaim costs a caller
 // a challenge that the expiry had already made room for.
 func TestCreateReclaimsBeforeEvicting(t *testing.T) {
-	store := NewChallengeStore(time.Hour)
-	expiring := store.Create()
-	survivor := store.Create()
+	store := NewLocalChallenges(time.Hour)
+	expiring := mustCreate(t, store)
+	survivor := mustCreate(t, store)
 	for i := 2; i < maxChallenges; i++ {
-		store.Create()
+		mustCreate(t, store)
 	}
 
 	store.mu.Lock()
 	store.challenges[expiring] = time.Now().Add(-2 * time.Hour)
 	store.mu.Unlock()
 
-	store.Create()
+	mustCreate(t, store)
 
 	store.mu.Lock()
 	held := len(store.challenges)
@@ -248,7 +258,7 @@ func TestCreateReclaimsBeforeEvicting(t *testing.T) {
 // one costs a caller a challenge it holds, and reordering makes the oldest no
 // longer the one at the front.
 func TestCompactionKeepsLiveChallengesInOrder(t *testing.T) {
-	store := NewChallengeStore(time.Hour)
+	store := NewLocalChallenges(time.Hour)
 
 	// A live challenge often enough that a compaction retains thousands of
 	// them, the rest consumed straight away, for well past the 2*maxChallenges
@@ -256,7 +266,7 @@ func TestCompactionKeepsLiveChallengesInOrder(t *testing.T) {
 	const liveEvery = 100
 	var live [][32]byte
 	for i := range 3 * maxChallenges {
-		challenge := store.Create()
+		challenge := mustCreate(t, store)
 		if i%liveEvery == 0 {
 			live = append(live, challenge)
 			continue
@@ -310,11 +320,11 @@ func TestCompactionKeepsLiveChallengesInOrder(t *testing.T) {
 // keeps its slot would fill the store with nothing, and the one live challenge
 // would be evicted to make room for a mint.
 func TestConsumedChallengesDoNotOccupyCapacity(t *testing.T) {
-	store := NewChallengeStore(time.Hour)
-	kept := store.Create()
+	store := NewLocalChallenges(time.Hour)
+	kept := mustCreate(t, store)
 
 	for i := range 3 * maxChallenges {
-		challenge := store.Create()
+		challenge := mustCreate(t, store)
 		if !store.Consume(challenge[:]) {
 			t.Fatalf("challenge %d did not consume", i)
 		}
@@ -348,9 +358,9 @@ func TestConsumedChallengesDoNotOccupyCapacity(t *testing.T) {
 // TestConsumedChallengesLeaveNoResidue pins the same reclaim from the other
 // side: consuming everything leaves neither the map nor the queue holding it.
 func TestConsumedChallengesLeaveNoResidue(t *testing.T) {
-	store := NewChallengeStore(time.Hour)
+	store := NewLocalChallenges(time.Hour)
 	for i := range 3 * maxChallenges {
-		challenge := store.Create()
+		challenge := mustCreate(t, store)
 		if !store.Consume(challenge[:]) {
 			t.Fatalf("challenge %d did not consume", i)
 		}
@@ -370,8 +380,8 @@ func TestConsumedChallengesLeaveNoResidue(t *testing.T) {
 }
 
 func TestConsumeExpiredChallenge(t *testing.T) {
-	store := NewChallengeStore(1 * time.Millisecond)
-	challenge := store.Create()
+	store := NewLocalChallenges(1 * time.Millisecond)
+	challenge := mustCreate(t, store)
 
 	time.Sleep(10 * time.Millisecond)
 

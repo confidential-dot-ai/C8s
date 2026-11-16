@@ -8,7 +8,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"sync"
 	"testing"
 
@@ -193,7 +192,7 @@ func (d duringFetch) Routes(ctx context.Context) (routes.Envelope, error) {
 func TestB3PollRetiresPoolsOnBundleChangeDuringFetch(t *testing.T) {
 	f := newFixture(t)
 	external := newCA(t, "external")
-	b := startBackend(t, "admin", issueLeaf(t, external, "", "admin.ops.svc"))
+	b := startBackend(t, "admin", issueLeaf(t, external, "", "admin.ops.svc"), webPKI)
 	m := manifestSpec{revision: 1, hosts: map[string][]route{
 		testHost: {addressRoute("/", "prefix", b.addr(), "admin.ops.svc", caPEM(external))},
 	}}
@@ -206,9 +205,7 @@ func TestB3PollRetiresPoolsOnBundleChangeDuringFetch(t *testing.T) {
 			if !rotate {
 				return
 			}
-			if err := os.WriteFile(f.meshCAFile, []byte(caPEM(f.mesh, external)), 0o600); err != nil {
-				t.Error(err)
-			}
+			f.publish(t, caPEM(f.mesh, external))
 		}},
 		Keys:       KeyFile(writeFile(t, "keys.pem", publicKeysPEM(t, f.op))),
 		Transports: f.transports,
@@ -246,7 +243,7 @@ func TestPollRetainsOnUnchanged(t *testing.T) {
 	}
 	f.transports.mu.Lock()
 	defer f.transports.mu.Unlock()
-	if _, ok := f.transports.cache[backendKey(gone)]; ok {
+	if _, ok := f.transports.cache[poolKey{backend: backendKey(gone)}]; ok {
 		t.Fatal("transport of an unnamed backend survived an unchanged poll")
 	}
 }

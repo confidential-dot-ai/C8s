@@ -6,7 +6,8 @@
     "serving_leaf_der_b64": "oKCgoKCgoKA=",
     "mesh_leaf_der_b64": "sbGxsbGxsbE=",
     "mesh_ca_der_b64": "wsLCwsLCwsI=",
-    "report_data_b64": "tjEfitWK7hKeY6baTNVYhuJewfmJeQQ+ojixCeXzskoohHjjdmVaKEc6C5wTcYzk"
+    "route_digest_b64": "1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NQ=",
+    "report_data_b64": "+SlUWAeDrtrXcr3UgB4dv8F0jO2Zo8KxCAqGRRnB2pDeJCQmqn0hKQPcnGRwyKXv"
   },
   {
     "description": "ascii DER placeholders, distinct lengths, acme mode",
@@ -15,7 +16,8 @@
     "serving_leaf_der_b64": "c2VydmluZy1sZWFmLWRlcg==",
     "mesh_leaf_der_b64": "bWVzaC1sZWFmLWRlcg==",
     "mesh_ca_der_b64": "bWVzaC1jYS1kZXI=",
-    "report_data_b64": "Xfm5JNaZwEoJwbaSXXt5q5jEB0R8KNLu1XU79ZH7xF7mOm8NzKU2dj8fPs+AoiX7"
+    "route_digest_b64": "yq3hqQUT2ZPEzd55u/y6A0EPf2oQ9kQ6mCSAIYVj0Ug=",
+    "report_data_b64": "1j7pq31+X++tUQgsW8TQuqLcl/DjaoPALicCCIGrxPcQEWysxDZTrp/6uiLM3Yfj"
   },
   {
     "description": "duplicate serving and mesh leaf bytes are hashed twice, not deduplicated",
@@ -24,6 +26,7 @@
     "serving_leaf_der_b64": "c2FtZS1kZXI=",
     "mesh_leaf_der_b64": "c2FtZS1kZXI=",
     "mesh_ca_der_b64": "aXNzdWVyLWRlcg==",
-    "report_data_b64": "k0R8DgYjhwabubDBVr9CgOc9nwx7v6xhv7EvPdd49nBDfR0Jttei16wtHNJ1YA06"
+    "route_digest_b64": "//////////////////////////////////////////8=",
+    "report_data_b64": "owS2MWuoNHPxuaCLrAXc12vyJreB/Ux0Lf6D0zw070Cx8AIFnIL/raf39+XPMAWV"
   }
 ]

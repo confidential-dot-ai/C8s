@@ -1,131 +1,124 @@
 package nriimagepolicy
 
 import (
-	"encoding/json"
-	"fmt"
-	"os"
-	"path/filepath"
-	"slices"
+	"errors"
+	"strings"
 
-	"github.com/confidential-dot-ai/c8s/internal/fileutil"
+	"github.com/distribution/reference"
 )
 
-// exemptSnapshot admits a container in an exempt namespace when its image
-// digest matches one captured running in that same namespace. The name selects
-// what to capture; the resolved digest is what admits — see
-// docs/getcert-workload-binding.md, Corner 8.
-//
-// The set is captured once, when the plugin first connects to a containerd that
-// already requires it (Synchronize sees the platform pods that came up before
-// the required_plugins gate), and then frozen. The installer deletes the file
-// whenever it rewrites the boot config, so a chart install or upgrade is the
-// only event that recaptures. A plain restart or node reboot loads the frozen
-// file, and load must win there: on a reboot containerd gates every container
-// on this plugin, so Synchronize sees an empty node and a recapture would
-// freeze nothing.
-type exemptSnapshot struct {
-	// Namespaces is the exempt set this was captured for. Diagnostic only —
-	// regeneration is keyed off the installer deleting the file, not off this.
-	Namespaces []string `json:"namespaces"`
-	// Digests maps an exempt namespace to the image digests captured under it.
-	Digests map[string][]string `json:"digests"`
+// ExemptRepositories holds the image repository prefixes each exempt namespace
+// admits. See docs/getcert-workload-binding.md — Corner 8.
+type ExemptRepositories map[string][]string
 
-	index map[string]map[string]struct{} // namespace -> digest set, for lookup
-}
-
-// newExemptSnapshot returns an empty snapshot ready to accumulate captures for
-// the given exempt namespaces.
-func newExemptSnapshot(namespaces []string) *exemptSnapshot {
-	return &exemptSnapshot{
-		Namespaces: slices.Clone(namespaces),
-		Digests:    map[string][]string{},
-		index:      map[string]map[string]struct{}{},
-	}
-}
-
-// add records a captured (namespace, digest). A blank digest is dropped: an
-// unresolved image cannot be an admission key.
-func (s *exemptSnapshot) add(namespace, digest string) {
-	if digest == "" {
-		return
-	}
-	set := s.index[namespace]
-	if set == nil {
-		set = map[string]struct{}{}
-		s.index[namespace] = set
-	}
-	if _, ok := set[digest]; ok {
-		return
-	}
-	set[digest] = struct{}{}
-	s.Digests[namespace] = append(s.Digests[namespace], digest)
-	slices.Sort(s.Digests[namespace])
-}
-
-// admits reports whether digest was captured running in namespace.
-func (s *exemptSnapshot) admits(namespace, digest string) bool {
-	if s == nil || digest == "" {
+// Admits reports whether one of the namespace's prefixes names the repository
+// imageRef is pulled from.
+func (e ExemptRepositories) Admits(namespace, imageRef string) bool {
+	repository := imageRepository(imageRef)
+	if repository == "" {
 		return false
 	}
-	_, ok := s.index[namespace][digest]
-	return ok
-}
-
-// empty reports whether the snapshot captured no digest in any namespace.
-func (s *exemptSnapshot) empty() bool {
-	return s == nil || len(s.index) == 0
-}
-
-// count is the total number of captured digests across all namespaces.
-func (s *exemptSnapshot) count() int {
-	n := 0
-	for _, set := range s.index {
-		n += len(set)
-	}
-	return n
-}
-
-// buildIndex populates the lookup index from the decoded Digests map.
-func (s *exemptSnapshot) buildIndex() {
-	s.index = make(map[string]map[string]struct{}, len(s.Digests))
-	for ns, digests := range s.Digests {
-		set := make(map[string]struct{}, len(digests))
-		for _, d := range digests {
-			set[d] = struct{}{}
+	for _, prefix := range e[namespace] {
+		if prefixNames(prefix, repository) {
+			return true
 		}
-		s.index[ns] = set
 	}
+	return false
 }
 
-// loadExemptSnapshot reads a persisted snapshot. It returns (nil, nil) when the
-// file is absent — the caller then captures. A present-but-unreadable file is
-// an error: on a host lane the file is host-controlled, so a corrupt snapshot
-// is treated as a fault to surface, not silently recaptured.
-func loadExemptSnapshot(path string) (*exemptSnapshot, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
+func prefixNames(prefix, repository string) bool {
+	prefixHost, prefixPath := splitRegistryHost(prefix)
+	host, path := splitRegistryHost(repository)
+	return hostNames(prefixHost, host) && pathCovers(prefixPath, path)
+}
+
+// splitRegistryHost divides a fully qualified name: validRepositoryPrefix
+// requires one of a prefix, imageRepository returns one.
+func splitRegistryHost(name string) (host, path string) {
+	host, path, _ = strings.Cut(name, "/")
+	return host, path
+}
+
+// The trailing / holds the match to whole path segments.
+func pathCovers(prefixPath, path string) bool {
+	return strings.HasPrefix(path+"/", prefixPath)
+}
+
+// hostNames reports whether prefixHost names host: byte-exact, or on the tail
+// a wildcard leaves, with one label's leading text before it.
+func hostNames(prefixHost, host string) bool {
+	tail, wildcarded := hostWildcard(prefixHost)
+	if !wildcarded {
+		return prefixHost == host
+	}
+	leadingText, found := strings.CutSuffix(host, tail)
+	return found && isHostLabelText(leadingText)
+}
+
+// hostWildcard reads the wildcard a prefix opens its first host label with:
+// *-artifactregistry.gcr.io leaves -artifactregistry.gcr.io.
+func hostWildcard(prefixHost string) (tail string, wildcarded bool) {
+	if !strings.HasPrefix(prefixHost, "*-") {
+		return "", false
+	}
+	return strings.TrimPrefix(prefixHost, "*"), true
+}
+
+// isHostLabelText reports whether s is the leading text of one host label:
+// letters, digits and hyphens, never empty and never across a dot.
+func isHostLabelText(s string) bool {
+	for _, r := range s {
+		letter := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z'
+		digit := r >= '0' && r <= '9'
+		if !letter && !digit && r != '-' {
+			return false
 		}
-		return nil, err
 	}
-	var s exemptSnapshot
-	if err := json.Unmarshal(b, &s); err != nil {
-		return nil, fmt.Errorf("parse exempt snapshot %q: %w", path, err)
-	}
-	s.buildIndex()
-	return &s, nil
+	return s != ""
 }
 
-// persist writes the snapshot atomically (tmp + rename) so a crash mid-write
-// cannot leave a truncated file the next start would load.
-func (s *exemptSnapshot) persist(path string) error {
-	b, err := json.MarshalIndent(s, "", "  ")
+// imageRepository is the registry and path a reference names, in the form
+// containerd's content store names it. A bare digest names none.
+func imageRepository(imageRef string) string {
+	if strings.HasPrefix(imageRef, "sha256:") {
+		return ""
+	}
+	named, err := reference.ParseDockerRef(imageRef)
 	if err != nil {
+		return ""
+	}
+	return reference.TrimNamed(named).String()
+}
+
+// A prefix ends on the path separator, so it matches whole path segments of a
+// repository name and not half of one.
+func validRepositoryPrefix(prefix string) error {
+	if !strings.HasSuffix(prefix, "/") {
+		return errors.New("a repository prefix ends in /")
+	}
+	if err := validHostWildcard(prefix); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
+	if !namesARegistryHost(prefix) {
+		return errors.New("a repository prefix starts with a registry host, as mcr.microsoft.com/oss/kubernetes/ does")
 	}
-	return fileutil.WriteAtomic(path, b, 0o600)
+	return nil
+}
+
+// A prefix carries at most one wildcard, where hostWildcard reads it.
+func validHostWildcard(prefix string) error {
+	host, _ := splitRegistryHost(prefix)
+	_, wildcarded := hostWildcard(host)
+	wildcards := strings.Count(prefix, "*")
+	if wildcards > 1 || (wildcards == 1 && !wildcarded) {
+		return errors.New("* opens the registry host's first label and nothing else, as *-artifactregistry.gcr.io/gke-release/ does")
+	}
+	return nil
+}
+
+// A prefix under no registry host normalizes to one (docker.io), so it names a
+// repository it does not spell. A wildcard stands in as one label's text.
+func namesARegistryHost(prefix string) bool {
+	under := strings.Replace(prefix, "*", "label", 1) + "image"
+	return imageRepository(under) == under
 }

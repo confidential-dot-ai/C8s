@@ -10,11 +10,15 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,6 +26,7 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
@@ -93,16 +98,38 @@ func caPEM(cas ...*issuer.CA) string {
 	return b.String()
 }
 
+// testSandboxID is the workload instance a member leaf names.
+const testSandboxID = "8d9f6c2b1a0e8d9f6c2b1a0e8d9f6c2b1a0e8d9f6c2b1a0e8d9f6c2b1a0e8d9f"
+
+// testDigest is the allowlist digest issueLeaf stamps, the router's own
+// unless a test renews it.
+var testDigest = digestOf(0x42)
+
+// digestOf returns an allowlist digest of b repeated 32 times.
+func digestOf(b byte) []byte { return bytes.Repeat([]byte{b}, 32) }
+
 // issueLeaf mints a leaf the way CDS does, carrying the matched workload
 // extension when workload is non-empty.
 func issueLeaf(t testing.TB, ca *issuer.CA, workload string, dnsNames ...string) tls.Certificate {
+	t.Helper()
+	return issueStampedLeaf(t, ca, workload, testDigest, dnsNames...)
+}
+
+// issueStampedLeaf is issueLeaf with the allowlist digest set to digest.
+func issueStampedLeaf(t testing.TB, ca *issuer.CA, workload string, digest []byte, dnsNames ...string) tls.Certificate {
+	t.Helper()
+	return issueAgentLeaf(t, ca, workload, digest, nil, dnsNames...)
+}
+
+// issueAgentLeaf is issueStampedLeaf carrying clientDocumentDigest when it is
+// not nil, as CDS stamps a pod CVM's leaf.
+func issueAgentLeaf(t testing.TB, ca *issuer.CA, workload string, digest, clientDocumentDigest []byte, dnsNames ...string) tls.Certificate {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
 	csrDER, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
-		Subject:  pkix.Name{CommonName: "leaf"},
 		DNSNames: dnsNames,
 	}, key)
 	if err != nil {
@@ -112,15 +139,15 @@ func issueLeaf(t testing.TB, ca *issuer.CA, workload string, dnsNames ...string)
 	if err != nil {
 		t.Fatal(err)
 	}
-	params := issuer.SignCSRParams{CSR: csr, TTL: 30 * time.Minute}
+	params := issuer.SignCSRParams{CSR: csr, TTL: 30 * time.Minute, SandboxID: testSandboxID, ClientDocumentDigest: clientDocumentDigest}
 	if workload != "" {
 		params.MatchedWorkload = &armtls.MatchedWorkload{
 			Name:             workload,
 			AllowlistVersion: "1",
-			AllowlistDigest:  bytes.Repeat([]byte{0x42}, 32),
+			AllowlistDigest:  digest,
 		}
 	}
-	certPEM, _, err := ca.SignCSR(params)
+	certPEM, _, _, err := ca.SignCSR(params)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +181,8 @@ type seen struct {
 	remoteAddr string
 }
 
-// testBackend is a TLS backend serving leaf, answering with its name.
+// testBackend is a backend serving leaf on the mesh profile, answering with
+// its name.
 type testBackend struct {
 	name string
 	ts   *httptest.Server
@@ -176,9 +204,7 @@ func startBackend(t testing.TB, name string, leaf tls.Certificate, opts ...func(
 	b.ts = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b.hits.Add(1)
 		s := seen{requestURI: r.RequestURI, host: r.Host, forwarded: r.Header.Get("X-Forwarded-For"), header: r.Header.Clone(), remoteAddr: r.RemoteAddr}
-		if len(r.TLS.PeerCertificates) > 0 {
-			s.clientCert = r.TLS.PeerCertificates[0]
-		}
+		s.clientCert = peerCertificate(r)
 		b.mu.Lock()
 		b.last = s
 		b.mu.Unlock()
@@ -219,7 +245,7 @@ func startBackend(t testing.TB, name string, leaf tls.Certificate, opts ...func(
 		w.Header().Set("X-Backend", name)
 		_, _ = w.Write([]byte(name))
 	}))
-	b.ts.TLS = &tls.Config{Certificates: []tls.Certificate{leaf}, ClientAuth: tls.RequireAnyClientCert}
+	testutil.ServeMeshBackend(b.ts, leaf)
 	for _, opt := range opts {
 		opt(b.ts.TLS)
 	}
@@ -228,7 +254,25 @@ func startBackend(t testing.TB, name string, leaf tls.Certificate, opts ...func(
 	return b
 }
 
-func (b *testBackend) addr() string { return strings.TrimPrefix(b.ts.URL, "https://") }
+// webPKI is the profile an address backend serves instead: a leaf for its
+// own name under its own CA, and no mesh protocol.
+func webPKI(cfg *tls.Config) {
+	cfg.MinVersion = tls.VersionTLS12
+	cfg.NextProtos = []string{"http/1.1"}
+}
+
+func (b *testBackend) addr() string {
+	return strings.TrimPrefix(b.ts.URL, "https://")
+}
+
+// peerCertificate is the leaf the client presented: the request's own on a
+// web-PKI connection, and the mesh connection's otherwise.
+func peerCertificate(r *http.Request) *x509.Certificate {
+	if r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
+		return r.TLS.PeerCertificates[0]
+	}
+	return testutil.MeshPeer(r)
+}
 
 func (b *testBackend) seen() seen {
 	b.mu.Lock()
@@ -286,6 +330,7 @@ type manifestSpec struct {
 	notBefore time.Time
 	maxAge    time.Duration
 	hosts     map[string][]route
+	patterns  []routes.Pattern
 }
 
 func (m manifestSpec) bytes(t testing.TB) []byte {
@@ -304,51 +349,145 @@ func (m manifestSpec) bytes(t testing.TB) []byte {
 		}
 		hosts[name] = map[string]any{"routes": list}
 	}
-	b, err := json.Marshal(map[string]any{
+	doc := map[string]any{
 		"schema":        routes.Schema,
 		"revision":      m.revision,
 		"notBefore":     m.notBefore.UTC().Format(time.RFC3339),
 		"maxAgeSeconds": int64(m.maxAge / time.Second),
 		"hosts":         hosts,
-	})
+	}
+	if m.patterns != nil {
+		var list []any
+		for _, p := range m.patterns {
+			list = append(list, map[string]any{"hostSuffix": p.HostSuffix, "workload": p.Workload, "port": p.Port})
+		}
+		doc["patterns"] = list
+	}
+	b, err := json.Marshal(doc)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return b
 }
 
-// fixture is a router: a mesh CA, its own mesh leaf, an operator, and the
-// routing engine wired the way cds-attest wires it.
+// fixture is a router: a mesh CA, its own mesh leaf published on a credential
+// volume, an operator, and the routing engine wired the way cds-attest wires
+// it.
 type fixture struct {
-	mesh       *issuer.CA
-	meshCAFile string
-	routerLeaf tls.Certificate
-	op         operator
-	clock      *fakeClock
-	state      *State
-	transports *Transports
-	proxy      *Proxy
+	transportLogs bytes.Buffer // what Transports reports, once per leaf
+	mesh          *issuer.CA
+	volume        string
+	routerLeaf    tls.Certificate
+	identity      *MeshIdentity
+	op            operator
+	clock         *fakeClock
+	state         *State
+	agents        *AgentIndex
+	transports    *Transports
+	proxy         *Proxy
 }
 
 func newFixture(t testing.TB) *fixture {
 	t.Helper()
 	f := &fixture{
-		mesh:  newCA(t, "mesh"),
-		op:    newOperator(t),
-		clock: &fakeClock{now: time.Now()},
+		mesh:   newCA(t, "mesh"),
+		volume: t.TempDir(),
+		op:     newOperator(t),
+		clock:  &fakeClock{now: time.Now()},
 	}
 	f.routerLeaf = issueLeaf(t, f.mesh, "router")
-	f.meshCAFile = writeFile(t, "ca.pem", []byte(caPEM(f.mesh)))
-	meshCAs := CAFile(f.meshCAFile)
-	f.state = NewState(StateConfig{Reserved: testReserved, MeshCAs: meshCAs, Now: f.clock.Now})
-	f.transports = NewTransports(TransportConfig{
-		MeshCAs: meshCAs,
-		ClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
-			return &f.routerLeaf, nil
-		},
-	})
-	f.proxy = NewProxy(ProxyConfig{State: f.state, Transports: f.transports, Timeout: 10 * time.Second})
+	f.publish(t, caPEM(f.mesh))
+	certFile, keyFile, caFile := volumePaths(f.volume)
+	identity, err := NewMeshIdentity(certFile, keyFile, caFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.identity = identity
+	f.state = NewState(StateConfig{Reserved: testReserved, MeshCAs: identity.MeshCAs, Now: f.clock.Now})
+	f.agents = NewAgentIndex()
+	f.transports = NewTransports(TransportConfig{MeshIdentity: identity.Credential, Logger: slog.New(slog.NewTextHandler(&f.transportLogs, nil)), Agents: f.agents})
+	f.proxy = NewProxy(ProxyConfig{State: f.state, Transports: f.transports, Bindings: newFakeBindings(nil), Timeout: 10 * time.Second, Agents: f.agents})
 	return f
+}
+
+// damagedStampLeaf is a self-signed leaf whose matched-workload extension
+// does not parse.
+func damagedStampLeaf(t testing.TB) tls.Certificate {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:    big.NewInt(1),
+		Subject:         pkix.Name{CommonName: "router"},
+		NotBefore:       time.Now().Add(-time.Minute),
+		NotAfter:        time.Now().Add(time.Hour),
+		ExtraExtensions: []pkix.Extension{{Id: armtls.OIDMatchedWorkload, Value: []byte{0x05, 0x00}}},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
+}
+
+// renew publishes leaf as the router's own, with the fixture's mesh CA.
+func (f *fixture) renew(t testing.TB, leaf tls.Certificate) {
+	t.Helper()
+	f.routerLeaf = leaf
+	f.publish(t, caPEM(f.mesh))
+}
+
+// publish publishes a generation holding the router's leaf and bundle as its
+// mesh CAs.
+func (f *fixture) publish(t testing.TB, bundle string) {
+	t.Helper()
+	key, ok := f.routerLeaf.PrivateKey.(*ecdsa.PrivateKey)
+	if !ok {
+		t.Fatalf("router leaf key is %T, want an ECDSA key", f.routerLeaf.PrivateKey)
+	}
+	keyPEM, err := certutil.MarshalECKeyPEM(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publishGeneration(t, f.volume, certutil.EncodeCertPEM(f.routerLeaf.Certificate[0]), keyPEM, []byte(bundle))
+}
+
+// volumePaths are the three reader paths of the credential volume in dir.
+func volumePaths(dir string) (certFile, keyFile, caFile string) {
+	return filepath.Join(dir, "tls.crt"), filepath.Join(dir, "tls.key"), filepath.Join(dir, "ca.crt")
+}
+
+// publishGeneration writes the next generation of the credential volume in dir
+// and flips the pointer onto it, the way get-cert publishes: the stable reader
+// paths are replaced beside the pointer.
+func publishGeneration(t testing.TB, dir string, chainPEM, keyPEM, caPEM []byte) {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(dir, "generations"))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+	name := filepath.Join("generations", strconv.Itoa(len(entries)+1))
+	generation := filepath.Join(dir, name)
+	if err := os.MkdirAll(generation, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for file, data := range map[string][]byte{"tls.crt": chainPEM, "tls.key": keyPEM, "ca.crt": caPEM} {
+		if err := os.WriteFile(filepath.Join(generation, file), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, file), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pointer := filepath.Join(dir, "current")
+	if err := os.Symlink(name, pointer+".next"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(pointer+".next", pointer); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // apply signs and accepts m, failing the test on any error.
@@ -368,4 +507,17 @@ func (f *fixture) get(target string) *httptest.ResponseRecorder {
 	w := httptest.NewRecorder()
 	f.proxy.ServeHTTP(w, r)
 	return w
+}
+
+// bound admits a session under the published credential and applied manifest.
+func (f *fixture) bound(t testing.TB) Binding {
+	t.Helper()
+	if err := f.transports.syncRouterDigest(); err != nil {
+		t.Fatal(err)
+	}
+	b := Binding{RouterDigest: f.transports.RouterDigest()}
+	if applied := f.state.Current(); applied != nil {
+		b.RouteDigest = applied.Signed.Digest()
+	}
+	return b
 }

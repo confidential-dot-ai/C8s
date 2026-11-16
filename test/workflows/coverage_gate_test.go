@@ -170,19 +170,19 @@ exec "$@"
 `,
 				// The script's own harness takes the coverage directory.
 				"head/scripts/coverage-gate.sh": string(body),
-				"head/node-guest-image/tests/mount-verity-test.sh": `cp fs.out "$2/fs-verity.out"
+				"head/images/node-guest/tests/mount-verity-test.sh": `cp fs.out "$2/fs-verity.out"
 cp dm.out "$2/dm-verity.out"
 `,
 			}
 			switch name {
 			case "no profile":
-				files["head/node-guest-image/tests/mount-verity-test.sh"] = "exit 0\n"
+				files["head/images/node-guest/tests/mount-verity-test.sh"] = "exit 0\n"
 			case "no fs-verity profile":
-				files["head/node-guest-image/tests/mount-verity-test.sh"] = `cp dm.out "$2/dm-verity.out"` + "\n"
+				files["head/images/node-guest/tests/mount-verity-test.sh"] = `cp dm.out "$2/dm-verity.out"` + "\n"
 			}
 			if name != "older base without harness" {
 				// The checked-out base revision's harness takes one argument.
-				files["node-guest-image/tests/mount-verity-test.sh"] = "[ $# = 1 ] || { echo 'usage: one-argument harness' >&2; exit 1; }\n"
+				files["images/node-guest/tests/mount-verity-test.sh"] = "[ $# = 1 ] || { echo 'usage: one-argument harness' >&2; exit 1; }\n"
 			}
 			for path, contents := range files {
 				full := filepath.Join(fixture, path)

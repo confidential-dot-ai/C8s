@@ -1,0 +1,787 @@
+package nriimagepolicy
+
+// The mesh gate is the runtime half of mesh membership: the enforcer installs
+// a pod's packet protection into its own network namespace before any of its
+// containers is created, verifies it before each one runs, and again before an
+// identity assertion. Fails closed; see docs/armtls.md.
+
+import (
+	"errors"
+	"fmt"
+	"io/fs"
+	"log/slog"
+	"net/netip"
+	"slices"
+	"strings"
+	"sync"
+
+	"github.com/containerd/nri/pkg/api"
+	"golang.org/x/sys/unix"
+)
+
+// errSandboxOffRecord is the gate's answer for a sandbox it holds no state for.
+// Before recovery has run, that is a pod not yet taken back under the gate, so
+// the refusal is transient; after it, the sandbox is genuinely unknown and the
+// refusal holds for its life.
+var errSandboxOffRecord = errors.New("this enforcer installed no packet protection for the sandbox")
+
+// errSandboxAlreadyOnRecord is recoverPod's answer for a sandbox protect()
+// already took: it is protected, so recovery treating it as a failure would
+// warn the operator about a pod that is in fact under the gate.
+var errSandboxAlreadyOnRecord = errors.New("sandbox is on record already")
+
+// errRecoveryRefusedPod is the gate's answer for a sandbox of a pod whose
+// recovery this process refused: the pod gets no identity while this enforcer
+// runs, whatever sandbox the kubelet gives it.
+var errRecoveryRefusedPod = errors.New("recovery refused an earlier sandbox of this pod")
+
+// meshGate holds this node's protection state, under the mesh policy its
+// measured configuration carries.
+type meshGate struct {
+	policy meshPolicy
+	logger *slog.Logger
+	mu     sync.Mutex
+	pods   map[string]*protectedPod
+	// refusedPods are the UIDs of the pods whose recovery this process
+	// refused; only a recovery refusal enters, so no denial can lock a pod out.
+	refusedPods map[string]struct{}
+	// recoveryRan is set once recovery has run: until then a sandbox off the
+	// record may simply be one recovery has not reached yet.
+	recoveryRan bool
+	// nodeAddress is this node's own address, which no exit may reach.
+	nodeAddress func() (netip.Addr, error)
+	// extend adds granted exits to a pod's live ruleset.
+	extend func(podNamespace, meshPolicy, string, []exit) error
+}
+
+// noteRecovered marks recovery complete, so a sandbox off the record is then a
+// refusal for its life rather than a pod recovery has not yet reached.
+func (g *meshGate) noteRecovered() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.recoveryRan = true
+}
+
+// recoveryDone reports whether recovery has run.
+func (g *meshGate) recoveryDone() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.recoveryRan
+}
+
+// protectedPod is one protected sandbox: a refusal holds for its life, and
+// kubeNamespace is what trusted policy built its ruleset from.
+type protectedPod struct {
+	netns           podNamespace
+	refusal         error
+	meshStarted     bool
+	workloadCreated bool
+	kubeNamespace   string
+	roleLaunches    []roleLaunch
+	// exitEntry is the allowlist entry whose exits the pod was granted, and
+	// exits those exits: fixed for the pod's life once granted.
+	exitEntry string
+	exits     []exit
+	// starts serializes a workload container's exit decision with its record
+	// in the inventory, so two starts cannot both decide on a set that lacks
+	// the other.
+	starts sync.Mutex
+}
+
+// exit is one range and TCP port a pod reaches uncaptured.
+type exit struct {
+	Range netip.Prefix
+	Port  uint16
+}
+
+// roleLaunch is a platform-role container this gate admitted in a sandbox: a
+// later container of the same role running the same bytes under the same
+// arguments is a replacement of it.
+type roleLaunch struct {
+	role   string
+	digest string
+	argv   []string
+}
+
+// podNamespace is a pod's own network namespace: the runtime chose the path,
+// the file the kernel holds is the namespace itself.
+type podNamespace struct {
+	path string
+	id   fileID
+}
+
+type fileID struct {
+	device uint64
+	inode  uint64
+}
+
+// gatedContainer is the container the validator decides on: its verified
+// role, the bytes and arguments that role was read from, and the adjustments
+// that could move its packets.
+type gatedContainer struct {
+	role string
+	// mountsPinned reports that the declaration granting the role pins the
+	// mount set too, which the router's namespace requires of every
+	// container (requireRoleOnlyPod).
+	mountsPinned bool
+	digest       string
+	argv         []string
+	namespaces   []*api.LinuxNamespace
+	netDevices   map[string]*api.LinuxNetDevice
+}
+
+func newMeshGate(policy meshPolicy, logger *slog.Logger) *meshGate {
+	return &meshGate{
+		policy:      policy,
+		logger:      logger,
+		pods:        map[string]*protectedPod{},
+		refusedPods: map[string]struct{}{},
+		nodeAddress: func() (netip.Addr, error) {
+			return netip.Addr{}, errors.New("this node's own address is unknown")
+		},
+		extend: extendPodRuleset,
+	}
+}
+
+// hosts reports a sandbox the enforcer protects: an API pod's own network
+// namespace, in a namespace trusted policy does not exempt. A static pod is
+// the node's own, whatever its namespace, except on a Pod guest, whose kubelet
+// runs the tenant's workload as its static pod.
+func (g *meshGate) hosts(pod *api.PodSandbox) bool {
+	if staticPod(pod) && g.policy.Pod == nil {
+		return false
+	}
+	return !slices.Contains(g.policy.ExemptNamespaces, pod.GetNamespace()) &&
+		podNetworkNamespace(pod) != ""
+}
+
+// protect installs the pod ruleset once in a sandbox's life, before any of
+// its containers is created. A sandbox it cannot protect is refused for life.
+func (g *meshGate) protect(pod *api.PodSandbox) error {
+	if !g.hosts(pod) {
+		return nil
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if _, onRecord := g.pods[pod.GetId()]; onRecord {
+		return fmt.Errorf("sandbox %s is on record already, so its protection stands as installed", pod.GetId())
+	}
+	if _, refused := g.refusedPods[pod.GetUid()]; refused {
+		g.pods[pod.GetId()] = &protectedPod{
+			refusal:       errRecoveryRefusedPod,
+			kubeNamespace: pod.GetNamespace(),
+		}
+		return fmt.Errorf("protect pod %s/%s: %w", pod.GetNamespace(), pod.GetName(), errRecoveryRefusedPod)
+	}
+	netns, err := installProtection(pod, g.rulesetPolicy())
+	g.pods[pod.GetId()] = &protectedPod{
+		netns:         netns,
+		refusal:       err,
+		kubeNamespace: pod.GetNamespace(),
+	}
+	if err != nil {
+		return fmt.Errorf("protect pod %s/%s: %w", pod.GetNamespace(), pod.GetName(), err)
+	}
+	g.logger.Info("installed the pod mesh ruleset",
+		"namespace", pod.GetNamespace(), "pod", pod.GetName(), "netns", netns.path)
+	return nil
+}
+
+// rulesetPolicy is the policy a pod's ruleset is built from: the measured
+// document plus this node's own address, which the document cannot carry.
+func (g *meshGate) rulesetPolicy() meshPolicy {
+	policy := g.policy
+	if policy.CredentialAttestationPort == 0 {
+		return policy
+	}
+	node, err := g.nodeAddress()
+	if err != nil {
+		g.logger.Warn("this node's own address is unknown, so no pod ruleset admits the attestation-api its credential clients verify evidence through",
+			"error", err)
+		return policy
+	}
+	policy.nodeAddr = node
+	return policy
+}
+
+// installProtection proves the pod's own network namespace and installs the
+// ruleset in it. A proven namespace is on record even when the install fails,
+// so a later report of another path still reads as a move.
+func installProtection(pod *api.PodSandbox, policy meshPolicy) (podNamespace, error) {
+	netns, err := proveSandboxNamespace(podNetworkNamespace(pod), pod.GetPid())
+	if err != nil {
+		return netns, err
+	}
+	if err := installPodRuleset(netns, policy, pod.GetNamespace()); err != nil {
+		return netns, err
+	}
+	return netns, nil
+}
+
+// recoveredContainer is a container of a sandbox that was running when this
+// enforcer connected, as the gate reads it from the runtime's list.
+type recoveredContainer struct {
+	ctr     *api.Container
+	launch  gatedContainer
+	running bool
+}
+
+// recoverPod takes a sandbox that was running before this enforcer connected
+// back under the gate, or refuses it for its life. Protection is read from the
+// sandbox, not the pod's claims: its proven namespace, the ruleset live there,
+// and the per-container checks. The list's order says nothing about start
+// order, so the order rules are not re-read.
+func (g *meshGate) recoverPod(pod *api.PodSandbox, ctrs []recoveredContainer, exits recoveredExits) error {
+	if !g.hosts(pod) {
+		return nil
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if _, onRecord := g.pods[pod.GetId()]; onRecord {
+		return fmt.Errorf("%w: %s", errSandboxAlreadyOnRecord, pod.GetId())
+	}
+	state, err := g.recovered(pod, ctrs, exits)
+	if err != nil {
+		g.pods[pod.GetId()] = &protectedPod{
+			refusal:       fmt.Errorf("the sandbox was running before this enforcer connected, and %w", err),
+			kubeNamespace: pod.GetNamespace(),
+		}
+		g.refusedPods[pod.GetUid()] = struct{}{}
+		return fmt.Errorf("recover pod %s/%s: %w", pod.GetNamespace(), pod.GetName(), err)
+	}
+	g.pods[pod.GetId()] = state
+	g.logger.Info("recovered the protection of a running pod",
+		"namespace", pod.GetNamespace(), "pod", pod.GetName(), "netns", state.netns.path,
+		"containers", len(ctrs), "mesh_running", state.meshStarted, "exit_entry", state.exitEntry)
+	return nil
+}
+
+// recoveredExits is the exit grant read back for a running sandbox; its live
+// ruleset must be the base mesh ruleset plus exactly these exits. cause, when
+// set, is why the grant is empty (match undecided or refused) and is reported
+// if the ruleset then fails to verify.
+type recoveredExits struct {
+	entry string
+	exits []exit
+	cause error
+}
+
+// recovered is the record of a running sandbox whose protection reads back.
+func (g *meshGate) recovered(pod *api.PodSandbox, ctrs []recoveredContainer, exits recoveredExits) (*protectedPod, error) {
+	netns, err := proveSandboxNamespace(podNetworkNamespace(pod), pod.GetPid())
+	if err != nil {
+		return nil, err
+	}
+	if err := verifyPodRuleset(netns, g.rulesetPolicy(), pod.GetNamespace(), exits.exits); err != nil {
+		if exits.cause != nil {
+			return nil, fmt.Errorf("%w; the pod was granted no exits: %v", err, exits.cause)
+		}
+		return nil, err
+	}
+	state := &protectedPod{
+		netns:         netns,
+		kubeNamespace: pod.GetNamespace(),
+		exitEntry:     exits.entry,
+		exits:         exits.exits,
+	}
+	for _, c := range ctrs {
+		if err := state.restore(g.policy, c); err != nil {
+			return nil, fmt.Errorf("container %s: %w", c.ctr.GetName(), err)
+		}
+	}
+	return state, nil
+}
+
+// restore records a container found in a recovered sandbox. A running mesh
+// endpoint counts as started.
+func (s *protectedPod) restore(policy meshPolicy, c recoveredContainer) error {
+	if err := s.requireContainerAlone(policy, c.ctr, c.launch); err != nil {
+		return err
+	}
+	if err := s.requireSandboxNetwork(c.ctr, c.running); err != nil {
+		return err
+	}
+	s.recordLaunch(c.launch)
+	if c.running && c.launch.role == meshRole {
+		s.meshStarted = true
+	}
+	return nil
+}
+
+// requireContainerAlone runs the create checks that need only the container,
+// shared by admission and recovery.
+func (s *protectedPod) requireContainerAlone(policy meshPolicy, ctr *api.Container, launch gatedContainer) error {
+	if err := s.requireRoleOnlyPod(launch); err != nil {
+		return err
+	}
+	if err := policy.requireRoleIdentity(ctr, launch.role); err != nil {
+		return err
+	}
+	return requirePrivatePIDNamespace(ctr)
+}
+
+// requireSandboxNetwork requires a running container's network namespace to be
+// the sandbox's. The runtime may name it by CNI path or by /proc/<pid>/ns/net,
+// so namespaces are compared by kernel identity, not path.
+func (s *protectedPod) requireSandboxNetwork(ctr *api.Container, running bool) error {
+	if !running {
+		return nil
+	}
+	for _, ns := range ctr.GetLinux().GetNamespaces() {
+		if ns.GetType() != "network" || ns.GetPath() == "" || ns.GetPath() == s.netns.path {
+			continue
+		}
+		described, err := namespaceFile(ns.GetPath())
+		if err != nil {
+			// A vanished /proc handle means the process exited and moves no
+			// packets; any other unresolvable path is refused.
+			if strings.HasPrefix(ns.GetPath(), "/proc/") && errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			return fmt.Errorf("the container runs in the network namespace %s, not the sandbox's %s: %w", ns.GetPath(), s.netns.path, err)
+		}
+		if described.id != s.netns.id {
+			return fmt.Errorf("the container runs in the network namespace %s, not the sandbox's %s", ns.GetPath(), s.netns.path)
+		}
+	}
+	return nil
+}
+
+func (g *meshGate) forget(sandboxID string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	delete(g.pods, sandboxID)
+}
+
+// noteMeshStarted records the start that opens the gate for the rest of a pod.
+func (g *meshGate) noteMeshStarted(sandboxID string) {
+	g.update(sandboxID, func(state *protectedPod) {
+		state.meshStarted = true
+	})
+}
+
+// noteLaunched records an admitted container for the order rules.
+func (g *meshGate) noteLaunched(sandboxID string, launch gatedContainer) {
+	g.update(sandboxID, func(state *protectedPod) {
+		state.recordLaunch(launch)
+	})
+}
+
+// recordLaunch records a container of the sandbox for the order rules.
+func (s *protectedPod) recordLaunch(launch gatedContainer) {
+	if launch.role == "" {
+		s.workloadCreated = true
+		return
+	}
+	if !s.admittedBefore(launch) {
+		s.roleLaunches = append(s.roleLaunches, launch.identity())
+	}
+}
+
+func (g *meshGate) update(sandboxID string, change func(*protectedPod)) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if state := g.pods[sandboxID]; state != nil {
+		change(state)
+	}
+}
+
+// admit is the startup gate: a container of a protected pod is created only
+// after the live ruleset in that pod's namespace is the one trusted policy
+// defines, independently of admission mode, ordering and probes.
+func (g *meshGate) admit(pod *api.PodSandbox, ctr *api.Container, launch gatedContainer) error {
+	if !g.hosts(pod) {
+		return nil
+	}
+	netns, kubeNamespace, err := g.admissible(pod, ctr, launch)
+	if err != nil {
+		return fmt.Errorf("mesh gate: container %s of pod %s/%s: %w", ctr.GetName(), pod.GetNamespace(), pod.GetName(), err)
+	}
+	if err := verifyPodRuleset(netns, g.rulesetPolicy(), kubeNamespace, g.grantedExits(pod.GetId())); err != nil {
+		return fmt.Errorf("mesh gate: container %s of pod %s/%s: %w", ctr.GetName(), pod.GetNamespace(), pod.GetName(), err)
+	}
+	g.noteLaunched(pod.GetId(), launch)
+	return nil
+}
+
+// grantedExits are the exits a protected sandbox was granted. A grant happens
+// once and only adds, so a ruleset verified with what this reads is the pod's.
+func (g *meshGate) grantedExits(sandboxID string) []exit {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if state := g.pods[sandboxID]; state != nil {
+		return state.exits
+	}
+	return nil
+}
+
+// lockStarts holds a protected sandbox's container starts one at a time,
+// from the exit decision to the inventory record. A sandbox off the record
+// needs no lock: it holds no exit, and the startup gate refuses it.
+func (g *meshGate) lockStarts(pod *api.PodSandbox) func() {
+	g.mu.Lock()
+	state := g.pods[pod.GetId()]
+	g.mu.Unlock()
+	if state == nil {
+		return func() {}
+	}
+	state.starts.Lock()
+	return state.starts.Unlock
+}
+
+// bindEntry applies the exit decision for a workload container about to start
+// in a protected pod (decideExits): it refuses the container, grants the
+// entry's exits, or holds a pod with exits to the entry they came from. The
+// exits are fixed for the pod's life: an allowlist change applies to the next
+// pod.
+func (g *meshGate) bindEntry(pod *api.PodSandbox, decision exitDecision) error {
+	// A pod CVM's egress is its own ruleset's (ruleset.Policy.Pod): no entry's
+	// exits are granted there, and none hold a container back.
+	if !g.hosts(pod) || g.policy.Pod != nil {
+		return nil
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	// A sandbox off the record or refused is the startup gate's to refuse; it
+	// holds no exit to grant or keep.
+	state := g.pods[pod.GetId()]
+	if state == nil || state.refusal != nil {
+		return nil
+	}
+	if decision.undecided != nil {
+		if state.exitEntry != "" {
+			return fmt.Errorf("the pod holds the exits of allowlist entry %q, and whether it still matches that entry cannot be read: %w", state.exitEntry, decision.undecided)
+		}
+		g.logger.Warn("no exits granted: the pod's workload match cannot be read",
+			"namespace", pod.GetNamespace(), "pod", pod.GetName(), "error", decision.undecided)
+		return nil
+	}
+	if decision.refusal != nil {
+		return decision.refusal
+	}
+	if state.exitEntry != "" {
+		if decision.entry != state.exitEntry {
+			return fmt.Errorf("the pod holds the exits of allowlist entry %q, and with this container it no longer matches that entry", state.exitEntry)
+		}
+		return nil
+	}
+	if decision.entry == "" {
+		if len(decision.shadowed) > 0 {
+			g.logger.Warn("no exits granted: each allowlist entry with exits is unpinned or shares its containers with another entry",
+				"namespace", pod.GetNamespace(), "pod", pod.GetName(), "entries", decision.shadowed, "allowlist_version", decision.version)
+		}
+		return nil
+	}
+	if err := g.requireOffLimits(decision.exits); err != nil {
+		return fmt.Errorf("allowlist entry %q: %w", decision.entry, err)
+	}
+	if err := g.extend(state.netns, g.rulesetPolicy(), state.kubeNamespace, decision.exits); err != nil {
+		return fmt.Errorf("grant the exits of allowlist entry %q: %w", decision.entry, err)
+	}
+	state.exitEntry, state.exits = decision.entry, decision.exits
+	g.logger.Info("granted the pod its allowlist entry's exits",
+		"namespace", pod.GetNamespace(), "pod", pod.GetName(), "entry", decision.entry,
+		"exits", decision.exits, "allowlist_version", decision.version)
+	return nil
+}
+
+// requireOffLimits refuses an exit into this cluster, onto this node or onto
+// a port a platform role dials: a connection to a member leaves the pod
+// through the mesh or not at all, and the node's own services and this
+// cluster's CDS are reached under their own rules, by the identity those
+// rules name, or not at all.
+func (g *meshGate) requireOffLimits(exits []exit) error {
+	if err := g.policy.requireOutsideCluster(exits); err != nil {
+		return err
+	}
+	node, err := g.nodeAddress()
+	if err != nil {
+		return fmt.Errorf("no exit can be shown to stay off this node: %w", err)
+	}
+	offLimits := []netip.Addr{node, g.policy.Resolver}
+	for _, e := range exits {
+		for _, addr := range offLimits {
+			if addr.IsValid() && e.Range.Contains(addr) {
+				return fmt.Errorf("exit %s port %d reaches %s, an address of this node or of a service a platform role is bound to", e.Range, e.Port, addr)
+			}
+		}
+		for _, role := range g.policy.Roles {
+			if role.Port != 0 && role.Port == e.Port {
+				return fmt.Errorf("exit %s port %d is the port the %s role dials outside this cluster, which its own identity reaches under its own rule", e.Range, e.Port, role.Name)
+			}
+		}
+	}
+	return nil
+}
+
+// requireOutsideCluster refuses an exit into this cluster's pod or Service
+// ranges: a connection to a member leaves the pod through the mesh or not at
+// all. A policy naming no range of an exit's address family cannot show that
+// exit stays outside them.
+func (p meshPolicy) requireOutsideCluster(exits []exit) error {
+	for _, e := range exits {
+		family := false
+		for _, in := range p.ClusterRanges {
+			if in.Addr().Is4() != e.Range.Addr().Is4() {
+				continue
+			}
+			family = true
+			if e.Range.Overlaps(in) {
+				return fmt.Errorf("exit %s port %d overlaps the cluster range %s", e.Range, e.Port, in)
+			}
+		}
+		if !family {
+			return fmt.Errorf("trusted mesh policy names no %s cluster range, so exit %s cannot be shown to stay outside the cluster", ipFamily(e.Range), e.Range)
+		}
+	}
+	return nil
+}
+
+func ipFamily(p netip.Prefix) string {
+	if p.Addr().Is4() {
+		return "IPv4"
+	}
+	return "IPv6"
+}
+
+// admissible answers from the enforcer's record, and returns the namespace
+// whose live ruleset is still to verify.
+func (g *meshGate) admissible(pod *api.PodSandbox, ctr *api.Container, launch gatedContainer) (podNamespace, string, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	state, err := g.state(pod.GetId())
+	if err != nil {
+		return podNamespace{}, "", err
+	}
+	// Protection a pod never had cannot be established by a later check, so a
+	// namespace that moved refuses the sandbox for its life.
+	if reported := podNetworkNamespace(pod); reported != state.netns.path {
+		state.refusal = fmt.Errorf("the reported network namespace moved from %s to %s", state.netns.path, reported)
+		return podNamespace{}, "", state.refusal
+	}
+	// The installed ruleset was built for the namespace the sandbox started
+	// in, so a container reported in another one is a container this pod's
+	// rules say nothing about.
+	if reported := pod.GetNamespace(); reported != state.kubeNamespace {
+		state.refusal = fmt.Errorf("the reported namespace moved from %s to %s", state.kubeNamespace, reported)
+		return podNamespace{}, "", state.refusal
+	}
+	for _, check := range []func() error{
+		func() error { return state.requireRoleOrder(launch) },
+		func() error { return state.requireContainerAlone(g.policy, ctr, launch) },
+		func() error { return launch.requireNoNetworkChange() },
+	} {
+		if err := check(); err != nil {
+			return podNamespace{}, "", err
+		}
+	}
+	return state.netns, state.kubeNamespace, nil
+}
+
+// verifyMember is the verification an identity assertion requires: a current
+// member pod whose live ruleset is the one trusted policy defines.
+func (g *meshGate) verifyMember(sandboxID string) error {
+	if err := g.verifyMemberRuleset(sandboxID); err != nil {
+		g.logger.Warn("refusing to verify a sandbox as a protected mesh member", "sandbox", sandboxID, "error", err)
+		return err
+	}
+	return nil
+}
+
+// verifyMemberRuleset verifies the live ruleset of a protected sandbox whose
+// mesh endpoint is running.
+func (g *meshGate) verifyMemberRuleset(sandboxID string) error {
+	netns, kubeNamespace, err := g.memberNamespace(sandboxID)
+	if err != nil {
+		return err
+	}
+	return verifyPodRuleset(netns, g.rulesetPolicy(), kubeNamespace, g.grantedExits(sandboxID))
+}
+
+// memberNamespace is the network namespace of a protected sandbox whose
+// verified mesh endpoint is running, with the Kubernetes namespace its ruleset
+// was built for.
+func (g *meshGate) memberNamespace(sandboxID string) (podNamespace, string, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	state, err := g.state(sandboxID)
+	if err != nil {
+		return podNamespace{}, "", err
+	}
+	if !state.meshStarted {
+		return podNamespace{}, "", fmt.Errorf("sandbox %s runs no verified mesh endpoint", sandboxID)
+	}
+	return state.netns, state.kubeNamespace, nil
+}
+
+// state is the record of a sandbox that is not refused. Callers hold g.mu.
+func (g *meshGate) state(sandboxID string) (*protectedPod, error) {
+	state := g.pods[sandboxID]
+	switch {
+	case state == nil:
+		return nil, fmt.Errorf("%w %s", errSandboxOffRecord, sandboxID)
+	case state.refusal != nil:
+		return nil, fmt.Errorf("sandbox %s is refused for its life: %w", sandboxID, state.refusal)
+	}
+	return state, nil
+}
+
+// requireRoleOrder requires the mesh endpoint to run before any other
+// container, and every role to precede every container outside a role. A
+// platform-role launch this gate admitted in this sandbox may start again
+// later, so a crashed role can be replaced by what already ran.
+func (s *protectedPod) requireRoleOrder(launch gatedContainer) error {
+	switch {
+	case launch.role != "" && s.workloadCreated && !s.admittedBefore(launch):
+		return fmt.Errorf("the %s role cannot start after a container outside every platform role", launch.role)
+	case launch.role == meshRole:
+		return nil
+	case !s.meshStarted:
+		return errors.New("the pod's mesh endpoint is not running, so no other container may start")
+	default:
+		return nil
+	}
+}
+
+// admittedBefore reports a launch of the same platform role, image digest and
+// arguments as one this gate admitted in this sandbox.
+func (s *protectedPod) admittedBefore(launch gatedContainer) bool {
+	return slices.ContainsFunc(s.roleLaunches, func(admitted roleLaunch) bool {
+		return admitted.role == launch.role &&
+			admitted.digest == launch.digest &&
+			slices.Equal(admitted.argv, launch.argv)
+	})
+}
+
+// identity is the part of an admitted launch a replacement must repeat.
+func (c gatedContainer) identity() roleLaunch {
+	return roleLaunch{
+		role:   c.role,
+		digest: c.digest,
+		argv:   slices.Clone(c.argv),
+	}
+}
+
+// requireRoleOnlyPod requires a pod of the router's namespace to hold role
+// containers only, from its first container: an inbound accept cannot be tied
+// to a socket UID, so those listeners are open to anything that runs there.
+// Each of them runs under a declaration that pins its mounts as well, because
+// the credentials of this pod are separated by mount set alone: a role
+// container whose mounts are left to the host could be given another role's
+// credential volume, and the upstream role's mount set is what binds its
+// uncaptured reach into the cluster to the sidecar that authenticates a
+// backend itself.
+func (s *protectedPod) requireRoleOnlyPod(launch gatedContainer) error {
+	if s.kubeNamespace != routerNamespace {
+		return nil
+	}
+	if launch.role == "" {
+		return fmt.Errorf("this pod serves the %s role's own ports, so only its platform roles may run here", routerRole)
+	}
+	if !launch.mountsPinned {
+		return fmt.Errorf("the %s role runs here only under a declaration that pins its mounts, which this launch has none of", launch.role)
+	}
+	return nil
+}
+
+// requirePrivatePIDNamespace requires a member pod's container to run in a pid
+// namespace of its own. In a shared one every process of the pod is visible
+// through one /proc, so a container reads another's credential volume at
+// /proc/<pid>/root whatever the mount sets say.
+//
+// containerd points the namespace at a process only when the pod shares it
+// (internal/cri/opts, WithPodNamespaces), and an absent entry is the node's
+// own; its own namespace is the entry with no path.
+func requirePrivatePIDNamespace(ctr *api.Container) error {
+	for _, ns := range ctr.GetLinux().GetNamespaces() {
+		if ns.GetType() != pidNamespace {
+			continue
+		}
+		if path := ns.GetPath(); path != "" {
+			return fmt.Errorf("the container joins the pid namespace at %s instead of running in its own", path)
+		}
+		return nil
+	}
+	return errors.New("the container declares no pid namespace of its own")
+}
+
+// requireNoNetworkChange refuses an adjustment that leaves the verified
+// ruleset behind: another namespace carries other rules, and a host network
+// device reaches past every rule in this one.
+func (c gatedContainer) requireNoNetworkChange() error {
+	if len(c.namespaces) > 0 || len(c.netDevices) > 0 {
+		return errors.New("an adjustment re-points the container's namespaces or moves a host network device in")
+	}
+	return nil
+}
+
+// selfNetworkNamespace names the network namespace of the thread-group
+// leader, which is the enforcer's own until a thread of it attaches to a
+// pod's.
+const selfNetworkNamespace = "/proc/self/ns/net"
+
+// enforcerNetworkNamespace answers with the network namespace the enforcer
+// runs in, read on the first call and kept for the process: installing a pod
+// ruleset leaves the thread it ran on in that pod's namespace, the leader
+// thread included, so a later read names a pod's.
+var enforcerNetworkNamespace = sync.OnceValues(func() (podNamespace, error) {
+	return namespaceFile(selfNetworkNamespace)
+})
+
+// proveSandboxNamespace proves that path is the network namespace the
+// sandbox's own process lives in, and not the node's: without it the ruleset
+// could protect a namespace carrying none of the pod's traffic.
+func proveSandboxNamespace(path string, sandboxPID uint32) (podNamespace, error) {
+	if sandboxPID == 0 {
+		return podNamespace{}, errors.New("the runtime reports no sandbox process to prove the network namespace against")
+	}
+	described, err := namespaceFile(path)
+	if err != nil {
+		return podNamespace{}, err
+	}
+	// The enforcer is a node process, so its own namespace is the node's.
+	enforcer, err := enforcerNetworkNamespace()
+	if err != nil {
+		return podNamespace{}, err
+	}
+	if described.id == enforcer.id {
+		return podNamespace{}, fmt.Errorf("%s is the node's own network namespace", path)
+	}
+	sandbox, err := namespaceFile(fmt.Sprintf("/proc/%d/ns/net", sandboxPID))
+	if err != nil {
+		return podNamespace{}, err
+	}
+	// The kernel's own handle on that process's namespace is the namespace:
+	// any other file, of any kind, is another thing.
+	if described.id != sandbox.id {
+		return podNamespace{}, fmt.Errorf("%s is not the network namespace of sandbox process %d", path, sandboxPID)
+	}
+	return described, nil
+}
+
+// namespaceFile describes the file a path names.
+func namespaceFile(path string) (podNamespace, error) {
+	var described unix.Stat_t
+	if err := unix.Stat(path, &described); err != nil {
+		return podNamespace{}, fmt.Errorf("describe network namespace %s: %w", path, err)
+	}
+	return podNamespace{
+		path: path,
+		id: fileID{
+			device: uint64(described.Dev),
+			inode:  described.Ino,
+		},
+	}, nil
+}
+
+// podNetworkNamespace is the path the runtime reports for the pod's own
+// network namespace, empty when the pod shares the node's: containerd drops
+// the entry rather than naming the host's (sandbox.go).
+func podNetworkNamespace(pod *api.PodSandbox) string {
+	for _, ns := range pod.GetLinux().GetNamespaces() {
+		if ns.GetType() == "network" {
+			return ns.GetPath()
+		}
+	}
+	return ""
+}

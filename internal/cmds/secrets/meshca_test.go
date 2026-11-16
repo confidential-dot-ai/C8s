@@ -77,7 +77,7 @@ func TestPutRefusesWithoutMeshCA(t *testing.T) {
 	key := writeOperatorKey(t)
 
 	_, _, err := runAttested(t, "hunter2", "put", "/tenant-a/db", "--url", url,
-		"--measurements", testutil.TestMeasurement, "--operator-key", key)
+		"--image-policy-file", testutil.CDSPinFile(t), "--operator-key", key)
 	if err == nil {
 		t.Fatal("a write with no --mesh-ca was accepted")
 	}
@@ -98,7 +98,7 @@ func TestPutRefusesAnotherCDSsMeshCA(t *testing.T) {
 	key := writeOperatorKey(t)
 
 	_, _, err := runAttested(t, "hunter2", "put", "/tenant-a/db", "--url", url,
-		"--measurements", testutil.TestMeasurement, "--operator-key", key, "--mesh-ca", bundle)
+		"--image-policy-file", testutil.CDSPinFile(t), "--operator-key", key, "--mesh-ca", bundle)
 	if err == nil {
 		t.Fatal("a write to a CDS serving an unpinned mesh CA was accepted")
 	}
@@ -118,7 +118,7 @@ func TestPutAcceptsThePinnedMeshCA(t *testing.T) {
 	key := writeOperatorKey(t)
 
 	out, _, err := runAttested(t, "hunter2", "put", "/tenant-a/db", "--url", url,
-		"--measurements", testutil.TestMeasurement, "--operator-key", key, "--mesh-ca", bundle)
+		"--image-policy-file", testutil.CDSPinFile(t), "--operator-key", key, "--mesh-ca", bundle)
 	if err != nil {
 		t.Fatalf("put against the pinned CDS: %v", err)
 	}
@@ -140,13 +140,13 @@ func TestPutAcceptsAnyCAInTheBundle(t *testing.T) {
 	for _, ca := range [][]byte{old, current} {
 		_, url := newAttestedCDS(t, ca)
 		if _, _, err := runAttested(t, "hunter2", "put", "/tenant-a/db", "--url", url,
-			"--measurements", testutil.TestMeasurement, "--operator-key", key, "--mesh-ca", bundle); err != nil {
+			"--image-policy-file", testutil.CDSPinFile(t), "--operator-key", key, "--mesh-ca", bundle); err != nil {
 			t.Fatalf("a CA in the bundle was refused: %v", err)
 		}
 	}
 	_, url := newAttestedCDS(t, testutil.MeshCA(t, "cds-n"))
 	if _, _, err := runAttested(t, "hunter2", "put", "/tenant-a/db", "--url", url,
-		"--measurements", testutil.TestMeasurement, "--operator-key", key, "--mesh-ca", bundle); err == nil {
+		"--image-policy-file", testutil.CDSPinFile(t), "--operator-key", key, "--mesh-ca", bundle); err == nil {
 		t.Fatal("a CA outside the bundle was accepted")
 	}
 }
@@ -158,7 +158,7 @@ func TestPutForceSkipsTheCheckLoudly(t *testing.T) {
 	key := writeOperatorKey(t)
 
 	_, errOut, err := runAttested(t, "hunter2", "put", "/tenant-a/db", "--url", url,
-		"--measurements", testutil.TestMeasurement, "--operator-key", key, "--force")
+		"--image-policy-file", testutil.CDSPinFile(t), "--operator-key", key, "--force")
 	if err != nil {
 		t.Fatalf("--force did not write: %v", err)
 	}
@@ -178,7 +178,7 @@ func TestPutRefusesEmptyServedCA(t *testing.T) {
 	key := writeOperatorKey(t)
 
 	_, _, err := runAttested(t, "hunter2", "put", "/tenant-a/db", "--url", url,
-		"--measurements", testutil.TestMeasurement, "--operator-key", key, "--mesh-ca", bundle)
+		"--image-policy-file", testutil.CDSPinFile(t), "--operator-key", key, "--mesh-ca", bundle)
 	if err == nil {
 		t.Fatal("a CDS serving no CA was accepted")
 	}
@@ -202,7 +202,7 @@ func TestPutRefusesUnusableBundle(t *testing.T) {
 		"no certs": empty,
 	} {
 		_, _, err := runAttested(t, "hunter2", "put", "/tenant-a/db", "--url", url,
-			"--measurements", testutil.TestMeasurement, "--operator-key", key, "--mesh-ca", path)
+			"--image-policy-file", testutil.CDSPinFile(t), "--operator-key", key, "--mesh-ca", path)
 		if err == nil {
 			t.Fatalf("%s bundle was accepted", name)
 		}
@@ -272,7 +272,7 @@ func TestPutRefusesAnUnusableCAResponse(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f, url := newAttestedCDSServingCA(t, tc.status, tc.body)
 			_, _, err := runAttested(t, "hunter2", "put", "/tenant-a/db", "--url", url,
-				"--measurements", testutil.TestMeasurement, "--operator-key", key, "--mesh-ca", bundle)
+				"--image-policy-file", testutil.CDSPinFile(t), "--operator-key", key, "--mesh-ca", bundle)
 			if err == nil {
 				t.Fatal("the write was accepted")
 			}
@@ -298,7 +298,7 @@ func TestPutRefusesWhenTheCAIsUnreachable(t *testing.T) {
 	// so the gate runs and the fetch is what fails.
 	dead := strings.Replace(url, url[strings.LastIndex(url, ":")+1:], "1", 1)
 	_, _, err := runAttested(t, "hunter2", "put", "/tenant-a/db", "--url", dead,
-		"--measurements", testutil.TestMeasurement, "--operator-key", key, "--mesh-ca", bundle)
+		"--image-policy-file", testutil.CDSPinFile(t), "--operator-key", key, "--mesh-ca", bundle)
 	if err == nil {
 		t.Fatal("a write to an unreachable CDS was accepted")
 	}
@@ -324,7 +324,7 @@ func TestPutIgnoresNonCertificateBlocksInTheBundle(t *testing.T) {
 	key := writeOperatorKey(t)
 
 	if _, _, err := runAttested(t, "hunter2", "put", "/tenant-a/db", "--url", url,
-		"--measurements", testutil.TestMeasurement, "--operator-key", key, "--mesh-ca", path); err != nil {
+		"--image-policy-file", testutil.CDSPinFile(t), "--operator-key", key, "--mesh-ca", path); err != nil {
 		t.Fatalf("a bundle with a non-certificate block was refused: %v", err)
 	}
 	if len(f.seen) != 1 {
@@ -344,7 +344,7 @@ func TestPutRefusesABundleWithAnUnparseableCertificate(t *testing.T) {
 	key := writeOperatorKey(t)
 
 	_, _, err := runAttested(t, "hunter2", "put", "/tenant-a/db", "--url", url,
-		"--measurements", testutil.TestMeasurement, "--operator-key", key, "--mesh-ca", path)
+		"--image-policy-file", testutil.CDSPinFile(t), "--operator-key", key, "--mesh-ca", path)
 	if err == nil {
 		t.Fatal("an unparseable bundle was accepted")
 	}
@@ -377,7 +377,7 @@ func TestPutRefusesAWriteThatRedialsToAnotherPeer(t *testing.T) {
 	url := proxy.URL
 
 	_, _, err := runAttested(t, "hunter2", "put", "/tenant-a/db", "--url", url,
-		"--measurements", testutil.TestMeasurement, "--operator-key", writeOperatorKey(t),
+		"--image-policy-file", testutil.CDSPinFile(t), "--operator-key", writeOperatorKey(t),
 		"--mesh-ca", writePEM(t, "mesh-ca.pem", ca))
 	if err == nil || !strings.Contains(err.Error(), "different serving certificate") {
 		t.Fatalf("got %v, want the redial refused for presenting another certificate", err)

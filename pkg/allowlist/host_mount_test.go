@@ -2,6 +2,7 @@ package allowlist
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -172,14 +173,73 @@ func TestServedUnknownMountKindRefusesDocument(t *testing.T) {
 	}
 }
 
-func TestNodeRootFileRuleIsNotPinnedForGrant(t *testing.T) {
+func TestNodeRootFileRuleStaysHostDependent(t *testing.T) {
 	policy := MountPolicy{Policy: PolicyExact, Rules: []MountRule{{Destination: "/usr/bin/nvidia-smi", Kind: MountNodeRootFile, Source: "/usr/bin/nvidia-smi", ReadOnly: true}}}
 	if (mountConstraint{policy: &policy}).hostIndependent() {
-		t.Fatal("nodeRootFile rule reported host-independent, so a secrets grant would accept it")
+		t.Fatal("nodeRootFile rule reported host-independent; it still names a host path")
 	}
 }
 
-func TestAdmitsVerifiedFile(t *testing.T) {
+// A secrets grant accepts a host file only when the node proves what the
+// container reads and the container cannot write back (#934).
+func TestMountRuleGrantPinned(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		rule MountRule
+		want bool
+	}{
+		{"emptyDir", MountRule{Destination: "/models", Kind: MountEmptyDir}, true},
+		{"data", MountRule{Destination: DataMountPrefix + "config", Kind: MountData}, true},
+		{"nodeRootFile read-only", MountRule{Destination: "/usr/bin/nvidia-smi", Kind: MountNodeRootFile, Source: "/usr/bin/nvidia-smi", ReadOnly: true}, true},
+		{"nodeRootFile writable", MountRule{Destination: "/usr/bin/nvidia-smi", Kind: MountNodeRootFile, Source: "/usr/bin/nvidia-smi"}, false},
+		{"host read-only", MountRule{Destination: "/usr/bin/nvidia-smi", Kind: MountHost, Source: "/usr/bin/nvidia-smi", ReadOnly: true}, false},
+		{"host writable", MountRule{Destination: "/usr/bin/nvidia-smi", Kind: MountHost, Source: "/usr/bin/nvidia-smi"}, false},
+		{"fsVerityFile read-only", MountRule{Destination: "/usr/bin/tool", Kind: MountFSVerityFile, Source: "/opt/tools/tool", ReadOnly: true, VerityDigest: strings.Repeat("b", 64)}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.rule.behavior().grantPinned(); got != tc.want {
+				t.Fatalf("grantPinned(%+v) = %t, want %t", tc.rule, got, tc.want)
+			}
+		})
+	}
+}
+
+// The NVIDIA CDI file set of a GPU worker, as nodeRootFile rules, passes a
+// grant; an unproven host path and the writable persistenced socket do not.
+func TestGPUWorkerGrantWithNodeRootCDIFiles(t *testing.T) {
+	files := []string{
+		"/lib/firmware/nvidia/595.71.05/gsp_ga10x.bin",
+		"/usr/bin/nvidia-smi",
+		"/usr/lib/x86_64-linux-gnu/libcuda.so.595.71.05",
+		"/usr/lib/x86_64-linux-gnu/libnvidia-ml.so.595.71.05",
+	}
+	worker := func(extra ...MountRule) Workload {
+		rules := []MountRule{{Destination: "/models", Kind: MountEmptyDir}}
+		for _, f := range files {
+			rules = append(rules, MountRule{Destination: f, Kind: MountNodeRootFile, Source: f, ReadOnly: true})
+		}
+		rules = append(rules, extra...)
+		return Workload{Containers: []Container{{
+			Command: ArgvPolicy{Policy: PolicyExact, Argv: []string{"python3"}},
+			Args:    ArgvPolicy{Policy: PolicyExact, Argv: []string{"-m", "sglang.launch_server"}},
+			Mounts:  MountPolicy{Policy: PolicyExact, Rules: rules},
+		}}}
+	}
+	if err := worker().PinnedForGrant(); err != nil {
+		t.Fatalf("nodeRootFile CDI files: PinnedForGrant = %v, want nil", err)
+	}
+	for name, extra := range map[string]MountRule{
+		"unproven host path":  {Destination: "/opt/tools", Kind: MountHost, Source: "/opt/tools", ReadOnly: true},
+		"persistenced socket": {Destination: "/run/nvidia-persistenced/socket", Kind: MountHost, Source: "/run/nvidia-persistenced/socket"},
+	} {
+		if err := worker(extra).PinnedForGrant(); !errors.Is(err, errGrantUnpinnedMounts) {
+			t.Errorf("%s: PinnedForGrant = %v, want errGrantUnpinnedMounts", name, err)
+		}
+	}
+}
+
+// A host bind is granted only by a declaration that pins its launch and names it.
+func TestGrantsHostBind(t *testing.T) {
 	const source = "/usr/bin/nvidia-smi"
 	sourceDigest, err := HostSourceDigest(source)
 	if err != nil {
@@ -189,24 +249,37 @@ func TestAdmitsVerifiedFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	index := func(command ArgvPolicy, mounts MountPolicy) *Index {
+	env, err := ObserveEnv([]string{"PATH=/usr/bin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	declare := func(command ArgvPolicy, mounts MountPolicy, envPolicy EnvPolicy) Container {
 		if err := normalizeMounts(&mounts); err != nil {
 			t.Fatal(err)
 		}
-		return (&Allowlist{Workloads: map[string]Workload{"c": {Containers: []Container{{
-			Digest: dig(t, dApp), Command: command, Args: ArgvPolicy{Policy: PolicyAny},
-			Mounts: mounts, Env: EnvPolicy{Policy: PolicyAny},
-		}}}}}).BuildIndex()
+		return Container{
+			Digest: dig(t, dApp), Command: command, Args: ArgvPolicy{Policy: PolicyDeny},
+			Mounts: mounts, Env: envPolicy,
+		}
 	}
-	anyCommand := ArgvPolicy{Policy: PolicyAny}
-	rule := MountRule{Destination: source, Kind: MountNodeRootFile, Source: source, ReadOnly: true}
-	plain := rule
-	plain.Kind = MountHost
-	exact := MountPolicy{Policy: PolicyExact, Rules: []MountRule{rule}}
+	index := func(declarations ...Container) *Index {
+		return (&Allowlist{Workloads: map[string]Workload{"w": {Containers: declarations}}}).BuildIndex()
+	}
+	argv := []string{"/bin/app"}
+	ownCommand := ArgvPolicy{Policy: PolicyExact, Argv: argv}
+	otherCommand := ArgvPolicy{Policy: PolicyExact, Argv: []string{"/bin/other"}}
+	pinnedEnv := EnvPolicy{Policy: PolicyExact, Values: map[string]string{"PATH": "/usr/bin"}}
+	openEnv := EnvPolicy{Policy: PolicyAny}
+	nodeRootRule := MountRule{Destination: source, Kind: MountNodeRootFile, Source: source, ReadOnly: true}
+	hostRule := nodeRootRule
+	hostRule.Kind = MountHost
+	exact := func(rule MountRule) MountPolicy {
+		return MountPolicy{Policy: PolicyExact, Rules: []MountRule{rule}}
+	}
+	open := MountPolicy{Policy: PolicyAny}
 	hash := strings.Repeat("b", 64)
-	fsVerity := rule
-	fsVerity.Kind, fsVerity.VerityDigest = MountFSVerityFile, hash
-	exactFSVerity := MountPolicy{Policy: PolicyExact, Rules: []MountRule{fsVerity}}
+	fsVerityRule := nodeRootRule
+	fsVerityRule.Kind, fsVerityRule.VerityDigest = MountFSVerityFile, hash
 	staged := func(m *ObservedMount) { m.Provenance, m.VerityDigest = ProvenanceFSVerity, hash }
 	verified := ObservedMount{Destination: source, Class: MountHost, Storage: MountUnknown, HostSourceDigest: sourceDigest, ReadOnly: true, Provenance: ProvenanceNodeRoot}
 	for _, tc := range []struct {
@@ -215,16 +288,24 @@ func TestAdmitsVerifiedFile(t *testing.T) {
 		mutate func(*ObservedMount)
 		want   bool
 	}{
-		{"exact nodeRootFile rule", index(anyCommand, exact), nil, true},
-		{"mount policy any", index(anyCommand, MountPolicy{Policy: PolicyAny}), nil, false},
-		{"host rule", index(anyCommand, MountPolicy{Policy: PolicyExact, Rules: []MountRule{plain}}), nil, false},
-		{"entry refuses argv", index(ArgvPolicy{Policy: PolicyExact, Argv: []string{"/bin/app"}}, exact), nil, false},
-		{"other source", index(anyCommand, exact), func(m *ObservedMount) { m.HostSourceDigest = otherDigest }, false},
-		{"no observed provenance", index(anyCommand, exact), func(m *ObservedMount) { m.Provenance = "" }, false},
-		{"exact fsVerityFile rule", index(anyCommand, exactFSVerity), staged, true},
-		{"fsVerityFile rule, other digest", index(anyCommand, exactFSVerity), func(m *ObservedMount) { staged(m); m.VerityDigest = strings.Repeat("a", 64) }, false},
-		{"fsVerityFile rule, node-root evidence", index(anyCommand, exactFSVerity), nil, false},
-		{"nodeRootFile rule, fs-verity evidence", index(anyCommand, exact), staged, false},
+		{"exact nodeRootFile rule", index(declare(ownCommand, exact(nodeRootRule), pinnedEnv)), nil, true},
+		{"exact host rule", index(declare(ownCommand, exact(hostRule), pinnedEnv)), nil, true},
+		{"host rule, writable bind", index(declare(ownCommand, exact(hostRule), pinnedEnv)), func(m *ObservedMount) { m.ReadOnly = false }, false},
+		{"nodeRootFile rule, no provenance", index(declare(ownCommand, exact(nodeRootRule), pinnedEnv)), func(m *ObservedMount) { m.Provenance = "" }, false},
+		{"host rule, other source", index(declare(ownCommand, exact(hostRule), pinnedEnv)), func(m *ObservedMount) { m.HostSourceDigest = otherDigest }, false},
+		{"host rule, unlisted destination", index(declare(ownCommand, exact(hostRule), pinnedEnv)), func(m *ObservedMount) { m.Destination = "/app/verify" }, false},
+		{"unconstrained environment", index(declare(ownCommand, exact(hostRule), openEnv)), nil, false},
+		{"declaration refuses the argv", index(declare(otherCommand, exact(hostRule), pinnedEnv)), nil, false},
+		{
+			"a second declaration admits the launch, under mounts: any",
+			index(declare(otherCommand, exact(hostRule), pinnedEnv), declare(ownCommand, open, pinnedEnv)),
+			nil,
+			false,
+		},
+		{"exact fsVerityFile rule", index(declare(ownCommand, exact(fsVerityRule), pinnedEnv)), staged, true},
+		{"fsVerityFile rule, other digest", index(declare(ownCommand, exact(fsVerityRule), pinnedEnv)), func(m *ObservedMount) { staged(m); m.VerityDigest = strings.Repeat("a", 64) }, false},
+		{"fsVerityFile rule, node-root evidence", index(declare(ownCommand, exact(fsVerityRule), pinnedEnv)), nil, false},
+		{"nodeRootFile rule, fs-verity evidence", index(declare(ownCommand, exact(nodeRootRule), pinnedEnv)), staged, false},
 		{"no allowlist", nil, nil, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -232,9 +313,9 @@ func TestAdmitsVerifiedFile(t *testing.T) {
 			if tc.mutate != nil {
 				tc.mutate(&m)
 			}
-			r := RunningContainer{Digest: dApp, Argv: []string{"/bin/other"}, Mounts: []ObservedMount{m}, Env: &EnvObservation{}}
-			if got := tc.index.AdmitsVerifiedFile(r, m); got != tc.want {
-				t.Fatalf("AdmitsVerifiedFile(%s) = %t, want %t", tc.name, got, tc.want)
+			r := RunningContainer{Digest: dApp, Argv: argv, Mounts: []ObservedMount{m}, Env: env}
+			if got := tc.index.GrantsHostBind(r, m); got != tc.want {
+				t.Fatalf("GrantsHostBind(%s) = %t, want %t", tc.name, got, tc.want)
 			}
 		})
 	}
@@ -280,13 +361,6 @@ func TestFSVerityFileMount(t *testing.T) {
 	}
 }
 
-func TestFSVerityFileRuleIsNotPinnedForGrant(t *testing.T) {
-	policy := MountPolicy{Policy: PolicyExact, Rules: []MountRule{{Destination: "/usr/bin/tool", Kind: MountFSVerityFile, Source: "/opt/tools/tool", ReadOnly: true, VerityDigest: strings.Repeat("b", 64)}}}
-	if (mountConstraint{policy: &policy}).hostIndependent() {
-		t.Fatal("fsVerityFile rule reported host-independent, so a secrets grant would accept it")
-	}
-}
-
 func TestIndexFSVerityMountRules(t *testing.T) {
 	hash := strings.Repeat("b", 64)
 	pinned := MountRule{Destination: "/usr/bin/tool", Kind: MountFSVerityFile, Source: "/opt/tools/tool", ReadOnly: true, VerityDigest: hash}
@@ -306,5 +380,24 @@ func TestIndexFSVerityMountRules(t *testing.T) {
 	var none *Index
 	if none.HasFSVerityMountRules() || none.FSVerityMountRules(digest.String()) != nil {
 		t.Fatal("nil index reported fs-verity rules")
+	}
+}
+
+// The grant answers only for a mount the launch carries.
+func TestGrantsHostBindNeedsTheLaunchToCarryTheMount(t *testing.T) {
+	env, err := ObserveEnv(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	argv := []string{"/bin/app"}
+	index := (&Allowlist{Workloads: map[string]Workload{"w": {Containers: []Container{{
+		Digest: dig(t, dApp), Command: ArgvPolicy{Policy: PolicyExact, Argv: argv},
+		Args: ArgvPolicy{Policy: PolicyDeny}, Mounts: MountPolicy{Policy: PolicyDeny},
+		Env: EnvPolicy{Policy: PolicyDeny},
+	}}}}}).BuildIndex()
+	r := RunningContainer{Digest: dApp, Argv: argv, Mounts: []ObservedMount{}, Env: env}
+	m := ObservedMount{Destination: "/usr/bin/nvidia-smi", Class: MountHost, ReadOnly: true}
+	if index.GrantsHostBind(r, m) {
+		t.Fatal("GrantsHostBind(a mount the launch does not carry) = true, want false")
 	}
 }

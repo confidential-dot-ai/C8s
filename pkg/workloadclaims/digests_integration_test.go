@@ -1,6 +1,7 @@
 package workloadclaims
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -24,8 +25,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/confidential-dot-ai/c8s/internal/readutil"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 // The callback is otherwise only ever driven through a fake at the CDS
@@ -216,7 +217,7 @@ func TestStartDigestsEndpointServesDespiteWarmUpFailure(t *testing.T) {
 	}
 	err = StartDigestsEndpoint(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)),
 		&fakeResolver{sandboxID: "sandbox-1"}, signer.PublicKeyDER(),
-		"sev-snp", attest, "http://127.0.0.1:1", armtls.Pins{})
+		"sev-snp", attest, "http://127.0.0.1:1", testPins(), "")
 	if err != nil {
 		t.Fatalf("StartDigestsEndpoint returned an error for a warm-up failure; it must degrade, not fail: %v", err)
 	}
@@ -282,15 +283,29 @@ func TestNewDigestsClientConstruction(t *testing.T) {
 	attest := func(context.Context, string) (string, error) { return "", errTestAttest }
 	ctx := context.Background()
 
-	if _, err := NewDigestsClient(ctx, "sev-snp", attest, "", armtls.Pins{}, 0); err == nil {
+	if _, err := NewDigestsClient(ctx, DigestsClientConfig{
+		Platform:   "sev-snp",
+		AttestFunc: attest,
+		NodeImages: testNodeImages(),
+	}); err == nil {
 		t.Fatal("built with no attestation-api URL")
 	}
-	if _, err := NewDigestsClient(ctx, "bogus-platform", attest, "http://127.0.0.1:1", armtls.Pins{}, 0); err == nil {
+	if _, err := NewDigestsClient(ctx, DigestsClientConfig{
+		Platform:          "bogus-platform",
+		AttestFunc:        attest,
+		AttestationAPIURL: "http://127.0.0.1:1",
+		NodeImages:        testNodeImages(),
+	}); err == nil {
 		t.Fatal("built with an unsupported TEE platform")
 	}
 	// A warm-up that cannot succeed is a construction failure here, unlike the
 	// server side: CDS has no work to do until it can present a client cert.
-	if _, err := NewDigestsClient(ctx, "sev-snp", attest, "http://127.0.0.1:1", armtls.Pins{}, 0); err == nil {
+	if _, err := NewDigestsClient(ctx, DigestsClientConfig{
+		Platform:          "sev-snp",
+		AttestFunc:        attest,
+		AttestationAPIURL: "http://127.0.0.1:1",
+		NodeImages:        testNodeImages(),
+	}); err == nil {
 		t.Fatal("built despite an attestation failure during warm-up")
 	}
 }
@@ -370,7 +385,9 @@ func TestDigestsClientTransportAndProtocolFailures(t *testing.T) {
 // 500 — distinct from the 404 that means "no such sandbox".
 type erroringResolver struct{}
 
-func (erroringResolver) SandboxForPeer(Peer) (string, error) { return "", errTestAttest }
+func (erroringResolver) SandboxForPeer(Peer) (CallerSandbox, error) {
+	return CallerSandbox{}, errTestAttest
+}
 func (erroringResolver) DigestsForSandbox(string) ([]string, []SandboxContainer, bool, error) {
 	return nil, nil, false, errTestAttest
 }
@@ -455,6 +472,51 @@ func TestDigestsClientRejectsMalformedAnswers(t *testing.T) {
 			t.Fatal("accepted a non-ECDSA inventory key")
 		}
 	})
+}
+
+// An inventory answer is one document: a second document after it, or a body
+// past maxResponseBytes, is refused rather than read as the answer.
+func TestDigestsClientAnswersMustBeOneDocument(t *testing.T) {
+	answering := func(t *testing.T, body []byte) (*DigestsClient, string) {
+		t.Helper()
+		c, host := clientAgainst(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write(body)
+		}))
+		// httptest's certificate names example.com, not the routable address.
+		c.http.Transport.(*http.Transport).TLSClientConfig.ServerName = "example.com"
+		return c, host
+	}
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := json.Marshal(InventoryIdentity{PublicKey: der})
+	if err != nil {
+		t.Fatal(err)
+	}
+	digests := []byte(`{"digests":["` + digestA + `"]}`)
+	padding := bytes.Repeat([]byte(" "), maxResponseBytes)
+
+	c, host := answering(t, append(bytes.Clone(digests), digests...))
+	if _, err := c.Fetch(t.Context(), host, "sandbox-1"); err == nil {
+		t.Fatal("accepted a digests body with a second document after it")
+	}
+	c, host = answering(t, append(bytes.Clone(digests), padding...))
+	if _, err := c.Fetch(t.Context(), host, "sandbox-1"); !errors.Is(err, readutil.ErrTooLarge) {
+		t.Fatalf("digests body past the cap = %v, want a refused read", err)
+	}
+	c, host = answering(t, append(bytes.Clone(identity), identity...))
+	if _, err := c.InventoryKey(t.Context(), host); err == nil {
+		t.Fatal("accepted an identity body with a second document after it")
+	}
+	c, host = answering(t, append(bytes.Clone(identity), padding...))
+	if _, err := c.InventoryKey(t.Context(), host); !errors.Is(err, readutil.ErrTooLarge) {
+		t.Fatalf("identity body past the cap = %v, want a refused read", err)
+	}
 }
 
 // A body larger than what arrives with the headers must still be readable

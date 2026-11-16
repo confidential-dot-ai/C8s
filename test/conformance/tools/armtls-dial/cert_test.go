@@ -149,3 +149,50 @@ func TestSelfSignedCertUnixSocket(t *testing.T) {
 		t.Fatal("an unknown platform must fail before any evidence is fetched")
 	}
 }
+
+func TestForeignCALeafChainsToItsOwnCAOnly(t *testing.T) {
+	c, err := foreignCALeaf()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Certificate) != 2 {
+		t.Fatalf("chain has %d certificates, want leaf and CA", len(c.Certificate))
+	}
+	leaf, err := x509.ParseCertificate(c.Certificate[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	ca, err := x509.ParseCertificate(c.Certificate[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	own := x509.NewCertPool()
+	own.AddCert(ca)
+	opts := x509.VerifyOptions{Roots: own, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}
+	if _, err := leaf.Verify(opts); err != nil {
+		t.Fatalf("leaf does not chain to its own CA: %v", err)
+	}
+	opts.Roots = x509.NewCertPool()
+	if _, err := leaf.Verify(opts); err == nil {
+		t.Fatal("leaf verified against an empty pool")
+	}
+	// A well-formed workload-instance extension, so only the chain is wrong.
+	if id, err := armtls.SandboxIDFromCert(leaf); err != nil || id != "conformance-foreign-peer" {
+		t.Fatalf("SandboxIDFromCert = %q, %v", id, err)
+	}
+}
+
+func TestSelfSignedWithoutEvidence(t *testing.T) {
+	c, err := selfSignedCert(context.Background(), certOptions{notAfter: time.Hour, timeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(c.Leaf.RawIssuer, c.Leaf.RawSubject) || !selfSignatureOK(c.Leaf) {
+		t.Fatal("certificate is not self-issued and self-signed")
+	}
+	for _, ext := range c.Leaf.Extensions {
+		if ext.Id.Equal(armtls.OIDARMTLSAttestation) {
+			t.Fatal("certificate carries an evidence extension")
+		}
+	}
+}

@@ -1,5 +1,5 @@
 # Bump: crane digest debian:bookworm-slim
-FROM debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587
+FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
 
 # cryptsetup-bin provides cryptsetup AND veritysetup, the two tools the daemon
 # shells out to (internal/cmds/volumed/systemops.go). The mount itself is a

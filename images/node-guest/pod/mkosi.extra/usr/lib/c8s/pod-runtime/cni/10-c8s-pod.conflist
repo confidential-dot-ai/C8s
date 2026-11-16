@@ -1,0 +1,13 @@
+{
+  "cniVersion": "1.0.0",
+  "name": "c8s-pod",
+  "plugins": [
+    {
+      "type": "bridge",
+      "bridge": "c8spod0",
+      "isGateway": true,
+      "ipMasq": false,
+      "ipam": {"type": "host-local", "ranges": [[{"subnet": "10.255.254.0/30"}]], "routes": [{"dst": "0.0.0.0/0"}]}
+    }
+  ]
+}

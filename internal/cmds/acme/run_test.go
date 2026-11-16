@@ -1,6 +1,7 @@
 package acme
 
 import (
+	"context"
 	"net"
 	"net/http/httptest"
 	"net/http/httputil"
@@ -8,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"syscall"
 	"testing"
 	"time"
 
@@ -27,10 +27,11 @@ func freePort(t *testing.T) int {
 	return l.Addr().(*net.TCPAddr).Port
 }
 
-// TestRunIssuesAndReloads drives the real run(): bootstrap placeholder, the
-// challenge listener, ACME issuance against the fake directory, nginx SIGHUP
-// on install, and shutdown on SIGTERM.
-func TestRunIssuesAndReloads(t *testing.T) {
+// TestRunIssuesAndInstalls drives the real run(): bootstrap placeholder, the
+// challenge listener, ACME issuance against the fake directory, the installed
+// key's mode, and shutdown when its context is cancelled. nginx reads it per
+// TLS handshake.
+func TestRunIssuesAndInstalls(t *testing.T) {
 	ca := newTestCA(t)
 	port := freePort(t)
 	fake := newFakeACME(t, ca, "http://127.0.0.1:"+strconv.Itoa(port))
@@ -43,12 +44,9 @@ func TestRunIssuesAndReloads(t *testing.T) {
 	}))
 	t.Cleanup(frontDoor.Close)
 
-	hup := catchSIGHUP(t)
-	procs := t.TempDir()
-	presentAsNginxMaster(t, procs)
-	overrideProcRoot(t, procs)
-
-	certDir := filepath.Join(t.TempDir(), "tls")
+	credentials := t.TempDir()
+	certDir := filepath.Join(credentials, "tls")
+	keyDir := filepath.Join(credentials, "key")
 	cfg := config{
 		domains:       []string{"lb.example.com", "infer.lb.example.com"},
 		directoryURL:  fake.directoryURL(),
@@ -56,13 +54,14 @@ func TestRunIssuesAndReloads(t *testing.T) {
 		challengePort: port,
 		httpPort:      serverPort(t, frontDoor.URL),
 		certDir:       certDir,
-		reloadNginx:   true,
+		keyDir:        keyDir,
 		logLevel:      "debug",
 	}
+	ctx, stop := context.WithCancel(t.Context())
 	done := make(chan error, 1)
-	go func() { done <- runWith(cfg, testPublicProbeClient(t, frontDoor.URL)) }()
+	go func() { done <- runWith(ctx, cfg, testPublicProbeClient(t, frontDoor.URL)) }()
 
-	// The install lands a CA-issued (non-self-issued) leaf and SIGHUPs nginx.
+	// The install lands a CA-issued (non-self-issued) leaf.
 	deadline := time.Now().Add(30 * time.Second)
 	for {
 		if time.Now().After(deadline) {
@@ -77,29 +76,24 @@ func TestRunIssuesAndReloads(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	select {
-	case <-hup:
-	case <-time.After(10 * time.Second):
-		t.Fatal("install did not SIGHUP nginx")
-	}
-	info, err := os.Stat(filepath.Join(certDir, keyFile))
+	info, err := os.Stat(filepath.Join(keyDir, keyFile))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("key mode = %v, want 0600", info.Mode().Perm())
+	// Group-readable: nginx serves this key as another identity, and the
+	// pod's fsGroup owns the directory.
+	if info.Mode().Perm() != keyMode {
+		t.Fatalf("key mode = %v, want %v", info.Mode().Perm(), os.FileMode(keyMode))
 	}
 
-	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
-		t.Fatal(err)
-	}
+	stop()
 	select {
 	case err := <-done:
 		if err != nil {
 			t.Fatalf("run: %v", err)
 		}
 	case <-time.After(10 * time.Second):
-		t.Fatal("run did not stop on SIGTERM")
+		t.Fatal("run did not stop when its context was cancelled")
 	}
 }
 
@@ -107,20 +101,7 @@ func TestRunValidatesConfig(t *testing.T) {
 	cfg := validTestConfig()
 	cfg.logLevel = "info"
 	cfg.domains = []string{"-bad-"}
-	if err := run(cfg); err == nil {
+	if err := run(t.Context(), cfg); err == nil {
 		t.Fatal("run accepted an invalid domain")
-	}
-}
-
-func TestRunFailsOnUncreatableCertDir(t *testing.T) {
-	ro := filepath.Join(t.TempDir(), "ro")
-	if err := os.Mkdir(ro, 0o555); err != nil {
-		t.Fatal(err)
-	}
-	cfg := validTestConfig()
-	cfg.logLevel = "info"
-	cfg.certDir = filepath.Join(ro, "tls")
-	if err := run(cfg); err == nil {
-		t.Fatal("run accepted an un-creatable cert dir")
 	}
 }

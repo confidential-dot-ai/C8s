@@ -3,7 +3,6 @@ package routing
 import (
 	"errors"
 	"net/http"
-	"os"
 	"testing"
 	"time"
 
@@ -242,7 +241,7 @@ func TestF1F2F3Freshness(t *testing.T) {
 func TestB3MeshCARotatedIntoAnchor(t *testing.T) {
 	f := newFixture(t)
 	external := newCA(t, "external")
-	b := startBackend(t, "admin", issueLeaf(t, external, "", "admin.ops.svc"))
+	b := startBackend(t, "admin", issueLeaf(t, external, "", "admin.ops.svc"), webPKI)
 	m := manifestSpec{revision: 1, hosts: map[string][]route{
 		testHost: {addressRoute("/", "prefix", b.addr(), "admin.ops.svc", caPEM(external))},
 	}}
@@ -254,9 +253,7 @@ func TestB3MeshCARotatedIntoAnchor(t *testing.T) {
 		t.Fatalf("GET / = %d, want %d", got, http.StatusOK)
 	}
 
-	if err := os.WriteFile(f.meshCAFile, []byte(caPEM(f.mesh, external)), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	f.publish(t, caPEM(f.mesh, external))
 	// The next poll notices the new bundle and drops the pooled connection.
 	if err := f.transports.dropMeshPools(); err != nil {
 		t.Fatal(err)
@@ -276,7 +273,7 @@ func TestB3MeshIssuedIntermediateAnchor(t *testing.T) {
 	f := newFixture(t)
 	root := newCA(t, "mesh-2")
 	intermediate := newIntermediate(t, root, "intermediate")
-	b := startBackend(t, "admin", issueLeaf(t, intermediate, "", "admin.ops.svc"))
+	b := startBackend(t, "admin", issueLeaf(t, intermediate, "", "admin.ops.svc"), webPKI)
 	m := manifestSpec{revision: 1, hosts: map[string][]route{
 		testHost: {addressRoute("/", "prefix", b.addr(), "admin.ops.svc", caPEM(intermediate))},
 	}}
@@ -288,9 +285,7 @@ func TestB3MeshIssuedIntermediateAnchor(t *testing.T) {
 		t.Fatalf("GET / = %d, want %d", got, http.StatusOK)
 	}
 
-	if err := os.WriteFile(f.meshCAFile, []byte(caPEM(f.mesh, root)), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	f.publish(t, caPEM(f.mesh, root))
 	if err := f.transports.dropMeshPools(); err != nil {
 		t.Fatal(err)
 	}
@@ -313,9 +308,7 @@ func TestB1UnreadableMeshCADropsPool(t *testing.T) {
 	if got := f.get("/").Code; got != http.StatusOK {
 		t.Fatalf("GET / = %d, want %d", got, http.StatusOK)
 	}
-	if err := os.WriteFile(f.meshCAFile, []byte("garbage"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	f.publish(t, "garbage")
 	if err := f.transports.dropMeshPools(); err == nil {
 		t.Fatal("dropMeshPools() with an unreadable bundle = nil, want an error")
 	}
@@ -324,9 +317,9 @@ func TestB1UnreadableMeshCADropsPool(t *testing.T) {
 	}
 }
 
-// TestB1RotationRetiresInFlightConnection: a connection in flight across a
-// mesh CA rotation must not return to a pool later requests use, even after
-// another request reached the backend in between.
+// TestB1RotationRetiresInFlightConnection: no connection verified under the
+// bundle before a mesh CA rotation carries a request after it, including one
+// in flight across the rotation.
 func TestB1RotationRetiresInFlightConnection(t *testing.T) {
 	f := newFixture(t)
 	web := startBackend(t, "web", issueLeaf(t, f.mesh, "web"))
@@ -334,31 +327,27 @@ func TestB1RotationRetiresInFlightConnection(t *testing.T) {
 	if err := f.transports.dropMeshPools(); err != nil { // records the bundle
 		t.Fatal(err)
 	}
+	if got := f.get("/").Code; got != http.StatusOK { // fills the pool
+		t.Fatalf("GET / = %d, want %d", got, http.StatusOK)
+	}
 
 	done := make(chan int)
 	go func() { done <- f.get("/slow").Code }()
 	<-web.entered
-	inFlight := web.seen().remoteAddr
-	if err := os.WriteFile(f.meshCAFile, []byte(caPEM(f.mesh, newCA(t, "mesh-2"))), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	// CDS holds one mesh CA, so a rotation replaces the published bundle
+	// rather than adding to it: the backend's leaf no longer chains.
+	f.publish(t, caPEM(newCA(t, "mesh-2")))
 	if err := f.transports.dropMeshPools(); err != nil {
 		t.Fatal(err)
 	}
-	if got := f.get("/").Code; got != http.StatusOK {
-		t.Fatalf("GET / = %d, want %d", got, http.StatusOK)
+	// A reused connection would answer 200: it was verified under a bundle
+	// this router no longer holds.
+	if got := f.get("/").Code; got != http.StatusBadGateway {
+		t.Errorf("GET / after the rotation = %d, want %d", got, http.StatusBadGateway)
 	}
 	close(web.release)
 	if got := <-done; got != http.StatusOK {
-		t.Fatalf("GET /slow = %d, want %d", got, http.StatusOK)
-	}
-	for range 3 {
-		if got := f.get("/").Code; got != http.StatusOK {
-			t.Fatalf("GET / = %d, want %d", got, http.StatusOK)
-		}
-		if got := web.seen().remoteAddr; got == inFlight {
-			t.Fatalf("GET / after the rotation reused connection %s, verified under the old bundle", got)
-		}
+		t.Errorf("GET /slow = %d, want %d", got, http.StatusOK)
 	}
 }
 
@@ -371,9 +360,7 @@ func TestB3A4StagedFetchRechecksApplied(t *testing.T) {
 		testHost: {addressRoute("/", "prefix", "127.0.0.1:1", "admin.ops.svc", caPEM(external))},
 	}}
 	f.apply(t, applied)
-	if err := os.WriteFile(f.meshCAFile, []byte(caPEM(f.mesh, external)), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	f.publish(t, caPEM(f.mesh, external))
 	staged := simpleManifest(2, "127.0.0.1:1")
 	staged.notBefore = f.clock.Now().Add(time.Hour)
 	staged.maxAge = time.Minute

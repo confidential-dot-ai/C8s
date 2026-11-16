@@ -120,7 +120,7 @@ func (o *options) fetch(ctx context.Context) (*pkgallowlist.Allowlist, string, e
 }
 
 // loadAllowlistFile reads and validates a full allowlist JSON file — the format
-// `export` writes and cds --allowlist-seed reads.
+// `export` writes and 'c8s cds config new --allowlist-seed' reads.
 func loadAllowlistFile(path string) (*pkgallowlist.Allowlist, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {

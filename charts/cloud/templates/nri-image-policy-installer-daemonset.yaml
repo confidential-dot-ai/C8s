@@ -1,0 +1,101 @@
+{{/*
+One pull-mode installer DaemonSet on every eligible host node. Each plugin polls
+the CDS the cluster trusts (cds.address), so operator `c8s allowlist add` writes
+reach admission. The `-worker` suffix keeps the DaemonSet's identity across upgrades.
+*/}}
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "nri-image-policy.fullname" . }}-worker
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "nri-image-policy.labels" . | nindent 4 }}
+    app.kubernetes.io/component: nri-installer-worker
+spec:
+  selector:
+    matchLabels:
+      {{- include "nri-image-policy.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: nri-installer-worker
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 0
+  template:
+    metadata:
+      labels:
+        {{- include "nri-image-policy.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: nri-installer-worker
+      annotations:
+        sidecar.istio.io/inject: "false"
+    spec:
+      hostPID: true
+      priorityClassName: {{ include "c8s.criticalPriorityClass" . }}
+      {{- include "c8s.imagePullSecrets" . | nindent 6 }}
+      tolerations:
+        - operator: "Exists"
+          effect: "NoExecute"
+        - operator: "Exists"
+          effect: "NoSchedule"
+      nodeSelector:
+        {{- include "c8s.confidentialNodeLabels" . | nindent 8 }}
+      affinity:
+        {{- include "c8s.hostDaemonAffinity" dict | nindent 8 }}
+      initContainers:
+        # Each script's argv is pinned in the seed as the runtime receives it,
+        # and the install script embeds component argv that may hold $(NAME),
+        # so every $ is escaped against the kubelet's expansion.
+        - name: install
+          image: {{ include "nri-image-policy.image" . }}
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+{{ include "nri-image-policy.installScript" (dict "root" . "bootConfig" (include "nri-image-policy.bootConfig" (dict "root" .))) | replace "$" "$$" | indent 14 }}
+          volumeMounts:
+            {{- include "nri-image-policy.hostVolumeMounts" . | nindent 12 }}
+          # The install enters the host namespaces and has systemd restart
+          # containerd, a peak above 64Mi; the request is the idle footprint.
+          resources:
+            {{- include "nri-image-policy.resources" . | nindent 12 }}
+      containers:
+        # Holds the pod, and its readiness follows the host plugin: the plugin
+        # exits when its NRI connection drops and NRI does not respawn it, so a
+        # bare sleep here left the DaemonSet Ready over a node admitting without
+        # it. See runPluginReady for why it checks the process (visible through
+        # hostPID) rather than the health socket, and why HTTP, not exec.
+        #
+        # Readiness only: a restart of this container reruns neither the
+        # install nor containerd, and the plugin comes back only when
+        # containerd restarts.
+        - name: plugin-ready
+          image: {{ include "nri-image-policy.image" . }}
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-c"]
+          args:
+            - {{ include "nri-image-policy.pluginReadyScript" . | replace "$" "$$" | quote }}
+          ports:
+            - name: plugin-ready
+              containerPort: {{ include "nri-image-policy.pluginReadyPort" . }}
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: plugin-ready
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # Measured at about 47Mi resident, most of it the c8s binary's file
+          # pages, which the cgroup charges like any other memory.
+          resources:
+            requests:
+              cpu: 10m
+              memory: 48Mi
+            limits:
+              cpu: 50m
+              memory: 64Mi
+      volumes:
+        {{- include "nri-image-policy.hostVolumes" . | nindent 8 }}

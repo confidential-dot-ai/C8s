@@ -2,9 +2,11 @@ package nriimagepolicy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
@@ -13,10 +15,23 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
+
+// meshYAML is the mesh policy every enforcer configuration carries.
+const meshYAML = `
+mesh:
+  exempt_namespaces: [kube-system, local-path-storage]
+  resolver: "10.43.0.10"
+  capture: {outbound: 15001, inbound: 15006, health: 15021}
+  roles:
+    - name: mesh
+      uid: 1337
+`
 
 func validConfig() config {
 	return config{
+		Mesh: meshRoles(),
 		Allowlist: allowlistConfig{
 			Base: anyAllowlist(map[string]string{
 				"sha256:0000000000000000000000000000000000000000000000000000000000000001": "test-installer",
@@ -57,11 +72,33 @@ func TestValidate_Valid(t *testing.T) {
 	}
 }
 
+// A config built in code names no sandbox policy, and sandboxMode reads an
+// unset one as off.
+func TestValidate_DefaultsTheSandboxPolicy(t *testing.T) {
+	cfg := validConfig()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Policy.Sandbox != SandboxEnforce {
+		t.Fatalf("policy.sandbox = %q, want %q", cfg.Policy.Sandbox, SandboxEnforce)
+	}
+}
+
 func TestValidate_AuditMode(t *testing.T) {
 	cfg := validConfig()
 	cfg.Policy.Mode = "audit"
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// The enforcer verifies a member pod's protection before the inventory signs
+// its identity, so a configuration carrying no mesh policy starts none.
+func TestValidate_MeshRequired(t *testing.T) {
+	cfg := validConfig()
+	cfg.Mesh = nil
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "mesh is required") {
+		t.Fatalf("err = %v, want a config with no mesh policy refused", err)
 	}
 }
 
@@ -95,14 +132,6 @@ func TestValidate_PullRequiresAttestationApi(t *testing.T) {
 	cfg.Allowlist.Pull.AttestationApiURL = ""
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected error when pull lacks attestation_api_url")
-	}
-}
-
-func TestValidate_PullRejectsInvalidCDSMeasurement(t *testing.T) {
-	cfg := validConfig()
-	cfg.Allowlist.Pull.CDSMeasurements = []string{"not-hex"}
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("expected error for invalid CDS measurement")
 	}
 }
 
@@ -174,7 +203,7 @@ func TestLoadConfig_Defaults(t *testing.T) {
   pull:
     url: https://127.0.0.1:30808
     attestation_api_url: http://localhost:30840
-`
+` + meshYAML
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
 		t.Fatal(err)
@@ -199,8 +228,7 @@ func TestLoadConfig_Defaults(t *testing.T) {
 	}
 }
 
-// exempt_namespaces is parsed into the policy config alongside the snapshot
-// path the plugin persists its captured digest set to.
+// exempt_namespaces and its repository set reach the policy config.
 func TestLoadConfig_ExemptNamespacesParsed(t *testing.T) {
 	body := "allowlist:" + baseYAML("sha256:0000000000000000000000000000000000000000000000000000000000000001", "installer") + `
   pull:
@@ -209,8 +237,10 @@ func TestLoadConfig_ExemptNamespacesParsed(t *testing.T) {
 policy:
   mode: fail-closed
   exempt_namespaces: [kube-system, local-path-storage]
-  exempt_snapshot_path: /var/lib/nri-image-policy/exempt-snapshot.json
-`
+  exempt_repositories:
+    kube-system: [mcr.microsoft.com/oss/kubernetes/]
+    local-path-storage: [docker.io/rancher/]
+` + meshYAML
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
@@ -222,20 +252,151 @@ policy:
 	if got, want := cfg.Policy.ExemptNamespaces, []string{"kube-system", "local-path-storage"}; !slices.Equal(got, want) {
 		t.Errorf("ExemptNamespaces = %v, want %v", got, want)
 	}
-	if cfg.Policy.ExemptSnapshotPath == "" {
-		t.Error("ExemptSnapshotPath not parsed")
+	if !cfg.Policy.ExemptRepositories.Admits("kube-system", "mcr.microsoft.com/oss/kubernetes/coredns:v1.11.3") {
+		t.Errorf("exempt_repositories = %v, want kube-system to admit an AKS add-on image", cfg.Policy.ExemptRepositories)
+	}
+	if cfg.Policy.ExemptRepositories.Admits("kube-system", "docker.io/rancher/local-path-provisioner:v0.0.31") {
+		t.Error("a repository of another namespace's set must not admit")
 	}
 }
 
-// exempt_namespaces without a snapshot path is refused: the captured set must
-// have somewhere to persist, or it would silently recapture (and on a reboot
-// freeze empty) every restart.
-func TestValidate_ExemptNamespacesRequireSnapshotPath(t *testing.T) {
-	cfg := validConfig()
-	cfg.Policy.ExemptNamespaces = []string{"kube-system"}
-	cfg.Policy.ExemptSnapshotPath = ""
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("expected error when exempt_namespaces is set without exempt_snapshot_path")
+// bootConfigDocument is an installer's configuration document: the namespaces
+// image admission exempts, each admitting one repository, and the mesh gate's.
+func bootConfigDocument(exempt, meshExempt string) string {
+	repositories := ""
+	for _, namespace := range strings.Split(strings.Trim(exempt, "[]"), ",") {
+		repositories += fmt.Sprintf("    %s: [mcr.microsoft.com/oss/kubernetes/]\n", strings.TrimSpace(namespace))
+	}
+	return "allowlist:" + baseYAML("sha256:0000000000000000000000000000000000000000000000000000000000000001", "installer") + fmt.Sprintf(`
+  pull:
+    url: https://127.0.0.1:30808
+    attestation_api_url: http://localhost:30840
+policy:
+  mode: fail-closed
+  exempt_namespaces: %s
+  exempt_repositories:
+%smesh:
+  exempt_namespaces: %s
+  resolver: "10.43.0.10"
+  capture: {outbound: 15001, inbound: 15006, health: 15021}
+  roles:
+    - name: mesh
+      uid: 1337
+`, exempt, repositories, meshExempt)
+}
+
+// CheckBootConfig is how a caller validates a config document before a node is
+// made to require the plugin that reads it: the same keys and the same
+// refusals the plugin applies at start.
+func TestCheckBootConfig(t *testing.T) {
+	for _, tc := range []struct {
+		name, config, want string
+	}{
+		{
+			"an exemption the mesh exempts too",
+			bootConfigDocument("[kube-system]", "[kube-system, local-path-storage]"),
+			"",
+		},
+		{
+			"an exemption the mesh does not",
+			bootConfigDocument("[kube-system]", "[local-path-storage]"),
+			"must also be in mesh.exempt_namespaces",
+		},
+		{
+			"the router namespace",
+			bootConfigDocument("[kube-system]", "[kube-system, c8s-router]"),
+			"whose pods serve the router's ports",
+		},
+		{
+			"a misspelt key",
+			strings.Replace(bootConfigDocument("[kube-system]", "[kube-system]"), "\n  mode: fail-closed\n", "\n  modes: fail-closed\n", 1),
+			"field modes not found",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := CheckBootConfig([]byte(tc.config))
+			switch {
+			case tc.want == "" && err != nil:
+				t.Fatalf("CheckBootConfig = %v, want the config accepted", err)
+			case tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)):
+				t.Fatalf("CheckBootConfig = %v, want a refusal naming %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// A config that names an exempt namespace without repositories, or holds a
+// prefix admission could match half a path segment of, or wildcards anything
+// but the start of its registry host, is refused.
+func TestValidate_ExemptRepositories(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		namespaces   []string
+		repositories ExemptRepositories
+		want         string
+	}{
+		{
+			"a repository set per exempt namespace",
+			[]string{"kube-system"},
+			ExemptRepositories{"kube-system": {"mcr.microsoft.com/oss/kubernetes/"}},
+			"",
+		},
+		{
+			"exempt namespaces without repositories",
+			[]string{"kube-system"},
+			nil,
+			"requires policy.exempt_repositories",
+		},
+		{
+			"one of two exempt namespaces without repositories",
+			[]string{"kube-system", "gmp-system"},
+			ExemptRepositories{"kube-system": {"mcr.microsoft.com/oss/kubernetes/"}},
+			`policy.exempt_namespaces "gmp-system" requires`,
+		},
+		{
+			"a prefix that does not end on a path boundary",
+			[]string{"kube-system"},
+			ExemptRepositories{"kube-system": {"mcr.microsoft.com/oss/kubernetes"}},
+			`policy.exempt_repositories["kube-system"] holds "mcr.microsoft.com/oss/kubernetes"`,
+		},
+		{
+			"a prefix without a registry",
+			[]string{"kube-system"},
+			ExemptRepositories{"kube-system": {"oss/kubernetes/"}},
+			`policy.exempt_repositories["kube-system"] holds "oss/kubernetes/"`,
+		},
+		{
+			"a wildcard opening the registry host's first label",
+			[]string{"kube-system"},
+			ExemptRepositories{"kube-system": {"*-artifactregistry.gcr.io/gke-release/gke-release/"}},
+			"",
+		},
+		{
+			"a wildcard outside the registry host's first label",
+			[]string{"kube-system"},
+			ExemptRepositories{"kube-system": {"gcr.io/*/gke-release/"}},
+			`policy.exempt_repositories["kube-system"] holds "gcr.io/*/gke-release/"`,
+		},
+		{
+			"a wildcard taking a whole host label",
+			[]string{"kube-system"},
+			ExemptRepositories{"kube-system": {"*artifactregistry.gcr.io/gke-release/"}},
+			`policy.exempt_repositories["kube-system"] holds "*artifactregistry.gcr.io/gke-release/"`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validConfig()
+			cfg.Policy.ExemptNamespaces = tc.namespaces
+			cfg.Policy.ExemptRepositories = tc.repositories
+			cfg.Mesh.ExemptNamespaces = tc.namespaces
+			err := cfg.Validate()
+			switch {
+			case tc.want == "" && err != nil:
+				t.Fatalf("Validate = %v, want the config accepted", err)
+			case tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)):
+				t.Fatalf("Validate = %v, want a refusal naming %q", err, tc.want)
+			}
+		})
 	}
 }
 
@@ -293,6 +454,7 @@ func TestValidate_LabelRulesOnly(t *testing.T) {
 			Mode:       "fail-closed",
 			LabelRules: []labelRule{validLabelRule()},
 		},
+		Mesh: meshRoles(),
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -438,7 +600,7 @@ func TestLoadConfig_UnixAttestationAPIURL(t *testing.T) {
   pull:
     url: https://127.0.0.1:30808
     attestation_api_url: unix://` + sock + `
-`
+` + meshYAML
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
 		t.Fatal(err)
@@ -473,7 +635,7 @@ policy:
       match_expressions:
         - key: team
           operator: Exists
-`
+` + meshYAML
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
 		t.Fatal(err)
@@ -506,7 +668,7 @@ policy:
       match_expressions:
         - key: tenant
           operator: Exists
-`
+` + meshYAML
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
 		t.Fatal(err)
@@ -544,7 +706,7 @@ func TestLabelOperator(t *testing.T) {
 func TestConfigPlatform(t *testing.T) {
 	base := "allowlist:" + baseYAML(
 		"sha256:0000000000000000000000000000000000000000000000000000000000000000",
-		"example.com/img@sha256:0000000000000000000000000000000000000000000000000000000000000000")
+		"example.com/img@sha256:0000000000000000000000000000000000000000000000000000000000000000") + meshYAML
 
 	t.Run("defaults to snp so existing SNP deployments are unchanged", func(t *testing.T) {
 		cfg := writeAndLoad(t, base)
@@ -595,20 +757,127 @@ func writeAndLoad(t *testing.T, body string) *config {
 	return cfg
 }
 
-func TestValidateRejectsBadCDSRTMRs(t *testing.T) {
+// An unreadable pin document fails the node's pin source rather than
+// silently unpinning CDS.
+func TestTheNodePinSourceRejectsAnUnreadablePin(t *testing.T) {
 	cfg := validConfig()
-	cfg.Allowlist.Pull.CDSRTMRs = []string{"0=" + strings.Repeat("ab", 48)}
-	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "cds_rtmrs") {
-		t.Fatalf("err = %v, want a cds_rtmrs parse failure", err)
+	cfg.Allowlist.Pull.CDSMeasurementsConfig = "missing-file"
+	if _, _, err := cfg.Allowlist.Pull.cdsPinSource(discardLogger()); err == nil {
+		t.Fatal("an unreadable CDS pin was accepted")
 	}
 }
 
-// A malformed RTMR pin fails the pull-client build rather than silently
-// unpinning the registers.
-func TestAllowlistPullHTTPClientRejectsBadRTMRs(t *testing.T) {
-	cfg := validConfig().Allowlist.Pull
-	cfg.CDSRTMRs = []string{"1=zz"}
-	if _, err := allowlistPullHTTPClient(cfg); err == nil || !strings.Contains(err.Error(), "--cds-rtmrs") {
-		t.Fatalf("err = %v, want an RTMR parse failure", err)
+// podRoleConfig is a valid assigned pod-role configuration: the measured
+// endpoint in the base, the pod's own mesh policy and no node exemptions.
+func podRoleConfig(t *testing.T) config {
+	t.Helper()
+	cfg := validConfig()
+	cfg.WorkloadClaims.SocketDir = "/run/nri-image-policy"
+	cfg.Measure.RTMR3 = true
+	cfg.Platform = "tdx"
+	cfg.Allowlist.Pull.CDSMeasurementsConfig = "/run/c8s-launch/cds.json"
+	cfg.Allowlist.Base = roleBase(t, pushDigestB, meshRole, []string{"/mesh"})
+	cfg.Mesh.Pod = &podMeshPolicy{}
+	cfg.Mesh.Roles = cfg.Mesh.Roles[:1]
+	cfg.Mesh.ExemptNamespaces = nil
+	cfg.Policy.ExemptNamespaces = nil
+	cfg.Policy.Sandbox = SandboxEnforce
+	cfg.Policy.FatalExisting = true
+	cfg.Policy.EnforceExisting = true
+	cfg.Policy.BootMarkerPath = "/run/nri-image-policy/registered"
+	cfg.Pod = &podConfig{UID: "assigned", Namespace: "tenant", Name: "app", Images: map[string]string{workloadclaims.MeshContainerName: pushDigestB, "app": pushDigestA}}
+	return cfg
+}
+
+// A signed peer or ingress port the guest ruleset would refuse fails at load,
+// not at the first sandbox.
+func TestPodRoleRefusesTuplesTheGuestRulesetWouldRefuse(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		pod  podMeshPolicy
+		want string
+	}{
+		{"zero ingress port", podMeshPolicy{IngressPorts: []uint16{0}}, "mesh.pod.ingress_ports"},
+		{"mesh ingress port", podMeshPolicy{IngressPorts: []uint16{uint16(workloadclaims.MeshInboundPort)}}, "mesh.pod.ingress_ports"},
+		{"local peer", podMeshPolicy{Peers: []netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:443")}}, "mesh.pod.peers"},
+		{"peer without port", podMeshPolicy{Peers: []netip.AddrPort{netip.MustParseAddrPort("10.0.0.9:0")}}, "mesh.pod.peers"},
+	} {
+		cfg := podRoleConfig(t)
+		cfg.Mesh.Pod = &tc.pod
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: got %v, want %q", tc.name, err, tc.want)
+		}
+	}
+	cfg := podRoleConfig(t)
+	cfg.Mesh.Pod = &podMeshPolicy{Peers: []netip.AddrPort{netip.MustParseAddrPort("10.0.0.9:443")}, IngressPorts: []uint16{8080}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid tuples refused: %v", err)
+	}
+}
+
+// The register has no writer besides the plugin's measured launches;
+// The journal lives where its readers look.
+func TestPodRoleRefusesMeasurePolicies(t *testing.T) {
+	cfg := podRoleConfig(t)
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("one writer: %v", err)
+	}
+	cfg.Allowlist.Pull.MeasurePolicies = true
+	if err := cfg.Validate(); !errors.Is(err, ErrPodRoleMeasurePolicies) {
+		t.Fatalf("got %v, want ErrPodRoleMeasurePolicies", err)
+	}
+	cfg.Allowlist.Pull.MeasurePolicies = false
+	cfg.WorkloadClaims.SocketDir = "/run/elsewhere"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "measure.rtmr3 requires workload_claims.socket_dir /run/nri-image-policy") {
+		t.Fatalf("journal elsewhere than its readers look: %v", err)
+	}
+}
+
+func TestPodRoleConfigRefusals(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(*config)
+		want   string
+	}{
+		{"worker", func(c *config) { c.Worker = true }, "not a worker"},
+		{"no pod", func(c *config) { c.Pod = nil }, "measure.rtmr3 and the signed pod"},
+		{"no pod mesh policy", func(c *config) { c.Mesh.Pod = nil }, "measure.rtmr3 and the signed pod"},
+		{"SNP", func(c *config) { c.Platform = "snp" }, "requires TDX"},
+		{"audit sandbox", func(c *config) { c.Policy.Sandbox = SandboxAudit }, "requires TDX"},
+		{"mesh exemption", func(c *config) { c.Mesh.ExemptNamespaces = []string{"kube-system"} }, "no namespace exemptions"},
+		{"router namespace", func(c *config) { c.Pod.Namespace = routerNamespace }, "no namespace exemptions"},
+		{"credential port", func(c *config) { c.Mesh.CredentialAttestationPort = 9000 }, "only the mesh role"},
+		{"no pod UID", func(c *config) { c.Pod.UID = "" }, "signed pod uid"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := podRoleConfig(t)
+			tc.change(&cfg)
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("got %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestValidate_PullSourceRefusals(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(*config)
+		want   string
+	}{
+		{"URL and address file", func(c *config) { c.Allowlist.Pull.CDSAddressFile = "/run/cds-address" }, "cannot be combined"},
+		{"zero interval", func(c *config) { c.Allowlist.Pull.Interval = 0 }, "allowlist.pull.interval"},
+		{"node IP without socket dir", func(c *config) {
+			c.WorkloadClaims.PublishNodeIP = true
+			c.WorkloadClaims.SocketDir = ""
+		}, "publish_node_ip requires workload_claims.socket_dir"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validConfig()
+			tc.change(&cfg)
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("got %v, want %q", err, tc.want)
+			}
+		})
 	}
 }

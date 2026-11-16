@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cdsconn"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	intsecrets "github.com/confidential-dot-ai/c8s/internal/secrets"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
@@ -48,8 +49,8 @@ an allowlist entry whose 'secrets' grant covers the key's path. 'create' prints
 the grant and the pod annotations to apply; it does not modify any workload.
 
 Writes are signed with an operator EC private key you supply via --operator-key
-(or C8S_OPERATOR_KEY), whose public half CDS pins via 'c8s install
---operator-keys'.
+(or C8S_OPERATOR_KEY), whose public half CDS pins from its configuration
+('c8s cds config new --operator-keys').
 
 Keys live in the CDS process and nowhere else, so a CDS restart makes every
 volume in the cluster unopenable until its key is written again. Keep the escrow
@@ -58,9 +59,10 @@ file 'create' writes.`,
 	}
 	cdsconn.BindFlags(cmd.PersistentFlags(), &o.Options)
 	cmd.AddCommand(newCreateCmd(o))
-	// attach/detach run on the node and never speak to CDS; they inherit the
-	// connection flags without requiring them.
-	cmd.AddCommand(newAttachCmd(Attacher{}), newDetachCmd(Attacher{}))
+	attach, detach := newAttachCmd(Attacher{}), newDetachCmd(Attacher{})
+	cmdsutil.HideUnreadFlags(attach, cmd.PersistentFlags())
+	cmdsutil.HideUnreadFlags(detach, cmd.PersistentFlags())
+	cmd.AddCommand(attach, detach)
 	return cmd
 }
 

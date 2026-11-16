@@ -1,0 +1,24 @@
+# containerd starts only on a staged floor and after every boot gate; the NRI
+# plugin it requires admits each container (nri-image-policy.toml).
+[Unit]
+Description=containerd for the worker's kubelet
+Requires=worker-stage.service apparmor-enforce.service c8s-modules-latch.service scratch-enforce.service gpu-cc-enforce.service
+After=worker-stage.service apparmor-enforce.service c8s-modules-latch.service scratch-enforce.service gpu-cc-enforce.service containerd-data-disk.service models-disk.service local-fs.target
+
+[Service]
+Type=notify
+# The runc shim is found beside containerd.
+Environment=PATH=/usr/lib/c8s/worker/bin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/usr/lib/c8s/worker/bin/containerd --config=/etc/containerd/config.toml
+Delegate=yes
+KillMode=process
+Restart=always
+RestartSec=5
+LimitNPROC=infinity
+LimitCORE=infinity
+LimitNOFILE=1048576
+TasksMax=infinity
+OOMScoreAdjust=-999
+
+[Install]
+WantedBy=multi-user.target

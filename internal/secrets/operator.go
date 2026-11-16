@@ -137,6 +137,12 @@ func (h OperatorHandler) writeFailed(w http.ResponseWriter, path string, err err
 	case errors.Is(err, ErrStoreFull):
 		h.logger().Warn("operator secret write refused", "path", path, "error", err)
 		writeError(w, http.StatusInsufficientStorage, types.ErrorCodeSecretStoreFull, "secret storage limit reached")
+	case errors.Is(err, ErrCapacity):
+		h.logger().Warn("operator secret write refused", "path", path, "error", err)
+		writeError(w, http.StatusInsufficientStorage, types.ErrorCodeStateCapacity, capacityMessage)
+	case errors.Is(err, ErrUnavailable):
+		h.logger().Warn("operator secret write not committed", "path", path, "error", err)
+		httputil.WriteUnavailable(w, ErrUnavailable)
 	default:
 		h.logger().Error("operator secret write failed", "path", path, "error", err)
 		http.Error(w, "secret write failed", http.StatusInternalServerError)
@@ -162,12 +168,15 @@ func (h OperatorHandler) authorize(w http.ResponseWriter, r *http.Request) ([]by
 	}
 	if err := h.Authorize(r, body); err != nil {
 		h.logger().Warn("operator secret write rejected", "remote", r.RemoteAddr, "reason", err)
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		httputil.RefuseOperatorToken(w, err)
 		return nil, false
 	}
 	return body, true
 }
 
+// writeResult answers with a JSON PutResponse. The CLI relies on the JSON
+// Content-Type to tell an occupied-path 409 from a spent-token 409, which
+// httputil.RefuseOperatorToken answers in plain text.
 func writeResult(w http.ResponseWriter, status int, resp PutResponse) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")

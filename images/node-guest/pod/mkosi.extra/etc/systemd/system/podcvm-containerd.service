@@ -1,0 +1,27 @@
+# The worker's containerd and its drop-ins (the runtime wrapper, the required
+# admission plugin and this profile's pod network), started by podcvm-status
+# once a pod is assigned and its runtime policy is installed, so the plugin
+# never admits under a generic policy. Not enabled.
+[Unit]
+Description=containerd for the assigned pod
+ConditionPathExists=/run/confos/role-pod
+Requires=pod-stage.service apparmor-enforce.service c8s-modules-latch.service scratch-enforce.service gpu-cc-enforce.service
+After=pod-stage.service apparmor-enforce.service c8s-modules-latch.service scratch-enforce.service gpu-cc-enforce.service containerd-data-disk.service models-disk.service local-fs.target
+Wants=nri-image-policy.service
+
+[Service]
+Type=notify
+# The runc shim is found beside containerd.
+Environment=PATH=/usr/lib/c8s/worker/bin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# Pick up node-services' veth/bridge Unmanaged drop-in before the first pod.
+ExecStartPre=/usr/bin/networkctl reload
+ExecStart=/usr/lib/c8s/worker/bin/containerd --config=/etc/containerd/config.toml
+Delegate=yes
+KillMode=process
+Restart=always
+RestartSec=5
+LimitNPROC=infinity
+LimitCORE=infinity
+LimitNOFILE=1048576
+TasksMax=infinity
+OOMScoreAdjust=-999

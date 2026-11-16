@@ -1,0 +1,23 @@
+[Unit]
+Description=Open c8s encrypted volumes for workloads on this worker
+# A worker's kubelet root, cgroup layout and inventory socket directory are
+# fixed by this image, so volumed runs here as a host service instead of the
+# chart DaemonSet a non-baked install uses (docs/volumes.md).
+Requires=worker-stage.service
+# The kubelet creates the pod directory volumed opens volumes into while it
+# starts; volumed.path starts this service once it exists.
+After=worker-stage.service kubelet.service
+ConditionPathExists=/var/lib/kubelet/pods
+
+[Service]
+# The socket directory is the only input with no default: the daemon creates
+# its own socket beside the inventory's, in the directory the image's tmpfiles
+# create and the plugin mounts into a workload's sidecar. The kubelet root is
+# passed too, because volumed.path watches a directory under it.
+ExecStart=/usr/local/bin/c8s volumed --socket-dir=/run/nri-image-policy --kubelet-root=/var/lib/kubelet
+# A worker serves volumes for as long as it runs, so any exit is restarted;
+# the condition above holds the service down while the directory is gone.
+Restart=always
+RestartSec=5
+# INVARIANT: no sandboxing — volumed's mounts must land in the host's mount
+# namespace, where the kubelet reads them. See docs/volumes.md.

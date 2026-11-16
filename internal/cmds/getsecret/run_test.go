@@ -9,13 +9,23 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 )
+
+func ramBacked(dir string) error {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	return fileutil.RequireRAMBackedRoot(root)
+}
 
 // TestPrepareOutDir: the "must be memory-backed" invariant on --out-dir is
 // enforced, not merely documented.
 func TestPrepareOutDir(t *testing.T) {
 	dir := t.TempDir()
-	if fileutil.RequireRAMBacked(dir) == nil {
+	if ramBacked(dir) == nil {
 		t.Skipf("%s is RAM-backed; no on-disk path to reject", dir)
 	}
 	out := filepath.Join(dir, "secrets")
@@ -70,15 +80,16 @@ func TestParseSecretSpec(t *testing.T) {
 func validConfig(t *testing.T) config {
 	t.Helper()
 	return config{
-		CDSURL:            "https://cds.example",
-		AttestationApiURL: "http://127.0.0.1:8080",
-		Attempts:          3,
-		RetryInterval:     time.Second,
-		RequestTimeout:    time.Second,
-		InventoryTimeout:  time.Second,
-		Secrets:           []secretRequest{{Name: "DB", Path: "/api/db"}},
-		OutDir:            t.TempDir(),
-		FileMode:          "0640",
+		CDSURL:                 "https://cds.example",
+		AttestationApiURL:      "http://127.0.0.1:8080",
+		MeasurementsConfigJSON: testutil.CDSPinDocument(testutil.TestMeasurement, testutil.CDSLaunchFile),
+		Attempts:               3,
+		RetryInterval:          time.Second,
+		RequestTimeout:         time.Second,
+		InventoryTimeout:       time.Second,
+		Secrets:                []secretRequest{{Name: "DB", Path: "/api/db"}},
+		OutDir:                 t.TempDir(),
+		FileMode:               "0640",
 	}
 }
 
@@ -95,7 +106,7 @@ func TestValidate(t *testing.T) {
 		{"plaintext cds url", func(c *config) { c.CDSURL = "http://cds.example" }, "https"},
 		{"no attestation api", func(c *config) { c.AttestationApiURL = "" }, "--attestation-api-url"},
 		{"no secrets", func(c *config) { c.Secrets = nil }, "--secret"},
-		{"zero attempts", func(c *config) { c.Attempts = 0 }, "--attempts"},
+		{"negative attempts", func(c *config) { c.Attempts = -1 }, "--attempts"},
 		{"zero retry interval", func(c *config) { c.RetryInterval = 0 }, "--retry-interval"},
 		{"bad file mode", func(c *config) { c.FileMode = "rw-r-----" }, "--file-mode"},
 		{"file mode out of range", func(c *config) { c.FileMode = "7777" }, "--file-mode"},
@@ -282,7 +293,7 @@ func TestWriteAllStaysInVerifiedOutDirAfterPathReplacement(t *testing.T) {
 		t.Skipf("cannot create a temporary directory in /dev/shm: %v", err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(base) })
-	if err := fileutil.RequireRAMBacked(base); err != nil {
+	if err := ramBacked(base); err != nil {
 		t.Skipf("/dev/shm is not usable tmpfs: %v", err)
 	}
 
@@ -324,12 +335,12 @@ func openOutRoot(t *testing.T, dir string) *os.Root {
 	return root
 }
 
-// A malformed RTMR pin is a typo in rendered config; pinning nothing is not
-// an acceptable fallback for it.
-func TestRunRejectsBadRTMRs(t *testing.T) {
+// A pin that is not one CDS VM's identity is a typo in rendered config;
+// pinning nothing is not an acceptable fallback for it.
+func TestRunRejectsAPinWithoutALaunchBinding(t *testing.T) {
 	cfg := validConfig(t)
-	cfg.RTMRs = []string{"nope"}
-	if err := run(cfg); err == nil || !strings.Contains(err.Error(), "--rtmrs") {
-		t.Fatalf("err = %v, want an RTMR-parse failure", err)
+	cfg.MeasurementsConfigJSON = `{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"cds","measurement":"` + testutil.TestMeasurement + `"}]}`
+	if err := run(t.Context(), cfg); err == nil || !strings.Contains(err.Error(), "launch file") {
+		t.Fatalf("err = %v, want a launch-binding refusal", err)
 	}
 }

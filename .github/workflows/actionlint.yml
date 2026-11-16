@@ -2,6 +2,9 @@ name: actionlint
 
 on:
   pull_request:
+  merge_group:
+    types: [checks_requested]
+    branches: [main]
   push:
     branches: [main]
 
@@ -18,8 +21,44 @@ jobs:
       - name: Test pin manifest utility
         run: bash .github/scripts/tests/test-pin-manifest.sh
 
+      - name: Test the release tag resolver
+        run: bash .github/scripts/tests/test-release-pin.sh
+
+      - name: Test the release CLI build
+        run: bash .github/scripts/tests/test-release-cli.sh
+
+      - name: Test the confos mkosi pin reader
+        run: bash .github/scripts/tests/test-confos-mkosi-pin.sh
+
+      - name: Test the ghcr digest resolver
+        run: bash .github/scripts/tests/test-ghcr-digest.sh
+
+      - name: Test the chart attestation-api digest copy
+        run: bash .github/scripts/tests/test-chart-attestation-api-digest.sh
+
+      - name: Test the chart's third-party image pins
+        run: bash .github/scripts/tests/test-chart-image-pins.sh
+
+      - uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5.1.0
+        with:
+          version: v3.14.4
+
+      - name: Lint and render the cloud chart
+        env:
+          CHART_DIR: charts/cloud
+        run: .github/scripts/chart-verify.sh
+
+      - name: Test the release chart's digest stamp
+        run: bash .github/scripts/tests/test-chart-stamp.sh
+
       - name: Test repro-gate change classification
         run: bash .github/scripts/tests/test-repro-gate-changes.sh
+
+      - name: Test the pin-watch PR opener
+        run: bash .github/scripts/tests/test-pin-watch-pr.sh
+
+      - name: Test the one-command image publisher
+        run: bash .github/scripts/tests/test-publish-ref-images.sh
 
       - name: Install actionlint (checksum-pinned)
         env:
@@ -27,44 +66,46 @@ jobs:
           SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
         run: |
           set -euo pipefail
-          curl -fsSL -o actionlint.tar.gz \
-            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          .github/scripts/fetch-release.sh rhysd/actionlint v1.7.12 actionlint_1.7.12_linux_amd64.tar.gz actionlint.tar.gz
           echo "$SHA256  actionlint.tar.gz" | sha256sum -c -
           tar xzf actionlint.tar.gz actionlint
 
       - name: Lint workflows
-        # Ignores clear findings that pre-exist on origin/main (c8s-image.yml's
-        # undeclared workflow_call input; shellcheck hits in the metal e2e
-        # workflows, surfaced by the runners' preinstalled shellcheck) so only
-        # new findings fail the gate.
+        # Ignores the findings that pre-exist on origin/main so only new ones
+        # fail the gate: c8s-image.yml's undeclared workflow_call input, the
+        # loop variables and A && B || C in docker.yml's word-wise
+        # read and grype.yml's unquoted expansion.
         run: |
           set -euo pipefail
-          lint() {
-            ./actionlint \
-              -ignore 'property "gate_intree" is not defined in object type' \
-              -ignore 'SC2006' \
-              -ignore 'SC2013' \
-              -ignore 'SC2015' \
-              -ignore 'SC2016' \
-              -ignore 'SC2034' \
-              -ignore 'SC2086' \
-              -ignore 'SC2129' "$@"
-          }
-          lint
-          # Keep expression/shell coverage after extracting the TDX steps.
-          # yq and jq are supplied by the hosted Ubuntu runner image. Feed
-          # the unchanged composite steps to actionlint as a string-input job.
-          yq -o=json '.' .github/actions/tdx-metal-e2e/action.yml |
-            jq '{on:{workflow_call:{inputs:(.inputs|with_entries(.value.type="string"))}},
-                 jobs:{e2e:{"runs-on":"ubuntu-latest",steps:.runs.steps}}}' |
-            lint -stdin-filename .github/workflows/tdx-composite-lint.yml -
+          ./actionlint \
+            -ignore 'property "gate_intree" is not defined in object type' \
+            -ignore 'SC2013' \
+            -ignore 'SC2015' \
+            -ignore 'SC2034' \
+            -ignore 'SC2086'
 
       - name: Shellcheck scripts
         run: |
           shellcheck \
             .github/scripts/calculate-release-version.sh \
             .github/scripts/pin-manifest.sh \
+            .github/scripts/release-pin.sh \
+            .github/scripts/confos-mkosi-pin.sh \
+            .github/scripts/ghcr-digest.sh \
+            .github/scripts/chart-attestation-api-digest.sh \
             .github/scripts/repro-gate-changes \
             .github/scripts/build-gate-images.sh \
             .github/scripts/tests/test-pin-manifest.sh \
-            .github/scripts/tests/test-repro-gate-changes.sh
+            .github/scripts/tests/test-release-pin.sh \
+            .github/scripts/tests/test-confos-mkosi-pin.sh \
+            .github/scripts/tests/test-ghcr-digest.sh \
+            .github/scripts/tests/test-chart-attestation-api-digest.sh \
+            .github/scripts/chart-image-pins.sh \
+            .github/scripts/tests/test-chart-image-pins.sh \
+            .github/scripts/chart-stamp.sh \
+            .github/scripts/tests/test-chart-stamp.sh \
+            .github/scripts/tests/test-repro-gate-changes.sh \
+            .github/scripts/pin-watch-pr.sh \
+            .github/scripts/tests/test-pin-watch-pr.sh \
+            .github/scripts/publish-ref-images.sh \
+            .github/scripts/tests/test-publish-ref-images.sh

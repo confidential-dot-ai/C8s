@@ -171,6 +171,11 @@ func TestPrintResultNamesSerialAnnotationGrantAndMountPolicy(t *testing.T) {
 	if strings.Contains(got, "/**") {
 		t.Errorf("output offers a subtree grant:\n%s", got)
 	}
+	// The credential volume reaches the injected containers alone, so an entry
+	// admitting it would describe a mount its containers never hold.
+	if strings.Contains(got, "cert volume") {
+		t.Errorf("output asks the entry to admit the credential volume:\n%s", got)
+	}
 }
 
 // The printed grant and mounts policy must form an entry the allowlist write

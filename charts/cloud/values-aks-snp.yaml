@@ -1,0 +1,37 @@
+## Azure confidential VMs on AMD SEV-SNP: evidence is the vTPM's HCL report,
+## which wraps the SNP report.
+attestationApi:
+  devices:
+    - /dev/tpm0
+    - /dev/tpmrm0
+## AKS marks a confidential node pool with this label.
+confidentialNodeSelector:
+  kubernetes.azure.com/security-type: ConfidentialVM
+controlPlane:
+  webhook:
+    ## AKS's admissions enforcer rewrites a webhook's namespaceSelector, which
+    ## makes every helm upgrade conflict.
+    annotations:
+      admissions.enforcer/disabled: "true"
+nriImagePolicy:
+  platform: snp
+  policy:
+    ## AKS owns kube-system; its add-on images are not on the C8s allowlist.
+    ## An add-on outside these repositories is denied; `c8s install` names it.
+    exemptNamespaces:
+      - kube-system
+    exemptRepositories:
+      kube-system:
+        - mcr.microsoft.com/aks/
+        - mcr.microsoft.com/azurelinux/distroless/base/
+        - mcr.microsoft.com/containernetworking/
+        - mcr.microsoft.com/oss/kubernetes/
+        - mcr.microsoft.com/oss/kubernetes-csi/
+        - mcr.microsoft.com/oss/v2/azure/ip-masq-agent-v2/
+        - mcr.microsoft.com/oss/v2/kubernetes/
+        - mcr.microsoft.com/oss/v2/kubernetes-csi/
+router:
+  attest:
+    platform: az-snp
+    ## The report carries the processor generation.
+    generation: ""

@@ -99,7 +99,7 @@ func (l *leaf) sandboxID() (string, error) {
 		return "", nil
 	}
 	var id string
-	if _, err := asn1.UnmarshalWithParams(value, &id, "ia5"); err != nil {
+	if _, err := asn1.UnmarshalWithParams(value, &id, "utf8"); err != nil {
 		return "", fmt.Errorf("the sandbox ID extension: %w", err)
 	}
 	return id, nil

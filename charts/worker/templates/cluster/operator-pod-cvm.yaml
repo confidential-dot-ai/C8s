@@ -1,0 +1,4 @@
+{{- /* The Pod CVM provider runs in the operator, which authenticates as this user. */ -}}
+{{- if .Values.operator.podCVMProvider.enabled }}
+{{ include "c8s.podCVMProviderGrants" (dict "root" . "subject" (dict "apiGroup" "rbac.authorization.k8s.io" "kind" "User" "name" "c8s-operator")) }}
+{{- end }}

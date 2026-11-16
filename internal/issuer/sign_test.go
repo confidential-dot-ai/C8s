@@ -9,10 +9,16 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"net"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
@@ -50,7 +56,7 @@ func TestCASignCSR_SignsLeafAgainstCA(t *testing.T) {
 	csr, key := mustCSR(t, "test-node", nil, []net.IP{net.ParseIP("10.0.0.1")}, nil)
 
 	before := time.Now()
-	certPEM, serial, err := ca.SignCSR(issuer.SignCSRParams{
+	certPEM, _, serial, err := ca.SignCSR(issuer.SignCSRParams{
 		CSR:      csr,
 		TTL:      time.Hour,
 		Evidence: []byte(`{"test":true}`),
@@ -86,7 +92,7 @@ func TestCASignCSR_EmbedsAttestationDigest(t *testing.T) {
 	evidence := []byte(`{"submods":{"cpu0":"snp"}}`)
 	csr, _ := mustCSR(t, "node", nil, nil, nil)
 
-	certPEM, _, err := ca.SignCSR(issuer.SignCSRParams{
+	certPEM, _, _, err := ca.SignCSR(issuer.SignCSRParams{
 		CSR:      csr,
 		TTL:      time.Hour,
 		Evidence: evidence,
@@ -115,7 +121,10 @@ func TestCASignCSR_AlwaysEmbedsAttestationDigest(t *testing.T) {
 	}
 	csr, _ := mustCSR(t, "node", nil, nil, nil)
 
-	certPEM, _, err := ca.SignCSR(issuer.SignCSRParams{CSR: csr, TTL: time.Hour})
+	certPEM, _, _, err := ca.SignCSR(issuer.SignCSRParams{
+		CSR: csr,
+		TTL: time.Hour,
+	})
 	if err != nil {
 		t.Fatalf("SignCSR: %v", err)
 	}
@@ -138,7 +147,10 @@ func TestCASignCSR_CopiesARMTLSExtension(t *testing.T) {
 		{Id: armtls.OIDARMTLSAttestation, Value: armtlsValue},
 	})
 
-	certPEM, _, err := ca.SignCSR(issuer.SignCSRParams{CSR: csr, TTL: time.Hour})
+	certPEM, _, _, err := ca.SignCSR(issuer.SignCSRParams{
+		CSR: csr,
+		TTL: time.Hour,
+	})
 	if err != nil {
 		t.Fatalf("SignCSR: %v", err)
 	}
@@ -154,15 +166,51 @@ func TestCASignCSR_CopiesARMTLSExtension(t *testing.T) {
 	t.Fatalf("armTLS extension not propagated to leaf")
 }
 
+// The leaf carries the CSR's armTLS extension whole, measured-policy list
+// included, so armTLS-mode verifiers of CA-issued leaves replay it.
+func TestCASignCSR_KeepsRuntimeExtensions(t *testing.T) {
+	ca, err := issuer.NewCA("test ca", time.Hour)
+	if err != nil {
+		t.Fatalf("new ca: %v", err)
+	}
+	list := []string{"sha256:" + strings.Repeat("1", 64)}
+	report, err := json.Marshal(teetypes.AttestationEvidence{Platform: teetypes.PlatformTDX, Evidence: json.RawMessage(`{"quote":"AA=="}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ext, err := armtls.MarshalExtension(&armtls.Attestation{Family: armtls.TEETypeTDX, Report: report, RuntimeExtensions: list})
+	if err != nil {
+		t.Fatal(err)
+	}
+	csr, _ := mustCSR(t, "node", nil, nil, []pkix.Extension{ext})
+	certPEM, _, _, err := ca.SignCSR(issuer.SignCSRParams{CSR: csr, TTL: time.Hour})
+	if err != nil {
+		t.Fatalf("SignCSR: %v", err)
+	}
+	att, err := armtls.ExtractAttestation(mustParseCert(t, certPEM))
+	if err != nil {
+		t.Fatalf("ExtractAttestation: %v", err)
+	}
+	if !slices.Equal(att.RuntimeExtensions, list) {
+		t.Errorf("leaf RuntimeExtensions = %v, want %v", att.RuntimeExtensions, list)
+	}
+}
+
 func TestCASignCSR_StampsSandboxID(t *testing.T) {
 	ca, err := issuer.NewCA("test ca", time.Hour)
 	if err != nil {
 		t.Fatalf("new ca: %v", err)
 	}
-	csr, _ := mustCSR(t, "node", nil, nil, nil)
+	// A DNS SAN names this leaf, so the sandbox stamp is the only thing under
+	// test here.
+	csr, _ := mustCSR(t, "node", []string{"foo.mesh.svc"}, nil, nil)
 	const sandboxID = "8d9f6c2b1a0e8d9f6c2b1a0e8d9f6c2b1a0e8d9f6c2b1a0e8d9f6c2b1a0e8d9f"
 
-	certPEM, _, err := ca.SignCSR(issuer.SignCSRParams{CSR: csr, TTL: time.Hour, SandboxID: sandboxID})
+	certPEM, _, _, err := ca.SignCSR(issuer.SignCSRParams{
+		CSR:       csr,
+		TTL:       time.Hour,
+		SandboxID: sandboxID,
+	})
 	if err != nil {
 		t.Fatalf("SignCSR: %v", err)
 	}
@@ -175,7 +223,10 @@ func TestCASignCSR_StampsSandboxID(t *testing.T) {
 	}
 
 	// No SandboxID param ⇒ no extension.
-	certPEM, _, err = ca.SignCSR(issuer.SignCSRParams{CSR: csr, TTL: time.Hour})
+	certPEM, _, _, err = ca.SignCSR(issuer.SignCSRParams{
+		CSR: csr,
+		TTL: time.Hour,
+	})
 	if err != nil {
 		t.Fatalf("SignCSR: %v", err)
 	}
@@ -184,8 +235,104 @@ func TestCASignCSR_StampsSandboxID(t *testing.T) {
 	}
 
 	// An invalid sandbox ID fails the signing, not silently drops.
-	if _, _, err := ca.SignCSR(issuer.SignCSRParams{CSR: csr, TTL: time.Hour, SandboxID: "not valid!"}); err == nil {
+	if _, _, _, err := ca.SignCSR(issuer.SignCSRParams{
+		CSR:       csr,
+		TTL:       time.Hour,
+		SandboxID: "not valid!",
+	}); err == nil {
 		t.Fatal("invalid sandbox ID signed")
+	}
+}
+
+func TestCASignCSR_LeafSubject(t *testing.T) {
+	ca, err := issuer.NewCA("test ca", time.Hour)
+	if err != nil {
+		t.Fatalf("new ca: %v", err)
+	}
+	const sandboxID = "8d9f6c2b1a0e8d9f6c2b1a0e8d9f6c2b1a0e8d9f6c2b1a0e8d9f6c2b1a0e8d9f"
+	sandboxDigest := sha256.Sum256([]byte(sandboxID))
+
+	cases := []struct {
+		name      string
+		csrCN     string
+		dnsNames  []string
+		ips       []net.IP
+		sandboxID string
+		wantCN    string
+		wantDeny  bool
+	}{
+		{
+			name:      "verified sandbox names a subjectless SAN-less CSR",
+			sandboxID: sandboxID,
+			wantCN:    hex.EncodeToString(sandboxDigest[:]),
+		},
+		{
+			name:      "a DNS SAN keeps the CSR CN",
+			csrCN:     "foo.mesh.svc",
+			dnsNames:  []string{"foo.mesh.svc"},
+			sandboxID: sandboxID,
+			wantCN:    "foo.mesh.svc",
+		},
+		{
+			name:      "a DNS SAN keeps an empty CSR CN",
+			dnsNames:  []string{"foo.mesh.svc"},
+			sandboxID: sandboxID,
+		},
+		{
+			name:      "an IP SAN keeps an empty CSR CN",
+			ips:       []net.IP{net.ParseIP("192.0.2.1")},
+			sandboxID: sandboxID,
+		},
+		{
+			name:      "an IP SAN keeps the CSR CN",
+			csrCN:     "node",
+			ips:       []net.IP{net.ParseIP("192.0.2.1")},
+			sandboxID: sandboxID,
+			wantCN:    "node",
+		},
+		{
+			name:   "a SAN-less CSR without a sandbox keeps its CN",
+			csrCN:  "armtls-mesh-10.0.0.1",
+			wantCN: "armtls-mesh-10.0.0.1",
+		},
+		{
+			name:      "a SAN-less CSR naming itself and a sandbox is denied",
+			csrCN:     "attacker-chosen",
+			sandboxID: sandboxID,
+			wantDeny:  true,
+		},
+		{
+			name:     "a SAN-less CSR with no subject and no sandbox is denied",
+			wantDeny: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			csr, _ := mustCSR(t, tc.csrCN, tc.dnsNames, tc.ips, nil)
+			certPEM, subjectCN, _, err := ca.SignCSR(issuer.SignCSRParams{
+				CSR:       csr,
+				TTL:       time.Hour,
+				SandboxID: tc.sandboxID,
+			})
+			if tc.wantDeny {
+				if !errors.Is(err, issuer.ErrSubjectDenied) {
+					t.Fatalf("err = %v, want ErrSubjectDenied", err)
+				}
+				if certPEM != nil {
+					t.Error("a denied subject still produced a certificate")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("SignCSR: %v", err)
+			}
+			if subjectCN != tc.wantCN {
+				t.Errorf("returned CN = %q, want %q", subjectCN, tc.wantCN)
+			}
+			if cn := mustParseCert(t, certPEM).Subject.CommonName; cn != tc.wantCN {
+				t.Errorf("leaf CN = %q, want %q", cn, tc.wantCN)
+			}
+		})
 	}
 }
 
@@ -201,7 +348,11 @@ func TestCASignCSR_StampsMatchedWorkload(t *testing.T) {
 		AllowlistDigest:  bytes.Repeat([]byte{0x11}, 32),
 	}
 
-	certPEM, _, err := ca.SignCSR(issuer.SignCSRParams{CSR: csr, TTL: time.Hour, MatchedWorkload: matched})
+	certPEM, _, _, err := ca.SignCSR(issuer.SignCSRParams{
+		CSR:             csr,
+		TTL:             time.Hour,
+		MatchedWorkload: matched,
+	})
 	if err != nil {
 		t.Fatalf("SignCSR: %v", err)
 	}
@@ -214,7 +365,10 @@ func TestCASignCSR_StampsMatchedWorkload(t *testing.T) {
 	}
 
 	// No MatchedWorkload param ⇒ no extension.
-	certPEM, _, err = ca.SignCSR(issuer.SignCSRParams{CSR: csr, TTL: time.Hour})
+	certPEM, _, _, err = ca.SignCSR(issuer.SignCSRParams{
+		CSR: csr,
+		TTL: time.Hour,
+	})
 	if err != nil {
 		t.Fatalf("SignCSR: %v", err)
 	}
@@ -224,7 +378,11 @@ func TestCASignCSR_StampsMatchedWorkload(t *testing.T) {
 
 	// An invalid value fails the signing, not silently drops.
 	bad := &armtls.MatchedWorkload{Name: "api", AllowlistVersion: "0", AllowlistDigest: matched.AllowlistDigest}
-	if _, _, err := ca.SignCSR(issuer.SignCSRParams{CSR: csr, TTL: time.Hour, MatchedWorkload: bad}); err == nil {
+	if _, _, _, err := ca.SignCSR(issuer.SignCSRParams{
+		CSR:             csr,
+		TTL:             time.Hour,
+		MatchedWorkload: bad,
+	}); err == nil {
 		t.Fatal("invalid matched workload signed")
 	}
 }
@@ -236,10 +394,16 @@ func TestCASignCSR_RejectsNilCAOrCSR(t *testing.T) {
 	}
 	csr, _ := mustCSR(t, "node", nil, nil, nil)
 
-	if _, _, err := (*issuer.CA)(nil).SignCSR(issuer.SignCSRParams{CSR: csr, TTL: time.Hour}); err == nil {
+	if _, _, _, err := (*issuer.CA)(nil).SignCSR(issuer.SignCSRParams{
+		CSR: csr,
+		TTL: time.Hour,
+	}); err == nil {
 		t.Error("nil CA: expected error, got nil")
 	}
-	if _, _, err := ca.SignCSR(issuer.SignCSRParams{CSR: nil, TTL: time.Hour}); err == nil {
+	if _, _, _, err := ca.SignCSR(issuer.SignCSRParams{
+		CSR: nil,
+		TTL: time.Hour,
+	}); err == nil {
 		t.Error("nil CSR: expected error, got nil")
 	}
 }

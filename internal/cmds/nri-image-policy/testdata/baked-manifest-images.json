@@ -1,0 +1,15 @@
+{
+  "sha256:27c1b2553a690ca3d29889dcd61df97525d46f58272c0be8dc63c2b18f120075": {
+    "image": "nvcr.io/nvidia/k8s-device-plugin:v0.20.1@sha256:27c1b2553a690ca3d29889dcd61df97525d46f58272c0be8dc63c2b18f120075",
+    "env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/busybox",
+      "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
+      "OPENSSL_CONF=/etc/ssl/openssl-nofips.cnf",
+      "OPENSSL_MODULES=/usr/lib/x86_64-linux-gnu/ossl-modules/",
+      "LD_LIBRARY_PATH=/lib/distroless/",
+      "NVIDIA_DISABLE_REQUIRE=true",
+      "NVIDIA_VISIBLE_DEVICES=all",
+      "NVIDIA_DRIVER_CAPABILITIES=compute,utility"
+    ]
+  }
+}

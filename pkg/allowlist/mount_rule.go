@@ -11,6 +11,10 @@ type mountRuleBehavior interface {
 	validate() error
 	admits(ObservedMount) bool
 	hostIndependent() bool
+	// grantPinned reports whether a secrets grant accepts the rule: the host
+	// chooses neither what the container reads through it nor where it
+	// writes.
+	grantPinned() bool
 }
 
 var (
@@ -38,22 +42,45 @@ func (r MountRule) behavior() mountRuleBehavior {
 	}
 }
 
+// bindsVolume reports whether this rule's source names a pod volume rather
+// than a host path: the kinds the kubelet stages from the pod's own volumes.
+func (r MountRule) bindsVolume() bool {
+	return r.Kind == MountEmptyDir || r.Kind == MountData
+}
+
 type emptyDirRule struct {
 	MountRule
 }
 
 func (r emptyDirRule) validate() error {
-	if r.Source != "" || r.ReadOnly || r.VerityDigest != "" {
-		return fmt.Errorf("mount kind %q does not support source, readOnly or verityDigest", r.Kind)
+	if r.ReadOnly {
+		return fmt.Errorf("mount kind %q does not support readOnly", r.Kind)
+	}
+	if r.Source != "" && (strings.Contains(r.Source, "/") || r.Source == "." || r.Source == "..") {
+		return fmt.Errorf("mount kind %q source %q must be a volume name, not a path", r.Kind, r.Source)
+	}
+	if r.VerityDigest != "" {
+		return fmt.Errorf("mount kind %q does not support verityDigest", r.Kind)
 	}
 	return nil
 }
 
-func (emptyDirRule) admits(m ObservedMount) bool {
-	return m.Storage == MountMemory || m.Storage == MountEncrypted
+// admits also binds the pod volume behind the mount when the rule names one,
+// so two destinations of one container cannot be fed from each other's
+// volume. The node names that volume (internal/cmds/nri-image-policy); a
+// mount it read out of no pod volume names none and is refused.
+func (r emptyDirRule) admits(m ObservedMount) bool {
+	if m.Storage != MountMemory && m.Storage != MountEncrypted {
+		return false
+	}
+	return r.Source == "" || m.Volume == r.Source
 }
 
 func (emptyDirRule) hostIndependent() bool {
+	return true
+}
+
+func (emptyDirRule) grantPinned() bool {
 	return true
 }
 
@@ -65,7 +92,7 @@ func (r dataRule) validate() error {
 	if err := r.emptyDirRule.validate(); err != nil {
 		return err
 	}
-	if !strings.HasPrefix(r.Destination, DataMountPrefix) {
+	if !r.Node && !strings.HasPrefix(r.Destination, DataMountPrefix) {
 		return fmt.Errorf("data destination %q must be below %s", r.Destination, DataMountPrefix)
 	}
 	return nil
@@ -92,8 +119,15 @@ func (hostRule) hostIndependent() bool {
 	return false
 }
 
+// grantPinned is false: read-only or not, the host chooses the file's content,
+// and a writable path is a channel to whatever the host runs behind it.
+func (hostRule) grantPinned() bool {
+	return false
+}
+
 // nodeRootFileRule is a read-only host rule that also requires node-root
-// evidence. It still names a host path, so secrets grants reject it.
+// evidence. It still names a host path, so it is not host-independent, but a
+// secrets grant accepts it (grantPinned).
 type nodeRootFileRule struct {
 	hostRule
 }
@@ -107,6 +141,12 @@ func (r nodeRootFileRule) validate() error {
 
 func (r nodeRootFileRule) admits(m ObservedMount) bool {
 	return m.Provenance == ProvenanceNodeRoot && r.hostRule.admits(m)
+}
+
+// grantPinned is true when read-only: the node proves the bytes are on the
+// measured root, and read-only removes the write channel.
+func (r nodeRootFileRule) grantPinned() bool {
+	return r.ReadOnly
 }
 
 // fsVerityFileRule is a read-only host rule that also requires fs-verity
@@ -128,6 +168,12 @@ func (r fsVerityFileRule) validate() error {
 
 func (r fsVerityFileRule) admits(m ObservedMount) bool {
 	return m.Provenance == ProvenanceFSVerity && m.VerityDigest == r.VerityDigest && r.hostRule.admits(m)
+}
+
+// grantPinned is true when read-only: the verityDigest pins the bytes the
+// kernel serves, and read-only removes the write channel.
+func (r fsVerityFileRule) grantPinned() bool {
+	return r.ReadOnly
 }
 
 // CanonicalVerityDigest reports whether value is a SHA-256 digest in the one

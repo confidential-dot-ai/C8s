@@ -79,9 +79,6 @@ func validClaimsSidecar(name, mode string) map[string]any {
 	sidecar["image"] = testC8sImage
 	sidecar["restartPolicy"] = "Always"
 	sidecar["args"] = []any{mode}
-	if mode == "get-cert" {
-		sidecar["args"] = append(sidecar["args"].([]any), "--workload-claims")
-	}
 	// The node plugin supplies the claims mount through NRI, below the Pod spec.
 	return sidecar
 }

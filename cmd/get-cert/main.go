@@ -6,11 +6,14 @@ package main
 import (
 	"os"
 
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/getcert"
 )
 
 func main() {
-	if err := getcert.NewCmd().Execute(); err != nil {
+	ctx, stop := cmdsutil.SignalContext()
+	defer stop()
+	if err := getcert.NewCmd().ExecuteContext(ctx); err != nil {
 		os.Exit(1)
 	}
 }

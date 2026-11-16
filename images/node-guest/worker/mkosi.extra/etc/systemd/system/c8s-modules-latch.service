@@ -1,0 +1,37 @@
+# Restore the no-further-modules posture on a GPU-less composition.
+#
+# kernel/c8s.config turns CONFIG_MODULES back on (the base kernel compiles it
+# out) so the two signed NVIDIA modules can load. That makes
+# kernel.modules_disabled a live key on this image, and confos's
+# 99-kspp-hardening.conf omits it precisely because the base kernel has no such
+# key. The only latch confos ships lives in its gpu profile, so the GPU-less
+# composition documented in mkosi.conf boots with modules loadable for the
+# whole boot, and nothing pins the gpu profile into the canonical build.
+#
+# Same split as 99-c8s-bpf.conf: this profile owns the runtime lock its own
+# kernel fragment makes necessary.
+[Unit]
+Description=Latch kernel.modules_disabled once boot-time module loading is done
+# Skip cleanly if a later fragment compiles modules out again: no key means
+# the stronger compile-time posture is already in force.
+ConditionPathExists=/proc/sys/kernel/modules_disabled
+# Ordered after every boot-time load and after the gpu profile's own latch, so
+# on the canonical GPU build this runs last and rewrites an already-set 1.
+# None of these units exist in a GPU-less build; a missing After= target is
+# inert ordering, not a requirement.
+After=nvidia-modules-latch.service nvidia-cc-ready.service systemd-modules-load.service
+Before=containerd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# One-way: 1 cannot go back to 0 without a reboot.
+ExecStart=/sbin/sysctl -w kernel.modules_disabled=1
+
+# vsock fence: only attestation-api may use AF_VSOCK (see kernel/gpu.config).
+RestrictAddressFamilies=AF_UNIX
+
+[Install]
+WantedBy=multi-user.target
+# A skipped condition is not a failure, so a modules-less kernel still boots.
+RequiredBy=containerd.service

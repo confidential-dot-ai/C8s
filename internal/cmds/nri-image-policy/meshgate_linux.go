@@ -1,0 +1,159 @@
+//go:build linux
+
+package nriimagepolicy
+
+import (
+	"fmt"
+
+	"github.com/confidential-dot-ai/c8s/internal/podmesh"
+	"github.com/confidential-dot-ai/c8s/internal/podmesh/ruleset"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+)
+
+var guestNetworkNamespace = "/proc/1/ns/net"
+
+// installPodRuleset puts the ruleset trusted policy defines for a pod of that
+// Kubernetes namespace into the network namespace the enforcer proved.
+func installPodRuleset(netns podNamespace, policy meshPolicy, namespace string) error {
+	if err := ruleset.Install(netns.path, policy.podRuleset(namespace, nil)); err != nil {
+		return err
+	}
+	if policy.Pod != nil {
+		return ruleset.InstallGuest(guestNetworkNamespace, policy.guestRuleset())
+	}
+	return nil
+}
+
+// verifyPodRuleset requires the live ruleset of that same namespace to be the
+// one trusted policy defines, with the exits the pod was granted. A path the
+// runtime re-pointed names another namespace, whose rules say nothing about
+// this pod.
+func verifyPodRuleset(netns podNamespace, policy meshPolicy, namespace string, exits []exit) error {
+	if err := requireSameNamespace(netns); err != nil {
+		return err
+	}
+	if err := ruleset.Verify(netns.path, policy.podRuleset(namespace, exits)); err != nil {
+		return err
+	}
+	if policy.Pod != nil {
+		return ruleset.VerifyGuest(guestNetworkNamespace, policy.guestRuleset())
+	}
+	return nil
+}
+
+// extendPodRuleset adds a pod's granted exits to the ruleset it was protected
+// with.
+func extendPodRuleset(netns podNamespace, policy meshPolicy, namespace string, exits []exit) error {
+	if err := requireSameNamespace(netns); err != nil {
+		return err
+	}
+	return ruleset.Extend(netns.path, policy.podRuleset(namespace, nil), rulesetExits(exits))
+}
+
+func requireSameNamespace(netns podNamespace) error {
+	current, err := namespaceFile(netns.path)
+	if err != nil {
+		return err
+	}
+	if current.id != netns.id {
+		return fmt.Errorf("the network namespace at %s was replaced", netns.path)
+	}
+	return nil
+}
+
+func rulesetExits(exits []exit) []ruleset.Exit {
+	var out []ruleset.Exit
+	for _, e := range exits {
+		out = append(out, ruleset.Exit{Range: e.Range, Port: e.Port})
+	}
+	return out
+}
+
+// podRuleset is the ruleset a member pod of that Kubernetes namespace
+// carries: the mesh endpoint's reserved UID owns the capture ports, every
+// dialing role reaches only what its binding names, every container reaches
+// the platform services the policy names and the exits the pod was granted,
+// and a pod of the router's namespace also answers the router's external
+// listeners.
+func (p meshPolicy) podRuleset(kubeNamespace string, granted []exit) ruleset.Policy {
+	endpoint, _ := p.role(meshRole)
+	policy := ruleset.Policy{
+		Resolver:      p.Resolver,
+		Capture:       ruleset.CapturePorts(p.Capture),
+		MeshUID:       endpoint.UID,
+		ClusterRanges: p.ClusterRanges,
+		Exits:         rulesetExits(granted),
+		Server:        p.servedPorts(kubeNamespace),
+		Roles:         p.dialingRoles(),
+	}
+	if p.Pod != nil {
+		policy.Pod = &ruleset.PodPolicy{Peers: p.podPeers()}
+	}
+	return policy
+}
+
+func (p meshPolicy) podPeers() []ruleset.Destination {
+	peers := make([]ruleset.Destination, 0, len(p.Pod.Peers))
+	for _, peer := range p.Pod.Peers {
+		peers = append(peers, ruleset.Destination{Addr: peer.Addr(), Port: peer.Port()})
+	}
+	return peers
+}
+
+func (p meshPolicy) guestRuleset() ruleset.GuestPolicy {
+	return ruleset.GuestPolicy{Bridge: podmesh.GuestBridge, PodAddress: podmesh.GuestPodAddress, IngressPorts: p.Pod.IngressPorts}
+}
+
+// servedPorts is the server role the ruleset of a pod of the router's
+// namespace carries, and an empty role for a pod of any other namespace. The
+// acme role holds the egress ports and nginx's role never does, so a request
+// nginx relays is captured wherever its name resolves. The upstream role
+// dials every backend itself and authenticates each peer: a member pod or a
+// pod CVM's endpoint as the mesh client of the workload and agent its route
+// names, its CDS over armTLS, and the verifier that weighs that CDS's
+// evidence only at an address cds-attest admits (checkNodeVerifier).
+func (p meshPolicy) servedPorts(kubeNamespace string) ruleset.ServerRole {
+	if kubeNamespace != routerNamespace {
+		return ruleset.ServerRole{}
+	}
+	return ruleset.ServerRole{
+		Listeners: routerListeners,
+		Egress: ruleset.ServerEgress{
+			UID:   workloadclaims.AcmeUID,
+			Ports: acmeEgressPorts,
+		},
+		Upstream: workloadclaims.UpstreamUID,
+	}
+}
+
+// credentialVerifier is the attestation-api that weighs a CDS's evidence for
+// the pods on this node: this node's own address, on the port policy names.
+func (p meshPolicy) credentialVerifier() (ruleset.Destination, bool) {
+	if p.CredentialAttestationPort == 0 || !p.nodeAddr.IsValid() {
+		return ruleset.Destination{}, false
+	}
+	return ruleset.Destination{
+		Addr: p.nodeAddr,
+		Port: p.CredentialAttestationPort,
+	}, true
+}
+
+// dialingRoles are the roles the ruleset permits by port: every bound role
+// but the mesh endpoint, whose sockets it exempts by UID instead. Each
+// reaches its port outside this cluster, and the credential clients also
+// reach the verifier that weighs their CDS's evidence, where policy names a
+// port for it.
+func (p meshPolicy) dialingRoles() []ruleset.Role {
+	var roles []ruleset.Role
+	for _, role := range p.Roles {
+		if role.Name == meshRole {
+			continue
+		}
+		bound := ruleset.Role{UID: role.UID, OutsidePort: role.Port}
+		if verifier, named := p.credentialVerifier(); named && role.Name == CredentialRole {
+			bound.Destinations = append(bound.Destinations, verifier)
+		}
+		roles = append(roles, bound)
+	}
+	return roles
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"slices"
 	"strings"
@@ -12,8 +13,10 @@ import (
 	"github.com/containerd/nri/pkg/api"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/confidential-dot-ai/c8s/internal/podmesh"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 // Exercise containerd's create/start lifecycle for older admission tests.
@@ -201,7 +204,7 @@ func TestMountCreationValidatorChecksCumulativeEdits(t *testing.T) {
 			}
 			req := &api.ValidateContainerAdjustmentRequest{Pod: pod, Container: ctr, Adjust: adjust}
 			before := proto.Clone(req)
-			if tc.cdi && adjustedMounts(req, proto.Clone(ctr).(*api.Container), "") != nil {
+			if tc.cdi && p.adjustedMounts(req, proto.Clone(ctr).(*api.Container)) != nil {
 				t.Fatal("deferred CDI produced complete mount evidence")
 			}
 			err := p.ValidateContainerAdjustment(context.Background(), req)
@@ -219,36 +222,33 @@ func TestMountCreationValidatorChecksCumulativeEdits(t *testing.T) {
 }
 
 func TestMountCreationValidatorContainerdBaseline(t *testing.T) {
-	for _, tc := range []struct{ name, root, state string }{
-		{"containerd", "/var/lib/containerd", "/run/containerd"},
-		{"rke2", "/var/lib/rancher/rke2/agent/containerd", "/run/k3s/containerd"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			al := workloadAllowlist(t, pushDigestA, pushDigestB, []string{"/bin/app"})
-			al.Workloads["w"].Containers[0].Mounts = allowlist.MountPolicy{Policy: allowlist.PolicyDeny}
-			p, _ := newCachedPlugin(&config{Policy: policyConfig{Mode: ModeFailClosed}, Allowlist: allowlistConfig{Base: anyAllowlist(map[string]string{pushDigestA: "base"})}}, al)
-			p.SetReady()
-			pod := makePod("default", "pod")
-			pod.Uid = "pod-a"
-			ctr := makeCtrWithImageArgs(pod.Id, "ctr", "registry/repo@"+pushDigestB, []string{"/bin/app", "--serve"})
-			sandbox := "/io.containerd.grpc.v1.cri/sandboxes/" + pod.Id
-			ctr.Mounts = []*api.Mount{
-				{Source: tc.root + sandbox + "/hostname", Destination: "/etc/hostname"},
-				{Source: tc.root + sandbox + "/resolv.conf", Destination: "/etc/resolv.conf"},
-				{Source: tc.state + sandbox + "/shm", Destination: "/dev/shm"},
-				{Source: kubeletRoot + "/pods/pod-a/etc-hosts", Destination: "/etc/hosts"},
-			}
-			req := &api.ValidateContainerAdjustmentRequest{Pod: pod, Container: ctr}
-			if err := p.ValidateContainerAdjustment(context.Background(), req); err != nil {
-				t.Fatalf("platform baseline rejected: %v", err)
-			}
-			for _, source := range []string{tc.root + "/io.containerd.grpc.v1.cri/sandboxes/foreign/hostname", tc.root + "-lookalike" + sandbox + "/hostname"} {
-				ctr.Mounts[0].Source = source
-				if err := p.ValidateContainerAdjustment(context.Background(), req); err == nil {
-					t.Errorf("unowned hostname source admitted: %s", source)
-				}
-			}
-		})
+	const (
+		root  = "/var/lib/containerd"
+		state = "/run/containerd"
+	)
+	al := workloadAllowlist(t, pushDigestA, pushDigestB, []string{"/bin/app"})
+	al.Workloads["w"].Containers[0].Mounts = allowlist.MountPolicy{Policy: allowlist.PolicyDeny}
+	p, _ := newCachedPlugin(&config{Policy: policyConfig{Mode: ModeFailClosed}, Allowlist: allowlistConfig{Base: anyAllowlist(map[string]string{pushDigestA: "base"})}}, al)
+	p.SetReady()
+	pod := makePod("default", "pod")
+	pod.Uid = "pod-a"
+	ctr := makeCtrWithImageArgs(pod.Id, "ctr", "registry/repo@"+pushDigestB, []string{"/bin/app", "--serve"})
+	sandbox := "/io.containerd.grpc.v1.cri/sandboxes/" + pod.Id
+	ctr.Mounts = []*api.Mount{
+		{Source: root + sandbox + "/hostname", Destination: "/etc/hostname"},
+		{Source: root + sandbox + "/resolv.conf", Destination: "/etc/resolv.conf"},
+		{Source: state + sandbox + "/shm", Destination: "/dev/shm"},
+		{Source: kubeletRoot + "/pods/pod-a/etc-hosts", Destination: "/etc/hosts"},
+	}
+	req := &api.ValidateContainerAdjustmentRequest{Pod: pod, Container: ctr}
+	if err := p.ValidateContainerAdjustment(context.Background(), req); err != nil {
+		t.Fatalf("platform baseline rejected: %v", err)
+	}
+	for _, source := range []string{root + "/io.containerd.grpc.v1.cri/sandboxes/foreign/hostname", root + "-lookalike" + sandbox + "/hostname"} {
+		ctr.Mounts[0].Source = source
+		if err := p.ValidateContainerAdjustment(context.Background(), req); err == nil {
+			t.Errorf("unowned hostname source admitted: %s", source)
+		}
 	}
 }
 
@@ -298,7 +298,7 @@ func TestInventoryServesEvidenceRecordedBeforeMatchPolicy(t *testing.T) {
 	ctr := makeCtrWithImage(pod.Id, "ctr", "registry/repo@"+pushDigestB)
 	ctr.Args = []string{"/bin/app"}
 	ctr.Env = []string{"MODE=production"}
-	p.recordUncheckedForInventory(pod, ctr, "registry/repo@"+pushDigestB)
+	p.recordForInventory(t.Context(), pod, ctr, "registry/repo@"+pushDigestB)
 
 	al := workloadAllowlist(t, pushDigestA, pushDigestB, []string{"/bin/app"})
 	if err := json.Unmarshal([]byte(`{"policy":"match","variables":{"MODE":{"present":true}}}`), &al.Workloads["w"].Containers[0].Env); err != nil {
@@ -331,7 +331,7 @@ func TestInventoryKeepsRunningEvidenceUntilMatchPolicyApplies(t *testing.T) {
 	pod := makePod("default", "pod")
 	main := makeCtrWithImageArgs(pod.Id, "main", "registry/repo@"+pushDigestB, []string{"/bin/app"})
 	main.Env = variant("main")
-	p.recordUncheckedForInventory(pod, main, "registry/repo@"+pushDigestB)
+	p.recordForInventory(t.Context(), pod, main, "registry/repo@"+pushDigestB)
 	probe, err := allowlist.ObserveEnv(main.Env)
 	if err != nil {
 		t.Fatal(err)
@@ -339,7 +339,7 @@ func TestInventoryKeepsRunningEvidenceUntilMatchPolicyApplies(t *testing.T) {
 	for i := range allowlist.MaxSandboxVariableEvidenceBytes/probe.VariableEvidenceBytes() + 2 {
 		sidecar := makeCtrWithImageArgs(pod.Id, fmt.Sprint("sidecar-", i), "registry/sidecar@"+pushDigestA, []string{"/sidecar"})
 		sidecar.Env = variant(fmt.Sprint(i))
-		p.recordUncheckedForInventory(pod, sidecar, "registry/sidecar@"+pushDigestA)
+		p.recordForInventory(t.Context(), pod, sidecar, "registry/sidecar@"+pushDigestA)
 		if _, err := p.StopContainer(context.Background(), pod, sidecar); err != nil {
 			t.Fatal(err)
 		}
@@ -421,7 +421,7 @@ func TestMatchWorkloadAtEvidenceCeiling(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if name, _, err := al.MatchWorkload(secrets.WorkloadContainers(al, cs)); err != nil || name != "wide" {
+	if name, _, err := al.MatchWorkload(secrets.WorkloadContainers(cs)); err != nil || name != "wide" {
 		t.Fatalf("MatchWorkload() = %q, %v; want wide", name, err)
 	}
 
@@ -499,7 +499,7 @@ func TestSharedDigestMatchWorkloadAtEvidenceCeiling(t *testing.T) {
 			t.Fatalf("record %s lost its per-variable evidence", c.Env.Digest)
 		}
 	}
-	if name, _, err := al.MatchWorkload(secrets.WorkloadContainers(al, cs)); err != nil || name != "shared" {
+	if name, _, err := al.MatchWorkload(secrets.WorkloadContainers(cs)); err != nil || name != "shared" {
 		t.Fatalf("MatchWorkload() = %q, %v; want shared", name, err)
 	}
 
@@ -640,16 +640,82 @@ func TestMatchRolloutNamesEveryApplyLog(t *testing.T) {
 	}
 	_, rollout, _ := strings.Cut(string(doc), "To start using\n`match`:")
 	rollout, _, _ = strings.Cut(strings.TrimSpace(rollout), "\n\n")
-	source, err := os.ReadFile("main.go")
+	source, err := os.ReadFile("refresh.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, message := range []string{"initial allowlist pulled from CDS", "pull loop: allowlist refreshed"} {
 		if !strings.Contains(string(source), `"`+message+`"`) {
-			t.Fatalf("main.go no longer logs %q", message)
+			t.Fatalf("refresh.go no longer logs %q", message)
 		}
 		if !strings.Contains(strings.Join(strings.Fields(rollout), " "), message) {
 			t.Errorf("match rollout steps do not name %q", message)
 		}
+	}
+}
+
+// The Pod endpoint's role comes from the mount set it finally launches with.
+func TestPodAdjustmentRoleComesFromTheFinalMountSet(t *testing.T) {
+	pod := meshPod("default", "pod", testNetNS)
+	pod.Uid = "runtime-uid"
+	source := kubeletRoot + "/pods/" + pod.Uid + "/volumes/" + emptyDirPlugin + "/" + podmesh.CertVolumeName
+	declared := &api.Container{
+		Id:           "mesh-id",
+		PodSandboxId: pod.Id,
+		Name:         workloadclaims.MeshContainerName,
+		Args:         []string{"/c8s", "mesh"},
+		Mounts:       []*api.Mount{readOnlyBind(source, podmesh.CertDir)},
+	}
+	// The declaration pins the mount set its role is bound to.
+	base := roleBase(t, pushDigestB, meshRole, []string{"/c8s", "mesh"})
+	entry := base.Workloads["role-entry"].Containers[0]
+	entry.Mounts = allowlist.MountPolicy{Policy: allowlist.PolicyExact, Rules: []allowlist.MountRule{{
+		Destination: podmesh.CertDir,
+		Kind:        allowlist.MountEmptyDir,
+		ReadOnly:    true,
+	}}}
+	base.Workloads["role-entry"] = allowlist.Workload{Containers: []allowlist.Container{entry}}
+
+	gate := func(p *plugin, adjust *api.ContainerAdjustment) error {
+		p.mountStorage = fixedStorage(allowlist.MountMemory)
+		p.mesh = newMeshGate(*meshRoles(), discardLogger())
+		req := &api.ValidateContainerAdjustmentRequest{Pod: pod, Container: declared, Adjust: adjust}
+		ctr, env := adjustedLaunchContainer(req)
+		observed := observedContainer{
+			pod:      pod,
+			ctr:      ctr,
+			imageRef: "registry/repo@" + pushDigestB,
+			env:      env,
+			mounts:   p.adjustedMounts(req, ctr),
+		}
+		return p.gateMesh(t.Context(), req, observed)
+	}
+	moved := &api.ContainerAdjustment{Mounts: []*api.Mount{readOnlyBind(source, "/tenant/certs")}}
+
+	newGuest := func() *plugin {
+		p, _ := newCachedPlugin(&config{
+			Pod:       &podConfig{UID: "signed-uid", Namespace: pod.Namespace, Name: pod.Name},
+			Allowlist: allowlistConfig{Base: base},
+			Policy:    policyConfig{Mode: ModeFailClosed},
+		}, anyAllowlist(map[string]string{pushDigestB: "mesh"}))
+		p.logger = slog.Default()
+		return p
+	}
+	err := gate(newGuest(), moved)
+	if err == nil || !strings.Contains(err.Error(), "private credential volume") {
+		t.Fatalf("a Pod guest judged the role on the declared mounts: %v", err)
+	}
+
+	node, _ := newCachedPlugin(&config{
+		Allowlist: allowlistConfig{Base: base},
+		Policy:    policyConfig{Mode: ModeFailClosed},
+	}, anyAllowlist(map[string]string{pushDigestB: "mesh"}))
+	node.logger = slog.Default()
+	if err := gate(node, moved); err != nil && strings.Contains(err.Error(), "credential volume") {
+		t.Fatalf("a node applied the Pod credential boundary: %v", err)
+	}
+	// Unedited, the Pod guest's final mount set still carries its role.
+	if err := gate(newGuest(), nil); err != nil && strings.Contains(err.Error(), "private credential volume") {
+		t.Fatalf("the unedited mount set lost the credential volume: %v", err)
 	}
 }

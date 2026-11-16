@@ -2,11 +2,14 @@ package armtls
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"fmt"
 	"time"
 
+	agarmtls "github.com/confidential-dot-ai/attestation-go/armtls"
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 )
 
@@ -33,19 +36,28 @@ type SelfSignedProvider struct {
 	Platform   string
 	AttestFunc func(ctx context.Context, customData string) (string, error)
 	Opts       *CertOptions
+	// MeasuredPolicies is the journal a TDX certificate lists; nil lists none.
+	MeasuredPolicies *Journal
+	// Key, when set, is the key every certificate is issued over. Nil
+	// generates a fresh key per certificate.
+	Key *ecdsa.PrivateKey
 }
 
 var _ CertProvider = (*SelfSignedProvider)(nil)
 
-// Provision generates a key, obtains hardware attestation, and creates a
-// self-signed certificate with the attestation embedded as an X.509 extension.
+// Provision generates a key unless one is configured, obtains hardware
+// attestation over it, and creates a self-signed certificate with the
+// attestation embedded as an X.509 extension.
 func (p *SelfSignedProvider) Provision(ctx context.Context) (*tls.Certificate, time.Duration, error) {
-	key, _, err := GenerateKeyPair()
-	if err != nil {
-		return nil, 0, err
+	key := p.Key
+	if key == nil {
+		var err error
+		if key, _, err = GenerateKeyPair(); err != nil {
+			return nil, 0, err
+		}
 	}
 
-	teeType, err := teetypes.ParseFamily(p.Platform)
+	family, err := teetypes.ParseFamily(p.Platform)
 	if err != nil {
 		return nil, 0, fmt.Errorf("%w: %v", ErrUnsupportedTEE, err)
 	}
@@ -61,7 +73,11 @@ func (p *SelfSignedProvider) Provision(ctx context.Context) (*tls.Certificate, t
 		return nil, 0, fmt.Errorf("armtls: get attestation: %w", err)
 	}
 
-	att := &Attestation{Family: teeType, Report: []byte(evidence)}
+	att, err := attestationFromEvidence(family, []byte(evidence))
+	if err != nil {
+		return nil, 0, err
+	}
+	att = WithRuntimeExtensions(att, p.MeasuredPolicies)
 	certDER, err := CreateAttestedCert(key, att, p.Opts)
 	if err != nil {
 		return nil, 0, err
@@ -77,4 +93,36 @@ func (p *SelfSignedProvider) Provision(ctx context.Context) (*tls.Certificate, t
 		PrivateKey:  key,
 		Leaf:        cert,
 	}, p.Opts.ttl(), nil
+}
+
+// attestationFromEvidence wraps evidence fresh from the attestation-api in the
+// extension's shape. The TEE type comes from the evidence, not from the
+// configured platform (docs/armtls.md, "The attestation extension"): an
+// envelope declares its own platform, and the only raw shape is the SEV-SNP
+// report. An envelope carries its collateral inside, so certChain stays empty.
+func attestationFromEvidence(family TEEType, evidence []byte) (*Attestation, error) {
+	envelope, isEnvelope := evidenceEnvelope(evidence)
+	switch {
+	case isEnvelope && envelope.Platform.Family() != family:
+		return nil, fmt.Errorf("%w: attestation-api returned %q evidence on a %s platform", ErrInvalidReport, envelope.Platform, family)
+	case isEnvelope:
+		return agarmtls.NewAttestation(envelope)
+	case family == TEETypeSEVSNP && len(evidence) == SNPReportSize:
+		return &Attestation{
+			Family: TEETypeSEVSNP,
+			Report: evidence,
+		}, nil
+	default:
+		return nil, fmt.Errorf("%w: %d bytes from the attestation-api are neither a %s evidence envelope nor a raw SEV-SNP report", ErrInvalidReport, len(evidence), family)
+	}
+}
+
+// evidenceEnvelope reports whether the payload is a platform-tagged evidence
+// envelope, and returns it when it is.
+func evidenceEnvelope(evidence []byte) (teetypes.AttestationEvidence, bool) {
+	var envelope teetypes.AttestationEvidence
+	if err := json.Unmarshal(evidence, &envelope); err != nil {
+		return envelope, false
+	}
+	return envelope, envelope.Platform != ""
 }

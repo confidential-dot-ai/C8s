@@ -76,7 +76,7 @@ func printManifest(out io.Writer, manifest []byte, m *pkgroutes.Manifest, verifi
 	fmt.Fprintf(out, "maxAgeSeconds: %d\n", int64(m.MaxAge/time.Second))
 	fmt.Fprintf(out, "digest:        %s\n", digestHex(manifest))
 	fmt.Fprintf(out, "signature:     %s\n", signature)
-	if len(m.Hosts) == 0 {
+	if len(m.Hosts) == 0 && len(m.Patterns) == 0 {
 		_, err := fmt.Fprintln(out, "\nno hosts in the stored manifest")
 		return err
 	}
@@ -91,6 +91,9 @@ func printManifest(out io.Writer, manifest []byte, m *pkgroutes.Manifest, verifi
 			}
 			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", host, r.Path, r.Match, r.Backend.Address, backend)
 		}
+	}
+	for _, p := range m.Patterns {
+		fmt.Fprintf(tw, "<label>.%s\t/\tprefix\tagent <label>, port %d\tworkload %s\n", p.HostSuffix, p.Port, p.Workload)
 	}
 	return tw.Flush()
 }

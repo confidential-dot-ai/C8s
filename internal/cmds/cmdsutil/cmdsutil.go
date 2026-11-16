@@ -3,32 +3,66 @@
 package cmdsutil
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"path"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
 )
 
+// SignalContext is the context a binary runs its command under. The first
+// SIGINT or SIGTERM cancels it; any later one ends the process.
+func SignalContext() (context.Context, context.CancelFunc) {
+	ctx, stopListening := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	context.AfterFunc(ctx, stopListening)
+	return ctx, stopListening
+}
+
 // RunMain is the body of the per-binary thin shim under cmd/<name>/main.go.
-// It calls run with os.Args[1:], prints any error to stderr, and exits with
-// status 1 on failure. Each shim collapses to: cmdsutil.RunMain(pkg.Run).
-func RunMain(run func([]string) error) {
-	if err := run(os.Args[1:]); err != nil {
+// It calls run with the SignalContext and os.Args[1:], prints any error to
+// stderr, and exits with ExitStatus. Each shim collapses to:
+// cmdsutil.RunMain(pkg.Run).
+func RunMain(run func(context.Context, []string) error) {
+	ctx, stop := SignalContext()
+	defer stop()
+	if err := run(ctx, os.Args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return
 		}
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		os.Exit(ExitStatus(err))
 	}
+}
+
+// ExitStatusError carries the exit status a verb answers with, for a caller
+// that branches on more than success and failure.
+type ExitStatusError struct {
+	Status int
+	Err    error
+}
+
+func (e *ExitStatusError) Error() string { return e.Err.Error() }
+func (e *ExitStatusError) Unwrap() error { return e.Err }
+
+// ExitStatus is the status a failed run exits with: 1 unless err names one.
+func ExitStatus(err error) int {
+	var named *ExitStatusError
+	if errors.As(err, &named) {
+		return named.Status
+	}
+	return 1
 }
 
 // ValidateHTTPURL returns an error if u is not an http:// or https:// URL.
@@ -55,9 +89,10 @@ func ValidateAttestationAPIURL(flagName, u string) error {
 
 // Node address references in an attestation-api URL. The chart writes them as
 // $$(HOST_IP) and $$(NODE_IP) so the kubelet passes them through unexpanded.
+// NodeIPReference is the one the node itself fills, from NodeIPPath.
 const (
 	hostIPReference = "$(HOST_IP)"
-	nodeIPReference = "$(NODE_IP)"
+	NodeIPReference = "$(NODE_IP)"
 )
 
 // NodeIPPath is where the chart mounts, read-only, the node-ip file the image
@@ -83,16 +118,16 @@ func ExpandHostIP(u string) (string, error) {
 }
 
 func expandNodeAddress(u, nodeIPPath string, getenv func(string) string) (string, error) {
-	if strings.Contains(u, nodeIPReference) {
+	if strings.Contains(u, NodeIPReference) {
 		data, err := os.ReadFile(nodeIPPath)
 		if err != nil {
-			return "", fmt.Errorf("attestation-api URL %q names %s: %w", u, nodeIPReference, err)
+			return "", fmt.Errorf("attestation-api URL %q names %s: %w", u, NodeIPReference, err)
 		}
 		host, err := urlHost(strings.TrimSpace(string(data)))
 		if err != nil {
-			return "", fmt.Errorf("attestation-api URL %q names %s, but %s: %w", u, nodeIPReference, nodeIPPath, err)
+			return "", fmt.Errorf("attestation-api URL %q names %s, but %s: %w", u, NodeIPReference, nodeIPPath, err)
 		}
-		u = strings.ReplaceAll(u, nodeIPReference, host)
+		u = strings.ReplaceAll(u, NodeIPReference, host)
 	}
 	if strings.Contains(u, hostIPReference) {
 		host, err := urlHost(getenv("HOST_IP"))
@@ -114,7 +149,7 @@ func urlHost(ip string) (string, error) {
 }
 
 // RequireRAMBackedDir returns an error unless dir sits on tmpfs/ramfs
-// (fileutil.RequireRAMBacked). The flagName is interpolated into the error so
+// (fileutil.RequireRAMBackedRoot). The flagName is interpolated into the error so
 // callers needn't wrap. Shared by get-secret (--out-dir) and get-cert
 // (--key-out): each secret-writing sidecar gets the same refusal shape.
 func RequireRAMBackedDir(flagName, dir string) error {
@@ -185,14 +220,29 @@ func ServeInBackground(ctx context.Context, addr string, handler http.Handler, l
 	return listener.Addr(), nil
 }
 
-// WarnIfCDSUnpinned warns when a sidecar talks to CDS without launch measurements.
-//
-// An empty set accepts any armTLS-attested CDS. "No pinning" is a supported
-// development shape (`c8s install --measurements` documents empty as UNSAFE),
-// so it stays a warning. Shared by get-cert, get-secret and get-volume: three
-// copies of this decision would be three chances to drift.
-func WarnIfCDSUnpinned(measurementCount int, warn string) {
-	if measurementCount <= 0 {
-		slog.Warn(warn)
+// Confirm writes prompt to out and reports whether the line read from in is
+// "y" or "yes", in any case. A ctx that ends first is a no.
+func Confirm(ctx context.Context, in io.Reader, out io.Writer, prompt string) bool {
+	fmt.Fprintf(out, "%s [y/N] ", prompt)
+	select {
+	case <-ctx.Done():
+		return false
+	case line := <-readLine(in):
+		return isYes(line)
 	}
+}
+
+// readLine delivers the next line read from in, once it is typed.
+func readLine(in io.Reader) <-chan string {
+	line := make(chan string, 1)
+	go func() {
+		text, _ := bufio.NewReader(in).ReadString('\n')
+		line <- text
+	}()
+	return line
+}
+
+func isYes(answer string) bool {
+	answer = strings.TrimSpace(strings.ToLower(answer))
+	return answer == "y" || answer == "yes"
 }

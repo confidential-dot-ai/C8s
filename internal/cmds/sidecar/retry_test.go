@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestRetryRecoversOnceReleased(t *testing.T) {
@@ -36,6 +39,60 @@ func TestRetryGivesUp(t *testing.T) {
 	}
 	if calls != cfg.Attempts {
 		t.Fatalf("attempted %d times, want %d", calls, cfg.Attempts)
+	}
+}
+
+// With no attempt bound the loop outlasts any fixed count: the main image may
+// still be pulling long after a bounded window would have expired (C8s #977).
+func TestRetryWithoutABoundWaitsUntilReleased(t *testing.T) {
+	cfg := testConfig("https://cds.example")
+	cfg.Attempts = 0
+	var calls int
+	err := Retry(context.Background(), cfg, "volume", func(context.Context) error {
+		calls++
+		if calls < 8 {
+			return errNotYet
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if calls != 8 {
+		t.Fatalf("attempted %d times, want 8", calls)
+	}
+}
+
+// CDS's 403 is opaque, so the log has to say what it usually means.
+func TestRefusalReasonNamesTheContainerGate(t *testing.T) {
+	forbidden := fmt.Errorf("volume weights: %w", &StatusError{Status: http.StatusForbidden, Err: errNotYet})
+	if got := refusalReason(forbidden); !strings.Contains(got, "every main container") {
+		t.Fatalf("403 reason = %q, want it to name the main-container gate", got)
+	}
+	if got := refusalReason(errNotYet); strings.Contains(got, "every main container") {
+		t.Fatalf("non-403 reason = %q, want it not to blame the container gate", got)
+	}
+}
+
+func TestRefusalReasonOnNotFoundNamesBothCauses(t *testing.T) {
+	wrappedNotFound := fmt.Errorf("volume scratch: %w", &StatusError{Status: http.StatusNotFound, Err: errNotYet})
+	got := refusalReason(wrappedNotFound)
+	for _, want := range []string{"does not grant reading", "c8s secrets explain", "holds no value", "c8s secrets put"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("404 reason = %q, want it to name %q", got, want)
+		}
+	}
+}
+
+func TestNextWait(t *testing.T) {
+	for _, tc := range []struct{ wait, interval, want time.Duration }{
+		{5 * time.Second, 5 * time.Second, 10 * time.Second},
+		{20 * time.Second, 5 * time.Second, 30 * time.Second},
+		{time.Minute, time.Minute, time.Minute},
+	} {
+		if got := nextWait(tc.wait, tc.interval); got != tc.want {
+			t.Errorf("nextWait(%v, %v) = %v, want %v", tc.wait, tc.interval, got, tc.want)
+		}
 	}
 }
 

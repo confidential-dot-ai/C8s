@@ -1,9 +1,15 @@
 package nriimagepolicy
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"errors"
 	"fmt"
-	"net/url"
 	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -13,7 +19,11 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/c8s/internal/podassign"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 // config represents the plugin configuration.
@@ -29,6 +39,65 @@ type config struct {
 	Policy         policyConfig         `yaml:"policy"`
 	Logging        loggingConfig        `yaml:"logging"`
 	WorkloadClaims workloadClaimsConfig `yaml:"workload_claims"`
+	// Mesh is the trusted mesh policy (roles.go); required.
+	Mesh    *meshPolicy   `yaml:"mesh"`
+	Measure measureConfig `yaml:"measure"`
+	Pod     *podConfig    `yaml:"pod,omitempty"`
+	// Worker marks a worker, whose Kubernetes control plane runs outside
+	// its TEE; only the worker image's measured config sets it.
+	Worker bool `yaml:"worker"`
+
+	// cdsAddress is the <host>:<port> this node's CDS serves on, read at load
+	// from what names it (cdsaddress.go). "" when nothing does.
+	cdsAddress string
+}
+
+// podConfig is the signed identity the guest preparation stages. Runtime UID
+// and sandbox identity come independently from NRI, never from this document.
+type podConfig struct {
+	UID       string            `yaml:"uid"`
+	Namespace string            `yaml:"namespace"`
+	Name      string            `yaml:"name"`
+	Images    map[string]string `yaml:"images"`
+	// ClientDocument is the signed assignment's client document, empty when
+	// it carried none. Its digest goes into the Pod claims and every
+	// container reads it at workloadclaims.ClientDocumentPath.
+	ClientDocument clientDocument `yaml:"client_document,omitempty"`
+}
+
+// clientDocument is opaque bytes, standard base64 in the configuration.
+type clientDocument []byte
+
+func (d *clientDocument) UnmarshalYAML(node *yaml.Node) error {
+	var value string
+	if err := node.Decode(&value); err != nil {
+		return err
+	}
+	decoded, err := base64.StdEncoding.Strict().DecodeString(value)
+	if err != nil || len(decoded) > podassign.MaxClientDocument {
+		return errors.New("pod.client_document must be standard base64 of a bounded client document")
+	}
+	*d = decoded
+	return nil
+}
+
+// digest is the client document's lowercase hex SHA-256, empty for an empty
+// document.
+func (d clientDocument) digest() string {
+	if len(d) == 0 {
+		return ""
+	}
+	h := sha256.Sum256(d)
+	return hex.EncodeToString(h[:])
+}
+
+// measureConfig extends each started workload's image digest into RTMR[3]
+// (pod-role CVMs only; set by node-services prepare), into the measured-policy
+// journal under workload_claims.socket_dir, seeded with the staged launch key
+// the register already holds. It excludes allowlist.pull.measure_policies: a
+// boot has one RTMR[3] writer.
+type measureConfig struct {
+	RTMR3 bool `yaml:"rtmr3"`
 }
 
 // pluginConfig contains plugin runtime settings.
@@ -69,8 +138,8 @@ type workloadClaimsConfig struct {
 // invocations are admitted by argv-pinned entries in the served document.
 // Base entries enforce env and mounts at final admission just like served
 // entries. The chart's component entries pin each container's argv and mount
-// table and leave env open; the node image's generated RKE2 system entries
-// leave command and args open.
+// table and leave env open; a worker image's floor pins every command and
+// leaves args open only where the pod chooses them.
 // Pull is the runtime-update source: every plugin polls CDS.
 type allowlistConfig struct {
 	Base *allowlist.Allowlist `yaml:"base"`
@@ -86,21 +155,68 @@ type allowlistConfig struct {
 
 // pullConfig configures the CDS polling source.
 type pullConfig struct {
-	URL                   string        `yaml:"url"`                     // empty disables pull
-	Interval              time.Duration `yaml:"interval"`                // ticker cadence; > 0 required when URL is set
-	Timeout               time.Duration `yaml:"timeout"`                 // per-request timeout; > 0 required when URL is set
+	URL                   string        `yaml:"url"`                     // a measured config names the CDS here; excludes cds_address_file
+	CDSAddressFile        string        `yaml:"cds_address_file"`        // the CDS endpoint an install mounts, as host:port
+	Interval              time.Duration `yaml:"interval"`                // ticker cadence; > 0 required when a CDS is named
+	Timeout               time.Duration `yaml:"timeout"`                 // per-request timeout; > 0 required when a CDS is named
 	AttestationApiURL     string        `yaml:"attestation_api_url"`     // required for https pull
-	CDSMeasurements       []string      `yaml:"cds_measurements"`        // SHA-384 hex launch digests
-	CDSRTMRs              []string      `yaml:"cds_rtmrs"`               // TDX RTMR pins <index>=<sha384-hex>; ignored for SNP evidence
-	CDSMeasurementsConfig string        `yaml:"cds_measurements_config"` // complete CDS image and operator identity policy
+	CDSMeasurementsConfig string        `yaml:"cds_measurements_config"` // the CDS pin document, every entry bound to the launch file CDS runs on
+	// CDSPinFloor is the lowest cluster version this node takes a CDS pin
+	// decree at, from the launch document it booted.
+	CDSPinFloor uint64 `yaml:"cds_pin_floor"`
+	// MeasurePolicies extends RTMR[3] (TDX) with each pulled policy before
+	// applying it. Off by default: verifiers on attestation-go predating
+	// runtime extensions, and flat RTMR[3] pins, still require the bare
+	// operator-key seed.
+	MeasurePolicies bool `yaml:"measure_policies"`
 }
 
-// validatePolicyInputs rejects competing CDS identity policy sources before I/O.
-func (c pullConfig) validatePolicyInputs() error {
-	if c.CDSMeasurementsConfig != "" && (len(c.CDSMeasurements) != 0 || len(c.CDSRTMRs) != 0) {
-		return fmt.Errorf("allowlist.pull.cds_measurements_config cannot be combined with cds_measurements or cds_rtmrs")
+// cdsSource is how a config names the CDS this node reaches: a measured boot
+// config carries the URL, an install's carries the file it mounts. Each half
+// has one source, so a node reaches one CDS and holds it to one identity.
+type cdsSource struct {
+	// URL locates the CDS, or AddressFile holds its endpoint.
+	URL         string
+	AddressFile string
+	// PinFile is the document identifying it.
+	PinFile string
+}
+
+func (s cdsSource) located() bool {
+	return s.URL != "" || s.AddressFile != ""
+}
+
+// cdsSource refuses competing sources before any I/O: config validation runs
+// where the configured documents need not exist yet.
+func (c pullConfig) cdsSource() (cdsSource, error) {
+	source := cdsSource{
+		URL:         c.URL,
+		AddressFile: c.CDSAddressFile,
+		PinFile:     c.CDSMeasurementsConfig,
 	}
-	return nil
+	if source.URL != "" && source.AddressFile != "" {
+		return cdsSource{}, fmt.Errorf("allowlist.pull.url cannot be combined with cds_address_file: a node reaches one CDS")
+	}
+	return source, nil
+}
+
+// policySet is the CDS identity set this node's own clients and its injected
+// credential clients are held to. The document declares the family of the CDS
+// VM, which an operator chooses independently of this node's, and binds every
+// entry to the launch file that CDS runs on.
+func (c pullConfig) policySet() (refvalues.ReferenceValues, error) {
+	source, err := c.cdsSource()
+	if err != nil {
+		return refvalues.ReferenceValues{}, err
+	}
+	set, err := (cmdsutil.ImagePolicySource{File: source.PinFile}).Values()
+	if err != nil {
+		return refvalues.ReferenceValues{}, fmt.Errorf("allowlist.pull: %w", err)
+	}
+	if _, err := cmdsutil.CDSLaunchFile(set); err != nil {
+		return refvalues.ReferenceValues{}, fmt.Errorf("allowlist.pull.cds_measurements_config %w", err)
+	}
+	return set, nil
 }
 
 // containerdConfig contains containerd connection settings for tag-to-digest resolution.
@@ -112,7 +228,7 @@ type containerdConfig struct {
 // policyConfig contains policy enforcement settings.
 type policyConfig struct {
 	Mode                  string      `yaml:"mode"`                    // fail-closed, audit
-	EnforceExisting       bool        `yaml:"enforce_existing"`        // kill non-allowlisted containers on startup
+	EnforceExisting       bool        `yaml:"enforce_existing"`        // kill denied running containers on startup and after each applied allowlist
 	DenyMissingAnnotation bool        `yaml:"deny_missing_annotation"` // deny containers without image annotation
 	LabelRules            []labelRule `yaml:"label_rules"`
 
@@ -122,19 +238,16 @@ type policyConfig struct {
 	// enforce; see sandbox.go and docs/allowlist-and-capabilities.md.
 	Sandbox sandboxMode `yaml:"sandbox"`
 
-	// ExemptNamespaces admits a namespace's containers by the digests captured
-	// running in it at first admission, not by a name the control plane picks.
-	// See exempt.go and docs/getcert-workload-binding.md — Corner 8.
+	// Admitted by ExemptRepositories, see docs/getcert-workload-binding.md — Corner 8.
 	ExemptNamespaces []string `yaml:"exempt_namespaces"`
-	// ExemptSnapshotPath persists the captured per-namespace digest set. Required
-	// when ExemptNamespaces is set; must sit on a filesystem that survives reboot.
-	ExemptSnapshotPath string `yaml:"exempt_snapshot_path"`
+	// The image repository prefixes each exempt namespace admits. Required with ExemptNamespaces.
+	ExemptRepositories ExemptRepositories `yaml:"exempt_repositories"`
 
 	// FatalExisting powers the node off when a container is already running at
 	// the plugin's first registration after boot, or when the startup check
-	// denies one on a plugin restart. For the measured node image, where the
-	// plugin is pre-registered and containerd's required_plugins gate means no
-	// container can legitimately predate it. See bootgate.go.
+	// denies one on a plugin restart. For the measured node image, where
+	// containerd's required_plugins gate means no container can legitimately
+	// predate the plugin's first registration. See bootgate.go.
 	FatalExisting bool `yaml:"fatal_existing"`
 	// BootMarkerPath separates the first registration since boot from a plugin
 	// restart. Must be on tmpfs: a marker that survived a reboot would read
@@ -174,6 +287,11 @@ const (
 // loggingConfig contains logging settings.
 type loggingConfig struct {
 	Level string `yaml:"level"`
+	// Syslog is the syslog socket the plugin logs to, such as journald's
+	// /dev/log. Empty logs to stdout, which containerd discards for a
+	// pre-installed plugin: it starts one with its standard streams on
+	// /dev/null.
+	Syslog string `yaml:"syslog"`
 }
 
 const defaultPullInterval = 5 * time.Second
@@ -184,22 +302,77 @@ const defaultPullTimeout = 30 * time.Second
 // only a host process may write it, never a pod.
 const NodeIPFile = "node-ip"
 
-// defaultConfigPath is the plugin config containerd's plugin_config_path
-// resolves for this plugin, and the file set-cds-pins patches.
-const defaultConfigPath = "/etc/nri/conf.d/image-policy.yaml"
+// DefaultConfigPath is the config the plugin opens with no -config argument,
+// and the measured policy its runtime wrapper reads (internal/cmds/c8srunc).
+const DefaultConfigPath = "/etc/nri/conf.d/image-policy.yaml"
 
-// loadConfig loads configuration from a YAML file.
+// loadConfig loads configuration from a YAML file, and completes the one
+// binding a launched node makes itself (cdsaddress.go).
 func loadConfig(path string) (*config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read config file: %w", err)
 	}
-	return parseConfig(data)
+	return completeConfig(data)
 }
 
-// parseConfig decodes and validates a config document. set-cds-pins reads the
-// file it is about to patch through here, so the patched bytes are accepted by
-// exactly the loader the plugin boots with.
+// completeConfig parses data and completes its runtime role bindings.
+func completeConfig(data []byte) (*config, error) {
+	cfg, err := parseConfig(data)
+	if err != nil {
+		return nil, err
+	}
+	address, err := loadCDSAddress(cfg.Allowlist.Pull)
+	if err != nil {
+		return nil, fmt.Errorf("the CDS this node reaches: %w", err)
+	}
+	cfg.cdsAddress = address
+	if err := bindCredentialRole(cfg); err != nil {
+		return nil, fmt.Errorf("bind the %s role to the CDS this node reaches: %w", CredentialRole, err)
+	}
+	if err := cfg.validateMeshRoleBindings(); err != nil {
+		return nil, fmt.Errorf("validate mesh role bindings: %w", err)
+	}
+	return cfg, nil
+}
+
+// CheckBootConfig loads data the way the plugin loads its configuration file
+// at start, refusing any key the plugin does not read, so a misspelt key is an
+// error rather than a server's rules.
+func CheckBootConfig(data []byte) error {
+	_, err := checkedConfig(data)
+	return err
+}
+
+// checkedConfig is the configuration the plugin would run with, or the error
+// it would exit with.
+func checkedConfig(data []byte) (*config, error) {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(&config{}); err != nil {
+		return nil, fmt.Errorf("parse config: %w", err)
+	}
+	return completeConfig(data)
+}
+
+// CheckWorkerConfig loads data the way the plugin does and requires a worker's
+// posture: worker: true, and policy measurement.
+func CheckWorkerConfig(data []byte) error {
+	cfg, err := checkedConfig(data)
+	if err != nil {
+		return err
+	}
+	if !cfg.Worker {
+		return errors.New("config does not set worker: true")
+	}
+	if !cfg.Allowlist.Pull.MeasurePolicies {
+		return errors.New("worker requires allowlist.pull.measure_policies: its evidence records each served allowlist it applies")
+	}
+	return nil
+}
+
+// parseConfig validates static configuration for the plugin. loadConfig
+// completes runtime role bindings before validating them.
 func parseConfig(data []byte) (*config, error) {
 	cfg := &config{
 		Allowlist: allowlistConfig{
@@ -226,12 +399,6 @@ func parseConfig(data []byte) (*config, error) {
 	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
-	// The pin parsers take one spelling of a digest, and this file is
-	// hand-editable: fold the case an operator typed rather than refusing a
-	// config the node has been booting with.
-	cfg.Allowlist.Pull.CDSMeasurements = foldHexPins(cfg.Allowlist.Pull.CDSMeasurements)
-	cfg.Allowlist.Pull.CDSRTMRs = foldHexPins(cfg.Allowlist.Pull.CDSRTMRs)
-
 	if cfg.Allowlist.Base != nil {
 		if err := cfg.Allowlist.Base.Normalize(); err != nil {
 			return nil, fmt.Errorf("allowlist.base: %w", err)
@@ -245,20 +412,20 @@ func parseConfig(data []byte) (*config, error) {
 	return cfg, nil
 }
 
-// foldHexPins lowercases each pin, leaving blanks and the "<index>=" prefix of
-// an RTMR pin untouched: both halves are hex or digits, which fold to
-// themselves.
-func foldHexPins(vals []string) []string {
-	out := make([]string, len(vals))
-	for i, v := range vals {
-		out[i] = strings.ToLower(v)
+// checkPullURL holds a configured pull URL to the https <host>:<port> this
+// cluster's CDS serves on: CDS serves armTLS only.
+func checkPullURL(raw string) error {
+	if raw == "" {
+		return nil
 	}
-	return out
+	if _, err := cmdsutil.CDSURLAddress(raw); err != nil {
+		return fmt.Errorf("allowlist.pull.url %w", err)
+	}
+	return nil
 }
 
 // NormalizedPlatform folds the az-/gcp- variants onto the two TEE families the
-// armTLS extension records, matching what CDS does with its own
-// --armtls-platform. Defaulting here rather than in loadConfig keeps every
+// armTLS extension records. Defaulting here rather than in loadConfig keeps every
 // construction path on the same value, including callers that build a config
 // literal and validate it directly.
 func (c *config) NormalizedPlatform() string {
@@ -273,8 +440,34 @@ func (c *config) NormalizedPlatform() string {
 	return family.String()
 }
 
-// PullEnabled reports whether the plugin should poll a remote CDS.
-func (c *config) PullEnabled() bool { return c.Allowlist.Pull.URL != "" }
+// podRole reports whether this boot is a pod CVM's: the signed pod section is
+// present, and validatePod ties it to measure.rtmr3 and mesh.pod, so the
+// plugin asks this one question wherever the two roles part.
+func (c *config) podRole() bool {
+	return c.Pod != nil
+}
+
+// injectsCredentialClients excludes a pod CVM: measuring its workloads does
+// not grant containers access to node credential services.
+func (c *config) injectsCredentialClients() bool {
+	return c.WorkloadClaims.SocketDir != "" && !c.podRole()
+}
+
+// PullEnabled: a config naming two CDS sources never loads (cdsSource), so
+// either half answers.
+func (c *config) PullEnabled() bool {
+	return c.Allowlist.Pull.URL != "" || c.Allowlist.Pull.CDSAddressFile != ""
+}
+
+// pullURL is the CDS this node pulls its allowlist from: the endpoint
+// whatever named it at load (cdsaddress.go), dialled over armTLS. Empty where
+// the config names no CDS.
+func (c *config) pullURL() string {
+	if c.cdsAddress == "" {
+		return ""
+	}
+	return cmdsutil.CDSURL(c.cdsAddress)
+}
 
 // baseEnabled reports whether the base allowlist carries any workload.
 func (c *config) baseEnabled() bool {
@@ -291,6 +484,16 @@ func (c *config) sandboxMode() sandboxMode {
 	return c.Policy.Sandbox
 }
 
+// allowlistRevokesRunning reports whether a running container the allowlist
+// no longer admits is killed.
+func (c *config) allowlistRevokesRunning() bool {
+	return c.Policy.Mode != ModeAudit && c.Policy.EnforceExisting
+}
+
+func (c *config) isExemptNamespace(namespace string) bool {
+	return slices.Contains(c.Policy.ExemptNamespaces, namespace)
+}
+
 // sandboxObserved reports whether the host-privilege observation runs at all.
 func (c *config) sandboxObserved() bool { return c.sandboxMode() != SandboxOff }
 
@@ -301,6 +504,28 @@ func (c *config) AllowlistEnabled() bool {
 
 // Validate checks the configuration for errors.
 func (c *config) Validate() error {
+	for _, check := range []func() error{
+		c.validatePlatform,
+		c.validateFatalExisting,
+		c.validatePull,
+		c.validateEnforcementMechanism,
+		c.validatePolicyModes,
+		c.validateNodeTCB,
+		c.validateWorkloadClaims,
+		c.validateMeasuredJournal,
+		c.validateExemptRepositories,
+		c.validateMesh,
+		c.validatePod,
+		c.validateWorker,
+	} {
+		if err := check(); err != nil {
+			return err
+		}
+	}
+	return validateLabelRules(c.Policy.LabelRules)
+}
+
+func (c *config) validatePlatform() error {
 	// Reject at load rather than at the first CDS handshake: a wrong platform
 	// produces a peer-attestation failure on the CDS side that names the
 	// evidence platform, not this setting, so the cause is several hops from
@@ -308,58 +533,66 @@ func (c *config) Validate() error {
 	if _, err := teetypes.ParseFamily(c.NormalizedPlatform()); err != nil {
 		return fmt.Errorf("platform %q is not a supported CPU TEE (want snp or tdx)", c.Platform)
 	}
-	if c.Policy.FatalExisting {
-		// Both couplings are what makes the setting mean anything: audit mode
-		// reaches no deny branch, and without enforce_existing the startup
-		// check never evaluates a running container.
-		if c.Policy.Mode != ModeFailClosed {
-			return fmt.Errorf("policy.fatal_existing requires policy.mode %q, got %q", ModeFailClosed, c.Policy.Mode)
-		}
-		if !c.Policy.EnforceExisting {
-			return fmt.Errorf("policy.fatal_existing requires policy.enforce_existing")
-		}
-		if !strings.HasPrefix(c.Policy.BootMarkerPath, "/") {
-			return fmt.Errorf("policy.boot_marker_path must be an absolute path on tmpfs when policy.fatal_existing is set, got %q", c.Policy.BootMarkerPath)
-		}
+	return nil
+}
+
+func (c *config) validateFatalExisting() error {
+	if !c.Policy.FatalExisting {
+		return nil
 	}
+	// Both couplings are what makes the setting mean anything: audit mode
+	// reaches no deny branch, and without enforce_existing the startup
+	// check never evaluates a running container.
+	if c.Policy.Mode != ModeFailClosed {
+		return fmt.Errorf("policy.fatal_existing requires policy.mode %q, got %q", ModeFailClosed, c.Policy.Mode)
+	}
+	if !c.Policy.EnforceExisting {
+		return fmt.Errorf("policy.fatal_existing requires policy.enforce_existing")
+	}
+	if !strings.HasPrefix(c.Policy.BootMarkerPath, "/") {
+		return fmt.Errorf("policy.boot_marker_path must be an absolute path on tmpfs when policy.fatal_existing is set, got %q", c.Policy.BootMarkerPath)
+	}
+	return nil
+}
+
+func (c *config) validatePull() error {
 	if c.PullEnabled() && !c.baseEnabled() {
 		return fmt.Errorf("allowlist.base must carry at least one workload when pull is configured (cold-boot baseline)")
 	}
-	if c.PullEnabled() {
-		if err := c.Allowlist.Pull.validatePolicyInputs(); err != nil {
-			return err
-		}
-		if c.Allowlist.Pull.Timeout <= 0 {
-			return fmt.Errorf("allowlist.pull.timeout must be > 0 when pull.url is set")
-		}
-		if c.Allowlist.Pull.Interval <= 0 {
-			return fmt.Errorf("allowlist.pull.interval must be > 0 when pull.url is set")
-		}
-		parsed, err := url.Parse(c.Allowlist.Pull.URL)
-		if err != nil {
-			return fmt.Errorf("allowlist.pull.url: %w", err)
-		}
-		// CDS serves armTLS only, so the pull URL must be https — a plaintext
-		// pull would defeat the attestation handshake entirely.
-		if parsed.Scheme != "https" {
-			return fmt.Errorf("allowlist.pull.url scheme must be https, got %q", parsed.Scheme)
-		}
-		if c.Allowlist.Pull.AttestationApiURL == "" {
-			return fmt.Errorf("allowlist.pull.attestation_api_url must be set")
-		}
-		if _, err := refvalues.ParseHexMeasurementsList(c.Allowlist.Pull.CDSMeasurements); err != nil {
-			return fmt.Errorf("allowlist.pull.cds_measurements: %w", err)
-		}
-		if _, err := refvalues.ParseRegisterPins(c.Allowlist.Pull.CDSRTMRs); err != nil {
-			return fmt.Errorf("allowlist.pull.cds_rtmrs: %w", err)
-		}
+	source, err := c.Allowlist.Pull.cdsSource()
+	if err != nil {
+		return err
 	}
+	if !source.located() {
+		return nil
+	}
+	if c.Allowlist.Pull.Timeout <= 0 {
+		return fmt.Errorf("allowlist.pull.timeout must be > 0 when allowlist.pull names a CDS")
+	}
+	if c.Allowlist.Pull.Interval <= 0 {
+		return fmt.Errorf("allowlist.pull.interval must be > 0 when allowlist.pull names a CDS")
+	}
+	if err := checkPullURL(source.URL); err != nil {
+		return err
+	}
+	if c.Allowlist.Pull.AttestationApiURL == "" {
+		return fmt.Errorf("allowlist.pull.attestation_api_url must be set")
+	}
+	return nil
+}
+
+func (c *config) validateEnforcementMechanism() error {
 	if !c.AllowlistEnabled() && len(c.Policy.LabelRules) == 0 {
 		return fmt.Errorf("set allowlist.base (required when pull is enabled) or configure policy.label_rules")
 	}
+	return nil
+}
+
+func (c *config) validatePolicyModes() error {
 	if c.Policy.Mode != ModeFailClosed && c.Policy.Mode != ModeAudit {
 		return fmt.Errorf("policy.mode must be '%s' or '%s'", ModeFailClosed, ModeAudit)
 	}
+	// A validated config carries an explicit policy.sandbox; sandboxMode reads an unset one as off.
 	switch c.Policy.Sandbox {
 	case SandboxEnforce, SandboxAudit, SandboxOff:
 	case "":
@@ -367,22 +600,176 @@ func (c *config) Validate() error {
 	default:
 		return fmt.Errorf("policy.sandbox must be '%s', '%s' or '%s'", SandboxEnforce, SandboxAudit, SandboxOff)
 	}
+	return nil
+}
+
+func (c *config) validateNodeTCB() error {
 	// The marker grants the base an exemption, so an empty base makes it a
 	// statement about nothing — and a config that carries it without one is
 	// more likely a key in the wrong section than an intent.
 	if c.Allowlist.NodeTCB && !c.baseEnabled() {
 		return fmt.Errorf("allowlist.node_tcb needs a non-empty allowlist.base: it exempts the base's digests from the sandbox policy")
 	}
+	// The exemption rests on the base being measured with the image, which is
+	// the worker image's floor; the only other base is a chart-rendered one,
+	// chosen by the admin the policy defends against.
+	if c.Allowlist.NodeTCB && !c.Worker {
+		return errors.New("allowlist.node_tcb requires worker: true: a measured base is a worker image's floor")
+	}
+	return nil
+}
+
+func (c *config) validateWorkloadClaims() error {
 	if c.WorkloadClaims.SocketDir != "" && !c.AllowlistEnabled() {
 		return fmt.Errorf("workload_claims.socket_dir requires allowlist.base or allowlist.pull: the inventory reports digests for CDS to match against the allowlist")
 	}
 	if c.WorkloadClaims.PublishNodeIP && c.WorkloadClaims.SocketDir == "" {
 		return fmt.Errorf("workload_claims.publish_node_ip requires workload_claims.socket_dir: the node-ip file lives there")
 	}
-	if len(c.Policy.ExemptNamespaces) > 0 && c.Policy.ExemptSnapshotPath == "" {
-		return fmt.Errorf("policy.exempt_namespaces requires policy.exempt_snapshot_path: the captured digest set must persist across restarts")
+	return nil
+}
+
+func (c *config) validateMeasuredJournal() error {
+	// Certificate producers read the journal only from the default runtime directory.
+	journalDir := filepath.Dir(armtls.NodeJournal)
+	if c.Allowlist.Pull.MeasurePolicies && !c.PullEnabled() {
+		return fmt.Errorf("allowlist.pull.measure_policies requires a CDS to pull from: only pulled policies are measured")
 	}
-	return validateLabelRules(c.Policy.LabelRules)
+	if c.Allowlist.Pull.MeasurePolicies && filepath.Clean(c.WorkloadClaims.SocketDir) != journalDir {
+		return fmt.Errorf("allowlist.pull.measure_policies requires workload_claims.socket_dir %s (got %q): certificate producers read the measured-policy journal there", journalDir, c.WorkloadClaims.SocketDir)
+	}
+	if !c.Measure.RTMR3 {
+		return nil
+	}
+	if c.Allowlist.Pull.MeasurePolicies {
+		return ErrPodRoleMeasurePolicies
+	}
+	if filepath.Clean(c.WorkloadClaims.SocketDir) != journalDir {
+		return fmt.Errorf("measure.rtmr3 requires workload_claims.socket_dir %s (got %q): pod-status and certificate producers read the measured journal there", journalDir, c.WorkloadClaims.SocketDir)
+	}
+	return nil
+}
+
+func (c *config) validateExemptRepositories() error {
+	for _, namespace := range c.Policy.ExemptNamespaces {
+		prefixes := c.Policy.ExemptRepositories[namespace]
+		if len(prefixes) == 0 {
+			return fmt.Errorf("policy.exempt_namespaces %q requires policy.exempt_repositories[%q]: the namespace admits the provider's add-on repositories, which the chart's platform values name", namespace, namespace)
+		}
+		for _, prefix := range prefixes {
+			if err := validRepositoryPrefix(prefix); err != nil {
+				return fmt.Errorf("policy.exempt_repositories[%q] holds %q: %w", namespace, prefix, err)
+			}
+		}
+	}
+	return nil
+}
+
+func (c *config) validatePod() error {
+	if !c.Measure.RTMR3 && c.Pod == nil && c.Mesh.Pod == nil {
+		return nil
+	}
+	if c.Worker {
+		return errors.New("a Pod guest is not a worker")
+	}
+	if !c.Measure.RTMR3 || c.Pod == nil || c.Mesh.Pod == nil {
+		return fmt.Errorf("the Pod broker requires measure.rtmr3 and the signed pod uid, namespace and name")
+	}
+	if c.NormalizedPlatform() != "tdx" || !c.PullEnabled() || c.Allowlist.Pull.CDSMeasurementsConfig == "" || c.Allowlist.NodeTCB || c.Policy.Mode != ModeFailClosed || c.Policy.Sandbox != SandboxEnforce || !c.Policy.FatalExisting {
+		return fmt.Errorf("the Pod broker requires TDX, authenticated CDS pull and fail-closed sandbox enforcement without node TCB")
+	}
+	if len(c.Policy.ExemptNamespaces) != 0 || len(c.Mesh.ExemptNamespaces) != 0 || c.Pod.Namespace == routerNamespace {
+		return fmt.Errorf("the Pod broker permits no namespace exemptions or router namespace")
+	}
+	if len(c.Mesh.Roles) != 1 || c.Mesh.Roles[0].Name != meshRole || c.Mesh.Roles[0].UID != workloadclaims.MeshUID || c.Mesh.Roles[0].Port != 0 || c.Mesh.CredentialAttestationPort != 0 {
+		return fmt.Errorf("the Pod broker requires only the mesh role and no Pod credential-client bypass")
+	}
+	if c.Pod.UID == "" || c.Pod.Namespace == "" || c.Pod.Name == "" {
+		return errors.New("the Pod broker requires the signed pod uid, namespace and name")
+	}
+	if err := c.Mesh.Pod.validate(); err != nil {
+		return err
+	}
+	return c.validatePodImages()
+}
+
+// validateWorker requires a worker to enforce its policy and to exempt no
+// namespace.
+func (c *config) validateWorker() error {
+	if !c.Worker {
+		return nil
+	}
+	if !c.enforcesWorkerPolicy() {
+		return fmt.Errorf("worker requires allowlist.node_tcb, allowlist.base, policy.mode %q, policy.sandbox %q and policy.deny_missing_annotation", ModeFailClosed, SandboxEnforce)
+	}
+	if len(c.Mesh.ExemptNamespaces) > 0 {
+		return fmt.Errorf("worker requires no mesh.exempt_namespaces, got %v: the control plane chooses a pod's namespace", c.Mesh.ExemptNamespaces)
+	}
+	if c.Mesh.CredentialAttestationPort != 0 {
+		return errors.New("worker requires no mesh.credential_attestation_port: its credential clients verify through the node's attestation socket")
+	}
+	return nil
+}
+
+// enforcesWorkerPolicy reports whether c's base allowlist is the node's TCB
+// and its policy fails closed, enforces sandbox checks and denies containers
+// without an image annotation.
+func (c *config) enforcesWorkerPolicy() bool {
+	return c.Allowlist.NodeTCB &&
+		c.Allowlist.Base != nil &&
+		c.Policy.Mode == ModeFailClosed &&
+		c.Policy.Sandbox == SandboxEnforce &&
+		c.Policy.DenyMissingAnnotation
+}
+
+// validateMesh requires a mesh policy this node can enforce.
+func (c *config) validateMesh() error {
+	if c.Mesh == nil {
+		return errors.New("mesh is required: the enforcer verifies a pod's protection before any workload identity assertion")
+	}
+	if err := c.Mesh.validate(); err != nil {
+		return err
+	}
+	if c.requiresTrustedMeshEnforcement() && (c.Policy.Mode != ModeFailClosed || !c.Policy.FatalExisting) {
+		return fmt.Errorf("mesh requires policy.mode %q and policy.fatal_existing: a member pod needs trusted enforcement from node startup", ModeFailClosed)
+	}
+	// A namespace the admission carve-out admits holds the provider's platform
+	// pods, which came up before any enforcer connected and run as no member
+	// pod's container may, so the mesh exempts it rather than refuse them.
+	for _, namespace := range c.Policy.ExemptNamespaces {
+		if !slices.Contains(c.Mesh.ExemptNamespaces, namespace) {
+			return fmt.Errorf("policy.exempt_namespaces %q must also be in mesh.exempt_namespaces: the gate refuses the platform pods that were running before any enforcer connected", namespace)
+		}
+	}
+	return nil
+}
+
+func (c *config) validateMeshRoleBindings() error {
+	if c.Allowlist.Base == nil {
+		return nil
+	}
+	identities := c.Mesh.reservedIdentities()
+	for name, workload := range c.Allowlist.Base.Workloads {
+		for _, container := range workload.Containers {
+			if container.Role == "" {
+				continue
+			}
+			if _, bound := identities[container.Role]; !bound {
+				return fmt.Errorf("allowlist.base workload %s role %s has no mesh identity binding", name, container.Role)
+			}
+		}
+	}
+	return nil
+}
+
+// requiresTrustedMeshEnforcement reports whether this node's mesh policy is
+// one the cluster admin could not write. A config claiming the node TCB is
+// measured with a baked image, and its members' protection rests on
+// fail-closed admission and the boot gate; a chart-rendered config is an
+// install, where the mesh runs for test clusters and the admin who wrote the
+// policy could undo the enforcement anyway.
+func (c *config) requiresTrustedMeshEnforcement() bool {
+	return c.Allowlist.NodeTCB || c.Measure.RTMR3
 }
 
 // validateLabelRules checks label rules for errors.

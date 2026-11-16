@@ -5,6 +5,9 @@ services:
       dockerfile: test/mock-attestation/Dockerfile
     environment:
       PORT: "8400"
+      # The launch binding every report carries: run.sh derives it from the
+      # same bytes cds-pin.json pins as the mock CDS's launch file.
+      HOST_DATA: ${CDS_HOST_DATA:?run this through test/integration/run.sh}
 
   mock-cds:
     build:
@@ -15,6 +18,23 @@ services:
       ATTESTATION_API_URL: "http://mock-attestation:8400"
     depends_on:
       - mock-attestation
+      - mock-inventory
+
+  # Stands in for nri-image-policy: serves the sandbox-token route on the
+  # socket get-cert dials, and the signing key mock-cds verifies tokens with.
+  mock-inventory:
+    build:
+      context: ../..
+      dockerfile: test/mock-inventory/Dockerfile
+    volumes:
+      - workload-claims:/run/c8s/workload-claims
+    healthcheck:
+      # get-cert asserts its workload instance before its first retryable
+      # request, so the socket must exist before it starts.
+      test: ["CMD", "test", "-S", "/run/c8s/workload-claims/workload-claims.sock"]
+      interval: 1s
+      timeout: 2s
+      retries: 30
 
   # A simple backend that the nginx proxy forwards to.
   backend:
@@ -40,18 +60,26 @@ services:
     command:
       - --cds-url=https://mock-cds:8080
       - --attestation-api-url=http://mock-attestation:8400
-      # The mock attestation-api's launch digest is all-zero; get-cert must pin it.
-      - --cds-measurements=000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+      - --image-policy-file=/pin/cds-pin.json
       - --san=nginx-lb
-      - --out=/tls/cert.pem
-      - --key-out=/tls/key.pem
+      - --cert-path=/tls/cert.pem
+      - --key-path=/tls/key.pem
+      - --ca-path=/tls/ca.pem
       - --verbose
     volumes:
       - tls-certs:/tls
+      - ${CDS_PIN:?run this through test/integration/run.sh}:/pin/cds-pin.json:ro
+      # The inventory socket arrives read-only, as the NRI plugin mounts it.
+      - workload-claims:/run/c8s/workload-claims:ro
     depends_on:
-      - mock-cds
-      - mock-attestation
-      - tls-holder
+      mock-cds:
+        condition: service_started
+      mock-attestation:
+        condition: service_started
+      tls-holder:
+        condition: service_started
+      mock-inventory:
+        condition: service_healthy
 
   nginx-lb:
     image: nginx:1.30-alpine
@@ -68,9 +96,13 @@ services:
 
 volumes:
   # tmpfs-backed like the Memory-medium emptyDir the webhook injects in
-  # production: get-cert refuses a --key-out on persistent storage.
+  # production: get-cert refuses a credential volume on persistent storage.
   tls-certs:
     driver: local
     driver_opts:
       type: tmpfs
       device: tmpfs
+
+  # The inventory's socket directory, bind-mounted by its NRI plugin in
+  # production.
+  workload-claims:

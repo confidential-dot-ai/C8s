@@ -118,6 +118,9 @@ func manifestFamily(path string, want teetypes.Family) (teetypes.Family, error) 
 		return teetypes.FamilyUnknown, err
 	}
 	if len(families) == 1 {
+		if want != teetypes.FamilyUnknown && want != families[0] {
+			return teetypes.FamilyUnknown, fmt.Errorf("--tee asks for %s, but image manifest %s is built for %s", want, path, families[0])
+		}
 		return families[0], nil
 	}
 	if want == teetypes.FamilyUnknown {

@@ -2,16 +2,28 @@ package helmchart
 
 import (
 	"maps"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
 
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
+
+// writeMeasurementsConfig writes a measurements document where helm
+// --set-file can read it, whatever directory the render runs in.
+func writeMeasurementsConfig(t *testing.T, document string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "measurements.json")
+	if err := os.WriteFile(path, []byte(document), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
 
 // kubeletExpand is the kubelet's $(VAR) expansion of one argv token: $$ is a
 // literal $, a reference to a variable the container defines becomes its
@@ -48,10 +60,14 @@ func kubeletExpand(token string, env map[string]string) string {
 }
 
 // runtimeArgv is the OCI process.args the runtime starts: the container's
-// command and args after kubelet expansion, with the image entrypoint in
-// place of an absent command.
+// command and args after kubelet expansion over its env and the kubelet's
+// service variables, with the image entrypoint in place of an absent command.
 func runtimeArgv(c corev1.Container, entrypoint []string) []string {
 	env := map[string]string{}
+	for _, kv := range kubeletServiceEnv {
+		name, value, _ := strings.Cut(kv, "=")
+		env[name] = value
+	}
 	for _, e := range c.Env {
 		env[e.Name] = e.Value
 		if e.ValueFrom != nil {
@@ -136,14 +152,16 @@ func observedMounts(t *testing.T, spec corev1.PodSpec, c corev1.Container) []pkg
 		if !ok {
 			t.Fatalf("container %s mounts undeclared volume %q", c.Name, m.Name)
 		}
-		mount := pkgallowlist.ObservedMount{Destination: m.MountPath, Class: pkgallowlist.MountData, Storage: pkgallowlist.MountUnknown}
+		// The kubelet's host source for a pod volume ends in the volume's
+		// name, which is what an exact rule binds (pkg/allowlist).
+		mount := pkgallowlist.ObservedMount{Destination: m.MountPath, Source: podVolumeSource(m.Name), Volume: m.Name, Class: pkgallowlist.MountData, Storage: pkgallowlist.MountUnknown}
 		switch {
 		case v.HostPath != nil:
 			digest, err := pkgallowlist.HostSourceDigest(v.HostPath.Path)
 			if err != nil {
 				t.Fatalf("container %s volume %q: %v", c.Name, m.Name, err)
 			}
-			mount = pkgallowlist.ObservedMount{Destination: m.MountPath, Class: pkgallowlist.MountHost, Storage: pkgallowlist.MountUnknown, HostSourceDigest: digest, ReadOnly: m.ReadOnly}
+			mount = pkgallowlist.ObservedMount{Destination: m.MountPath, Source: v.HostPath.Path, Class: pkgallowlist.MountHost, Storage: pkgallowlist.MountUnknown, HostSourceDigest: digest, ReadOnly: m.ReadOnly}
 		case v.EmptyDir != nil:
 			mount.Class = pkgallowlist.MountEmptyDir
 			if v.EmptyDir.Medium == corev1.StorageMediumMemory {
@@ -170,6 +188,19 @@ type componentPin struct {
 // componentPins maps each component digest a render sets to its
 // componentPin, from the render's own --set arguments, the CDS digest
 // helmTemplate pins and the nginx digest the router renders.
+// renderedLaunch is the launch a node observes for a rendered component
+// container: its argv, its classified mount table and the environment it
+// starts with. It is what Index.RoleOf and AdmitsContainer are given.
+func renderedLaunch(t *testing.T, spec corev1.PodSpec, c corev1.Container, pin componentPin) pkgallowlist.RunningContainer {
+	t.Helper()
+	return pkgallowlist.RunningContainer{
+		Digest: digestOf(c.Image),
+		Argv:   runtimeArgv(c, pin.entrypoint),
+		Mounts: observedMounts(t, spec, c),
+		Env:    launchEnv(t, spec, c, pin.imageEnv),
+	}
+}
+
 func componentPins(t *testing.T, out string, args []string) map[string]componentPin {
 	t.Helper()
 	entrypoints, envs := componentPinValues(t), componentImageEnvValues(t)
@@ -190,7 +221,7 @@ func componentPins(t *testing.T, out string, args []string) map[string]component
 	for _, w := range renderedPodSpecs(t, out) {
 		for _, c := range w.spec.Containers {
 			if strings.Contains(c.Image, "nginx-unprivileged@") {
-				pins[imageDigest(c.Image)] = values["router.nginx"]
+				pins[imageDigest(c.Image)] = values["routerNginx"]
 			}
 		}
 	}
@@ -209,7 +240,7 @@ func injectedShape(c pkgallowlist.Container) bool {
 // and by the plugin's base where one renders, under exactly the argv, mount
 // table and environment it is rendered with: one argument more, one mount
 // fewer or one more, a loader variable or a redirected PATH is refused. On
-// default, bare-metal and baked renders alike, no component entry leaves env
+// default, AKS and worker renders alike, no component entry leaves env
 // open, nor args or mounts except the injected sidecar shapes, whose args are
 // per pod and whose mount tables leave out the inventory socket.
 func TestChartComponentShapesAreExact(t *testing.T) {
@@ -218,33 +249,20 @@ func TestChartComponentShapesAreExact(t *testing.T) {
 	for valuePath, digest := range componentTestDigests {
 		digests = append(digests, "--set", valuePath+".digest="+digest)
 	}
-	derived := append([]string{"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true"}, digests...)
-	measurements := strings.Repeat("a", 96)
-	measurementsConfig := writeChartImagePolicy(t, `{"schema_version":"1","tee":"tdx","measurements":[{"name":"first","mrtd":"`+measurements+`"}]}`)
+	derived := digests
 	for _, tc := range []struct {
-		name string
-		args []string
-		base bool
+		name   string
+		render func(t *testing.T, args ...string) (string, error)
+		args   []string
+		base   bool
 	}{
-		{"default", append(slices.Clone(derived), "--set", "volumed.enabled=true", "--set", "attestationApi.enabled=true"), true},
-		{"gke", append(slices.Clone(derived), "--set", "attestationApi.cvmMode=gke", "--set", "attestationApi.enabled=true", "--set", "volumed.enabled=true"), true},
-		{"bare-metal", append(slices.Clone(derived),
-			"--set", "attestationApi.cvmMode=bare-metal", "--set", "attestationApi.enabled=false",
-			"--set", "nriImagePolicy.baked=true", "--set", "router.attest.enabled=true", "--set", "volumed.enabled=true"), false},
-		{"bare-metal router gate", append(slices.Clone(derived),
-			"--set", "attestationApi.cvmMode=bare-metal", "--set", "attestationApi.enabled=false", "--set", "nriImagePolicy.baked=true",
-			"--set", "router.attest.enabled=true", "--set", "router.attest.expectedWorkload=front", "--set", "router.hostPort.enabled=false"), false},
-		{"webpki and discovery", append(slices.Clone(derived),
-			"--set", "router.publicTLS.mode=webpki", "--set", "router.publicTLS.secretName=pub", "--set", "router.discovery.enabled=true",
-			"--set-file", "cds.measurementsConfig="+measurementsConfig, "--set-file", "armtlsMesh.measurementsConfig="+measurementsConfig,
-			"--set", "cds.measurements={"+measurements+"}"), true},
-		{"acme", append(slices.Clone(derived),
-			"--set", "router.publicTLS.mode=acme", "--set", "router.service.type=LoadBalancer", "--set-json", `router.san=["a.example.com"]`), true},
-		{"escaped operator args", append(slices.Clone(derived), "--set-json", `operator.extraArgs=["cost $5","$(a $$","$$(POD_NAME)"]`), true},
-		{"baked", append(slices.Clone(bakedArgs), "--set", "armtlsMesh.image.digest=sha256:"+strings.Repeat("2", 64)), false},
+		{"default", helmTemplate, append(slices.Clone(derived), "--set", "volumed.enabled=true"), true},
+		{"aks-snp", helmTemplateAKSSNP, append(slices.Clone(derived), "--set", "volumed.enabled=true"), true},
+		{"pod CVM provider", helmTemplate, append(slices.Clone(derived), "--set", "operator.podCVMProvider.enabled=true", "--set", "operator.podCVMProvider.existingSecret=pod-launch-config"), true},
+		{"worker", helmTemplateWorker, workerRenderArgs, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			out, err := helmTemplate(t, tc.args...)
+			out, err := tc.render(t, tc.args...)
 			if err != nil {
 				t.Fatalf("helm template: %v\n%s", err, out)
 			}
@@ -258,6 +276,14 @@ func TestChartComponentShapesAreExact(t *testing.T) {
 				for name, w := range al.Workloads {
 					for _, c := range w.Containers {
 						if _, ok := pins[c.Digest.String()]; !ok {
+							continue
+						}
+						// A role entry grants a platform role; the enforcer
+						// matches it against a launch it knows the arguments
+						// of but not the mounts or the environment
+						// (Index.RoleOf), so it cannot pin either. The shape
+						// entries below are what admit these digests.
+						if c.Role != "" {
 							continue
 						}
 						if c.Env.Policy != pkgallowlist.PolicyMatch {
@@ -294,8 +320,13 @@ func TestChartComponentShapesAreExact(t *testing.T) {
 						return launchEnv(t, w.spec, c, pin.imageEnv, extra...)
 					}
 					mounts := observedMounts(t, w.spec, c)
+					// A credential client of the router pod runs the
+					// invocation and mount table the webhook injects, so the
+					// injected shape admits it with the per-pod args that
+					// shape leaves open.
+					pinnedArgs := !workloadclaims.IsInjectedContainerName(c.Name)
 					for source, al := range sources {
-						checkExactShape(t, source+" "+w.name+"/"+c.Name, al.BuildIndex(), digest, argv, mounts, launch)
+						checkExactShape(t, source+" "+w.name+"/"+c.Name, al.BuildIndex(), digest, argv, mounts, pinnedArgs, launch)
 					}
 				}
 			}
@@ -306,24 +337,30 @@ func TestChartComponentShapesAreExact(t *testing.T) {
 	}
 }
 
-// A baked router reads its nginx configuration from the image, so the seed
-// refuses a ConfigMap swapped in over that directory.
-func TestChartBakedNginxRefusesConfigMapConfig(t *testing.T) {
+// helmTemplateAKSSNP renders the cloud chart with values-aks-snp.yaml.
+func helmTemplateAKSSNP(t *testing.T, args ...string) (string, error) {
+	t.Helper()
+	return helmTemplatePlatform(t, "aks-snp", args...)
+}
+
+// The worker router reads its nginx configuration and its entrypoint from the
+// image, so the seed refuses a ConfigMap swapped in over that directory.
+func TestWorkerChartNginxRefusesConfigMapConfig(t *testing.T) {
 	t.Parallel()
-	out, err := helmTemplate(t, bakedArgs...)
+	out, err := helmTemplateWorker(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
 	spec := renderedDeployment(t, out, "c8s-router").Spec.Template.Spec
 	i := slices.IndexFunc(spec.Containers, func(c corev1.Container) bool { return c.Name == "nginx" })
 	if i < 0 {
-		t.Fatal("baked router has no nginx container")
+		t.Fatal("worker router has no nginx container")
 	}
 	nginx := spec.Containers[i]
-	pin := componentPins(t, out, bakedArgs)[imageDigest(nginx.Image)]
+	pin := componentPins(t, out, workerRenderArgs)[imageDigest(nginx.Image)]
 	argv := runtimeArgv(nginx, pin.entrypoint)
-	if !slices.Contains(argv, "/usr/lib/c8s/router-nginx/nginx.conf") {
-		t.Errorf("baked nginx argv = %q, want -c /usr/lib/c8s/router-nginx/nginx.conf", argv)
+	if !slices.Contains(argv, "/usr/lib/c8s/router-nginx/serve.sh") {
+		t.Errorf("worker nginx argv = %q, want the image's /usr/lib/c8s/router-nginx/serve.sh", argv)
 	}
 	index := renderedSeed(t, out).BuildIndex()
 	admits := func() bool {
@@ -332,15 +369,15 @@ func TestChartBakedNginxRefusesConfigMapConfig(t *testing.T) {
 		})
 	}
 	if !admits() {
-		t.Fatal("baked seed refuses nginx as rendered")
+		t.Fatal("worker seed refuses nginx as rendered")
 	}
 	v := slices.IndexFunc(spec.Volumes, func(v corev1.Volume) bool { return v.Name == "nginx-config" })
 	if v < 0 || spec.Volumes[v].HostPath == nil || spec.Volumes[v].HostPath.Path != "/usr/lib/c8s/router-nginx" {
-		t.Fatalf("baked router lacks the nginx-config hostPath /usr/lib/c8s/router-nginx: %+v", spec.Volumes)
+		t.Fatalf("worker router lacks the nginx-config hostPath /usr/lib/c8s/router-nginx: %+v", spec.Volumes)
 	}
 	spec.Volumes[v].VolumeSource = corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{}}
 	if admits() {
-		t.Error("baked seed admits nginx with its configuration from a ConfigMap")
+		t.Error("worker seed admits nginx with its configuration from a ConfigMap")
 	}
 }
 
@@ -348,7 +385,7 @@ func TestChartBakedNginxRefusesConfigMapConfig(t *testing.T) {
 // refuses it with an extra argument, without any one of its own mounts, with
 // one mount more, or with LD_PRELOAD set or PATH pointed elsewhere. launch
 // returns its launch environment with the given variables set over it.
-func checkExactShape(t *testing.T, what string, index *pkgallowlist.Index, digest string, argv []string, mounts []pkgallowlist.ObservedMount, launch func(...string) *pkgallowlist.EnvObservation) {
+func checkExactShape(t *testing.T, what string, index *pkgallowlist.Index, digest string, argv []string, mounts []pkgallowlist.ObservedMount, pinnedArgs bool, launch func(...string) *pkgallowlist.EnvObservation) {
 	t.Helper()
 	env := launch()
 	admits := func(argv []string, mounts []pkgallowlist.ObservedMount) bool {
@@ -363,7 +400,7 @@ func checkExactShape(t *testing.T, what string, index *pkgallowlist.Index, diges
 			t.Errorf("%s: admitted with %s", what, variable)
 		}
 	}
-	if admits(append(slices.Clone(argv), "--kubeconfig=/tmp/kubeconfig"), mounts) {
+	if pinnedArgs && admits(append(slices.Clone(argv), "--kubeconfig=/tmp/kubeconfig"), mounts) {
 		t.Errorf("%s: admitted with an extra argument", what)
 	}
 	extra := pkgallowlist.ObservedMount{Destination: "/extra", Class: pkgallowlist.MountEmptyDir, Storage: pkgallowlist.MountMemory}
@@ -394,38 +431,6 @@ func TestChartMemoryVolumesHaveSizeLimit(t *testing.T) {
 			if v.EmptyDir.SizeLimit == nil {
 				t.Errorf("%s/%s volume %q: memory emptyDir without sizeLimit", w.kind, w.name, v.Name)
 			}
-		}
-	}
-}
-
-// The schema accepts any positive Kubernetes quantity as the store's memory
-// limit and renders it as the volume's sizeLimit.
-func TestChartAcceptsCDSMemorySizeLimitQuantities(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		flag, value, want string
-	}{
-		{"--set-string", "64Mi", "64Mi"},
-		{"--set", "67108864", "64Mi"},
-	} {
-		out, err := helmTemplate(t, tc.flag, "cds.persistence.memorySizeLimit="+tc.value)
-		if err != nil {
-			t.Errorf("helm template %s memorySizeLimit=%s: %v\n%s", tc.flag, tc.value, err, out)
-			continue
-		}
-		pod := renderedDeployment(t, out, "c8s-cds").Spec.Template.Spec
-		i := slices.IndexFunc(pod.Volumes, func(v corev1.Volume) bool { return v.Name == "data" })
-		if i < 0 || pod.Volumes[i].EmptyDir == nil || pod.Volumes[i].EmptyDir.SizeLimit == nil {
-			t.Errorf("memorySizeLimit=%s: no data emptyDir with a sizeLimit in %+v", tc.value, pod.Volumes)
-			continue
-		}
-		if got := pod.Volumes[i].EmptyDir.SizeLimit; got.Cmp(resource.MustParse(tc.want)) != 0 {
-			t.Errorf("memorySizeLimit=%s: sizeLimit = %s, want %s", tc.value, got, tc.want)
-		}
-	}
-	for _, value := range []string{"0Mi"} {
-		if out, err := helmTemplate(t, "--set-string", "cds.persistence.memorySizeLimit="+value); err == nil {
-			t.Errorf("helm template memorySizeLimit=%s succeeded, want a schema error\n%s", value, out)
 		}
 	}
 }

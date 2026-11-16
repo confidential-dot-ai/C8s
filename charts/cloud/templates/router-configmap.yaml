@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "router.fullname" . }}-nginx
+  namespace: {{ include "c8s.routerMeshNamespace" . }}
+  labels:
+    {{- include "router.labels" . | nindent 4 }}
+data:
+  {{- include "router.cloudNginxFiles" . | fromJson | toYaml | nindent 2 }}

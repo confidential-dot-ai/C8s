@@ -1,0 +1,55 @@
+# CoreDNS for the cluster's names, on every worker, behind the control plane's
+# kube-dns Service at the documents' clusterDNS.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: coredns
+  namespace: kube-system
+  labels: {k8s-app: kube-dns}
+spec:
+  dnsPolicy: Default
+  enableServiceLinks: false
+  priorityClassName: system-cluster-critical
+  securityContext:
+    seccompProfile: {type: RuntimeDefault}
+  containers:
+  - name: coredns
+    image: registry.k8s.io/coredns/coredns:v1.14.7@sha256:7efd3c635b03efd68c4e8398fc45f0d993d0e9ab016f72c1cefb0fd6d01aa286
+    command: [/coredns]
+    args: [-conf, /etc/coredns/Corefile]
+    env:
+    - {name: PATH, value: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'}
+    - {name: SSL_CERT_FILE, value: /etc/ssl/certs/ca-certificates.crt}
+    ports:
+    - {name: dns, containerPort: 53, protocol: UDP}
+    - {name: dns-tcp, containerPort: 53, protocol: TCP}
+    livenessProbe:
+      httpGet: {path: /health, port: 8080}
+      initialDelaySeconds: 60
+      periodSeconds: 10
+      timeoutSeconds: 5
+    readinessProbe:
+      httpGet: {path: /ready, port: 8181}
+      periodSeconds: 10
+      timeoutSeconds: 1
+    securityContext:
+      # The kubelet's client key is root's alone.
+      runAsUser: 0
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      # The image's /coredns carries it as a file capability, which exec
+      # refuses once it is outside the bounding set.
+      capabilities:
+        add: [NET_BIND_SERVICE]
+        drop: [ALL]
+    volumeMounts:
+    - {name: corefile, mountPath: /etc/coredns, readOnly: true}
+    - {name: kubeconfig, mountPath: /var/lib/kubelet/kubeconfig, readOnly: true}
+    - {name: kubelet-pki, mountPath: /var/lib/kubelet/pki, readOnly: true}
+  volumes:
+  - name: corefile
+    hostPath: {path: /usr/lib/c8s/worker/coredns, type: Directory}
+  - name: kubeconfig
+    hostPath: {path: /var/lib/kubelet/kubeconfig, type: File}
+  - name: kubelet-pki
+    hostPath: {path: /var/lib/kubelet/pki, type: Directory}

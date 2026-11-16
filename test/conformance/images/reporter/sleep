@@ -1,0 +1,25 @@
+#!/bin/sh
+# The conformance reporter, as this image's sleep: test/conformance/README.md
+# ("Probes the steps exec"). The paths are CERT_VOLUME_PATH and the steps'
+# secretClientDir.
+/bin/sleep "$@" &
+pid=$!
+prev=""
+fstype=""
+while kill -0 "$pid" 2>/dev/null; do
+    now="$(find /etc/c8s/certs /run/c8s/secrets -type f ! -path /etc/c8s/certs/tls.key -exec cksum {} + 2>/dev/null)"
+    if [ "$now" != "$prev" ]; then
+        while read -r _ _ f; do
+            [ -z "$f" ] || echo "c8s-report file $f $(base64 < "$f" | tr -d '\n')"
+        done <<CHANGED
+$(printf '%s\n' "$now" | grep -vxF -e "$prev")
+CHANGED
+        prev="$now"
+    fi
+    if [ -z "$fstype" ] && [ -d /run/c8s/secrets ]; then
+        fstype="$(stat -f -c %T /run/c8s/secrets 2>/dev/null)"
+        [ -z "$fstype" ] || echo "c8s-report fstype /run/c8s/secrets $fstype"
+    fi
+    /bin/sleep 1
+done
+wait "$pid"

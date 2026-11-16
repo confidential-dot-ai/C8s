@@ -1,0 +1,33 @@
+{{- /*
+The CDS this cluster trusts: the pin its clients hold it to and the address
+they dial. The installer copies both to
+the node, where the image policy plugin reads them and hands them to every
+injected credential client. The router's sidecars read the pin from their own
+namespace, which a projected volume cannot leave, so the same document is
+rendered there too.
+
+Public policy, not secret: an address and the digests a verifier compares
+evidence against. No component's arguments name either, so an entry of the
+allowlist seed this cluster serves does not depend on the CDS serving it.
+*/ -}}
+{{- $cds := include "c8s.validatedCDSPin" . }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "c8s.fullname" . }}-measurements
+  namespace: {{ .Release.Namespace }}
+  labels:
+{{ include "c8s.commonLabels" . | indent 4 }}
+data:
+  cds.json: {{ $cds | quote }}
+  cds-address: {{ .Values.cds.address | quote }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "c8s.fullname" . }}-measurements
+  namespace: {{ include "c8s.routerMeshNamespace" . }}
+  labels:
+{{ include "c8s.commonLabels" . | indent 4 }}
+data:
+  cds.json: {{ $cds | quote }}

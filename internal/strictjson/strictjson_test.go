@@ -1,6 +1,7 @@
 package strictjson
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -34,6 +35,41 @@ func TestValidate(t *testing.T) {
 				t.Errorf("Validate(%q) = %v, want ok %v", tt.input, err, tt.ok)
 			}
 		})
+	}
+}
+
+func TestUnmarshal(t *testing.T) {
+	type document struct {
+		Name string `json:"name"`
+	}
+	var decoded document
+	if err := Unmarshal([]byte(`{"name":"a"}`), &decoded); err != nil || decoded.Name != "a" {
+		t.Fatalf("Unmarshal() = %+v, %v, want name a", decoded, err)
+	}
+	for _, tt := range []struct {
+		name  string
+		input string
+	}{
+		{"unknown field", `{"name":"a","surprise":1}`},
+		{"duplicate known key", `{"name":"a","name":"a"}`},
+		{"trailing document", `{"name":"a"} {}`},
+		{"invalid UTF-8", "{\"name\":\"\xff\"}"},
+		{"empty", ``},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var decoded document
+			if err := Unmarshal([]byte(tt.input), &decoded); err == nil {
+				t.Errorf("Unmarshal(%q) = %+v, want an error", tt.input, decoded)
+			}
+		})
+	}
+}
+
+// A map target names no field, so validation is all that refuses a duplicate key.
+func TestUnmarshalIntoAMapRefusesADuplicateKey(t *testing.T) {
+	var fields map[string]json.RawMessage
+	if err := Unmarshal([]byte(`{"a":1,"a":2}`), &fields); err == nil {
+		t.Errorf("Unmarshal(duplicate key) = %v, want an error", fields)
 	}
 }
 

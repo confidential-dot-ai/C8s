@@ -1,0 +1,17 @@
+# The worker's admission plugin unit, bound to pod staging instead of worker
+# staging. podcvm-containerd wants it; containerd refuses every container
+# create while it is not registered (required_plugins).
+[Unit]
+Description=nri-image-policy, the admission plugin containerd requires
+# It reads the runtime policy the assignment installs.
+Requires=pod-stage.service
+After=pod-stage.service podcvm-containerd.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+Environment=NRI_PLUGIN_NAME=nri-image-policy NRI_PLUGIN_IDX=10
+ExecStart=/opt/nri/plugins/10-nri-image-policy
+Restart=always
+RestartSec=1
+OOMScoreAdjust=-999

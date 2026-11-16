@@ -1,28 +1,40 @@
 package helmchart
 
 import (
-	"os"
-	"os/exec"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
-
-	"sigs.k8s.io/yaml"
 
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
-// A configuration-only upgrade keeps every image digest but changes the
-// operator's argv and so the installer's boot config. The store starts with
+// A configuration-only upgrade (one more namespace the webhooks leave alone)
+// keeps every image digest but changes the operator's argv and so the
+// installer's boot config. The store starts with
 // the previous release's policies only, which admit neither new launch. CDS
 // keeps its shape, so the old boot base still admits it and it is not
-// recreated; it reseeds when the mounted seed changes (cds.followSeed), and
-// after that the old and the new launches are all admitted.
+// recreated. Once the new seed is published (c8s allowlist apply), the old
+// and the new launches are all admitted.
 func TestChartConfigOnlyUpgradeAdmitsOldAndNewShapes(t *testing.T) {
 	t.Parallel()
-	args := []string{"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true"}
+	for name, change := range map[string][]string{
+		"webhook exclusions": {"--set", "controlPlane.webhook.extraExcluded={local-path-storage,tenant-tools}"},
+		"provider exemptions": {
+			"--set", "nriImagePolicy.policy.exemptNamespaces={provider-tools}",
+			"--set-string", "nriImagePolicy.policy.exemptRepositories.provider-tools[0]=registry.example/provider/",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			assertConfigUpgradeAdmitsOldAndNewShapes(t, change)
+		})
+	}
+}
+
+func assertConfigUpgradeAdmitsOldAndNewShapes(t *testing.T, change []string) {
+	t.Helper()
+	var args []string
 	for valuePath, digest := range componentTestDigests {
 		args = append(args, "--set", valuePath+".digest="+digest)
 	}
@@ -30,7 +42,7 @@ func TestChartConfigOnlyUpgradeAdmitsOldAndNewShapes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, before)
 	}
-	upgraded := append(slices.Clone(args), "--set-json", `operator.extraArgs=["--zap-log-level=debug"]`)
+	upgraded := slices.Concat(args, change)
 	after, err := helmTemplate(t, upgraded...)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, after)
@@ -41,10 +53,8 @@ func TestChartConfigOnlyUpgradeAdmitsOldAndNewShapes(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	if got, want := cdsShapeAnnotation(t, after), cdsShapeAnnotation(t, before); got == "" || got != want {
-		t.Fatalf("CDS shape %q after the upgrade, want unchanged %q", got, want)
-	}
-	if _, _, err := store.SeedWorkloads(renderedSeed(t, before).Workloads); err != nil {
+	allowlistWrites := store.Local()
+	if _, _, err := allowlistWrites.SeedWorkloads(renderedSeed(t, before).Workloads); err != nil {
 		t.Fatal(err)
 	}
 	operatorDigest := componentTestDigests["image"]
@@ -67,7 +77,7 @@ func TestChartConfigOnlyUpgradeAdmitsOldAndNewShapes(t *testing.T) {
 			}
 		}
 	}
-	if _, _, err := store.SeedWorkloads(renderedSeed(t, after).Workloads); err != nil {
+	if _, _, err := allowlistWrites.SeedWorkloads(renderedSeed(t, after).Workloads); err != nil {
 		t.Fatal(err)
 	}
 	live, _, err := store.LoadAll()
@@ -106,87 +116,17 @@ func TestChartConfigOnlyUpgradeAdmitsOldAndNewShapes(t *testing.T) {
 	}
 }
 
-// cdsShapeAnnotation is the CDS shape the rendered Deployment records for the
-// next upgrade's guard.
-func cdsShapeAnnotation(t *testing.T, out string) string {
-	t.Helper()
-	for _, doc := range strings.Split(out, "\n---") {
-		var obj struct {
-			Kind     string `json:"kind"`
-			Metadata struct {
-				Name        string            `json:"name"`
-				Annotations map[string]string `json:"annotations"`
-			} `json:"metadata"`
-		}
-		if err := yaml.Unmarshal([]byte(doc), &obj); err != nil || obj.Kind != "Deployment" || obj.Metadata.Name != "c8s-cds" {
-			continue
-		}
-		return obj.Metadata.Annotations["confidential.ai/cds-shape"]
-	}
-	t.Fatal("no c8s-cds Deployment rendered")
-	return ""
-}
-
-// A changed CDS command line fails the upgrade until its entry is published:
-// otherwise the old CDS stops and the enforcers refuse the new one.
-func TestCDSShapeGuard(t *testing.T) {
-	t.Parallel()
-	if _, err := exec.LookPath("helm"); err != nil {
-		t.Skip("helm CLI not found")
-	}
-	dir := t.TempDir()
-	tpl, err := os.ReadFile("c8s/templates/_upgrade.tpl")
-	if err != nil {
-		t.Fatal(err)
-	}
-	files := map[string]string{
-		"Chart.yaml":             "apiVersion: v2\nname: guard\nversion: 0.0.1\n",
-		"templates/_upgrade.tpl": string(tpl),
-		"templates/guard.yaml":   `{{ include "c8s.cdsShapeGuard" (dict "live" .Values.live "want" .Values.want "published" .Values.published) }}`,
-	}
-	for name, body := range files {
-		path := filepath.Join(dir, name)
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for _, tc := range []struct {
-		name, live, want, published string
-		fails                       bool
-	}{
-		{name: "first install", want: "cds-new"},
-		{name: "unchanged", live: "cds-old", want: "cds-old"},
-		{name: "not digest-pinned", live: "cds-old"},
-		{name: "changed and unpublished", live: "cds-old", want: "cds-new", fails: true},
-		{name: "changed and another shape published", live: "cds-old", want: "cds-new", published: "cds-old", fails: true},
-		{name: "changed and published", live: "cds-old", want: "cds-new", published: "cds-new"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			out, err := exec.Command("helm", "template", "g", dir,
-				"--set-string", "live="+tc.live, "--set-string", "want="+tc.want, "--set-string", "published="+tc.published).CombinedOutput()
-			if (err != nil) != tc.fails {
-				t.Fatalf("render error = %v, want failure %t\n%s", err, tc.fails, out)
-			}
-			if tc.fails && !strings.Contains(string(out), "cds.publishedShape="+tc.want) {
-				t.Errorf("failure does not name the entry to publish:\n%s", out)
-			}
-		})
-	}
-}
-
 // Matching ignores the image label, so a mirror of the same digest keeps the
 // entry's name: seeding it again adds nothing and the match stays unambiguous.
+// volumed is the subject because its argv names no image of its own.
 func TestChartEntryNamesIgnoreImageRepository(t *testing.T) {
 	t.Parallel()
-	const cdsDigest = "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+	const volumedDigest = "sha256:0000000000000000000000000000000000000000000000000000000000000001"
 	names := func(out string) []string {
 		var got []string
 		for name, w := range renderedSeed(t, out).Workloads {
 			for _, c := range slices.Concat(w.InitContainers, w.Containers) {
-				if c.Digest.String() == cdsDigest {
+				if c.Digest.String() == volumedDigest {
 					got = append(got, name)
 					break
 				}
@@ -195,17 +135,21 @@ func TestChartEntryNamesIgnoreImageRepository(t *testing.T) {
 		slices.Sort(got)
 		return got
 	}
-	upstream, err := helmTemplate(t)
+	derived := []string{
+		"--set", "volumed.enabled=true",
+		"--set-string", "volumed.image.digest=" + volumedDigest,
+	}
+	upstream, err := helmTemplate(t, derived...)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, upstream)
 	}
-	mirrored, err := helmTemplate(t, "--set", "cds.image.repository=mirror.example/c8s/cds")
+	mirrored, err := helmTemplate(t, append(derived, "--set", "volumed.image.repository=mirror.example/c8s/volumed")...)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, mirrored)
 	}
 	want := names(upstream)
 	if len(want) == 0 {
-		t.Fatal("no seed entry for the CDS digest")
+		t.Fatal("no seed entry for the volumed digest")
 	}
 	if got := names(mirrored); !slices.Equal(got, want) {
 		t.Errorf("entry names under a mirror = %v, want %v", got, want)
@@ -216,7 +160,7 @@ func TestChartEntryNamesIgnoreImageRepository(t *testing.T) {
 // DigestEntryName with open args and mounts, and one before env matching
 // seeded each shape with env any; the current seed must retire both.
 func TestChartSeedRetiresPreShapeComponentEntries(t *testing.T) {
-	args := []string{"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true"}
+	var args []string
 	for valuePath, digest := range componentTestDigests {
 		args = append(args, "--set", valuePath+".digest="+digest)
 	}
@@ -254,10 +198,11 @@ func TestChartSeedRetiresPreShapeComponentEntries(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	if _, _, err := store.SeedWorkloads(old); err != nil {
+	allowlistWrites := store.Local()
+	if _, _, err := allowlistWrites.SeedWorkloads(old); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := store.SeedWorkloads(seed); err != nil {
+	if _, _, err := allowlistWrites.SeedWorkloads(seed); err != nil {
 		t.Fatal(err)
 	}
 	live, _, err := store.LoadAll()

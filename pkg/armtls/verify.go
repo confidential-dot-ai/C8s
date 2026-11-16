@@ -4,13 +4,14 @@ import (
 	"context"
 	"crypto"
 	"crypto/ecdsa"
-	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/x509"
+	"encoding/asn1"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
 	agarmtls "github.com/confidential-dot-ai/attestation-go/armtls"
@@ -22,7 +23,8 @@ import (
 type VerifyPolicy struct {
 	// Policy is the evidence policy the attestation-api enforces: image pins,
 	// launch-measurement reference values, TDX runtime registers, the SEV-SNP
-	// TCB floor and the debug rule. Leave ExpectedReportData unset — the
+	// TCB floor and the debug rule. It must carry a launch measurement or an
+	// image pin ([ErrUnpinned]). Leave ExpectedReportData unset — the
 	// verifying paths derive it from the certificate key and refuse a value
 	// that disagrees.
 	Policy remote.Policy
@@ -33,19 +35,9 @@ type VerifyPolicy struct {
 	// check is performed (TLS 1.3 already provides replay protection).
 	Nonce []byte
 
-	// SandboxID, when set, is the CRI pod sandbox ID the certificate's
-	// sandbox-ID extension must carry (docs/armtls.md, "Sandbox identity").
-	// Only [VerifyCert] can enforce it (the ID rides the certificate);
-	// [VerifyAttestation] fails closed when it is set.
-	SandboxID string
-
-	// WorkloadName, when set, is the allowlist entry name the certificate's
-	// matched-workload extension must carry (docs/armtls.md, "Matched
-	// workload"). Like SandboxID it is CA-vouched: it is enforced only on the
-	// chain-verified branch of the dual peer verifier, and VerifyAttestation /
-	// VerifyCert fail closed when it is set — neither checks a CA chain, so
-	// neither can authenticate the stamp.
-	WorkloadName string
+	// ExtensionOID is the OID the evidence extension is carried under; unset
+	// means [OIDARMTLSAttestation].
+	ExtensionOID asn1.ObjectIdentifier
 
 	// AttestationApiURL is the attestation-api whose /verify endpoint performs
 	// all evidence verification: hardware signature chain, REPORTDATA key
@@ -62,22 +54,6 @@ type VerifyPolicy struct {
 	// AttestationVerifyTimeout bounds online attestation-api verification.
 	// If unset, a conservative default is used.
 	AttestationVerifyTimeout time.Duration
-
-	// RequireCAEvidence selects the production trust mode for the dual CA /
-	// armTLS peer verifier (dualVerifyPeerCallback). When false (default), a
-	// peer whose leaf chains to a configured CA is accepted on the CA chain
-	// alone (a sandbox-ID pin is still enforced) — the legacy/dev mode that
-	// eases rolling upgrades and CA rotation. When true, a valid CA chain is no
-	// longer sufficient: the leaf must ALSO carry re-verifiable armTLS evidence
-	// (issuer.SignCSR copies the requester's nonce-free .1.1 extension onto the
-	// leaf), which is re-verified per connection so a CA compromise or wrong
-	// issuance policy is caught at the peer rather than trusted from the chain.
-	// The embedded evidence is nonce-free by construction (bound to the leaf
-	// key and claims, no per-connection nonce); connection liveness comes from
-	// the TLS 1.3 proof-of-possession of the leaf key. Set by the production
-	// profile; a self-signed armTLS peer is unaffected (it always verifies its
-	// evidence via the fallback path).
-	RequireCAEvidence bool
 }
 
 // VerifyResult contains the verified attestation claims extracted from the cert.
@@ -94,6 +70,10 @@ type VerifyResult struct {
 	// PlatformInfo contains platform-specific metadata from the
 	// attestation-api response. Only set on the SNP path.
 	PlatformInfo []byte
+	// Verified is the attestation-api's response, which carries the platform
+	// it verified and the claims it read. A caller holding it can enforce a
+	// later policy against the same verdict without a second round-trip.
+	Verified remote.VerifyResponse
 }
 
 // VerifyAttestation verifies a raw attestation report against a public key by
@@ -105,11 +85,16 @@ type VerifyResult struct {
 //     minimum-TCB policy.
 //  2. The launch measurement it returns is checked against policy.Policy here,
 //     by the same enforcement every attestation-go caller gets.
+//
+// A policy that names no guest fails with [ErrUnpinned] before any request.
 func VerifyAttestation(pub crypto.PublicKey, att *Attestation, policy *VerifyPolicy, nonce []byte) (*VerifyResult, error) {
 	if policy == nil {
 		policy = &VerifyPolicy{}
 	}
-	if err := policy.checkEvidenceOnlyPins(); err != nil {
+	if err := requirePins(policy.Policy); err != nil {
+		return nil, err
+	}
+	if err := policy.requireAttestationApi(); err != nil {
 		return nil, err
 	}
 	return verifyOnline(att, pub, policy, nonce)
@@ -120,11 +105,9 @@ func VerifyAttestation(pub crypto.PublicKey, att *Attestation, policy *VerifyPol
 //
 // Trust comes from the hardware attestation chain (AMD ARK → ASK → VCEK, or
 // Intel equivalent for TDX) as verified by the same-TCB attestation-api, not
-// from any certificate authority signature. A sandbox-ID pin therefore cannot
-// be enforced here: the ID rests on CDS's signature over the leaf, which this
-// path does not check (docs/armtls.md, "Sandbox identity").
+// from any certificate authority signature.
 //
-// The certificate body is authenticated first (certutil.AuthenticateLeafBody):
+// The certificate body is authenticated first (requireSelfIssued):
 // the validity window (NotBefore within [certutil.LeafValiditySkew], NotAfter
 // with no allowance), because the embedded evidence carries no per-connection
 // nonce and the window is the only freshness bound this path has; and, for a
@@ -133,56 +116,70 @@ func VerifyAttestation(pub crypto.PublicKey, att *Attestation, policy *VerifyPol
 // rewritten under a genuine extension. Doing it before the evidence
 // round-trip also keeps a bad certificate from consuming an attestation-api
 // call.
+//
+// A policy that names no guest fails with [ErrUnpinned].
 func VerifyCert(cert *x509.Certificate, policy *VerifyPolicy, nonce []byte) (*VerifyResult, error) {
 	if policy == nil {
 		policy = &VerifyPolicy{}
 	}
+	if err := requirePins(policy.Policy); err != nil {
+		return nil, err
+	}
 
-	// Split out so a window failure keeps its own sentinel; callers
-	// (dualVerifyPeerCallback, the mesh proxies) branch on ErrCertValidity.
+	// Split out so a window failure keeps its own sentinel, which callers
+	// branch on (ErrCertValidity).
 	now := time.Now()
 	if err := certutil.CheckValidity(cert, now); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrCertValidity, err)
 	}
-	// The classification is not actionable at this layer: both classes reach
-	// here legitimately — the self-signed mesh peer, and (via
-	// dualVerifyPeerCallback's RequireCAEvidence step) a CA-signed leaf whose
-	// chain that caller has already verified. What the call buys is the
-	// self-signature check on the self-issued case, which is the half of body
-	// authentication this path would otherwise skip.
-	if _, err := certutil.AuthenticateLeafBody(cert, now); err != nil {
+	// This path verifies no chain, so the leaf must be self-issued: the
+	// evidence binds the key alone. A CDS-issued leaf is verified on the
+	// chain path (NewMeshClientTLSConfig).
+	if err := requireSelfIssued(cert, now); err != nil {
 		return nil, fmt.Errorf("armtls: peer certificate body: %w", err)
 	}
 
-	att, err := ExtractAttestation(cert)
+	att, err := agarmtls.ExtractAttestation(cert, policy.extensionOID())
 	if err != nil {
 		return nil, err
 	}
 
-	pub, err := publicKeyFromCert(cert)
-	if err != nil {
-		return nil, fmt.Errorf("armtls: extract public key: %w", err)
-	}
-
-	if err := policy.checkEvidenceOnlyPins(); err != nil {
+	if err := checkPeerKeyType(cert); err != nil {
 		return nil, err
 	}
-	return verifyOnline(att, pub, policy, nonce)
+
+	if err := policy.requireAttestationApi(); err != nil {
+		return nil, err
+	}
+	return verifyOnline(att, cert.PublicKey, policy, nonce)
 }
 
-// checkEvidenceOnlyPins rejects a policy the evidence alone cannot settle: the
-// sandbox ID and the matched workload are CA-vouched stamps, and neither
-// [VerifyAttestation] nor [VerifyCert] verifies a chain. It also requires the
-// attestation-api, since there is no in-process verification path here.
-func (p *VerifyPolicy) checkEvidenceOnlyPins() error {
+// requireSelfIssued authenticates a certificate body the caller holds no chain
+// for: the validity window and the self-signature under the certificate's own
+// key.
+func requireSelfIssued(cert *x509.Certificate, now time.Time) error {
+	body, err := certutil.AuthenticateLeafBody(cert, now)
+	if err != nil {
+		return err
+	}
+	if body != certutil.BodySelfSigned {
+		return fmt.Errorf("not self-issued: its body is %s", body)
+	}
+	return nil
+}
+
+func (p *VerifyPolicy) extensionOID() asn1.ObjectIdentifier {
+	if len(p.ExtensionOID) == 0 {
+		return OIDARMTLSAttestation
+	}
+	return p.ExtensionOID
+}
+
+// requireAttestationApi enforces the attestation-api URL every evidence path
+// needs: there is no in-process verification path here.
+func (p *VerifyPolicy) requireAttestationApi() error {
 	if p.AttestationApiURL == "" {
 		return fmt.Errorf("%w: attestation-api URL is required", ErrInvalidReport)
-	}
-	if p.SandboxID != "" {
-		return fmt.Errorf("%w: sandbox-ID pin requires a CA-verified certificate", ErrPolicyViolation)
-	}
-	if p.WorkloadName != "" {
-		return fmt.Errorf("%w: workload pin requires a CA-verified certificate", ErrPolicyViolation)
 	}
 	return nil
 }
@@ -215,7 +212,8 @@ const defaultAttestationVerifyTimeout = 10 * time.Second
 
 // verifyOnline hands the evidence to the attestation-api through
 // [agarmtls.VerifyWithService], which derives the REPORTDATA anchor from pub
-// and nonce, fails closed on the verdict, and then enforces policy.Policy.
+// and nonce, fails closed on the verdict, and then enforces policy.Policy,
+// whose anchored pins accept a replaying runtime list as [EnforceImages] does.
 //
 // C8s ships no in-process quote parser, so every platform is verified there,
 // bare-metal SNP included; an inline VCEK travels in the envelope as
@@ -234,12 +232,18 @@ func verifyOnline(att *Attestation, pub crypto.PublicKey, policy *VerifyPolicy, 
 	defer cancel()
 
 	svc := NewAttestationClient(policy.AttestationApiURL)
-	resp, err := agarmtls.VerifyWithService(ctx, svc, att, pub, nonce, policy.Policy)
+	pins := policy.Policy
+	pins.Images = acceptReplayed(pins.Images)
+	resp, err := agarmtls.VerifyWithService(ctx, svc, att, pub, nonce, pins)
 	if err != nil {
 		return nil, mapVerifyError(att.Family, err)
 	}
 
-	result := &VerifyResult{TEEType: att.Family, ReportData: expectedReportData}
+	result := &VerifyResult{
+		TEEType:    att.Family,
+		ReportData: expectedReportData,
+		Verified:   resp,
+	}
 	if att.Family == TEETypeSEVSNP && len(resp.Result.Claims.PlatformData) > 0 {
 		// The claims map came out of json.Unmarshal, so re-marshaling it
 		// cannot fail.
@@ -254,33 +258,59 @@ func verifyOnline(att *Attestation, pub crypto.PublicKey, policy *VerifyPolicy, 
 }
 
 // mapVerifyError translates remote verdict sentinels onto this package's error
-// surface, which callers match with errors.Is.
+// surface, which callers match with errors.Is. An attestation-api refusal of
+// the evidence (400, 415, 422) is terminal and maps to [ErrInvalidReport];
+// transport failures and every other status stay unwrapped, as retryable or as
+// a deployment fault that is not the peer's.
 func mapVerifyError(family TEEType, err error) error {
+	var apiErr *remote.APIError
 	switch {
 	case errors.Is(err, remote.ErrSignatureInvalid):
 		return ErrSignatureInvalid
 	case errors.Is(err, remote.ErrReportDataMismatch):
 		return fmt.Errorf("%w — key was not generated in this TEE", ErrKeyBinding)
-	case errors.Is(err, remote.ErrMeasurementNotAllowed), errors.Is(err, remote.ErrRegistersNotAllowed), errors.Is(err, remote.ErrAnchorNotAllowed):
+	case errors.Is(err, remote.ErrMeasurementNotAllowed),
+		errors.Is(err, remote.ErrRegistersNotAllowed),
+		errors.Is(err, remote.ErrAnchorNotAllowed),
+		errors.Is(err, remote.ErrLaunchFileNotAllowed),
+		errors.Is(err, remote.ErrMinTcbNotAllowed),
+		errors.Is(err, remote.ErrPCRNotAllowed),
+		errors.Is(err, remote.ErrInitDataMismatch):
 		return fmt.Errorf("%w: %v", ErrPolicyViolation, err)
+	// ErrPlatformMismatch is the verifier answering for another platform than
+	// the evidence named: a fault in its response, not a pin the peer failed,
+	// so it stays unwrapped.
+	case errors.Is(err, remote.ErrUnsupportedPlatform):
+		return fmt.Errorf("%w: %v", ErrUnsupportedTEE, err)
 	case errors.Is(err, remote.ErrInvalidLaunchDigest):
 		return fmt.Errorf("%w: %v", ErrInvalidReport, err)
+	// The api answers its own refusals in the JSON envelope; a non-JSON 4xx
+	// comes from something in front of it and stays a deployment fault.
+	case errors.As(err, &apiErr) && rejectsRequest(apiErr.Status):
+		return fmt.Errorf("%w: attestation-api refused the evidence (%d): %w", ErrInvalidReport, apiErr.Status, err)
 	default:
 		return fmt.Errorf("armtls: online %s attestation verify: %w", family, err)
 	}
 }
 
-// publicKeyFromCert extracts and validates the public key from a certificate.
-func publicKeyFromCert(cert *x509.Certificate) (crypto.PublicKey, error) {
-	switch pub := cert.PublicKey.(type) {
-	case *ecdsa.PublicKey:
-		if pub.Curve != elliptic.P256() && pub.Curve != elliptic.P384() {
-			return nil, fmt.Errorf("armtls: unsupported ECDSA curve: %s", pub.Curve.Params().Name)
-		}
-		return pub, nil
-	case ed25519.PublicKey:
-		return pub, nil
-	default:
-		return nil, fmt.Errorf("armtls: unsupported key type in certificate: %T", pub)
+// rejectsRequest reports whether a status names what was sent: the
+// attestation-api answers evidence verdicts and body rejections with these
+// alone. 401, 403 and 404 point at the deployment, not the peer, and so does
+// 413, which an ingress body limit answers in JSON too.
+func rejectsRequest(status int) bool {
+	return status == http.StatusBadRequest ||
+		status == http.StatusUnsupportedMediaType ||
+		status == http.StatusUnprocessableEntity
+}
+
+// checkPeerKeyType accepts ECDSA P-256 or P-384 on either verification path.
+func checkPeerKeyType(cert *x509.Certificate) error {
+	pub, ok := cert.PublicKey.(*ecdsa.PublicKey)
+	if !ok {
+		return fmt.Errorf("armtls: peer key is %T, want ECDSA P-256 or P-384", cert.PublicKey)
 	}
+	if pub.Curve != elliptic.P256() && pub.Curve != elliptic.P384() {
+		return fmt.Errorf("armtls: peer key is ECDSA %s, want P-256 or P-384", pub.Curve.Params().Name)
+	}
+	return nil
 }

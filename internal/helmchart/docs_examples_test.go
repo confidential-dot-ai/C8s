@@ -1,0 +1,60 @@
+package helmchart
+
+import (
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"testing"
+
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
+)
+
+const helmCommand = "helm template c8s charts/cloud"
+
+// helmExample matches a `helm template` command of the chart in a docs code
+// block, through its last continuation line. A backslash followed by trailing
+// blanks counts as one, so the shell fails on it rather than the match
+// ending early.
+var helmExample = regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(helmCommand) + `(?:.*\\[ \t]*\n)*.*$`)
+
+// The operator guide's helm template examples render as written.
+func TestOperatorDocHelmTemplateExamples(t *testing.T) {
+	if _, err := exec.LookPath("helm"); err != nil {
+		t.Fatal("helm CLI not found")
+	}
+	doc, err := os.ReadFile(testutil.RepoPath("docs", "operator.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	examples := helmExample.FindAllString(string(doc), -1)
+	if len(examples) == 0 {
+		t.Fatal("docs/operator.md has no helm template example")
+	}
+	// The examples read the CDS pin an operator has beside them, and name the
+	// chart and its files relative to the repository, so they run in a
+	// directory holding that pin against the charts' absolute paths.
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "cds-pin.json"), []byte(baseCDSPinDocument(t)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	chart := "helm template c8s " + cloudChartDir
+	for _, example := range examples {
+		// The helm client's simulated cluster may predate the chart's kubeVersion.
+		script := "set -e\n" + strings.Replace(example, helmCommand, chart+" --kube-version 1.30.0", 1)
+		script = strings.ReplaceAll(script, " charts/cloud", " "+cloudChartDir)
+		cmd := exec.Command("sh", "-c", script)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Errorf("%s: %v\n%s", example, err, tail(out))
+		}
+	}
+}
+
+func tail(out []byte) []byte {
+	if len(out) > 2000 {
+		return out[len(out)-2000:]
+	}
+	return out
+}

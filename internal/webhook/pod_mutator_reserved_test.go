@@ -9,46 +9,37 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+
+	"github.com/confidential-dot-ai/c8s/internal/cmds/volume"
 )
 
-// TestPreDeclaredReservedMountIsForcedReadOnly covers a pod that declares its
-// own mount of a reserved volume with readOnly omitted (defaulting to false).
-// Matching on the name and skipping would leave that writable mount in place,
-// handing the workload write access to the shared secrets directory and to the
-// sidecar-managed leaf key — the invariant secretContainer depends on.
-func TestPreDeclaredReservedMountIsForcedReadOnly(t *testing.T) {
-	for _, tc := range []struct {
-		name   string
-		volume string
-	}{
-		{"secrets", secretsVolumeName},
-		{"certs", DefaultCertVolumeName},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			pod := podWithApp()
-			pod.Spec.Containers[0].VolumeMounts = []corev1.VolumeMount{{
-				Name:      tc.volume,
-				MountPath: "/attacker/chosen/path",
-			}}
-			pod.Spec.Volumes = []corev1.Volume{{
-				Name:     tc.volume,
-				EmptyDir: &corev1.EmptyDirVolumeSource{Medium: corev1.StorageMediumMemory},
-			}}
+// A pod that declares its own mount of the secrets volume with readOnly
+// omitted (defaulting to false) keeps the mount path and loses the write bit:
+// the fetcher is the only writer of that directory. The credential volume is
+// not in this list — no workload container may mount it at all
+// (rejectCredentialMounts).
+func TestPreDeclaredSecretsMountIsForcedReadOnly(t *testing.T) {
+	pod := podWithApp()
+	pod.Spec.Containers[0].VolumeMounts = []corev1.VolumeMount{{
+		Name:      secretsVolumeName,
+		MountPath: "/attacker/chosen/path",
+	}}
+	pod.Spec.Volumes = []corev1.Volume{{
+		Name:     secretsVolumeName,
+		EmptyDir: &corev1.EmptyDirVolumeSource{Medium: corev1.StorageMediumMemory},
+	}}
 
-			mutateWithSecrets(t, pod, []string{"DB=/api/db"})
+	mutateWithSecrets(t, pod, []string{"DB=/api/db"})
 
-			m := containerMount(&pod.Spec.Containers[0], tc.volume)
-			if m == nil {
-				t.Fatalf("workload container lost its %q mount", tc.volume)
-			}
-			if !m.ReadOnly {
-				t.Fatalf("pre-declared %q mount stayed writable: %+v", tc.volume, *m)
-			}
-			// Only the write bit is coerced; the pod keeps its mount path.
-			if m.MountPath != "/attacker/chosen/path" {
-				t.Fatalf("MountPath = %q, want the pod's own path", m.MountPath)
-			}
-		})
+	m := containerMount(&pod.Spec.Containers[0], secretsVolumeName)
+	if m == nil {
+		t.Fatalf("workload container lost its %q mount", secretsVolumeName)
+	}
+	if !m.ReadOnly {
+		t.Fatalf("pre-declared %q mount stayed writable: %+v", secretsVolumeName, *m)
+	}
+	if m.MountPath != "/attacker/chosen/path" {
+		t.Fatalf("MountPath = %q, want the pod's own path", m.MountPath)
 	}
 }
 
@@ -78,39 +69,33 @@ func TestFetcherKeepsWriteAccessAcrossReinvocation(t *testing.T) {
 	}
 }
 
-// TestEphemeralGuardIgnoresAnnotationRewrite is the annotation-rewrite bypass:
-// annotations stay mutable on a running pod, so pointing AnnotationCertVolume
-// at a decoy must not free the volume that actually holds the leaf key.
-func TestEphemeralGuardIgnoresAnnotationRewrite(t *testing.T) {
+// An ephemeral container is attached to a running pod, so it is the one way
+// into the volumes the injected sidecars hold.
+func TestEphemeralGuardCoversInjectedVolumes(t *testing.T) {
 	pod := podWithApp()
-	pod.Annotations = map[string]string{AnnotationCertVolume: "my-certs"}
 	mutatePod(pod, &injection{
 		WorkloadID: "api",
-		Cert:       certSpec{Volume: "my-certs"},
 		Secrets:    secretsSpec{Specs: []string{"DB=/api/db"}},
 	}, secretsConfig())
 
-	// The attacker rewrites the annotation on the running pod, then attaches an
-	// ephemeral container mounting the real cert volume.
-	pod.Annotations[AnnotationCertVolume] = "decoy"
 	pod.Spec.EphemeralContainers = []corev1.EphemeralContainer{{
 		Name:         "debugger",
-		VolumeMounts: []corev1.VolumeMount{{Name: "my-certs", MountPath: "/x"}},
+		VolumeMounts: []corev1.VolumeMount{{Name: CertVolumeName, MountPath: "/x"}},
 	}}
 
-	if err := rejectEphemeralReservedMounts(pod); err == nil {
-		t.Fatal("annotation rewrite let an ephemeral container mount the real cert volume")
+	if err := rejectEphemeralReach(pod); err == nil {
+		t.Fatal("an ephemeral container mounted the volume holding the leaf key")
 	}
 
 	// The secrets volume has a fixed name, so it is reserved either way.
 	pod.Spec.EphemeralContainers[0].VolumeMounts = []corev1.VolumeMount{{Name: secretsVolumeName, MountPath: "/x"}}
-	if err := rejectEphemeralReservedMounts(pod); err == nil {
+	if err := rejectEphemeralReach(pod); err == nil {
 		t.Fatal("ephemeral container mounted the released secrets")
 	}
 
 	// A genuinely unrelated volume is still fine.
 	pod.Spec.EphemeralContainers[0].VolumeMounts = []corev1.VolumeMount{{Name: "scratch", MountPath: "/x"}}
-	if err := rejectEphemeralReservedMounts(pod); err != nil {
+	if err := rejectEphemeralReach(pod); err != nil {
 		t.Fatalf("rejected a harmless ephemeral container: %v", err)
 	}
 }
@@ -125,7 +110,7 @@ func TestReservedVolumeNamesCoversSidecarMounts(t *testing.T) {
 	}
 
 	reserved := reservedVolumeNames(pod)
-	for _, want := range []string{secretsVolumeName, DefaultCertVolumeName, "my-certs", "sidecar-extra"} {
+	for _, want := range []string{secretsVolumeName, CertVolumeName, "my-certs", "sidecar-extra"} {
 		if !reserved[want] {
 			t.Errorf("%q not reserved", want)
 		}
@@ -133,6 +118,48 @@ func TestReservedVolumeNamesCoversSidecarMounts(t *testing.T) {
 	// A non-c8s init container's mounts are the pod's own business.
 	if reserved["user-scratch"] {
 		t.Error("a user init container's volume was reserved")
+	}
+}
+
+// A hostPath here would write the pod's private key to host-visible storage,
+// outside the TEE boundary.
+func TestReservedCertVolumeMustBeMemoryBacked(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		source corev1.VolumeSource
+		wantOK bool
+	}{
+		{"memory emptyDir", corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{Medium: corev1.StorageMediumMemory}}, true},
+		{"hostPath", corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: "/var/lib/exfil"}}, false},
+		{"disk emptyDir", corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}, false},
+		{"pvc", corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: "c"}}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pod := podWithApp()
+			pod.Spec.Volumes = []corev1.Volume{{Name: CertVolumeName, VolumeSource: tc.source}}
+			err := rejectReservedVolumeShapes(pod)
+			if tc.wantOK && err != nil {
+				t.Fatalf("rejected a valid volume: %v", err)
+			}
+			if !tc.wantOK && err == nil {
+				t.Fatal("accepted a volume that would leave the TEE boundary")
+			}
+		})
+	}
+}
+
+// The credential volume is judged before the opened volumes, whatever order the
+// pod declares them in.
+func TestReservedVolumeRefusalNamesTheCredentialVolumeFirst(t *testing.T) {
+	pod := podWithApp()
+	pod.Spec.Volumes = []corev1.Volume{
+		{Name: volume.KubeVolumeName("weights"), HostPath: &corev1.HostPathVolumeSource{Path: "/tmp/exfil"}},
+		{Name: CertVolumeName, HostPath: &corev1.HostPathVolumeSource{Path: "/tmp/exfil"}},
+	}
+
+	err := rejectReservedVolumeShapes(pod)
+	if err == nil || !strings.Contains(err.Error(), CertVolumeName) {
+		t.Fatalf("error = %v, want the credential volume refused first", err)
 	}
 }
 

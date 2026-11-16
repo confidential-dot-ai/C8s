@@ -1,17 +1,22 @@
 package cds
 
 import (
+	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/attestation"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	"github.com/confidential-dot-ai/c8s/internal/server"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/routes"
+	"github.com/confidential-dot-ai/c8s/pkg/secretbroker"
 )
 
 // dependencies bundles everything the cds router needs.
@@ -20,16 +25,18 @@ type dependencies struct {
 	AllowlistHandler  allowlist.Handler
 	Routes            routeHandler
 	ReadyFn           attestation.ReadinessFunc
-	CACertPEM         []byte
-	OperatorKeysPEM   []byte                // pinned operator public keys; empty = /operator-keys 404s
-	MeasurementsDoc   []byte                // reference values being enforced, as served at /measurements
-	RateLimiter       *issuer.IPRateLimiter // per-source-IP limiter for attestation endpoints
-	ChallengeLimiter  *issuer.IPRateLimiter // /authenticate's own, so it cannot spend the map above
-	MaxRequestSize    int64                 // applied to write endpoints; must be > 0
-	SecretsHandler    *secrets.Handler      // nil leaves /secrets unrouted (--secrets off)
-	SecretsChallenges *attestation.ChallengeStore
+	MeshCA            meshCA                      // the CA served at /ca, which signs every leaf
+	ClusterRoutes     map[string]http.HandlerFunc // a replica's cluster routes, by method and path
+	OperatorKeysPEM   []byte                      // pinned operator public keys; empty = /operator-keys 404s
+	NodeImages        armtls.PinSource            // the node images /attest admits by and /measurements publishes
+	RateLimiter       *issuer.IPRateLimiter       // per-source-IP limiter for attestation endpoints
+	ChallengeLimiter  *issuer.IPRateLimiter       // /authenticate's own, so it cannot spend the map above
+	MaxRequestSize    int64                       // applied to write endpoints; must be > 0
+	SecretsHandler    *secrets.Handler            // nil leaves /secrets unrouted (--secrets off)
+	SecretsChallenges attestation.Challenges
 	SecretsOperator   *secrets.OperatorHandler // operator-supplied values; routed with SecretsHandler
 	SecretsExplain    *secrets.ExplainHandler  // release diagnostic; routed with SecretsHandler
+	PodSecrets        *PodSecretHandler        // nil leaves pod secret release unrouted (no KMS configured)
 }
 
 func newRouter(deps dependencies) http.Handler {
@@ -45,6 +52,19 @@ func newRouter(deps dependencies) http.Handler {
 	if deps.ChallengeLimiter == deps.RateLimiter {
 		panic("cds: dependencies.ChallengeLimiter must be a limiter of its own, not the attestation one")
 	}
+	if deps.MeshCA == nil {
+		panic("cds: dependencies.MeshCA must be set")
+	}
+	if deps.NodeImages == nil {
+		panic("cds: dependencies.NodeImages must be set")
+	}
+	// One CA for the whole router: the handler signs with the certificate
+	// /ca publishes, and the route policy excludes that same certificate.
+	deps.AttestHandler.MeshCA = deps.MeshCA
+	deps.Routes.MeshCA = deps.MeshCA
+	// One node image set for the whole router: /attest admits a caller by the
+	// set /measurements publishes.
+	deps.AttestHandler.NodeImages = deps.NodeImages
 	r := chi.NewRouter()
 	r.Use(server.RequestLogger)
 
@@ -65,8 +85,6 @@ func newRouter(deps dependencies) http.Handler {
 	r.Get("/allowlist/objects/sha256/{hex}", deps.AllowlistHandler.HandleObject)
 	r.Get("/allowlist/objects/sha256/{hex}/signature", deps.AllowlistHandler.HandleSignature)
 	r.Method(http.MethodPut, "/allowlist", deps.allowlistWrite(http.HandlerFunc(deps.AllowlistHandler.HandleReplaceAll)))
-	r.Method(http.MethodPut, "/allowlist/workloads/{name}", deps.allowlistWrite(http.HandlerFunc(deps.AllowlistHandler.HandlePutWorkload)))
-	r.Method(http.MethodDelete, "/allowlist/workloads/{name}", deps.allowlistWrite(http.HandlerFunc(deps.AllowlistHandler.HandleDeleteWorkload)))
 
 	// The route manifest is written like the allowlist (W1) and read like it.
 	r.Get(routes.Path, deps.Routes.handleGet)
@@ -86,9 +104,19 @@ func newRouter(deps dependencies) http.Handler {
 		r.Method(http.MethodGet, secrets.ExplainRoute, deps.allowlistWrite(deps.SecretsExplain))
 	}
 
-	r.Get("/ca", handleCA(deps.CACertPEM))
+	// A pod CVM asks with its mesh leaf, so it is charged by the pod that leaf names.
+	if deps.PodSecrets != nil {
+		r.Method(http.MethodPost, secretbroker.PodRoute, deps.perSandbox(deps.PodSecrets))
+	}
+
+	for route, handler := range deps.ClusterRoutes {
+		method, path, _ := strings.Cut(route, " ")
+		r.Method(method, path, handler)
+	}
+
+	r.Get("/ca", handleCA(deps.MeshCA))
 	r.Get("/operator-keys", handleOperatorKeys(deps.OperatorKeysPEM))
-	r.Get("/measurements", handleMeasurements(deps.MeasurementsDoc))
+	r.Get("/measurements", handleMeasurements(deps.NodeImages))
 
 	return r
 }
@@ -134,30 +162,39 @@ func capBody(max int64, next http.Handler) http.Handler {
 	return http.MaxBytesHandler(next, max)
 }
 
-func handleCA(caCertPEM []byte) http.HandlerFunc {
+// handleCA serves the one current mesh CA certificate; a renewal replaces it.
+func handleCA(mesh meshCA) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
+		current, issuing := mesh.Current()
+		if !issuing {
+			http.Error(w, "this CDS holds no mesh CA to publish", http.StatusServiceUnavailable)
+			return
+		}
 		w.Header().Set("Content-Type", "application/x-pem-file")
-		w.Write(caCertPEM)
+		w.Write(current.CertPEM)
+	}
+}
+
+// handleMeasurements renders the node images this CDS admits a caller
+// against, so a verifier can compare the operator's own file with them. An
+// empty set is served, not 404'd: a CDS that certifies no node image is the
+// state a verifier most needs to be told about.
+func handleMeasurements(nodeImages armtls.PinSource) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		document, err := refvalues.Render(nodeImages.Current())
+		if err != nil {
+			slog.Error("render the node images this CDS certifies", "error", err)
+			http.Error(w, "measurements unavailable", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(document)
 	}
 }
 
 // handleOperatorKeys serves the pinned operator public-key bundle (public
 // material, like /ca) so `c8s verify` can report which keys may mutate the
 // allowlist. 404 when allowlist writes are disabled (no pinned keys).
-// handleMeasurements serves the reference values this CDS is enforcing. An
-// empty set is served, not 404'd: "admitting any measurement" is the state a
-// verifier most needs to be told about.
-func handleMeasurements(doc []byte) http.HandlerFunc {
-	return func(w http.ResponseWriter, _ *http.Request) {
-		if len(doc) == 0 {
-			http.Error(w, "measurements unavailable", http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.Write(doc)
-	}
-}
-
 func handleOperatorKeys(operatorKeysPEM []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		if len(operatorKeysPEM) == 0 {

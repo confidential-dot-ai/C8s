@@ -1,0 +1,27 @@
+apiVersion: v2
+name: c8s-cloud
+description: |
+  Confidential Kubernetes platform. Installs the c8s Deployment
+  (admission webhook + status-mirror controllers), CRDs, the
+  attestation-api DaemonSet, the CDS trust root, and the
+  default c8s component charts.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.30.0-0"
+dependencies:
+  - name: c8s-control-plane
+    alias: controlPlane
+    version: 0.1.0
+    repository: file://../control-plane
+  - name: c8s-lib
+    version: 0.1.0
+    repository: file://../lib
+keywords:
+  - confidential
+  - tee
+  - attestation
+  - armtls
+maintainers:
+  - name: confidential-dot-ai
+home: https://github.com/confidential-dot-ai

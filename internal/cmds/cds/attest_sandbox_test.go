@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdsa"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -13,8 +14,8 @@ import (
 	"testing"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-	"github.com/confidential-dot-ai/c8s/internal/attestation"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
@@ -60,6 +61,12 @@ func (f fakeDigests) FetchSandbox(_ context.Context, host, sandboxID string) (wo
 	}, nil
 }
 
+// sandboxCSR matches the empty subject and SANs sent by get-cert --no-san.
+func sandboxCSR(t *testing.T) string {
+	t.Helper()
+	return csrPEMFor(t, &x509.CertificateRequest{})
+}
+
 // newSandboxTestEnv wires an AttestHandler that resolves an inventory key the
 // way production does — from the inventory's own endpoint — and returns the
 // signer holding that key.
@@ -92,7 +99,7 @@ func newSandboxTestEnv(t *testing.T, stubURL string) (AttestHandler, *workloadcl
 // (CDS re-checks the token nonce against the challenge it consumes).
 func signedSandboxToken(t *testing.T, signer *workloadclaims.SandboxTokenSigner, csrPEM, challenge, sandboxID string) json.RawMessage {
 	t.Helper()
-	csr, err := attestation.ParseAndVerifyCSR(csrPEM)
+	csr, err := certutil.ParseCSRPEM([]byte(csrPEM))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,9 +141,9 @@ func postAttestSandbox(t *testing.T, h AttestHandler, challenge, csrPEM string, 
 
 // A valid inventory token gets its sandbox ID stamped into the signed leaf.
 func TestAttest_SandboxToken_StampedOnLeaf(t *testing.T) {
-	stub := newStubAttestationApi(t, "deadbeef")
+	stub := newStubAttestationApi(t, testLaunchDigest)
 	h, signer := newSandboxTestEnv(t, stub.URL())
-	csrPEM, _ := generateCSR(t)
+	csrPEM := sandboxCSR(t)
 
 	challenge := issueChallenge(t, h)
 	w := postAttestSandbox(t, h, challenge, csrPEM, signedSandboxToken(t, signer, csrPEM, challenge, testSandboxID))
@@ -154,8 +161,9 @@ func TestAttest_SandboxToken_StampedOnLeaf(t *testing.T) {
 
 // No token ⇒ no extension (the pre-sandbox flow is unchanged).
 func TestAttest_SandboxToken_AbsentWhenNotRequested(t *testing.T) {
-	stub := newStubAttestationApi(t, "deadbeef")
+	stub := newStubAttestationApi(t, testLaunchDigest)
 	h, _ := newSandboxTestEnv(t, stub.URL())
+	// No token, so the CSR names the leaf itself.
 	csrPEM, _ := generateCSR(t)
 
 	w := postAttest(t, h, issueChallenge(t, h), csrPEM)
@@ -170,10 +178,10 @@ func TestAttest_SandboxToken_AbsentWhenNotRequested(t *testing.T) {
 // A token bound to a different key than the CSR's must be rejected: only the
 // get-cert holding the bound key may redeem the token.
 func TestAttest_SandboxToken_RejectsWrongRequesterKey(t *testing.T) {
-	stub := newStubAttestationApi(t, "deadbeef")
+	stub := newStubAttestationApi(t, testLaunchDigest)
 	h, signer := newSandboxTestEnv(t, stub.URL())
-	victimCSR, _ := generateCSR(t)
-	attackerCSR, _ := generateCSR(t)
+	victimCSR := sandboxCSR(t)
+	attackerCSR := sandboxCSR(t)
 
 	// Token issued for the victim's key, replayed with the attacker's CSR.
 	challenge := issueChallenge(t, h)
@@ -184,11 +192,11 @@ func TestAttest_SandboxToken_RejectsWrongRequesterKey(t *testing.T) {
 // A token signed by a key other than the inventory key CDS resolves must be
 // rejected: the token must come from the attested inventory.
 func TestAttest_SandboxToken_RejectsForeignInventoryEAR(t *testing.T) {
-	stub := newStubAttestationApi(t, "deadbeef")
+	stub := newStubAttestationApi(t, testLaunchDigest)
 	h, _ := newSandboxTestEnv(t, stub.URL())
 	// A second environment with a signing key the handler does not trust.
 	_, foreignSigner := newSandboxTestEnv(t, stub.URL())
-	csrPEM, _ := generateCSR(t)
+	csrPEM := sandboxCSR(t)
 
 	challenge := issueChallenge(t, h)
 	w := postAttestSandbox(t, h, challenge, csrPEM, signedSandboxToken(t, foreignSigner, csrPEM, challenge, testSandboxID))
@@ -201,7 +209,7 @@ func TestAttest_SandboxToken_RejectsForeignInventoryEAR(t *testing.T) {
 // another pod's sandbox. CDS resolves the key from the inventory's own
 // privileged-port endpoint, so the impostor's own key never matches.
 func TestAttest_SandboxToken_RejectsKeyTheInventoryDoesNotHold(t *testing.T) {
-	stub := newStubAttestationApi(t, "deadbeef")
+	stub := newStubAttestationApi(t, testLaunchDigest)
 	h, _ := newSandboxTestEnv(t, stub.URL())
 
 	// An attacker signs its own token for someone else's sandbox.
@@ -209,7 +217,7 @@ func TestAttest_SandboxToken_RejectsKeyTheInventoryDoesNotHold(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	csrPEM, _ := generateCSR(t)
+	csrPEM := sandboxCSR(t)
 	challenge := issueChallenge(t, h)
 	w := postAttestSandbox(t, h, challenge, csrPEM, signedSandboxToken(t, impostor, csrPEM, challenge, testSandboxID))
 	wantRefusal(t, w, http.StatusForbidden, types.ErrorCodeCSRDenied)
@@ -219,7 +227,7 @@ func TestAttest_SandboxToken_RejectsKeyTheInventoryDoesNotHold(t *testing.T) {
 // anything is dialed — that boundary is what stops a workload pointing the
 // callback at its own pod IP and answering as its node's inventory.
 func TestAttest_SandboxToken_RejectsHostOutsideNodeCIDRs(t *testing.T) {
-	stub := newStubAttestationApi(t, "deadbeef")
+	stub := newStubAttestationApi(t, testLaunchDigest)
 	h, signer := newSandboxTestEnv(t, stub.URL())
 	hosts, err := workloadclaims.ParseInventoryHosts([]string{"192.168.99.0/24"}) // not testInventoryHost
 	if err != nil {
@@ -227,20 +235,93 @@ func TestAttest_SandboxToken_RejectsHostOutsideNodeCIDRs(t *testing.T) {
 	}
 	h.InventoryHosts = hosts
 
-	csrPEM, _ := generateCSR(t)
+	csrPEM := sandboxCSR(t)
 	challenge := issueChallenge(t, h)
 	w := postAttestSandbox(t, h, challenge, csrPEM, signedSandboxToken(t, signer, csrPEM, challenge, testSandboxID))
 	wantRefusal(t, w, http.StatusForbidden, types.ErrorCodeCSRDenied)
 }
 
+// A refused sandbox token tells the caller nothing about the inventory it
+// names: whether CDS dialled it, reached it or got a key from it, the answer is
+// the same and the detail stays in the log.
+func TestAttest_SandboxToken_RefusalWithholdsInventoryDetail(t *testing.T) {
+	insideNodeRanges, err := workloadclaims.ParseInventoryHosts([]string{"10.0.0.0/24"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	outsideNodeRanges, err := workloadclaims.ParseInventoryHosts([]string{"192.168.99.0/24"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inventory, err := workloadclaims.NewSandboxTokenSigner(testInventoryHost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	impostor, err := workloadclaims.NewSandboxTokenSigner(testInventoryHost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	answering := fakeDigests{key: inventory.PublicKey()}
+	unreachable := fakeDigests{}
+
+	var answers []string
+	for _, tc := range []struct {
+		name       string
+		nodeRanges workloadclaims.CIDRHosts
+		inventory  sandboxDigestSource
+	}{
+		{
+			name:       "host outside the node address ranges",
+			nodeRanges: outsideNodeRanges,
+			inventory:  answering,
+		},
+		{
+			name:       "inventory unreachable",
+			nodeRanges: insideNodeRanges,
+			inventory:  unreachable,
+		},
+		{
+			name:       "inventory answers with its own key",
+			nodeRanges: insideNodeRanges,
+			inventory:  answering,
+		},
+	} {
+		stub := newStubAttestationApi(t, testLaunchDigest)
+		h, _ := newSandboxTestEnv(t, stub.URL())
+		h.InventoryHosts = tc.nodeRanges
+		h.SandboxDigests = tc.inventory
+		csrPEM := sandboxCSR(t)
+		challenge := issueChallenge(t, h)
+
+		logs := captureSlog(t)
+		w := postAttestSandbox(t, h, challenge, csrPEM, signedSandboxToken(t, impostor, csrPEM, challenge, testSandboxID))
+		wantRefusal(t, w, http.StatusForbidden, types.ErrorCodeCSRDenied)
+		detail, _ := logRecord(t, logs, "sandbox token rejected")["error"].(string)
+		if detail == "" {
+			t.Fatalf("%s: the log does not record why the token was rejected", tc.name)
+		}
+		for _, withheld := range []string{detail, testInventoryHost} {
+			if strings.Contains(w.Body.String(), withheld) {
+				t.Fatalf("%s: refusal %s carries %q", tc.name, w.Body.String(), withheld)
+			}
+		}
+		answers = append(answers, w.Body.String())
+	}
+	for _, answer := range answers[1:] {
+		if answer != answers[0] {
+			t.Fatalf("refusals differ by what CDS saw of the inventory: %q", answers)
+		}
+	}
+}
+
 // With no CIDRs configured CDS has no boundary to apply, so it refuses tokens
 // outright rather than dialing wherever it is pointed.
 func TestAttest_SandboxToken_RejectsWithoutConfiguredCIDRs(t *testing.T) {
-	stub := newStubAttestationApi(t, "deadbeef")
+	stub := newStubAttestationApi(t, testLaunchDigest)
 	h, signer := newSandboxTestEnv(t, stub.URL())
 	h.InventoryHosts = nil
 
-	csrPEM, _ := generateCSR(t)
+	csrPEM := sandboxCSR(t)
 	challenge := issueChallenge(t, h)
 	w := postAttestSandbox(t, h, challenge, csrPEM, signedSandboxToken(t, signer, csrPEM, challenge, testSandboxID))
 	wantRefusal(t, w, http.StatusForbidden, types.ErrorCodeCSRDenied)
@@ -250,9 +331,9 @@ func TestAttest_SandboxToken_RejectsWithoutConfiguredCIDRs(t *testing.T) {
 // challenge — not the one this request consumes — is rejected, so a captured or
 // pre-signed token cannot be replayed against a fresh challenge.
 func TestAttest_SandboxToken_RejectsStaleNonce(t *testing.T) {
-	stub := newStubAttestationApi(t, "deadbeef")
+	stub := newStubAttestationApi(t, testLaunchDigest)
 	h, signer := newSandboxTestEnv(t, stub.URL())
-	csrPEM, _ := generateCSR(t)
+	csrPEM := sandboxCSR(t)
 
 	// Token is bound to a different challenge than the request carries.
 	staleChallenge := base64.StdEncoding.EncodeToString([]byte("a-different-challenge"))
@@ -263,10 +344,10 @@ func TestAttest_SandboxToken_RejectsStaleNonce(t *testing.T) {
 // A CDS without an inventory resolver cannot verify sandbox tokens and must
 // reject a request that carries one rather than stamp it unverified.
 func TestAttest_SandboxToken_RejectsWhenUnverifiable(t *testing.T) {
-	stub := newStubAttestationApi(t, "deadbeef")
+	stub := newStubAttestationApi(t, testLaunchDigest)
 	h, signer := newSandboxTestEnv(t, stub.URL())
 	h.SandboxDigests = nil
-	csrPEM, _ := generateCSR(t)
+	csrPEM := sandboxCSR(t)
 
 	challenge := issueChallenge(t, h)
 	w := postAttestSandbox(t, h, challenge, csrPEM, signedSandboxToken(t, signer, csrPEM, challenge, testSandboxID))
@@ -285,21 +366,22 @@ func TestAttest_SandboxToken_RejectsMalformedEnvelope(t *testing.T) {
 		{"token bytes are not DER", json.RawMessage(`{"token":"bm90LWRlcg==","signature":"AA=="}`)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			stub := newStubAttestationApi(t, "deadbeef")
+			stub := newStubAttestationApi(t, testLaunchDigest)
 			h, _ := newSandboxTestEnv(t, stub.URL())
-			csrPEM, _ := generateCSR(t)
+			csrPEM := sandboxCSR(t)
 			w := postAttestSandbox(t, h, issueChallenge(t, h), csrPEM, tc.token)
 			wantRefusal(t, w, http.StatusForbidden, types.ErrorCodeCSRDenied)
 		})
 	}
 }
 
-// A token carrying an ID ValidateSandboxID rejects is refused at token
-// verification — before the evidence round-trip and before any ledger write —
-// so a garbage ID can never be bound to an inventory or stamped on a leaf.
+// A token carrying an ID ValidateSandboxID rejects, or one with the prefix
+// reserved for Pod CVM issuance, is refused at token verification — before the
+// evidence round-trip and before any ledger write — so neither can be bound to
+// an inventory or stamped on a leaf.
 // (A non-IA5 ID like "sandbox-🙂" is unrepresentable: the token's IA5String
 // marshal refuses it. ValidateSandboxID's own test pins that case.)
-func TestAttest_SandboxToken_RejectsMalformedSandboxID(t *testing.T) {
+func TestAttest_SandboxToken_RejectsSandboxID(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		id   string
@@ -309,11 +391,12 @@ func TestAttest_SandboxToken_RejectsMalformedSandboxID(t *testing.T) {
 		{"embedded slash", "a/b"},
 		{"embedded space", "sandbox id"},
 		{"over 128 chars", strings.Repeat("a", 129)},
+		{"reserved Pod CVM prefix", workloadclaims.PodInstancePrefix + strings.Repeat("a", 64)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			stub := newStubAttestationApi(t, "deadbeef")
+			stub := newStubAttestationApi(t, testLaunchDigest)
 			h, signer := newSandboxTestEnv(t, stub.URL())
-			// The inventory answers for the malformed ID, so the ID check is
+			// The inventory answers for the rejected ID, so the ID check is
 			// the only thing between this token and issuance.
 			h.SandboxDigests = fakeDigests{
 				digests: map[string][]string{tc.id: {wlDigestA}},
@@ -321,7 +404,7 @@ func TestAttest_SandboxToken_RejectsMalformedSandboxID(t *testing.T) {
 			}
 			binder := &recordingBinder{}
 			h.SandboxBindings = binder
-			csrPEM, _ := generateCSR(t)
+			csrPEM := sandboxCSR(t)
 
 			challenge := issueChallenge(t, h)
 			w := postAttestSandbox(t, h, challenge, csrPEM, signedSandboxToken(t, signer, csrPEM, challenge, tc.id))

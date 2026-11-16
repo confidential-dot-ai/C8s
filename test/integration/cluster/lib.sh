@@ -12,25 +12,50 @@ CLUSTER="${C8S_IT_CLUSTER:-c8s-it}"
 NODE_IMAGE="${C8S_IT_NODE_IMAGE:-kindest/node:v1.34.11@sha256:44e222ee2132dab25ff87301682f89eb82c7880ea3a1bf543bfe9708fd08d67d}"
 IMAGE_TAG=it
 NS=c8s-system
-CDS_LOCAL_PORT=18443
-ROUTER_LOCAL_PORT=18444
+# The namespace whose pods serve the router's own ports. A fixed name: the
+# measured mesh policy carries it (internal/helmchart.RouterNamespace).
+ROUTER_NS=c8s-router
 ADOPTED_LOCAL_PORT=18445
 # The router's default router.san, which `c8s install --upstream` makes the
 # route manifest's host.
-ROUTER_HOST="c8s-router.c8s-system.svc"
-# The mock attestation-api's synthetic launch digest (all zero). Pinned into
-# cds.measurements / armtlsMesh.measurements so every armTLS hop is verified
-# against it, exactly as a pinned production measurement.
+ROUTER_HOST="c8s-router.$ROUTER_NS.svc"
+# The mock attestation-api's synthetic launch digest (all zero). It is the
+# measurement of the CDS pin and of the node pins the CDS configuration
+# carries, so every armTLS hop is verified against it, exactly as a pinned
+# production measurement.
 MOCK_MEASUREMENT="000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
-# Its Deployment (manifests/mock-attestation.yaml) and the node address every
-# component dials it at.
-MOCK_ATTESTATION_NS=kube-system
-MOCK_ATTESTATION_NAME=mock-attestation
-mock_attestation_url() { echo "http://$NODE_IP:8400"; }
+
+# The CDS this cluster trusts runs outside it: two containers on the kind
+# network, the attestation-api reporting the launch binding of the
+# configuration CDS boots on, and CDS itself in its network namespace, so the
+# self-report it reads comes over loopback. cds_start writes the address they
+# answer on, so a driver sourcing this file after a kept run addresses the
+# same CDS. kind puts every node on that docker network, and the CDS joins it.
+KIND_NETWORK="${C8S_IT_KIND_NETWORK:-kind}"
+CDS_ATTESTATION_CONTAINER="${C8S_IT_CDS_ATTESTATION:-c8s-it-cds-attestation}"
+CDS_CONTAINER="${C8S_IT_CDS:-c8s-it-cds}"
+# The port CDS serves on, which the address its clients dial carries.
+CDS_PORT=8443
+# Short enough that the conformance suite's ~140 waits for a write to take
+# effect on nodes fit its timeout. CDS requires --router-cert-ttl positive and
+# shorter than --allowlist-node-delay (internal/cmds/cds/run.go).
+ROUTER_CERT_TTL=12s
+ALLOWLIST_NODE_DELAY=13s
+cds_address() { cat "$WORKDIR/cds-address"; }
+cds_host() {
+    local address
+    address="$(cds_address)"
+    echo "${address%:*}"
+}
+cds_url() { echo "https://$(cds_address)"; }
+
+# The CDS's mock attestation-api, which shares the CDS container's address and
+# answers this host.
+cds_mock_attestation_url() { echo "http://$(cds_host):8400"; }
 # Test-client and workload images. The workload image joins the install-time
 # floor; the test-client image stays out of it so the admission test can
 # drive a deny-then-allow transition through the signed CDS API.
-CURL_IMAGE=curlimages/curl:8.10.1
+CURL_IMAGE=curlimages/curl:8.10.1@sha256:d9b4541e214bcd85196d6e92e2753ac6d0ea699f0af5741f8c6cccbfcf00ef4b
 WORKLOAD_IMAGE=nginxinc/nginx-unprivileged@sha256:3af0c10d960cc2502427fe1219c52989d309e7d65596869c60a34fd2fa2406f0
 
 # Keep live client Pods and the admission regression tests on the same renderer.
@@ -38,6 +63,13 @@ pod_fixture() {
     local mode="$1" name="$2" ns="$3"
     shift 3
     python3 "$CLUSTER_HARNESS_DIR/pod-fixture.py" "$mode" "$name" "$ns" "$CURL_IMAGE" -- "$@"
+}
+
+# front_door_pod <name> <namespace> <ca-configmap> <url>: a curl Pod that
+# verifies the front door against the mesh CA in that ConfigMap.
+front_door_pod() {
+    python3 "$CLUSTER_HARNESS_DIR/pod-fixture.py" front-door "$1" "$2" "$CURL_IMAGE" \
+        --ca-configmap "$3" -- curl -sS --cacert /ca/ca.pem "$4"
 }
 
 NODE="${NODE:-}"  # kind node container name, resolved after cluster creation
@@ -48,35 +80,19 @@ log() { echo ""; echo "=== $* ==="; }
 diagnostics() {
     echo "--- cluster state (diagnostics) ---"
     kubectl get pods -A -o wide 2>&1 || true
-    kubectl -n "$NS" logs deploy/c8s-cds --tail=40 2>&1 || true
+    kubectl get events -A --sort-by=.lastTimestamp 2>&1 | tail -40 || true
+    kubectl -n "$ROUTER_NS" describe pods 2>&1 | tail -60 || true
+    kubectl -n "$ROUTER_NS" get pods -o json 2>&1 || true
+    kubectl -n "$ROUTER_NS" logs deploy/c8s-router -c cds-attest --tail=40 2>&1 || true
+    docker logs "$CDS_CONTAINER" --tail 40 2>&1 || true
     kubectl -n "$NS" logs deploy/c8s-operator --tail=40 2>&1 || true
     kubectl -n "$NS" logs ds/c8s-nri-image-policy-worker -c install --tail=80 2>&1 || true
     if [ -n "$NODE" ]; then
         node_exec journalctl -u containerd --no-pager -n 100 2>&1 || true
+        node_exec cat /etc/nri/conf.d/image-policy.yaml 2>&1 || true
+        node_exec sh -c 'for id in $(crictl ps --name cds-attest -q); do crictl inspect "$id"; done' 2>&1 || true
+        node_exec sh -c 'for p in /var/lib/kubelet/pods/*/volumes/*/*; do stat -f -c "%T %n" "$p"; done' 2>&1 || true
     fi
-    mesh_diagnostics
-}
-
-# The mesh assertions are counter and membership claims, and neither survives
-# into the log otherwise: a failed one leaves no way to tell a stale ipset from
-# a rule that never fired from a workload reached in plaintext.
-mesh_pod() { kubectl -n "$NS" get pod -l app=c8s-armtls-mesh -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true; }
-
-mesh_diagnostics() {
-    local pod
-    pod="$(mesh_pod)"
-    [ -n "$pod" ] || return 0
-    echo "--- armtls-mesh counters ---"
-    kubectl -n "$NS" exec "$pod" -c iptables-sync -- \
-        sh -c 'cat /tmp/armtls-iptables-metrics.json' 2>&1 || true
-    echo "--- cw guard chains and ipsets ---"
-    for chain in ARMTLS-MESH-CW ARMTLS-MESH-CW-EGRESS; do
-        kubectl -n "$NS" exec "$pod" -c iptables-sync -- iptables -L "$chain" -n -v -x 2>&1 || true
-    done
-    kubectl -n "$NS" exec "$pod" -c iptables-sync -- iptables -L FORWARD -n --line-numbers 2>&1 | head -12 || true
-    for set in ARMTLS-MESH-CW-PODS ARMTLS-MESH-PODS ARMTLS-MESH-LOCAL-PODS; do
-        kubectl -n "$NS" exec "$pod" -c iptables-sync -- ipset list "$set" 2>&1 | head -20 || true
-    done
 }
 
 fail() {
@@ -101,86 +117,169 @@ store_digests() {
 
 # --- CDS API helpers ---
 
-cds_healthy() { curl -sSk "https://127.0.0.1:$CDS_LOCAL_PORT/healthz" >/dev/null 2>&1; }
+cds_healthy() { curl -sSk "$(cds_url)/healthz" >/dev/null 2>&1; }
 
-# cds_pf_start opens the CDS port-forward, or reuses the one this WORKDIR
-# opened (its pid file), so drivers running each helper in its own process
-# share one. It forwards to the Deployment's pod rather than the Service: a
-# CDS that is not ready has no Service endpoint, and some callers read one.
-cds_pf_start() {
-    local pid
-    pid="$(cat "$WORKDIR/cds-pf.pid" 2>/dev/null || true)"
-    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && cds_healthy && return 0
-    kubectl -n "$NS" port-forward deploy/c8s-cds "$CDS_LOCAL_PORT:8443" >/dev/null 2>&1 &
-    echo "$!" > "$WORKDIR/cds-pf.pid"
-    for _ in $(seq 1 30); do
+# cds_start runs the CDS the cluster trusts: the attestation-api, reporting
+# the launch binding of the configuration CDS boots on, and CDS itself in that
+# container's network namespace, so the self-report it reads comes over
+# loopback, as in a CDS VM. The address is the attestation container's, so
+# cds_serve brings CDS back on the one the cluster trusts.
+cds_start() {
+    local ip
+    cds_stop
+    docker run -d \
+        --name "$CDS_ATTESTATION_CONTAINER" \
+        --network "$KIND_NETWORK" \
+        -e "HOST_DATA=$(sha256sum "$WORKDIR/cds/cds-config.yaml" | cut -d' ' -f1)" \
+        "ghcr.io/confidential-dot-ai/mock-attestation:$IMAGE_TAG" >/dev/null \
+        || fail "could not start the CDS attestation-api"
+    ip=$(docker inspect "$CDS_ATTESTATION_CONTAINER" \
+        -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
+    [ -n "$ip" ] || fail "the CDS has no address on the $KIND_NETWORK network"
+    echo "$ip:$CDS_PORT" > "$WORKDIR/cds-address"
+    cds_serve
+}
+
+# cds_serve [extra `c8s cds` flags...] replaces the CDS container on that
+# address: the flags the chart renders today, plus any given here, which a
+# later flag of the same name overrides.
+cds_serve() {
+    docker rm -f "$CDS_CONTAINER" >/dev/null 2>&1 || true
+    docker run -d \
+        --name "$CDS_CONTAINER" \
+        --network "container:$CDS_ATTESTATION_CONTAINER" \
+        -v "$WORKDIR/cds:/etc/confai:ro" \
+        "ghcr.io/confidential-dot-ai/cds:$IMAGE_TAG" \
+        --config=/etc/confai/cds-config.yaml \
+        --attestation-api-url=http://127.0.0.1:8400 \
+        --allowlist-db=/tmp/allowlist.db \
+        --allowlist-persistent=false \
+        --san-validation=true \
+        --router-cert-ttl="$ROUTER_CERT_TTL" \
+        --allowlist-node-delay="$ALLOWLIST_NODE_DELAY" \
+        --port="$CDS_PORT" \
+        --log-level=debug \
+        "$@" >/dev/null \
+        || fail "could not start CDS"
+}
+
+# cds_wait blocks until the CDS container serves: it refuses to serve at all
+# until a verified self-report binds the configuration it booted on.
+cds_wait() {
+    for _ in $(seq 1 60); do
         cds_healthy && return 0
         sleep 1
     done
-    fail "CDS port-forward never came up"
+    docker logs "$CDS_CONTAINER" 2>&1 | tail -30 || true
+    fail "CDS never answered /healthz at $(cds_url)"
 }
 
-cds_pf_stop() {
-    local pid
-    pid="$(cat "$WORKDIR/cds-pf.pid" 2>/dev/null || true)"
-    [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
-    rm -f "$WORKDIR/cds-pf.pid"
+cds_stop() {
+    docker rm -f "$CDS_CONTAINER" "$CDS_ATTESTATION_CONTAINER" >/dev/null 2>&1 || true
 }
 
-# --- Router front door helpers ---
+# --- Pod CVM provider ---
 
-router_healthy() { curl -sSk -o /dev/null "https://127.0.0.1:$ROUTER_LOCAL_PORT/healthz" 2>/dev/null; }
+# The Cloud the operator's Pod CVM provider launches into is test/mock-cloud,
+# a container of the kind network like the CDS. It starts no VM, so a pod
+# bound to the provider's node gets a record and an instance and never a
+# verified guest. The provider's identity, its node and its pod budget are
+# what pod_cvm_secret configures.
+CLOUD_CONTAINER="${C8S_IT_CLOUD:-c8s-it-cloud}"
+POD_CVM_PROVIDER=c8s-it
+POD_CVM_NODE=c8s-it-pod-cvm
+POD_CVM_SECRET=pod-cvm-provider
+POD_CVM_MAX_PODS=2
+POD_CVM_MEMORY_MIB=8192
+# The shortest deadline the provider accepts is 30; a minute leaves a pod's
+# earlier reasons time to be read before the deadline replaces them.
+POD_CVM_VERIFICATION_SECONDS=60
+cloud_url() { echo "http://$(cat "$WORKDIR/cloud-address")"; }
 
-# router_pf_start opens the port-forward to the router Service, or reuses the
-# one this WORKDIR opened.
-router_pf_start() {
-    local pid
-    pid="$(cat "$WORKDIR/router-pf.pid" 2>/dev/null || true)"
-    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && router_healthy && return 0
-    kubectl -n "$NS" port-forward svc/c8s-router "$ROUTER_LOCAL_PORT:443" >/dev/null 2>&1 &
-    echo "$!" > "$WORKDIR/router-pf.pid"
+cloud_start() {
+    local ip
+    cloud_stop
+    docker run -d --name "$CLOUD_CONTAINER" --network "$KIND_NETWORK" \
+        "ghcr.io/confidential-dot-ai/mock-cloud:$IMAGE_TAG" >/dev/null \
+        || fail "could not start the mock Cloud"
+    ip=$(docker inspect "$CLOUD_CONTAINER" \
+        -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
+    [ -n "$ip" ] || fail "the mock Cloud has no address on the $KIND_NETWORK network"
+    echo "$ip:8080" > "$WORKDIR/cloud-address"
     for _ in $(seq 1 30); do
-        router_healthy && return 0
+        curl -fsS "$(cloud_url)/healthz" >/dev/null 2>&1 && return 0
         sleep 1
     done
-    fail "router port-forward never came up"
+    fail "the mock Cloud never answered at $(cloud_url)"
 }
 
-router_pf_stop() {
-    local pid
-    pid="$(cat "$WORKDIR/router-pf.pid" 2>/dev/null || true)"
-    [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
-    rm -f "$WORKDIR/router-pf.pid"
+cloud_stop() {
+    docker rm -f "$CLOUD_CONTAINER" >/dev/null 2>&1 || true
 }
 
-# router_get <host> <path> <out-file> -> http code; a request through the
-# router front door for <host>, which nginx hands the routing listener as Host.
-# The path goes out as given (--path-as-is), empty segments included.
-router_get() {
-    router_pf_start
-    curl -sSk --path-as-is -o "$3" -w '%{http_code}' \
-        --resolve "$1:$ROUTER_LOCAL_PORT:127.0.0.1" "https://$1:$ROUTER_LOCAL_PORT$2" || true
-}
-
-# await_route <host> <path> <code> [<body substring>]: the router polls the
-# route manifest, so a write takes a poll interval to apply.
-await_route() {
-    local code
-    for _ in $(seq 1 30); do
-        code="$(router_get "$1" "$2" "$WORKDIR/route-body")"
-        if [ "$code" = "$3" ] && { [ -z "${4:-}" ] || grep -q "$4" "$WORKDIR/route-body"; }; then
-            return 0
-        fi
-        sleep 2
-    done
-    fail "GET https://$1$2 through the router: want HTTP $3${4:+ with \"$4\"}, got $code: $(head -c 300 "$WORKDIR/route-body")"
+# pod_cvm_secret: write the provider's trusted configuration and the files it
+# names (docs/pod-cvm-provider.md) into the Secret the chart mounts. The launch
+# key is generated here; the image manifest holds placeholder TDX registers,
+# which nothing verifies while no guest answers. The CDS policy is this
+# cluster's pin with a placeholder launch file: the pin's own carries the
+# whole floor, and the launch document that embeds the policy may not exceed
+# the Cloud's 64 KiB. No guest boots to dial that CDS.
+pod_cvm_secret() {
+    local dir="$WORKDIR/pod-cvm" register
+    rm -rf "$dir"
+    mkdir -p "$dir"
+    openssl ecparam -genkey -name prime256v1 -noout -out "$dir/pod.key" 2>/dev/null
+    echo c8s-it-cloud-token > "$dir/cloud-token"
+    jq --arg cluster "$CLUSTER" '.measurements[].launch_file = "schemaVersion: c8s-cds/v1\nclusterID: \($cluster)\n"' \
+        "$WORKDIR/cds/cds-pin.json" > "$dir/cds.json"
+    register="$(printf '%096d' 0)"
+    jq -n --arg r "$register" \
+        '{version: 1, build: {platform: "tdx"}, tdx: {mrtd: $r, rtmr1: $r, rtmr2: $r}}' > "$dir/manifest.json"
+    jq -n --arg digest "sha256:${WORKLOAD_IMAGE##*@sha256:}" \
+        '{schema: "c8s.allowlist/v1", workloads: {app: {containers: [{digest: $digest, command: {policy: "any"}, args: {policy: "any"}}]}}}' \
+        > "$dir/workloads.json"
+    jq -n --arg provider "$POD_CVM_PROVIDER" --arg node "$POD_CVM_NODE" --arg ns "$NS" \
+        --arg cloud "$(cloud_url)" --arg cds "$(cds_address)" --arg cluster "$CLUSTER" \
+        --argjson pods "$POD_CVM_MAX_PODS" --argjson deadline "$POD_CVM_VERIFICATION_SECONDS" \
+        --argjson memory "$POD_CVM_MEMORY_MIB" \
+        '{providerID: $provider, nodeName: $node, namespace: $ns, cloudURL: $cloud,
+          cloudTokenFile: "cloud-token", image: "c8s-pod@it", imageManifestFile: "manifest.json",
+          launchKeyFile: "pod.key", cdsAddress: $cds, cdsImagePolicyFile: "cds.json",
+          workloadsFile: "workloads.json", clusterID: $cluster, size: "it", location: "it",
+          vCPUs: 4, memoryMiB: $memory, maxPods: $pods, verificationTimeoutSeconds: $deadline}' \
+        > "$dir/config.json"
+    kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f - >/dev/null \
+        || fail "could not create the release namespace for the provider Secret"
+    kubectl -n "$NS" create secret generic "$POD_CVM_SECRET" --from-file="$dir" \
+        --dry-run=client -o yaml | kubectl apply -f - >/dev/null \
+        || fail "could not write the Pod CVM provider Secret"
 }
 
 # any_workload <digest> <image>: print a workload entry that admits the digest
-# under any command line and mounts, the body of PUT /allowlist/workloads/<name>.
+# under any command line and mounts, one entry of the allowlist document.
 any_workload() {
     printf '{"label":"%s","initContainers":[],"containers":[{"digest":"%s","image":"%s","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}]}' \
         "$2" "$1" "$2"
+}
+
+# allowlist_document <name> [<entry-file>]: print the served allowlist with the
+# entry in the file put under name, or with name removed when no file is given.
+# A write replaces the whole document, so every write starts here.
+allowlist_document() {
+    local name="$1" entry="${2:-}"
+    cds_get /allowlist "$WORKDIR/allowlist-live.json" >/dev/null
+    if [ -n "$entry" ]; then
+        jq -c --arg n "$name" --slurpfile e "$entry" '.workloads[$n] = $e[0]' "$WORKDIR/allowlist-live.json"
+    else
+        jq -c --arg n "$name" 'del(.workloads[$n])' "$WORKDIR/allowlist-live.json"
+    fi
+}
+
+# allowlist_set <name> [<entry-file>] -> http code: write the document
+# allowlist_document prints, signed with the operator key.
+allowlist_set() {
+    allowlist_document "$@" > "$WORKDIR/allowlist-write.json"
+    cds_write PUT /allowlist "$WORKDIR/allowlist-write.json"
 }
 
 # cds_write <method> <path> <body-file> -> http code; signed with the operator key.
@@ -188,14 +287,13 @@ any_workload() {
 # starts, so a 401 saying so is retried with a fresh token.
 cds_write() {
     local method="$1" path="$2" bodyfile="$3" token code
-    cds_pf_start
     for _ in $(seq 1 30); do
         token="$("$WORKDIR/optoken" "$WORKDIR/operator.key" "$method" "$path" "$bodyfile")"
         # Always exit 0: curl prints 000 on transport failure, and callers
         # assert on the code itself.
         code="$(curl -sSk -o "$WORKDIR/cds-write.out" -w '%{http_code}' -X "$method" \
             -H "Authorization: $token" -H 'Content-Type: application/json' \
-            --data-binary "@$bodyfile" "https://127.0.0.1:$CDS_LOCAL_PORT$path" || true)"
+            --data-binary "@$bodyfile" "$(cds_url)$path" || true)"
         if [ "$code" != 401 ] || ! grep -q 'issued too early' "$WORKDIR/cds-write.out"; then
             break
         fi
@@ -206,8 +304,7 @@ cds_write() {
 
 # cds_get <path> <out-file> -> http code; the response body lands in out-file.
 cds_get() {
-    cds_pf_start
-    curl -sSk -o "$2" -w '%{http_code}' "https://127.0.0.1:$CDS_LOCAL_PORT$1" || true
+    curl -sSk -o "$2" -w '%{http_code}' "$(cds_url)$1" || true
 }
 
 # route_manifest <revision> [<ca-pem-file>]: print a route manifest with one
@@ -243,41 +340,4 @@ run_pod() {
     done
     kubectl logs "$name" -n "$ns" 2>/dev/null || true
     kubectl delete pod "$name" -n "$ns" --ignore-not-found >/dev/null 2>&1 || true
-}
-
-# mesh_metric <pattern>: sum the matching series of the node's armtls-mesh
-# /metrics (hostNetwork). A missing series reads as 0.
-mesh_metric() {
-    run_pod default it-mesh-metrics "curl -sf --max-time 10 http://$NODE_IP:15021/metrics" \
-        | awk -v pat="$1" '$0 ~ pat {sum += $NF} END {print sum+0}'
-}
-
-# await_metric_above <pattern> <baseline> <what>
-await_metric_above() {
-    local pattern="$1" baseline="$2" what="$3" v
-    for _ in $(seq 1 18); do
-        v="$(mesh_metric "$pattern")"
-        [ "${v:-0}" -gt "$baseline" ] && return 0
-        sleep 5
-    done
-    fail "$what: no increase above baseline $baseline within 90s"
-}
-
-# await_ipset <set> <ip>: the mesh syncs pod IPs into its ipsets on a ~30s
-# tick; dialing before the client pod lands in ARMTLS-MESH-LOCAL-PODS bypasses
-# interception entirely, so gate every mesh assertion on membership. The kind
-# node has no ipset CLI; the mesh's iptables-sync container does and shares
-# the node's network namespace.
-MESH_POD=""
-await_ipset() {
-    local set="$1" ip="$2"
-    if [ -z "$MESH_POD" ]; then
-        MESH_POD="$(mesh_pod)"
-        [ -n "$MESH_POD" ] || fail "armtls-mesh pod not found"
-    fi
-    for _ in $(seq 1 18); do
-        kubectl -n "$NS" exec "$MESH_POD" -c iptables-sync -- ipset test "$set" "$ip" 2>/dev/null && return 0
-        sleep 5
-    done
-    fail "$ip never appeared in ipset $set"
 }

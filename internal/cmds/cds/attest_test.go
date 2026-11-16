@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
+	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
 	"github.com/confidential-dot-ai/c8s/internal/attestation"
@@ -41,6 +42,13 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
 	return f(r)
 }
+
+// testLaunchDigest is the launch measurement the stubbed attestation-api
+// reports; otherLaunchDigest is a second, unrelated node image's.
+var (
+	testLaunchDigest  = strings.Repeat("de", refvalues.DigestSize)
+	otherLaunchDigest = strings.Repeat("ca", refvalues.DigestSize)
+)
 
 func newStubAttestationApi(t *testing.T, launchDigest string) *mockapi.Stub {
 	t.Helper()
@@ -68,26 +76,53 @@ func generateCSRWith(t *testing.T, subject pkix.Name, dnsNames []string, ips []n
 	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der})), key
 }
 
-func newTestAttestHandler(t *testing.T, stubURL string, allowedMeasurements map[string]bool) AttestHandler {
+// newTestAttestHandler builds the /attest handler. A nil image set pins
+// testLaunchDigest, the digest the stubbed attestation-api reports, since
+// /attest admits only a pinned node image.
+func newTestAttestHandler(t *testing.T, stubURL string, pinned []remote.ImagePin) AttestHandler {
 	t.Helper()
-	ca, err := issuer.NewCA("test ca", 2*issuer.MaxLeafTTL)
-	if err != nil {
-		t.Fatalf("new ca: %v", err)
+	if pinned == nil {
+		pinned = []remote.ImagePin{imagePin(t, "node", testLaunchDigest)}
 	}
-	store := attestation.NewChallengeStore(30 * time.Second)
+	mesh, err := issuer.NewMeshCA("test ca", 2*issuer.MaxLeafTTL)
+	if err != nil {
+		t.Fatalf("new mesh ca: %v", err)
+	}
+	store := attestation.NewLocalChallenges(30 * time.Second)
 	return AttestHandler{
-		Challenges:        &store,
+		Challenges:        store,
 		AttestationClient: remote.NewClient(stubURL),
-		CA:                ca,
-		CAChainPEM:        certutil.EncodeCertPEM(ca.Cert.Raw),
+		MeshCA:            ownCA{mesh},
 		CertTTL:           time.Hour,
-		Measurements:      allowedMeasurements,
+		NodeImages:        certifying(pinned...),
+	}
+}
+
+// The set a CDS whose configuration names it certifies, which no command
+// replaces.
+func certifying(images ...remote.ImagePin) armtls.PinSource {
+	return armtls.FixedPins(refvalues.ReferenceValues{
+		Family: teetypes.FamilySNP,
+		Images: images,
+	})
+}
+
+// imagePin pins one node image by its launch digest, the whole pin on a
+// platform whose launch measurement covers the guest.
+func imagePin(t *testing.T, name, digest string) remote.ImagePin {
+	t.Helper()
+	return remote.ImagePin{
+		Name:   name,
+		Digest: mustDecode(t, digest),
 	}
 }
 
 func issueChallenge(t *testing.T, h AttestHandler) string {
 	t.Helper()
-	c := h.Challenges.Create()
+	c, err := h.Challenges.Create()
+	if err != nil {
+		t.Fatalf("create challenge: %v", err)
+	}
 	return base64.StdEncoding.EncodeToString(c[:])
 }
 
@@ -137,7 +172,7 @@ func leafFromAttestResponse(t *testing.T, w *httptest.ResponseRecorder) *x509.Ce
 }
 
 func TestAttest_InProcessSignAndReturnsChain(t *testing.T) {
-	stub := newStubAttestationApi(t, "deadbeef")
+	stub := newStubAttestationApi(t, testLaunchDigest)
 	h := newTestAttestHandler(t, stub.URL(), nil)
 	challenge := issueChallenge(t, h)
 	csrPEM, key := generateCSR(t)
@@ -160,7 +195,8 @@ func TestAttest_InProcessSignAndReturnsChain(t *testing.T) {
 	}
 	leaf := chain[0]
 	ca := chain[1]
-	if !bytes.Equal(ca.Raw, h.CA.Cert.Raw) {
+	signing, _ := h.MeshCA.Current()
+	if !bytes.Equal(ca.Raw, signing.CA.Cert.Raw) {
 		t.Fatalf("CA bundle cert does not match handler CA")
 	}
 	if err := leaf.CheckSignatureFrom(ca); err != nil {
@@ -173,7 +209,7 @@ func TestAttest_InProcessSignAndReturnsChain(t *testing.T) {
 }
 
 func TestAttest_ClampsCertTTLBeforeSigning(t *testing.T) {
-	stub := newStubAttestationApi(t, "deadbeef")
+	stub := newStubAttestationApi(t, testLaunchDigest)
 	base := newTestAttestHandler(t, stub.URL(), nil)
 	for _, tc := range []struct {
 		name       string
@@ -204,9 +240,14 @@ func TestAttest_ClampsCertTTLBeforeSigning(t *testing.T) {
 	}
 }
 
-func TestAttest_LaunchDigestAllowlistAllowed(t *testing.T) {
-	stub := newStubAttestationApi(t, "approved-digest")
-	h := newTestAttestHandler(t, stub.URL(), map[string]bool{"approved-digest": true})
+// A second pinned node image admits its own callers, which is what a
+// node-image rollout runs on.
+func TestAttest_AnyPinnedNodeImageIsAdmitted(t *testing.T) {
+	stub := newStubAttestationApi(t, otherLaunchDigest)
+	h := newTestAttestHandler(t, stub.URL(), []remote.ImagePin{
+		imagePin(t, "node", testLaunchDigest),
+		imagePin(t, "node-next", otherLaunchDigest),
+	})
 	challenge := issueChallenge(t, h)
 	csrPEM, _ := generateCSR(t)
 
@@ -216,21 +257,33 @@ func TestAttest_LaunchDigestAllowlistAllowed(t *testing.T) {
 	}
 }
 
-func TestAttest_LaunchDigestAllowlistCaseInsensitive(t *testing.T) {
-	stub := newStubAttestationApi(t, "DEADBEEF")
-	h := newTestAttestHandler(t, stub.URL(), map[string]bool{"deadbeef": true})
+func TestAttest_LaunchDigestCaseInsensitive(t *testing.T) {
+	stub := newStubAttestationApi(t, strings.ToUpper(testLaunchDigest))
+	h := newTestAttestHandler(t, stub.URL(), nil)
 	challenge := issueChallenge(t, h)
 	csrPEM, _ := generateCSR(t)
 
 	w := postAttest(t, h, challenge, csrPEM)
 	if w.Code != http.StatusOK {
-		t.Fatalf("uppercase digest with lowercase allowlist: got %d, want 200; body=%s", w.Code, w.Body.String())
+		t.Fatalf("uppercase digest against a lowercase pin: got %d, want 200; body=%s", w.Code, w.Body.String())
 	}
 }
 
-func TestAttest_LaunchDigestAllowlistDenied(t *testing.T) {
-	stub := newStubAttestationApi(t, "unknown-digest")
-	h := newTestAttestHandler(t, stub.URL(), map[string]bool{"approved-digest": true})
+func TestAttest_UnpinnedLaunchDigestDenied(t *testing.T) {
+	stub := newStubAttestationApi(t, otherLaunchDigest)
+	h := newTestAttestHandler(t, stub.URL(), nil)
+	challenge := issueChallenge(t, h)
+	csrPEM, _ := generateCSR(t)
+
+	wantRefusal(t, postAttest(t, h, challenge, csrPEM), http.StatusForbidden, types.ErrorCodeMeasurementDenied)
+}
+
+// A configuration pinning no node image admits nobody, rather than issuing
+// against whatever measurement attested.
+func TestAttest_NoPinnedNodeImageDenied(t *testing.T) {
+	stub := newStubAttestationApi(t, testLaunchDigest)
+	h := newTestAttestHandler(t, stub.URL(), nil)
+	h.NodeImages = certifying()
 	challenge := issueChallenge(t, h)
 	csrPEM, _ := generateCSR(t)
 
@@ -249,7 +302,7 @@ func TestAttest_TimeoutBeforeSigningReturns504(t *testing.T) {
 					Platform:        "snp",
 					SignatureValid:  true,
 					ReportDataMatch: &match,
-					Claims:          teetypes.Claims{LaunchDigest: "deadbeef"},
+					Claims:          teetypes.Claims{LaunchDigest: testLaunchDigest},
 				},
 			}
 			var body bytes.Buffer
@@ -285,7 +338,7 @@ func TestAttest_TimeoutBeforeSigningReturns504(t *testing.T) {
 }
 
 func TestAttest_ConsumedChallengeRejectsReplay(t *testing.T) {
-	stub := newStubAttestationApi(t, "x")
+	stub := newStubAttestationApi(t, testLaunchDigest)
 	h := newTestAttestHandler(t, stub.URL(), nil)
 	challenge := issueChallenge(t, h)
 	csrPEM, _ := generateCSR(t)
@@ -299,8 +352,8 @@ func TestAttest_ConsumedChallengeRejectsReplay(t *testing.T) {
 // A challenge is consumed by the attempt that carries it, not by success: a
 // requester whose evidence was refused cannot retry under the same challenge.
 func TestAttest_RefusedAttestConsumesChallenge(t *testing.T) {
-	stub := newStubAttestationApi(t, "deadbeef")
-	verdict := mockapi.PassingVerdict("deadbeef")
+	stub := newStubAttestationApi(t, testLaunchDigest)
+	verdict := mockapi.PassingVerdict(testLaunchDigest)
 	match := false
 	verdict.ReportDataMatch = &match
 	stub.SetVerdict(verdict)
@@ -310,14 +363,14 @@ func TestAttest_RefusedAttestConsumesChallenge(t *testing.T) {
 
 	wantRefusal(t, postAttest(t, h, challenge, csrPEM), http.StatusUnauthorized, types.ErrorCodeVerificationFailed)
 
-	stub.SetVerdict(mockapi.PassingVerdict("deadbeef"))
+	stub.SetVerdict(mockapi.PassingVerdict(testLaunchDigest))
 	wantRefusal(t, postAttest(t, h, challenge, csrPEM), http.StatusBadRequest, types.ErrorCodeInvalidChallenge)
 }
 
 // The verify request must bind this request's CSR key and challenge:
 // anything weaker signs a leaf for whoever holds any verifiable TEE report.
 func TestAttest_BindsReportDataToCSRKeyAndChallenge(t *testing.T) {
-	stub := newStubAttestationApi(t, "deadbeef")
+	stub := newStubAttestationApi(t, testLaunchDigest)
 	h := newTestAttestHandler(t, stub.URL(), nil)
 	challenge := issueChallenge(t, h)
 	csrPEM, csrKey := generateCSR(t)
@@ -360,8 +413,8 @@ func TestAttest_BindsReportDataToCSRKeyAndChallenge(t *testing.T) {
 // non-production shape (mockapi.Verdict) — production refuses a mismatch
 // with a 422; the 401 pins CDS's own fail-closed gate.
 func TestAttest_ReportDataMismatchReturns401(t *testing.T) {
-	stub := newStubAttestationApi(t, "deadbeef")
-	verdict := mockapi.PassingVerdict("deadbeef")
+	stub := newStubAttestationApi(t, testLaunchDigest)
+	verdict := mockapi.PassingVerdict(testLaunchDigest)
 	match := false
 	verdict.ReportDataMatch = &match
 	stub.SetVerdict(verdict)
@@ -373,7 +426,7 @@ func TestAttest_ReportDataMismatchReturns401(t *testing.T) {
 }
 
 func TestAttest_BadCSRRejected(t *testing.T) {
-	stub := newStubAttestationApi(t, "x")
+	stub := newStubAttestationApi(t, testLaunchDigest)
 	h := newTestAttestHandler(t, stub.URL(), nil)
 	challenge := issueChallenge(t, h)
 
@@ -381,7 +434,7 @@ func TestAttest_BadCSRRejected(t *testing.T) {
 }
 
 func TestAttest_RejectsCSRWithUnconfiguredDNSSAN(t *testing.T) {
-	stub := newStubAttestationApi(t, "x")
+	stub := newStubAttestationApi(t, testLaunchDigest)
 	h := newTestAttestHandler(t, stub.URL(), nil)
 	challenge := issueChallenge(t, h)
 	csrPEM, _ := generateCSRWith(t, pkix.Name{CommonName: "node"}, []string{"foo.mesh.svc"}, nil)
@@ -393,7 +446,7 @@ func TestAttest_RejectsCSRWithUnconfiguredDNSSAN(t *testing.T) {
 }
 
 func TestAttest_AcceptsCSRWithAllowedDNSSAN(t *testing.T) {
-	stub := newStubAttestationApi(t, "x")
+	stub := newStubAttestationApi(t, testLaunchDigest)
 	h := newTestAttestHandler(t, stub.URL(), nil)
 	h.Policy.DNSSANPatterns = []*regexp.Regexp{regexp.MustCompile(`^[a-z]+\.mesh\.svc$`)}
 	challenge := issueChallenge(t, h)
@@ -406,7 +459,7 @@ func TestAttest_AcceptsCSRWithAllowedDNSSAN(t *testing.T) {
 }
 
 func TestAttest_RejectsCSRWithBadCN(t *testing.T) {
-	stub := newStubAttestationApi(t, "x")
+	stub := newStubAttestationApi(t, testLaunchDigest)
 	h := newTestAttestHandler(t, stub.URL(), nil)
 	h.Policy.AllowedCNPattern = regexp.MustCompile(`^armtls-mesh-[0-9.]+$`)
 	challenge := issueChallenge(t, h)
@@ -416,7 +469,7 @@ func TestAttest_RejectsCSRWithBadCN(t *testing.T) {
 }
 
 func TestAttest_RejectsCSRWithMismatchedSourceIP(t *testing.T) {
-	stub := newStubAttestationApi(t, "x")
+	stub := newStubAttestationApi(t, testLaunchDigest)
 	h := newTestAttestHandler(t, stub.URL(), nil)
 	h.SANValidation = true
 	challenge := issueChallenge(t, h)
@@ -437,7 +490,7 @@ func TestAttest_RejectsCSRWithMismatchedSourceIP(t *testing.T) {
 }
 
 func TestAttest_RejectsCSRWithIPSANWhenSANValidationDisabled(t *testing.T) {
-	stub := newStubAttestationApi(t, "x")
+	stub := newStubAttestationApi(t, testLaunchDigest)
 	h := newTestAttestHandler(t, stub.URL(), nil)
 	// SANValidation defaults to false, leaving Policy.SourceIP empty.
 	challenge := issueChallenge(t, h)
@@ -746,46 +799,24 @@ func TestClassifyVerifyErrorDoesNotEchoUpstreamBody(t *testing.T) {
 	}
 }
 
-// caChainPEM has three branches: prefer CAChainPEM, fall back to CA.Cert, or
-// return nil.
-func TestAttestHandler_caChainPEM(t *testing.T) {
-	ca, err := issuer.NewCA("test ca", time.Hour)
-	if err != nil {
-		t.Fatalf("new ca: %v", err)
+func TestAttest_RejectsMalformedRequestJSON(t *testing.T) {
+	stub := newStubAttestationApi(t, testLaunchDigest)
+	h := newTestAttestHandler(t, stub.URL(), nil)
+
+	for name, body := range map[string]string{
+		"duplicate key": `{"challenge":"AA==","challenge":"AA=="}`,
+		"null body":     `null`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			h.HandleAttest(w, httptest.NewRequest(http.MethodPost, "/attest", bytes.NewReader([]byte(body))))
+			wantRefusal(t, w, http.StatusUnprocessableEntity, types.ErrorCodeInvalidRequest)
+		})
 	}
-
-	t.Run("prefers explicit CAChainPEM", func(t *testing.T) {
-		h := AttestHandler{CAChainPEM: []byte("explicit"), CA: ca}
-		if got := string(h.caChainPEM()); got != "explicit" {
-			t.Fatalf("got %q, want explicit", got)
-		}
-	})
-
-	t.Run("derives from CA cert when chain empty", func(t *testing.T) {
-		h := AttestHandler{CA: ca}
-		want := certutil.EncodeCertPEM(ca.Cert.Raw)
-		if !bytes.Equal(h.caChainPEM(), want) {
-			t.Fatal("derived chain does not match CA cert PEM")
-		}
-	})
-
-	t.Run("nil when no chain and no CA", func(t *testing.T) {
-		h := AttestHandler{}
-		if got := h.caChainPEM(); got != nil {
-			t.Fatalf("expected nil, got %v", got)
-		}
-	})
-
-	t.Run("nil when CA has nil cert", func(t *testing.T) {
-		h := AttestHandler{CA: &issuer.CA{}}
-		if got := h.caChainPEM(); got != nil {
-			t.Fatalf("expected nil, got %v", got)
-		}
-	})
 }
 
 func TestAttest_RejectsUnknownJSONFields(t *testing.T) {
-	stub := newStubAttestationApi(t, "x")
+	stub := newStubAttestationApi(t, testLaunchDigest)
 	h := newTestAttestHandler(t, stub.URL(), nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/attest", bytes.NewReader([]byte(`{"unknown":true}`)))
@@ -795,7 +826,7 @@ func TestAttest_RejectsUnknownJSONFields(t *testing.T) {
 }
 
 func TestAttest_RejectsMalformedChallengeEncoding(t *testing.T) {
-	stub := newStubAttestationApi(t, "x")
+	stub := newStubAttestationApi(t, testLaunchDigest)
 	h := newTestAttestHandler(t, stub.URL(), nil)
 	csrPEM, _ := generateCSR(t)
 
@@ -814,7 +845,7 @@ func TestAttest_RejectsMalformedChallengeEncoding(t *testing.T) {
 }
 
 func TestAttest_RejectsValidBase64UnknownChallenge(t *testing.T) {
-	stub := newStubAttestationApi(t, "x")
+	stub := newStubAttestationApi(t, testLaunchDigest)
 	h := newTestAttestHandler(t, stub.URL(), nil)
 	csrPEM, _ := generateCSR(t)
 
@@ -835,7 +866,7 @@ func TestAttest_RejectsValidBase64UnknownChallenge(t *testing.T) {
 
 // A CSR whose public key is not ECDSA must be rejected before verification.
 func TestAttest_RejectsNonECDSACSR(t *testing.T) {
-	stub := newStubAttestationApi(t, "x")
+	stub := newStubAttestationApi(t, testLaunchDigest)
 	h := newTestAttestHandler(t, stub.URL(), nil)
 	challenge := issueChallenge(t, h)
 
@@ -854,17 +885,69 @@ func TestAttest_RejectsNonECDSACSR(t *testing.T) {
 	wantRefusal(t, postAttest(t, h, challenge, csrPEM), http.StatusBadRequest, types.ErrorCodeInvalidCSR)
 }
 
-// An unloaded CA makes in-process signing fail after all validation passed.
-// Also exercises the RequestTimeout>0 wrapping.
-func TestAttest_SignFailureReturns500(t *testing.T) {
-	stub := newStubAttestationApi(t, "x")
-	h := newTestAttestHandler(t, stub.URL(), nil)
-	h.CA = &issuer.CA{} // no cert/key loaded: SignCSR fails
-	h.RequestTimeout = time.Second
+// RequestTimeout bounds the attestation round trip: an attestation-api that
+// does not answer inside it fails the request closed.
+func TestAttest_RequestTimeoutRefusesASlowAttestationApi(t *testing.T) {
+	slow := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		if _, err := io.Copy(io.Discard, r.Body); err != nil {
+			return
+		}
+		<-r.Context().Done()
+	}))
+	defer slow.Close()
+
+	h := newTestAttestHandler(t, slow.URL, nil)
+	h.RequestTimeout = 20 * time.Millisecond
 	challenge := issueChallenge(t, h)
 	csrPEM, _ := generateCSR(t)
 
-	wantRefusal(t, postAttest(t, h, challenge, csrPEM), http.StatusInternalServerError, types.ErrorCodeSignFailed)
+	wantRefusal(t, postAttest(t, h, challenge, csrPEM), http.StatusBadGateway, types.ErrorCodeAttestationApiUnreachable)
+}
+
+// captureSlog routes the default logger to a buffer for the test's duration.
+func captureSlog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &buf
+}
+
+const issuanceRecordMsg = "certificate issued (in-process)"
+
+// logRecord returns the attributes of the captured record carrying msg.
+func logRecord(t *testing.T, logs *bytes.Buffer, msg string) map[string]any {
+	t.Helper()
+	for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+		record := map[string]any{}
+		if json.Unmarshal([]byte(line), &record) != nil {
+			continue
+		}
+		if record["msg"] == msg {
+			return record
+		}
+	}
+	t.Fatalf("no %q record: %s", msg, logs.String())
+	return nil
+}
+
+// A CDS that holds no mesh CA between the gate and the signature answers
+// unavailable, so a requester retries instead of treating it as a refusal.
+func TestAttest_NoIssuingMeshCAIsUnavailable(t *testing.T) {
+	stub := newStubAttestationApi(t, testLaunchDigest)
+	h := newTestAttestHandler(t, stub.URL(), nil)
+	h.MeshCA = noMeshCA{}
+	csrPEM, _ := generateCSR(t)
+
+	wantRefusal(t, postAttest(t, h, issueChallenge(t, h), csrPEM), http.StatusServiceUnavailable, types.ErrorCodeInternal)
+}
+
+// noMeshCA is a replica that stopped serving.
+type noMeshCA struct{}
+
+func (noMeshCA) Current() (issuer.CurrentCA, bool) {
+	return issuer.CurrentCA{}, false
 }
 
 // The issuance record is the only durable trace that a mesh identity was
@@ -872,7 +955,7 @@ func TestAttest_SignFailureReturns500(t *testing.T) {
 // leaf, and this line is what an operator reconciles against expected
 // workloads afterwards. The serial has to match the leaf actually returned.
 func TestAttest_IssuanceIsRecorded(t *testing.T) {
-	stub := newStubAttestationApi(t, "deadbeef")
+	stub := newStubAttestationApi(t, testLaunchDigest)
 	h := newTestAttestHandler(t, stub.URL(), nil)
 	challenge := issueChallenge(t, h)
 	csrPEM, _ := generateCSR(t)
@@ -899,9 +982,8 @@ func TestAttest_IssuanceIsRecorded(t *testing.T) {
 	if want := fmt.Sprintf("%X", chain[0].SerialNumber); !strings.Contains(logs, want) {
 		t.Errorf("issuance record omits the leaf serial %s: %s", want, logs)
 	}
-	// Names what attested for it. Logged even with pinning off, which is when
-	// it is the only record of what was admitted.
-	if !strings.Contains(logs, "deadbeef") {
+	// Names what attested for it.
+	if !strings.Contains(logs, testLaunchDigest) {
 		t.Errorf("issuance record omits the launch digest: %s", logs)
 	}
 	if !strings.Contains(logs, "launch_digest") || !strings.Contains(logs, "remote_addr") {
@@ -911,9 +993,9 @@ func TestAttest_IssuanceIsRecorded(t *testing.T) {
 
 // A denial and the issuance that follows it have to be correlatable, or a run
 // of probes against CDS cannot be tied to the leaf that eventually succeeded.
-func TestAttest_MeasurementDenialRecordsPeer(t *testing.T) {
-	stub := newStubAttestationApi(t, "deadbeef")
-	h := newTestAttestHandler(t, stub.URL(), map[string]bool{"cafe": true})
+func TestAttest_NodeImageDenialRecordsPeer(t *testing.T) {
+	stub := newStubAttestationApi(t, testLaunchDigest)
+	h := newTestAttestHandler(t, stub.URL(), []remote.ImagePin{imagePin(t, "node-next", otherLaunchDigest)})
 	challenge := issueChallenge(t, h)
 	csrPEM, _ := generateCSR(t)
 
@@ -924,7 +1006,7 @@ func TestAttest_MeasurementDenialRecordsPeer(t *testing.T) {
 
 	wantRefusal(t, postAttest(t, h, challenge, csrPEM), http.StatusForbidden, types.ErrorCodeMeasurementDenied)
 	logs := buf.String()
-	if !strings.Contains(logs, "measurement does not match any reference value") {
+	if !strings.Contains(logs, "node identity does not match policy") {
 		t.Fatalf("no denial record: %s", logs)
 	}
 	if !strings.Contains(logs, "remote_addr") {

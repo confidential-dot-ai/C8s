@@ -165,7 +165,11 @@ func cryptOpenArgs(device, mapper string, readOnly bool) []string {
 		"--sector-size", strconv.Itoa(volume.SectorSize),
 	}
 	if readOnly {
-		args = append(args, "--readonly")
+		// Each pod has its own mapping. Immutable readers may share the same
+		// ciphertext device, including while another pod remains mounted.
+		// Without --shared cryptsetup refuses a replacement pod's open.
+		// Mutable mappings keep cryptsetup's exclusive device check.
+		args = append(args, "--readonly", "--shared")
 	}
 	return append(args, "--batch-mode", device, mapper)
 }
