@@ -21,6 +21,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
+	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/strictjson"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
@@ -370,7 +371,7 @@ func (s *State) setMember(slot int, key string) error {
 	if slot < 0 || slot >= len(s.Endpoints) {
 		return fmt.Errorf("member slot %d outside the %d endpoints", slot, len(s.Endpoints))
 	}
-	if _, err := ParseKey(key); err != nil {
+	if _, err := runtimemeasure.ParsePublicKeyPEM([]byte(key)); err != nil {
 		return fmt.Errorf("member key: %w", err)
 	}
 	if len(s.Members) == 0 {
@@ -464,7 +465,8 @@ func PublicKeyPEM(pub any) (string, error) {
 	return string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})), err
 }
 
-// ParseKey reads one PEM EC public key.
+// ParseKey reads one PEM EC public key of any curve: the mesh CA key is
+// P-384. A member key is P-256 (runtimemeasure.ParsePublicKeyPEM).
 func ParseKey(pemKey string) (*ecdsa.PublicKey, error) {
 	keys, err := operatorauth.ParsePublicKeysPEM([]byte(pemKey))
 	if err != nil {
@@ -487,7 +489,7 @@ func parseKeys(bundle string) ([]*ecdsa.PublicKey, error) {
 func parseEach(pems []string) ([]*ecdsa.PublicKey, error) {
 	keys := make([]*ecdsa.PublicKey, len(pems))
 	for i, p := range pems {
-		k, err := ParseKey(p)
+		k, err := runtimemeasure.ParsePublicKeyPEM([]byte(p))
 		if err != nil {
 			return nil, fmt.Errorf("member %d: %w", i, err)
 		}
