@@ -273,3 +273,78 @@ func TestDigestsListenerFollowsTheChainsBuilds(t *testing.T) {
 		t.Fatal("a replica of a build outside the chain's set was admitted")
 	}
 }
+
+// cds_chain is checked when the config loads: a pin that does not parse is
+// refused naming the key, and so is a chain with no CDS to read it from,
+// which would otherwise leave enforce_existing off for good.
+func TestValidate_CDSChain(t *testing.T) {
+	cfg := validConfig()
+	cfg.Allowlist.Pull.CDSChain = "0:" + strings.Repeat("ab", 32)
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("a chain pin with a CDS: %v", err)
+	}
+	cfg.Allowlist.Pull.CDSChain = "seven"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "allowlist.pull.cds_chain") {
+		t.Fatalf("a pin that does not parse: %v", err)
+	}
+	cfg = validConfig()
+	cfg.Allowlist.Pull = pullConfig{CDSChain: "0:" + strings.Repeat("ab", 32)}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "allowlist.pull.cds_chain") {
+		t.Fatalf("a chain pin with no CDS: %v", err)
+	}
+}
+
+// Before the pull transport is stored, the allowlist pull fails instead of
+// going out on the default transport, without armTLS.
+func TestChainPullFailsClosedWithoutATransport(t *testing.T) {
+	served := false
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { served = true }))
+	defer srv.Close()
+	c := slowChainPins(t, srv.URL, time.Second)
+	req, err := http.NewRequest(http.MethodGet, srv.URL+"/allowlist", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp, err := c.RoundTrip(req); err == nil || served {
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+		t.Fatalf("a pull with no transport: err %v, reached the CDS %v", err, served)
+	}
+}
+
+// A restarted plugin rewrites the pods' pins document in place: a pod started
+// before the restart bind-mounts its inode, and must read what the plugin
+// writes now and on every later chain update.
+func TestPrepareCDSPinsKeepsTheInodePodsMount(t *testing.T) {
+	renderInTempDir(t)
+	pin := testCDSPinFile(t)
+	p := testPlugin(t, &config{
+		Platform:       "tdx",
+		WorkloadClaims: workloadClaimsConfig{SocketDir: t.TempDir()},
+		Allowlist:      allowlistConfig{Pull: pullConfig{CDSMeasurementsConfig: pin}},
+	})
+	path := filepath.Join(enforcerRuntimeDir, renderedCDSPinsName)
+	if err := os.WriteFile(path, []byte("pins of the previous run"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mounted, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mounted.Close()
+	if err := p.prepareCDSPins(); err != nil {
+		t.Fatal(err)
+	}
+	seen, err := io.ReadAll(mounted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(seen) != string(want) || string(seen) == "pins of the previous run" {
+		t.Fatalf("a pod mounted before the restart reads %q", seen)
+	}
+}

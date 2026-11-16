@@ -51,6 +51,9 @@ type node struct {
 	// once none that started before is in flight.
 	muted   bool
 	in, out sync.RWMutex
+	// selfWait, when set, holds its own build check until it is closed; the
+	// check signals selfEntered (if set) first.
+	selfWait, selfEntered chan struct{}
 }
 
 // set is an in-process replica set: its nodes answer at r<slot>:8443 through
@@ -130,8 +133,17 @@ func (s *set) boot(slot int, b string) *node {
 		},
 		SelfCheck: func(_ context.Context, m string) (bool, error) {
 			s.mu.Lock()
-			noAnswer := n.selfErr
+			noAnswer, wait, entered := n.selfErr, n.selfWait, n.selfEntered
 			s.mu.Unlock()
+			if entered != nil {
+				select {
+				case entered <- struct{}{}:
+				default:
+				}
+			}
+			if wait != nil {
+				<-wait
+			}
 			if noAnswer {
 				return false, errors.New("no answer")
 			}

@@ -25,6 +25,20 @@ func key(t *testing.T) (*ecdsa.PrivateKey, string) {
 	return k, p
 }
 
+// p384PEM is a key a member never has: replicas make P-256 member keys.
+func p384PEM(t *testing.T) string {
+	t.Helper()
+	k, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := PublicKeyPEM(&k.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
 var build = Build{Measurements: testutil.CDSPinDocument(strings.Repeat("a1", 48), "launch"), Version: "v1.0.0"}
 
 type fixture struct {
@@ -88,6 +102,7 @@ func TestApply(t *testing.T) {
 		{"member signs a policy", f.member, next(TypeOperatorKeys, OperatorKeys{Keys: f.opPEM}), nil},
 		{"member slot out of range", f.member, next(TypeMember, Member{Slot: 3, Key: stranger}), nil},
 		{"member key twice", f.op, next(TypeMember, Member{Slot: 1, Key: f.members[0]}), nil},
+		{"member key not P-256", f.op, next(TypeMember, Member{Slot: 1, Key: p384PEM(t)}), nil},
 		{"empty accepted set", f.op, next(TypeAccepted, Accepted{}), nil},
 		{"build binds no launch file", f.op, next(TypeAccepted, Accepted{Accepted: []Build{unbound}}), nil},
 		{"build twice", f.op, next(TypeAccepted, Accepted{Accepted: []Build{build, build}}), nil},
@@ -143,10 +158,12 @@ func signRaw(t *testing.T, k *ecdsa.PrivateKey, body []byte) Entry {
 func TestGenesisRules(t *testing.T) {
 	op, opPEM := key(t)
 	_, m := key(t)
+	p384 := p384PEM(t)
 	for name, g := range map[string]Genesis{
-		"two endpoints":     {Endpoints: []string{"a:1", "b:1"}, Members: []string{m, m}, OperatorKeys: opPEM, CAKey: m, Accepted: []Build{build}},
-		"members short":     {Endpoints: []string{"a:1"}, OperatorKeys: opPEM, CAKey: m, Accepted: []Build{build}},
-		"no accepted build": {Endpoints: []string{"a:1"}, Members: []string{m}, OperatorKeys: opPEM, CAKey: m},
+		"member key not P-256": {Endpoints: []string{"a:1"}, Members: []string{p384}, OperatorKeys: opPEM, CAKey: m, Accepted: []Build{build}},
+		"two endpoints":        {Endpoints: []string{"a:1", "b:1"}, Members: []string{m, m}, OperatorKeys: opPEM, CAKey: m, Accepted: []Build{build}},
+		"members short":        {Endpoints: []string{"a:1"}, OperatorKeys: opPEM, CAKey: m, Accepted: []Build{build}},
+		"no accepted build":    {Endpoints: []string{"a:1"}, Members: []string{m}, OperatorKeys: opPEM, CAKey: m},
 	} {
 		e, _ := Sign(op, Body{Cluster: "lane", Type: TypeGenesis, Payload: mustJSON(t, g)})
 		if _, err := VerifyGenesis(e); err == nil {

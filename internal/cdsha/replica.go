@@ -51,8 +51,11 @@ type Config struct {
 	// SelfCheck reports whether this replica's own attestation passes one
 	// build's pins; an error is "no answer", which evicts nothing.
 	SelfCheck func(ctx context.Context, measurements string) (bool, error)
-	// OnState is told every state the replica adopts.
-	OnState func(*cdschain.State)
+	// OnState is told every state the replica adopts, in chain order: it
+	// runs under Replica.mu, so it must not call back into the replica.
+	// While it fails for the held state, the replica serves nothing; each
+	// store read retries it.
+	OnState func(*cdschain.State) error
 	// Validate checks an entry's payload beyond the chain's rules.
 	Validate func(cdschain.Body) error
 }
@@ -86,6 +89,16 @@ type Replica struct {
 	memberPEM string
 	self      atomic.Int64 // the slot, -1 until learnt
 
+	// mu guards the fields below, the replica's memory, and is never held
+	// across store, peer or attestation I/O, so a slow store, peer or
+	// verifier never stalls reads or gossip answers. A caller copies what it
+	// needs under mu, does the I/O, then applies the result in one locked
+	// step that re-checks it against the memory as it is then: adopt
+	// verifies entries after the current head, and the store itself orders
+	// writes by its compare-and-swap on the head. A stale copy thus costs a
+	// refusal or a retry, never a wrong state. findChain is the one
+	// exception: a pending replica serves nothing, so it reads the store
+	// under mu. Methods named *Locked expect mu held.
 	mu         sync.Mutex
 	store      Store
 	credential []byte
@@ -109,6 +122,12 @@ type Replica struct {
 	// cut is the seq a resolve cut the chain at: the kept entry there may be
 	// a done write, so the replica serves again only once it holds one.
 	cut uint64
+	// stateErr is OnState's error for the held state.
+	stateErr error
+	// policies indexes the allowlists of the chain's first indexed entries
+	// by digest (Policy).
+	policies map[string][]byte
+	indexed  int
 }
 
 // New starts a pending replica with a fresh member key.
@@ -122,8 +141,14 @@ func New(cfg Config, store Store) (*Replica, error) {
 		return nil, err
 	}
 	r := &Replica{
-		cfg: cfg, member: key, memberPEM: memberPEM, store: store,
-		heard: map[int]heard{}, dropped: map[cdschain.Hash]uint64{}, own: map[string]bool{}, handing: map[int]bool{},
+		cfg:       cfg,
+		member:    key,
+		memberPEM: memberPEM,
+		store:     store,
+		heard:     map[int]heard{},
+		dropped:   map[cdschain.Hash]uint64{},
+		own:       map[string]bool{},
+		handing:   map[int]bool{},
 	}
 	r.self.Store(int64(cfg.Self))
 	return r, nil
@@ -162,22 +187,24 @@ func (r *Replica) State() *cdschain.State {
 // Policy returns the allowlist of a policy entry in the chain whose digest
 // ("sha256:<hex>" of its canonical bytes) is digest, so any replica answers
 // for an allowlist a leaf was stamped under before it started.
+// Each entry is decoded once, on the first lookup after it is adopted.
 func (r *Replica) Policy(digest string) ([]byte, bool) {
 	r.mu.Lock()
-	chain := slices.Clone(r.chain)
-	r.mu.Unlock()
-	for _, e := range chain {
+	defer r.mu.Unlock()
+	if r.policies == nil {
+		r.policies = map[string][]byte{}
+	}
+	for ; r.indexed < len(r.chain); r.indexed++ {
 		var p cdschain.Policy
-		b, err := e.Decode()
+		b, err := r.chain[r.indexed].Decode()
 		if err != nil || b.Type != cdschain.TypePolicy || cdschain.DecodeStrict(b.Payload, &p) != nil {
 			continue
 		}
 		sum := sha256.Sum256(p.Allowlist)
-		if "sha256:"+hex.EncodeToString(sum[:]) == digest {
-			return p.Allowlist, true
-		}
+		r.policies["sha256:"+hex.EncodeToString(sum[:])] = p.Allowlist
 	}
-	return nil, false
+	allowlist, ok := r.policies[digest]
+	return allowlist, ok
 }
 
 // Identity is the chain identity this replica answers a client pinning pin
@@ -197,20 +224,22 @@ func (r *Replica) Identity(pin string) string {
 
 func majority(n int) int { return n/2 + 1 }
 
-// servingLocked is why the replica serves nothing now, nil when it serves.
-func (r *Replica) servingLocked() error {
+// refusalLocked is why the replica serves nothing now, nil when it serves.
+func (r *Replica) refusalLocked() error {
 	switch {
 	case r.state == nil:
 		return fmt.Errorf("%w: the replica holds no chain yet", ErrUnavailable)
+	case r.stateErr != nil:
+		return fmt.Errorf("%w: the CDS cannot serve head %d: %w", ErrUnavailable, r.state.Head.Seq, r.stateErr)
 	case r.fork != nil && r.fork.Seq == 0:
 		return fmt.Errorf("%w: halted: %s holds a different genesis; re-root under a new cluster ID", ErrUnavailable, r.fork.Source)
 	case r.fork != nil:
 		return fmt.Errorf("%w: halted: two entries at seq %d (%s, %s from %s); resolve the fork", ErrUnavailable, r.fork.Seq, r.fork.Mine, r.fork.Theirs, r.fork.Source)
 	case r.state.Members[r.slot()] != r.memberPEM:
 		return fmt.Errorf("%w: this replica is not the member of slot %d", ErrUnavailable, r.slot())
-	case r.buildLocked() == "":
+	case r.ownBuildVersionLocked() == "":
 		return fmt.Errorf("%w: this replica's build is not accepted at head %d", ErrUnavailable, r.state.Head.Seq)
-	case !r.freshLocked():
+	case !r.majorityHeardLocked():
 		return fmt.Errorf("%w: no gossip from enough replicas within %v", ErrUnavailable, r.cfg.Gossip)
 	case r.state.Head.Seq < r.cut:
 		return fmt.Errorf("%w: a resolve cut the chain at seq %d; it serves again once it holds the kept entry", ErrUnavailable, r.cut)
@@ -218,9 +247,9 @@ func (r *Replica) servingLocked() error {
 	return nil
 }
 
-// memberAheadLocked is the highest head seq a current member's pong named
+// memberAheadSeqLocked is the highest head seq a current member's pong named
 // within T, if it is above the store's last read head; else 0.
-func (r *Replica) memberAheadLocked() uint64 {
+func (r *Replica) memberAheadSeqLocked() uint64 {
 	ahead := uint64(0)
 	for slot, h := range r.heard {
 		if h.key == r.state.Members[slot] && time.Since(h.at) < r.cfg.Gossip && h.seq > r.storeSeq {
@@ -230,8 +259,9 @@ func (r *Replica) memberAheadLocked() uint64 {
 	return ahead
 }
 
-// freshLocked: a majority, counting self, answered a ping sent within T.
-func (r *Replica) freshLocked() bool {
+// majorityHeardLocked reports whether a majority, counting self, answered a
+// ping sent within T.
+func (r *Replica) majorityHeardLocked() bool {
 	recent := 1
 	for slot, h := range r.heard {
 		if h.key == r.state.Members[slot] && time.Since(h.at) < r.cfg.Gossip {
@@ -241,9 +271,9 @@ func (r *Replica) freshLocked() bool {
 	return recent >= majority(len(r.cfg.Endpoints))
 }
 
-// buildLocked is the version of an accepted build this replica's own
+// ownBuildVersionLocked is the version of an accepted build this replica's own
 // attestation passes, "" when none does.
-func (r *Replica) buildLocked() string {
+func (r *Replica) ownBuildVersionLocked() string {
 	for _, b := range r.state.Accepted {
 		if r.own[b.Measurements] {
 			return b.Version
@@ -260,7 +290,7 @@ func (r *Replica) Current(ctx context.Context) (*cdschain.State, error) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if err := r.servingLocked(); err != nil {
+	if err := r.refusalLocked(); err != nil {
 		return nil, err
 	}
 	return r.state, nil
@@ -288,12 +318,15 @@ func (r *Replica) refresh(ctx context.Context) ([]byte, error) {
 	switch {
 	case errors.Is(err, ErrHalted):
 		r.mu.Lock()
-		err = fmt.Errorf("%w: %w", ErrHalted, r.servingLocked())
+		err = fmt.Errorf("%w: %w", ErrHalted, r.refusalLocked())
 		r.mu.Unlock()
 	case err != nil && !errors.Is(err, ErrUnavailable):
 		err = fmt.Errorf("%w: the store is unreachable: %w", ErrUnavailable, err)
 	}
 	r.mu.Lock()
+	if r.stateErr != nil {
+		r.tellStateLocked()
+	}
 	if was := r.storeErr; err == nil {
 		r.storeErr = ""
 	} else if r.storeErr = err.Error(); r.storeErr != was {
@@ -317,7 +350,7 @@ func (r *Replica) reconcile(ctx context.Context, st Store, raw []byte) ([]byte, 
 	}
 	r.mu.Lock()
 	r.storeSeq = h.Seq
-	held, from := r.state.Head, r.fromLocked(h.Seq)
+	held, from := r.state.Head, r.walkFromLocked(h.Seq)
 	inChain := r.holdsLocked(h)
 	r.mu.Unlock()
 	switch {
@@ -339,9 +372,9 @@ func (r *Replica) reconcile(ctx context.Context, st Store, raw []byte) ([]byte, 
 	return raw, nil
 }
 
-// fromLocked is the lowest seq a fetch of a head at seq must start at to
+// walkFromLocked is the lowest seq a fetch of a head at seq must start at to
 // meet this replica's chain, or a branch a resolve dropped.
-func (r *Replica) fromLocked(seq uint64) uint64 {
+func (r *Replica) walkFromLocked(seq uint64) uint64 {
 	from := min(seq, r.state.Head.Seq+1)
 	for _, s := range r.dropped {
 		from = min(from, s)
@@ -459,7 +492,7 @@ func (r *Replica) adopt(entries []cdschain.Entry, source string) error {
 func (r *Replica) haltLocked(f Fork) {
 	if r.fork == nil {
 		r.fork = &f
-		slog.Error("CDS replica HALTED; issuance and writes stop until an operator resolves the fork", "reason", r.servingLocked())
+		slog.Error("CDS replica HALTED; issuance and writes stop until an operator resolves the fork", "reason", r.refusalLocked())
 	}
 }
 
@@ -474,9 +507,19 @@ func (r *Replica) adoptedLocked() {
 			slog.Error("CDS chain passed its size warning; v1 never prunes it", "entries", s.Entries, "bytes", s.Bytes)
 		}
 	}
-	if r.cfg.OnState != nil {
-		r.cfg.OnState(s)
+	r.tellStateLocked()
+}
+
+// tellStateLocked tells OnState the held state.
+func (r *Replica) tellStateLocked() {
+	if r.cfg.OnState == nil {
+		return
 	}
+	err := r.cfg.OnState(r.state)
+	if err != nil && (r.stateErr == nil || err.Error() != r.stateErr.Error()) {
+		slog.Error("CDS replica refuses: the CDS cannot serve the chain's head", "head", r.state.Head.Seq, "error", err)
+	}
+	r.stateErr = err
 }
 
 // writeForward puts this replica's entries from seq from on and moves the
@@ -577,10 +620,10 @@ func (r *Replica) swap(ctx context.Context, entry func(*cdschain.State) (cdschai
 			return cdschain.Head{}, e, err
 		}
 		r.mu.Lock()
-		state, halted, st, ahead := r.state, r.fork != nil, r.store, r.memberAheadLocked()
+		state, halted, st, ahead := r.state, r.fork != nil, r.store, r.memberAheadSeqLocked()
 		var notServing error
 		if serving && !halted {
-			notServing = r.servingLocked()
+			notServing = r.refusalLocked()
 		}
 		r.mu.Unlock()
 		if halted {
@@ -701,6 +744,7 @@ func (r *Replica) Resolve(seq uint64, keep, drop cdschain.Hash) error {
 			return err
 		}
 		r.chain, r.state, r.cut = r.chain[:seq], state, seq
+		r.policies, r.indexed = nil, 0
 		r.adoptedLocked()
 	}
 	r.dropped[drop] = seq

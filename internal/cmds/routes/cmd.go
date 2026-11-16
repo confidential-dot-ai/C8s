@@ -139,7 +139,10 @@ func (o *options) trustedKeys() ([]*ecdsa.PublicKey, error) {
 // command.
 func put(ctx context.Context, opts *cdsconn.Options, c routesclient.Client, manifest []byte, signer operatorauth.Authorizer, ifMatch, rebase string) error {
 	// A replica set takes the manifest as a chain entry.
-	if handled, err := hacli.WriteRoutes(ctx, opts, manifest, signer); handled {
+	if handled, err := hacli.WriteRoutes(ctx, opts, manifest, signer, ifMatch); handled {
+		if errors.Is(err, hacli.ErrRoutesChanged) {
+			return fmt.Errorf("%w; %s", err, rebase)
+		}
 		return err
 	}
 	err := c.Put(ctx, manifest, signer, ifMatch)

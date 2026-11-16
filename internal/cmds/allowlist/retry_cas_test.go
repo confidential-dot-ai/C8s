@@ -12,6 +12,7 @@ import (
 
 	"golang.org/x/time/rate"
 
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
@@ -281,6 +282,9 @@ func TestWholeDocumentWriteUnconfirmed(t *testing.T) {
 				!strings.Contains(err.Error(), "still serves version "+version+" without it") ||
 				strings.Contains(err.Error(), "nothing was") {
 				t.Fatalf("err = %v, want it to say the write is unconfirmed at version %s", err, version)
+			}
+			if got := cmdsutil.ExitStatus(err); got != cmdsutil.ExitNotConfirmed {
+				t.Fatalf("an unconfirmed write exits %d, want %d", got, cmdsutil.ExitNotConfirmed)
 			}
 		})
 	}

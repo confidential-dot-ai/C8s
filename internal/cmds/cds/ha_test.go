@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -151,7 +152,7 @@ func TestReplicaServesEachAllowlistAtANewVersion(t *testing.T) {
 		}
 		raw, _ := al.Canonical()
 		n, _ := strconv.ParseUint(version, 10, 64)
-		if prev, ok := served[version]; (ok && !bytes.Equal(prev, raw)) || n <= last || version != s.PolicyVersion() {
+		if prev, ok := served[version]; (ok && !bytes.Equal(prev, raw)) || n <= last || version != s.CurrentPolicyVersion() {
 			t.Fatalf("policy seq %d served at version %s after version %d", s.PolicySeq, version, last)
 		}
 		served[version], last = raw, n
@@ -238,11 +239,7 @@ func TestReplicaServesEveryChainPolicyByDigest(t *testing.T) {
 		Gossip:       100 * time.Millisecond, PeerTimeout: time.Second, StoreTimeout: time.Second,
 		Mesh:      mesh,
 		SelfCheck: func(context.Context, string) (bool, error) { return true, nil },
-		OnState: func(s *cdschain.State) {
-			if err := serve(s); err != nil {
-				t.Error(err)
-			}
-		},
+		OnState:   serve,
 	}, cdsha.NewMemory())
 	if err != nil {
 		t.Fatal(err)
@@ -358,4 +355,171 @@ func TestReplicaCertifiesTheChainsNodeImages(t *testing.T) {
 	if code := attest(); code == http.StatusOK {
 		t.Fatal("a node certified after the chain dropped its nodes entry")
 	}
+}
+
+// The replica flags take only values a replica runs with, and only on a CDS
+// whose configuration has an ha block.
+func TestValidateHAConfig(t *testing.T) {
+	valid := haConfig{gossip: 2 * time.Second, peerTimeout: 2 * time.Second, storeTimeout: 5 * time.Second}
+	set := &cdsconfig.Config{HA: &cdsconfig.HA{Endpoints: []string{"a:1"}}}
+	if err := validateHAConfig(config{measured: set, ha: valid}); err != nil {
+		t.Fatalf("defaults refused: %v", err)
+	}
+	if err := validateHAConfig(config{measured: &cdsconfig.Config{}, ha: haConfig{runtimeDir: "/run/cds-store"}}); err != nil {
+		t.Fatalf("a single CDS refuses the runtime disk every CDS VM is given: %v", err)
+	}
+	for name, tc := range map[string]struct {
+		measured *cdsconfig.Config
+		edit     func(*haConfig)
+	}{
+		"zero gossip interval":                  {set, func(h *haConfig) { h.gossip = 0 }},
+		"gossip interval without a half":        {set, func(h *haConfig) { h.gossip = time.Nanosecond; h.peerTimeout = time.Nanosecond }},
+		"negative gossip interval":              {set, func(h *haConfig) { h.gossip = -time.Second }},
+		"zero peer timeout":                     {set, func(h *haConfig) { h.peerTimeout = 0 }},
+		"peer timeout above the interval":       {set, func(h *haConfig) { h.peerTimeout = 3 * time.Second }},
+		"zero store timeout":                    {set, func(h *haConfig) { h.storeTimeout = 0 }},
+		"negative store timeout":                {set, func(h *haConfig) { h.storeTimeout = -time.Second }},
+		"--ha-self without an ha block":         {&cdsconfig.Config{}, func(h *haConfig) { h.self = "a:1" }},
+		"--ha-store-etcd without an ha block":   {&cdsconfig.Config{}, func(h *haConfig) { h.storeEtcd = "etcd.yaml" }},
+		"--ha-store-memory without an ha block": {&cdsconfig.Config{}, func(h *haConfig) { h.storeMemory = true }},
+	} {
+		ha := valid
+		tc.edit(&ha)
+		if err := validateHAConfig(config{measured: tc.measured, ha: ha}); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}
+
+// The serving check before signing runs under the request timeout: a check
+// still running when it expires answers 504 and signs nothing.
+func TestAttestServingCheckHasTheRequestTimeout(t *testing.T) {
+	stub := newStubAttestationApi(t, testLaunchDigest)
+	h := newTestAttestHandler(t, stub.URL(), nil)
+	h.RequestTimeout = time.Minute
+	h.Serving = func(ctx context.Context) error {
+		if _, ok := ctx.Deadline(); !ok {
+			return errors.New("the serving check has no deadline")
+		}
+		return nil
+	}
+	csrPEM, _ := generateCSR(t)
+	if w := postAttest(t, h, issueChallenge(t, h), csrPEM); w.Code != http.StatusOK {
+		t.Fatalf("/attest = %d: %s", w.Code, w.Body)
+	}
+	h.RequestTimeout = 50 * time.Millisecond
+	h.Serving = func(ctx context.Context) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	if w := postAttest(t, h, issueChallenge(t, h), csrPEM); w.Code != http.StatusGatewayTimeout {
+		t.Fatalf("a serving check past the request timeout: /attest = %d, want 504: %s", w.Code, w.Body)
+	}
+}
+
+// A replica serves its chain's route manifest, also when a resolve moved the
+// chain back to a lower revision or to none.
+func TestReplicaServesTheChainsRouteManifest(t *testing.T) {
+	store := inMemoryStore(t)
+	for _, revision := range []int{2, 1, 0} {
+		s := &cdschain.State{}
+		if revision > 0 {
+			s.Routes = &cdschain.Routes{Manifest: manifest(t, revision, ""), Token: "token-" + strconv.Itoa(revision)}
+		}
+		if err := serveRoutes(store, s); err != nil {
+			t.Fatal(err)
+		}
+		got, err := store.LoadRoutes()
+		switch {
+		case revision == 0 && !errors.Is(err, allowlist.ErrNoRoutes):
+			t.Fatalf("a chain without routes still serves %q (%v)", got.Manifest, err)
+		case revision > 0 && (err != nil || !bytes.Equal(got.Manifest, s.Routes.Manifest) || got.Token != s.Routes.Token):
+			t.Fatalf("revision %d: the store serves %q %q (%v)", revision, got.Manifest, got.Token, err)
+		}
+	}
+}
+
+// failingStore is a chain store whose head reads fail while down is set.
+type failingStore struct {
+	cdsha.Store
+	down atomic.Bool
+}
+
+func (f *failingStore) GetHead(ctx context.Context) ([]byte, error) {
+	if f.down.Load() {
+		return nil, errors.New("connection refused")
+	}
+	return f.Store.GetHead(ctx)
+}
+
+// /readyz fails while the replica's store reads fail, as its gated reads do.
+func TestReadyzFailsDuringAStoreOutage(t *testing.T) {
+	operator, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mesh, err := issuer.NewMeshCA("lane", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := &failingStore{Store: cdsha.NewMemory()}
+	replica, err := cdsha.New(cdsha.Config{
+		Cluster: "lane", Endpoints: []string{"a:1"},
+		OperatorKeys: []*ecdsa.PublicKey{&operator.PublicKey},
+		Gossip:       100 * time.Millisecond, PeerTimeout: 100 * time.Millisecond, StoreTimeout: time.Second,
+		Mesh:      mesh,
+		SelfCheck: func(context.Context, string) (bool, error) { return true, nil },
+	}, st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := replica.Pending(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opPEM, _ := cdschain.PublicKeyPEM(&operator.PublicKey)
+	genesis, _ := json.Marshal(cdschain.Genesis{
+		Endpoints: []string{"a:1"}, Members: []string{pending.Member}, OperatorKeys: opPEM, CAKey: pending.CAKey,
+		Accepted: []cdschain.Build{{Measurements: testutil.CDSPinDocument(strings.Repeat("a1", 48), "launch"), Version: "v1.0.0"}},
+	})
+	entry, err := cdschain.Sign(operator, cdschain.Body{Cluster: "lane", Type: cdschain.TypeGenesis, Payload: genesis})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := replica.Start(cdsha.Handoff{Entries: []cdschain.Entry{entry}}); err != nil {
+		t.Fatal(err)
+	}
+	router := newRouter(dependencies{
+		HA:               replica,
+		AllowlistHandler: allowlist.Handler{Store: inMemoryStore(t)},
+		ReadyFn:          func() bool { return true },
+		MeshCA:           mesh,
+		RateLimiter:      newTestRateLimiter(t),
+		ChallengeLimiter: newTestRateLimiter(t),
+		MaxRequestSize:   65536,
+	})
+	readyz := func() int {
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+		return w.Code
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go replica.Run(ctx)
+	waitFor := func(what string, cond func() bool) {
+		t.Helper()
+		for deadline := time.Now().Add(5 * time.Second); !cond(); time.Sleep(20 * time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatalf("timed out waiting for %s", what)
+			}
+		}
+	}
+	waitFor("the replica to be ready", func() bool { return readyz() == http.StatusOK })
+	st.down.Store(true)
+	waitFor("the store error", func() bool { return replica.Status().StoreError != "" })
+	if code := readyz(); code != http.StatusServiceUnavailable {
+		t.Fatalf("/readyz = %d during a store outage, want 503", code)
+	}
+	st.down.Store(false)
+	waitFor("the replica to be ready again", func() bool { return readyz() == http.StatusOK })
 }

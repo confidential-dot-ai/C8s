@@ -270,7 +270,11 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 	ttl := h.leafTTL(matched, router)
 	// A replica of a set signs only while it serves, checked last.
 	if h.Serving != nil {
-		if err := h.Serving(r.Context()); err != nil {
+		if err := h.Serving(ctx); err != nil {
+			if ctx.Err() != nil {
+				httputil.WriteError(w, http.StatusGatewayTimeout, types.ErrorCodeTimeout, "request timeout")
+				return
+			}
 			http.Error(w, err.Error(), http.StatusServiceUnavailable)
 			return
 		}
