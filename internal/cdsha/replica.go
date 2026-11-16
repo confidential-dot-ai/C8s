@@ -51,8 +51,9 @@ type Config struct {
 	// SelfCheck reports whether this replica's own attestation passes one
 	// build's pins; an error is "no answer", which evicts nothing.
 	SelfCheck func(ctx context.Context, measurements string) (bool, error)
-	// OnState is told every state the replica adopts.
-	OnState func(*cdschain.State)
+	// OnState is told every state the replica adopts. While it fails for the
+	// held state, the replica serves nothing; each store read retries it.
+	OnState func(*cdschain.State) error
 	// Validate checks an entry's payload beyond the chain's rules.
 	Validate func(cdschain.Body) error
 }
@@ -109,6 +110,8 @@ type Replica struct {
 	// cut is the seq a resolve cut the chain at: the kept entry there may be
 	// a done write, so the replica serves again only once it holds one.
 	cut uint64
+	// stateErr is OnState's error for the held state.
+	stateErr error
 }
 
 // New starts a pending replica with a fresh member key.
@@ -202,6 +205,8 @@ func (r *Replica) servingLocked() error {
 	switch {
 	case r.state == nil:
 		return fmt.Errorf("%w: the replica holds no chain yet", ErrUnavailable)
+	case r.stateErr != nil:
+		return fmt.Errorf("%w: the CDS cannot serve head %d: %w", ErrUnavailable, r.state.Head.Seq, r.stateErr)
 	case r.fork != nil && r.fork.Seq == 0:
 		return fmt.Errorf("%w: halted: %s holds a different genesis; re-root under a new cluster ID", ErrUnavailable, r.fork.Source)
 	case r.fork != nil:
@@ -294,6 +299,9 @@ func (r *Replica) refresh(ctx context.Context) ([]byte, error) {
 		err = fmt.Errorf("%w: the store is unreachable: %w", ErrUnavailable, err)
 	}
 	r.mu.Lock()
+	if r.stateErr != nil {
+		r.tellStateLocked()
+	}
 	if was := r.storeErr; err == nil {
 		r.storeErr = ""
 	} else if r.storeErr = err.Error(); r.storeErr != was {
@@ -474,9 +482,19 @@ func (r *Replica) adoptedLocked() {
 			slog.Error("CDS chain passed its size warning; v1 never prunes it", "entries", s.Entries, "bytes", s.Bytes)
 		}
 	}
-	if r.cfg.OnState != nil {
-		r.cfg.OnState(s)
+	r.tellStateLocked()
+}
+
+// tellStateLocked tells OnState the held state.
+func (r *Replica) tellStateLocked() {
+	if r.cfg.OnState == nil {
+		return
 	}
+	err := r.cfg.OnState(r.state)
+	if err != nil && (r.stateErr == nil || err.Error() != r.stateErr.Error()) {
+		slog.Error("CDS replica refuses: the CDS cannot serve the chain's head", "head", r.state.Head.Seq, "error", err)
+	}
+	r.stateErr = err
 }
 
 // writeForward puts this replica's entries from seq from on and moves the

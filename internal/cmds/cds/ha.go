@@ -81,16 +81,15 @@ func startHA(ctx context.Context, cfg config, mesh *issuer.MeshCA, store *allowl
 		SelfCheck: func(_ context.Context, measurements string) (bool, error) {
 			return ownBuildPasses(serving, measurements, cfg.attestationApiURL)
 		},
-		OnState: func(s *cdschain.State) {
-			if err := policy(s); err != nil {
-				slog.Error("CDS replica cannot serve the chain's allowlist", "version", s.PolicyVersion(), "error", err)
-			}
-			if s.Routes != nil {
-				if err := store.ReplaceRoutes(routes.Envelope{Manifest: s.Routes.Manifest, Token: s.Routes.Token}, ""); err != nil && !errors.Is(err, allowlist.ErrRevisionNotGreater) {
-					slog.Error("CDS replica cannot serve the chain's route manifest", "error", err)
-				}
-			}
+		OnState: func(s *cdschain.State) error {
 			meshPeers.UpdateClientCA(mesh.Current().CA.Cert)
+			if err := policy(s); err != nil {
+				return fmt.Errorf("serving the chain's allowlist (version %s): %w", s.PolicyVersion(), err)
+			}
+			if err := serveRoutes(store, s); err != nil {
+				return fmt.Errorf("serving the chain's route manifest: %w", err)
+			}
+			return nil
 		},
 		Validate: func(b cdschain.Body) error { return validateRoutes(b, mesh, store) },
 	}, chainStore)
@@ -164,6 +163,15 @@ func servePolicy(store *allowlist.Store, s *cdschain.State, seed *pkgallowlist.A
 		return store.FloorNodesAtHead()
 	}
 	return nil
+}
+
+// serveRoutes serves the chain's route manifest, none before a routes entry:
+// a resolve that drops a routes entry moves the manifest back.
+func serveRoutes(store *allowlist.Store, s *cdschain.State) error {
+	if s.Routes == nil {
+		return store.SetRoutes(nil)
+	}
+	return store.SetRoutes(&routes.Envelope{Manifest: s.Routes.Manifest, Token: s.Routes.Token})
 }
 
 // validateRoutes holds a routes entry to what PUT /routes checks.

@@ -236,11 +236,7 @@ func TestReplicaServesEveryChainPolicyByDigest(t *testing.T) {
 		Gossip:       100 * time.Millisecond, PeerTimeout: time.Second, StoreTimeout: time.Second,
 		Mesh:      mesh,
 		SelfCheck: func(context.Context, string) (bool, error) { return true, nil },
-		OnState: func(s *cdschain.State) {
-			if err := serve(s); err != nil {
-				t.Error(err)
-			}
-		},
+		OnState:   serve,
 	}, cdsha.NewMemory())
 	if err != nil {
 		t.Fatal(err)
@@ -378,5 +374,27 @@ func TestAttestServingCheckHasTheRequestTimeout(t *testing.T) {
 	}
 	if w := postAttest(t, h, issueChallenge(t, h), csrPEM); w.Code != http.StatusGatewayTimeout {
 		t.Fatalf("a serving check past the request timeout: /attest = %d, want 504: %s", w.Code, w.Body)
+	}
+}
+
+// A replica serves its chain's route manifest, also when a resolve moved the
+// chain back to a lower revision or to none.
+func TestReplicaServesTheChainsRouteManifest(t *testing.T) {
+	store := inMemoryStore(t)
+	for _, revision := range []int{2, 1, 0} {
+		s := &cdschain.State{}
+		if revision > 0 {
+			s.Routes = &cdschain.Routes{Manifest: manifest(t, revision, ""), Token: "token-" + strconv.Itoa(revision)}
+		}
+		if err := serveRoutes(store, s); err != nil {
+			t.Fatal(err)
+		}
+		got, err := store.LoadRoutes()
+		switch {
+		case revision == 0 && !errors.Is(err, allowlist.ErrNoRoutes):
+			t.Fatalf("a chain without routes still serves %q (%v)", got.Manifest, err)
+		case revision > 0 && (err != nil || !bytes.Equal(got.Manifest, s.Routes.Manifest) || got.Token != s.Routes.Token):
+			t.Fatalf("revision %d: the store serves %q %q (%v)", revision, got.Manifest, got.Token, err)
+		}
 	}
 }
