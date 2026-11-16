@@ -165,6 +165,8 @@ type racedReplica struct {
 	entries []cdschain.Entry
 	race    func(head *cdschain.State) cdschain.Entry
 	races   int
+	// answer, when set, rewrites the head a taken entry is answered with.
+	answer func(*cdschain.Head)
 }
 
 func (f *racedReplica) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -190,7 +192,11 @@ func (f *racedReplica) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		f.entries = append(f.entries, e)
-		_ = json.NewEncoder(w).Encode(cdschain.Head{Cluster: state.Cluster, Seq: state.Head.Seq + 1, Hash: e.Hash()})
+		head := cdschain.Head{Cluster: state.Cluster, Seq: state.Head.Seq + 1, Hash: e.Hash()}
+		if f.answer != nil {
+			f.answer(&head)
+		}
+		_ = json.NewEncoder(w).Encode(head)
 	}
 }
 
@@ -585,5 +591,31 @@ func TestStatusReportsAReplicaItCannotRead(t *testing.T) {
 	}
 	if err == nil || !strings.Contains(err.Error(), "1 of 1 replicas") {
 		t.Fatalf("status with no replica read: %v, want an error", err)
+	}
+}
+
+// A done answer is held to the entry's seq and cluster too: a replica naming
+// another one has not confirmed this write, which is then not recorded.
+func TestAppendHoldsTheAnswerToTheEntry(t *testing.T) {
+	for name, lie := range map[string]func(*cdschain.Head){
+		"seq":     func(h *cdschain.Head) { h.Seq += 5 },
+		"cluster": func(h *cdschain.Head) { h.Cluster = "other" },
+	} {
+		entries, key := testChain(t, 1)
+		replica := &racedReplica{entries: entries, answer: lie}
+		srv := httptest.NewServer(replica)
+		w := &writer{o: &options{stateDir: t.TempDir()}, url: srv.URL, client: srv.Client(), key: key}
+		state, err := w.verified(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		pub, _ := cdschain.PublicKeyPEM(&key.PublicKey)
+		if _, err := w.append(context.Background(), state, cdschain.TypeOperatorKeys, cdschain.OperatorKeys{Keys: pub}); !errors.Is(err, ErrNotConfirmed) {
+			t.Errorf("an answer naming another %s: %v", name, err)
+		}
+		if rec, _ := w.o.record("lane"); rec != nil && rec.Acknowledged.Seq != 0 {
+			t.Errorf("an answer naming another %s was recorded at %d", name, rec.Acknowledged.Seq)
+		}
+		srv.Close()
 	}
 }

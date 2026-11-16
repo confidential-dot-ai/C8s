@@ -219,6 +219,9 @@ func (w *writer) append(ctx context.Context, state *cdschain.State, typ cdschain
 	if err != nil {
 		return head, err
 	}
+	if head.Cluster != state.Cluster || head.Seq != state.Head.Seq+1 {
+		return head, fmt.Errorf("the replica answered done for head %d of %q, not %d of %q: %w", head.Seq, head.Cluster, state.Head.Seq+1, state.Cluster, ErrNotConfirmed)
+	}
 	fmt.Fprintf(os.Stderr, "committed head %d (%s)\n", head.Seq, head.Hash)
 	return head, w.o.acknowledge(state.Genesis, head)
 }
