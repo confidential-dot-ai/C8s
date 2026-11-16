@@ -44,6 +44,7 @@ updates:
       - /cmd/armtls-mesh
       - /cmd/volumed
       - /test/mock-attestation
+      - /test/mock-cloud
       - /test/mock-cds
       - /test/mock-inventory
     schedule:

@@ -72,6 +72,18 @@ func TestValidate_Valid(t *testing.T) {
 	}
 }
 
+// A config built in code names no sandbox policy, and sandboxMode reads an
+// unset one as off.
+func TestValidate_DefaultsTheSandboxPolicy(t *testing.T) {
+	cfg := validConfig()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Policy.Sandbox != SandboxEnforce {
+		t.Fatalf("policy.sandbox = %q, want %q", cfg.Policy.Sandbox, SandboxEnforce)
+	}
+}
+
 func TestValidate_AuditMode(t *testing.T) {
 	cfg := validConfig()
 	cfg.Policy.Mode = "audit"
@@ -216,8 +228,7 @@ func TestLoadConfig_Defaults(t *testing.T) {
 	}
 }
 
-// exempt_namespaces is parsed into the policy config alongside the snapshot
-// path the plugin persists its captured digest set to.
+// exempt_namespaces and its repository set reach the policy config.
 func TestLoadConfig_ExemptNamespacesParsed(t *testing.T) {
 	body := "allowlist:" + baseYAML("sha256:0000000000000000000000000000000000000000000000000000000000000001", "installer") + `
   pull:
@@ -226,7 +237,9 @@ func TestLoadConfig_ExemptNamespacesParsed(t *testing.T) {
 policy:
   mode: fail-closed
   exempt_namespaces: [kube-system, local-path-storage]
-  exempt_snapshot_path: /var/lib/nri-image-policy/exempt-snapshot.json
+  exempt_repositories:
+    kube-system: [mcr.microsoft.com/oss/kubernetes/]
+    local-path-storage: [docker.io/rancher/]
 ` + meshYAML
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
@@ -239,14 +252,21 @@ policy:
 	if got, want := cfg.Policy.ExemptNamespaces, []string{"kube-system", "local-path-storage"}; !slices.Equal(got, want) {
 		t.Errorf("ExemptNamespaces = %v, want %v", got, want)
 	}
-	if cfg.Policy.ExemptSnapshotPath == "" {
-		t.Error("ExemptSnapshotPath not parsed")
+	if !cfg.Policy.ExemptRepositories.Admits("kube-system", "mcr.microsoft.com/oss/kubernetes/coredns:v1.11.3") {
+		t.Errorf("exempt_repositories = %v, want kube-system to admit an AKS add-on image", cfg.Policy.ExemptRepositories)
+	}
+	if cfg.Policy.ExemptRepositories.Admits("kube-system", "docker.io/rancher/local-path-provisioner:v0.0.31") {
+		t.Error("a repository of another namespace's set must not admit")
 	}
 }
 
-// bootConfigDocument is an installer's configuration document, with the
-// namespaces image admission exempts and the ones the mesh gate exempts.
+// bootConfigDocument is an installer's configuration document: the namespaces
+// image admission exempts, each admitting one repository, and the mesh gate's.
 func bootConfigDocument(exempt, meshExempt string) string {
+	repositories := ""
+	for _, namespace := range strings.Split(strings.Trim(exempt, "[]"), ",") {
+		repositories += fmt.Sprintf("    %s: [mcr.microsoft.com/oss/kubernetes/]\n", strings.TrimSpace(namespace))
+	}
 	return "allowlist:" + baseYAML("sha256:0000000000000000000000000000000000000000000000000000000000000001", "installer") + fmt.Sprintf(`
   pull:
     url: https://127.0.0.1:30808
@@ -254,15 +274,15 @@ func bootConfigDocument(exempt, meshExempt string) string {
 policy:
   mode: fail-closed
   exempt_namespaces: %s
-  exempt_snapshot_path: /var/lib/nri-image-policy/exempt-snapshot.json
-mesh:
+  exempt_repositories:
+%smesh:
   exempt_namespaces: %s
   resolver: "10.43.0.10"
   capture: {outbound: 15001, inbound: 15006, health: 15021}
   roles:
     - name: mesh
       uid: 1337
-`, exempt, meshExempt)
+`, exempt, repositories, meshExempt)
 }
 
 // CheckBootConfig is how a caller validates a config document before a node is
@@ -305,15 +325,78 @@ func TestCheckBootConfig(t *testing.T) {
 	}
 }
 
-// exempt_namespaces without a snapshot path is refused: the captured set must
-// have somewhere to persist, or it would silently recapture (and on a reboot
-// freeze empty) every restart.
-func TestValidate_ExemptNamespacesRequireSnapshotPath(t *testing.T) {
-	cfg := validConfig()
-	cfg.Policy.ExemptNamespaces = []string{"kube-system"}
-	cfg.Policy.ExemptSnapshotPath = ""
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("expected error when exempt_namespaces is set without exempt_snapshot_path")
+// A config that names an exempt namespace without repositories, or holds a
+// prefix admission could match half a path segment of, or wildcards anything
+// but the start of its registry host, is refused.
+func TestValidate_ExemptRepositories(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		namespaces   []string
+		repositories ExemptRepositories
+		want         string
+	}{
+		{
+			"a repository set per exempt namespace",
+			[]string{"kube-system"},
+			ExemptRepositories{"kube-system": {"mcr.microsoft.com/oss/kubernetes/"}},
+			"",
+		},
+		{
+			"exempt namespaces without repositories",
+			[]string{"kube-system"},
+			nil,
+			"requires policy.exempt_repositories",
+		},
+		{
+			"one of two exempt namespaces without repositories",
+			[]string{"kube-system", "gmp-system"},
+			ExemptRepositories{"kube-system": {"mcr.microsoft.com/oss/kubernetes/"}},
+			`policy.exempt_namespaces "gmp-system" requires`,
+		},
+		{
+			"a prefix that does not end on a path boundary",
+			[]string{"kube-system"},
+			ExemptRepositories{"kube-system": {"mcr.microsoft.com/oss/kubernetes"}},
+			`policy.exempt_repositories["kube-system"] holds "mcr.microsoft.com/oss/kubernetes"`,
+		},
+		{
+			"a prefix without a registry",
+			[]string{"kube-system"},
+			ExemptRepositories{"kube-system": {"oss/kubernetes/"}},
+			`policy.exempt_repositories["kube-system"] holds "oss/kubernetes/"`,
+		},
+		{
+			"a wildcard opening the registry host's first label",
+			[]string{"kube-system"},
+			ExemptRepositories{"kube-system": {"*-artifactregistry.gcr.io/gke-release/gke-release/"}},
+			"",
+		},
+		{
+			"a wildcard outside the registry host's first label",
+			[]string{"kube-system"},
+			ExemptRepositories{"kube-system": {"gcr.io/*/gke-release/"}},
+			`policy.exempt_repositories["kube-system"] holds "gcr.io/*/gke-release/"`,
+		},
+		{
+			"a wildcard taking a whole host label",
+			[]string{"kube-system"},
+			ExemptRepositories{"kube-system": {"*artifactregistry.gcr.io/gke-release/"}},
+			`policy.exempt_repositories["kube-system"] holds "*artifactregistry.gcr.io/gke-release/"`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validConfig()
+			cfg.Policy.ExemptNamespaces = tc.namespaces
+			cfg.Policy.ExemptRepositories = tc.repositories
+			cfg.Mesh.ExemptNamespaces = tc.namespaces
+			err := cfg.Validate()
+			switch {
+			case tc.want == "" && err != nil:
+				t.Fatalf("Validate = %v, want the config accepted", err)
+			case tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)):
+				t.Fatalf("Validate = %v, want a refusal naming %q", err, tc.want)
+			}
+		})
 	}
 }
 

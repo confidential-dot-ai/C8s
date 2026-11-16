@@ -371,31 +371,6 @@ func TestParseAnnotationsRejectsWorkloadIDInvalidAsLabelValue(t *testing.T) {
 	}
 }
 
-func TestValidateWorkloadLabelRequiresMatchingAnnotation(t *testing.T) {
-	cases := []struct {
-		name    string
-		labels  map[string]string
-		ann     map[string]string
-		wantErr bool
-	}{
-		{"no label", nil, map[string]string{AnnotationWorkload: "api"}, false},
-		{"label matches annotation", map[string]string{LabelWorkload: "api"}, map[string]string{AnnotationWorkload: "api"}, false},
-		{"label without annotation", map[string]string{LabelWorkload: "api"}, nil, true},
-		{"label differs from annotation", map[string]string{LabelWorkload: "other"}, map[string]string{AnnotationWorkload: "api"}, true},
-	}
-	for _, tc := range cases {
-		err := validateWorkloadLabel(&corev1.Pod{
-			Labels: tc.labels, Annotations: tc.ann,
-		})
-		if tc.wantErr && !errors.Is(err, errInvalidInjectionAnnotation) {
-			t.Fatalf("%s: err = %v, want invalid annotation", tc.name, err)
-		}
-		if !tc.wantErr && err != nil {
-			t.Fatalf("%s: err = %v, want nil", tc.name, err)
-		}
-	}
-}
-
 func TestParseAnnotationsRejectsInvalidRenewInterval(t *testing.T) {
 	_, err := parseAnnotations(&corev1.Pod{
 		Annotations: map[string]string{
@@ -428,6 +403,26 @@ func TestParseAnnotationsRejectsIncompleteDiscovery(t *testing.T) {
 	}, "")
 	if !errors.Is(err, errInvalidInjectionAnnotation) {
 		t.Fatalf("parseAnnotations error = %v, want invalid annotation", err)
+	}
+}
+
+// The injected sidecar only ever serves cds or webpki, so the annotation
+// refuses acme even though get-cert accepts it.
+func TestParseAnnotationsRefusesACMEDiscoveryPublicTLSMode(t *testing.T) {
+	_, err := parseAnnotations(&corev1.Pod{
+		Annotations: map[string]string{
+			AnnotationWorkload:               "api",
+			AnnotationDiscoveryVolume:        "discovery",
+			AnnotationDiscoveryOut:           "/run/c8s/discovery/discovery.json",
+			AnnotationDiscoveryCDSCertURL:    "/.well-known/cds-cert.pem",
+			AnnotationDiscoveryPublicTLSMode: "acme",
+		},
+	}, "")
+	if !errors.Is(err, errInvalidInjectionAnnotation) {
+		t.Fatalf("parseAnnotations error = %v, want invalid annotation", err)
+	}
+	if !strings.Contains(err.Error(), `must be "cds" or "webpki", got "acme"`) {
+		t.Fatalf("error = %q, want it to name the two accepted modes", err)
 	}
 }
 

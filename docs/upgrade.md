@@ -34,6 +34,12 @@ Steps 1 and 5 take their replacements:
 | `--cvm-mode gke --hardware-platform sev-snp` | `--platform gke-snp` |
 | `--image-tag`, `--resolve-digests` | nothing |
 | `--cvm-mode bare-metal` | nothing |
+| nothing | `--pod-cidr <cidr>`, step 5 |
+
+An AKS cluster on Azure CNI Overlay, the AKS default, publishes no
+`spec.podCIDR` on its nodes; install refuses such a cluster unless step 5's
+command names each of its pod ranges with `--pod-cidr`
+([operator.md](operator.md#what-an-install-deploys)).
 
 The `--platform` value is step 1's `<PLATFORM>`. A release CLI pins each
 component to the digest the `c8s-cloud` chart of its own version stamps, so no
@@ -126,6 +132,27 @@ runs `helm upgrade --install` and, with `--wait` on by default, returns once the
 release is ready; confirm the router namespace too, with
 `kubectl -n c8s-router wait --for=condition=Ready pod --all --timeout=5m`.
 
-Install refuses when the resolved policy would deny a platform pod the cluster
-already runs, before touching anything; `--force` overrides. The previous
+An upgrade that changes the router pod rolls it, and the front door is down from
+the moment the old pod stops serving until the new one serves — up to 10 seconds
+for the old pod to go, since one router pod holds the public port of its node,
+plus a few seconds for the new pod to start.
+
+Where the upgrade changes the node's admission plugin too, the front door can
+stay down for about 55 seconds. Helm applies the new router and the new plugin
+at once, so the first replacement pod can start on a node still running the
+previous plugin and carry the packet rules that plugin installed; the new plugin
+refuses that pod and deletes it, and the router's Deployment starts another one.
+The front door serves again once that pod is ready.
+
+Install reads the allowlist CDS serves and refuses when an entry step 3
+publishes is not there; it warns and goes on where it cannot reach CDS. It also
+refuses when the resolved policy would deny a platform pod the cluster already
+runs, before touching anything; `--force` overrides that one. The previous
 release's entries stay in the allowlist, so a rollback still matches them.
+
+A release upgrade restarts every confidential workload pod. A node's plugin
+admits only the sidecar images its own configuration names, so it deletes a pod
+whose injected sidecars are the previous release's; the workload's controller
+recreates it with the new ones, and a pod no controller owns does not come back.
+Pods go as the new plugin takes each node, one node at a time, and a deleted pod
+is serving again about 40 seconds later.

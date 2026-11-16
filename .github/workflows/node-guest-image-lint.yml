@@ -10,32 +10,55 @@ name: node-guest-image lint
 
 on:
   pull_request:
-    paths:
-      - "images/node-guest/**"
-      - "images/cds-guest/**"
-      - "test/e2e/**"
-      - "test/conformance/**"
-      - ".github/workflows/node-guest-image-lint.yml"
-      - ".github/build-pins.json"
-      - ".github/scripts/pin-manifest.sh"
-      # Every job here runs via make; a broken or renamed target must fail
-      # here, not on the next images/node-guest change.
-      - "Makefile"
-      # The invariants gate body; a script-only change must run the gate.
-      - ".github/scripts/cds-guest-image-invariants.sh"
-      - ".github/scripts/tests/test-cds-guest-image-invariants.sh"
-      - ".github/workflows/c8s-image.yml"
-      - ".github/workflows/c8s-image-publish.yml"
-      - ".github/workflows/c8s-image-manual.yml"
+  merge_group:
+    types: [checks_requested]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
+  changes:
+    name: Relevant changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      relevant: ${{ steps.changes.outputs.relevant }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: changes
+        uses: ./.github/actions/relevant-changes
+        with:
+          filters: |
+            relevant:
+              - ".github/actions/relevant-changes/**"
+              - "images/node-guest/**"
+              - "images/cds-guest/**"
+              - "test/e2e/**"
+              - "test/conformance/**"
+              - ".github/workflows/node-guest-image-lint.yml"
+              - ".github/build-pins.json"
+              - ".github/scripts/pin-manifest.sh"
+              # Every job here runs via make; a broken or renamed target must fail
+              # here, not on the next images/node-guest change.
+              - "Makefile"
+              # The invariants gate body; a script-only change must run the gate.
+              - ".github/scripts/cds-guest-image-invariants.sh"
+              - ".github/scripts/tests/test-cds-guest-image-invariants.sh"
+              - ".github/workflows/c8s-image.yml"
+              - ".github/workflows/c8s-image-publish.yml"
+              - ".github/workflows/c8s-image-manual.yml"
+
   lint:
     name: worker-image invariants
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
     outputs:
       confos-release: ${{ steps.release.outputs.release }}
     steps:
@@ -79,6 +102,8 @@ jobs:
   systemd:
     name: worker host units under systemd
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -91,6 +116,8 @@ jobs:
   containerd:
     name: every pod runtime reaches the measured wrapper
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -105,6 +132,8 @@ jobs:
   cds-image:
     name: cds-guest-image invariants
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -147,7 +176,8 @@ jobs:
 
   immutable-root:
     name: immutable root and c8s writable state
-    needs: lint
+    needs: [changes, lint]
+    if: needs.changes.outputs.relevant == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -182,7 +212,8 @@ jobs:
     # Runs as root, so it gets its own job: no privileged step shares a
     # workspace with the confos checkout. The gate needs the release, not
     # the tree.
-    needs: lint
+    needs: [changes, lint]
+    if: needs.changes.outputs.relevant == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -197,6 +228,8 @@ jobs:
   gpu-cc:
     name: gpu-cc-enforce logic
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -206,6 +239,8 @@ jobs:
   scratch:
     name: scratch-enforce logic
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -214,7 +249,8 @@ jobs:
 
   apparmor:
     name: AppArmor config and boot gate
-    needs: lint
+    needs: [changes, lint]
+    if: needs.changes.outputs.relevant == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -239,3 +275,18 @@ jobs:
         env:
           CONFOS_RELEASE: ${{ needs.lint.outputs.confos-release }}
         run: bash images/node-guest/tests/apparmor-kernel-test.sh
+
+  result:
+    name: node-guest-image lint result
+    runs-on: ubuntu-latest
+    needs: [changes, lint, systemd, containerd, cds-image, immutable-root, cloud-init-disabled, gpu-cc, scratch, apparmor]
+    if: always()
+    steps:
+      # A job skipped by a failed dependency also reports skipped, so the changes job is read on its own.
+      - name: Require every job to have succeeded or skipped
+        if: needs.changes.result != 'success' || contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS"
+          exit 1

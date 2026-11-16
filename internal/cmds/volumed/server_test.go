@@ -289,6 +289,27 @@ func TestServerBoundsTheRequestBody(t *testing.T) {
 	}
 }
 
+// The open request is one document: the handler refuses anything following it
+// rather than opening the volume the first document names.
+func TestServerRefusesTrailingDataAfterTheRequest(t *testing.T) {
+	f := newServerFixture(t, resolvedIdentity())
+	raw, err := json.Marshal(openBody(t))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	resp, err := f.client.Post("http://volumed"+VolumePath, "application/json", bytes.NewReader(append(bytes.Clone(raw), raw...)))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
+	}
+	if f.opener.Len() != 0 {
+		t.Fatalf("opener holds %d mounts, want 0", f.opener.Len())
+	}
+}
+
 func TestAcquireBoundsConcurrentOpensPerPod(t *testing.T) {
 	s := &Server{}
 	var releases []func()

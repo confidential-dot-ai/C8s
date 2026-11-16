@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cdsconn"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 )
 
 type clusterReach struct {
@@ -32,7 +33,7 @@ func bindReachFlags(cmd *cobra.Command, reach *clusterReach) {
 	f.StringVar(&reach.config, "config", "", "the configuration document the cluster's CDS VMs boot on (REQUIRED); its replica entries name the replicas to read")
 	f.StringArrayVar(&reach.urls, "url", nil, "<host>[:"+strconv.Itoa(replicaPort)+"] of a replica to read instead of the configuration's replica entries; repeatable")
 	f.StringVar(&reach.cdsPin, "cds-pin", "", "measurements document pinning this cluster's CDS, which every replica read is verified against (REQUIRED); during an image roll the one naming both images")
-	requireFlags(cmd, "config", "cds-pin")
+	cmdsutil.RequireFlags(cmd, "config", "cds-pin")
 }
 
 // There is always at least one replica to read.

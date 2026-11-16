@@ -180,7 +180,7 @@ func writeConfigYAML(t *testing.T, yaml string) string {
 func runWithDeadline(t *testing.T, timeout time.Duration, args []string) error {
 	t.Helper()
 	done := make(chan error, 1)
-	go func() { done <- Run(args) }()
+	go func() { done <- Run(t.Context(), args) }()
 	select {
 	case err := <-done:
 		return err
@@ -229,6 +229,76 @@ func TestRun_MissingConfigFileErrors(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "load config") {
 		t.Fatalf("err = %v, want a load-config failure", err)
+	}
+}
+
+// The daemon and every helper verb take flags only, so a mistyped verb or a
+// stray word is refused instead of ignored.
+func TestRunRefusesAWordThatIsNotAFlag(t *testing.T) {
+	absent := filepath.Join(t.TempDir(), "absent.yaml")
+	running := fakeProc(t, kubeadmTree)
+	for _, tc := range []struct {
+		name      string
+		args      []string
+		firstWord string
+		status    int
+	}{
+		{
+			name:      "a mistyped verb",
+			args:      []string{"bogus-verb", "--config", absent},
+			firstWord: "bogus-verb",
+			status:    1,
+		},
+		{
+			name:      "a word after the daemon's flags",
+			args:      []string{"--config", absent, "extra", "more"},
+			firstWord: "extra",
+			status:    1,
+		},
+		{
+			name:      "a word after check-config's flags",
+			args:      []string{checkConfigVerb, "--config=" + absent, "extra", "more"},
+			firstWord: "extra",
+			status:    1,
+		},
+		{
+			name:      "a word in place of check-containerd-config's flags",
+			args:      []string{checkContainerdConfigVerb, "extra", "more"},
+			firstWord: "extra",
+			status:    1,
+		},
+		{
+			name:      "a word after plugin-ready's flags",
+			args:      []string{pluginReadyVerb, "--check", "--plugin-path", testPluginPath, "--proc-root", running, "extra", "more"},
+			firstWord: "extra",
+			status:    1,
+		},
+		{
+			name:      "a word after plugin-running's flags",
+			args:      []string{pluginRunningVerb, "--proc-root=" + running, "extra", "more"},
+			firstWord: "extra",
+			status:    pluginUnknownStatus,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := runWithDeadline(t, 10*time.Second, tc.args)
+			want := fmt.Sprintf("unknown command %q", tc.firstWord)
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("Run(%q) = %v, want an error containing %s", tc.args, err, want)
+			}
+			if got := cmdsutil.ExitStatus(err); got != tc.status {
+				t.Errorf("Run(%q) exits %d, want %d", tc.args, got, tc.status)
+			}
+		})
+	}
+}
+
+// The removers read 1 as "not running", so an argv plugin-running cannot parse
+// answers unknown, which they count as running.
+func TestRunPluginRunningAnswersUnknownToAnUnknownFlag(t *testing.T) {
+	err := Run(t.Context(), []string{pluginRunningVerb, "--bogus-flag"})
+	if got := cmdsutil.ExitStatus(err); got != pluginUnknownStatus {
+		t.Fatalf("plugin-running --bogus-flag = %v (status %d), want status %d", err, got, pluginUnknownStatus)
 	}
 }
 
@@ -543,7 +613,7 @@ func TestPullInitial_BacksOffBetweenAttempts(t *testing.T) {
 	_, err := pullInitial(context.Background(), pullArgs{
 		pull:        quietPull(),
 		client:      client,
-		store:       store,
+		target:      nodeTarget{store: store},
 		timeout:     time.Second,
 		pluginErrCh: make(chan error, 1),
 		logger:      discardLogger(),
@@ -853,5 +923,37 @@ func TestLogNodeRootLevel(t *testing.T) {
 		if got := buf.String(); tc.want == "" && got != "" || !strings.Contains(got, tc.want) {
 			t.Fatalf("logNodeRoot(enabled=%t, declared=%t) logged %q, want %q", tc.enabled, tc.declared, got, tc.want)
 		}
+	}
+}
+
+func TestCreateSocketDir(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "run", "nri-image-policy")
+	// The umask the chmod has to beat.
+	restore := syscall.Umask(0o077)
+	err := createSocketDir(dir)
+	syscall.Umask(restore)
+	if err != nil {
+		t.Fatalf("createSocketDir: %v", err)
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o711 {
+		t.Errorf("mode = %o, want 711", info.Mode().Perm())
+	}
+
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := createSocketDir(dir); err != nil {
+		t.Fatalf("createSocketDir on an existing directory: %v", err)
+	}
+	if info, err = os.Stat(dir); err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o755 {
+		t.Errorf("mode of an existing directory = %o, want the 755 its owner set", info.Mode().Perm())
 	}
 }

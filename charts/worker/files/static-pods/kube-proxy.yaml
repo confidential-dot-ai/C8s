@@ -12,7 +12,7 @@ spec:
   priorityClassName: system-node-critical
   containers:
   - name: kube-proxy
-    image: registry.k8s.io/kube-proxy:v1.36.4@sha256:b33fcdd8319290736e566f5fc2225ca07d3c2dfc025fb006342791aa31be4603
+    image: registry.k8s.io/kube-proxy:v1.36.6@sha256:70871b645aecbca013bfb8254ce29f49143822054b743b78485db1f5f0d5de2c
     command: [/usr/local/bin/kube-proxy]
     args: ['--cluster-cidr=${POD_CIDR}', --conntrack-max-per-core=0, --conntrack-tcp-timeout-close-wait=0s, --conntrack-tcp-timeout-established=0s, --healthz-bind-address=127.0.0.1, '--hostname-override=${NODE_NAME}',
       --iptables-localhost-nodeports=false, --kubeconfig=/var/lib/kubelet/kubeconfig, --proxy-mode=iptables]

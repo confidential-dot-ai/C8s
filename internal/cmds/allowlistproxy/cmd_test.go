@@ -504,7 +504,7 @@ func TestCommandRejectsPublicListenerBeforeStarting(t *testing.T) {
 }
 
 func TestRunRejectsInvalidHeaderTimeoutBeforeBuildingHandler(t *testing.T) {
-	err := run(config{host: "127.0.0.1", port: 8801})
+	err := run(t.Context(), config{host: "127.0.0.1", port: 8801})
 	want := "--read-header-timeout must be positive"
 	if err == nil || err.Error() != want {
 		t.Fatalf("error = %v, want %q", err, want)

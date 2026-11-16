@@ -31,6 +31,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
+	"github.com/confidential-dot-ai/c8s/internal/routerdiscovery"
 	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
@@ -1213,7 +1214,7 @@ func TestRunDiscoveryVerify_EndToEnd(t *testing.T) {
 
 	// The "router": serves the discovery doc unauthenticated at /v1/discovery.
 	lb := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != defaultDiscoveryPath {
+		if r.URL.Path != routerdiscovery.DefaultPath {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
@@ -1519,7 +1520,7 @@ func TestGatherEvidence_AutoPrefersDiscovery(t *testing.T) {
 	certPEM, _ := selfSignedCertPEM(t)
 	doc := discoveryDocWith(t, certPEM, []byte("challenge"), `{"attestation_report":"AAAA","cert_chain":{"vcek":"BBBB"}}`)
 	lb := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != defaultDiscoveryPath {
+		if r.URL.Path != routerdiscovery.DefaultPath {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
@@ -1719,6 +1720,81 @@ func TestRun_UsageAndGatherFailures(t *testing.T) {
 		var out, errOut bytes.Buffer
 		if code := run(context.Background(), config{url: "x", mode: "bogus"}, &out, &errOut); code != exitUsage {
 			t.Errorf("code = %d, want %d; stderr: %s", code, exitUsage, errOut.String())
+		}
+	})
+
+	t.Run("unknown kind is a usage error before evidence is read", func(t *testing.T) {
+		absent := filepath.Join(t.TempDir(), "absent")
+		for _, kind := range []string{"bogus", "CDS"} {
+			var out, errOut bytes.Buffer
+			code := run(context.Background(), config{fromFile: absent, kind: kind}, &out, &errOut)
+			if code != exitUsage {
+				t.Errorf("--kind %s: code = %d, want %d", kind, code, exitUsage)
+			}
+			if want := fmt.Sprintf("error: unknown --kind %q (valid kinds: auto, cds, lb, workload)\n", kind); errOut.String() != want {
+				t.Errorf("stderr = %q, want %q", errOut.String(), want)
+			}
+			if out.Len() != 0 {
+				t.Errorf("--kind %s printed a verdict:\n%s", kind, out.String())
+			}
+		}
+	})
+
+	t.Run("unknown output format is a usage error before evidence is read", func(t *testing.T) {
+		absent := filepath.Join(t.TempDir(), "absent")
+		for _, output := range []string{"yaml", "jsno"} {
+			var out, errOut bytes.Buffer
+			code := run(context.Background(), config{fromFile: absent, output: output}, &out, &errOut)
+			if code != exitUsage {
+				t.Errorf("--output %s: code = %d, want %d", output, code, exitUsage)
+			}
+			if want := fmt.Sprintf("error: unknown --output %q (valid formats: text, json)\n", output); errOut.String() != want {
+				t.Errorf("stderr = %q, want %q", errOut.String(), want)
+			}
+			if out.Len() != 0 {
+				t.Errorf("--output %s printed a verdict:\n%s", output, out.String())
+			}
+		}
+	})
+
+	t.Run("every kind the flag lists reaches the evidence read", func(t *testing.T) {
+		absent := filepath.Join(t.TempDir(), "absent")
+		for _, cfg := range []config{
+			{
+				fromFile: absent,
+			},
+			{
+				fromFile: absent,
+				kind:     "auto",
+			},
+			{
+				fromFile:           absent,
+				kind:               "cds",
+				measurementsConfig: testutil.CDSPinFile(t),
+			},
+			{
+				fromFile: absent,
+				kind:     "lb",
+			},
+			{
+				fromFile: absent,
+				kind:     "workload",
+			},
+		} {
+			var out, errOut bytes.Buffer
+			if code := run(context.Background(), cfg, &out, &errOut); code != exitNoEvidence {
+				t.Errorf("--kind %q: code = %d, want %d; stderr: %s", cfg.kind, code, exitNoEvidence, errOut.String())
+			}
+		}
+	})
+
+	t.Run("every output format the flag lists reaches the evidence read", func(t *testing.T) {
+		absent := filepath.Join(t.TempDir(), "absent")
+		for _, output := range []string{"", "text", "json"} {
+			var out, errOut bytes.Buffer
+			if code := run(context.Background(), config{fromFile: absent, output: output}, &out, &errOut); code != exitNoEvidence {
+				t.Errorf("--output %q: code = %d, want %d; stderr: %s", output, code, exitNoEvidence, errOut.String())
+			}
 		}
 	})
 

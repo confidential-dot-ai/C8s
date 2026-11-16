@@ -7,9 +7,11 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
 )
 
@@ -218,5 +220,77 @@ func TestRenewalRefreshesGenerationDeadline(t *testing.T) {
 	}
 	if got := len(attempts()); got != 1 {
 		t.Fatalf("renewed %d times after the generation deadline changed, want 1", got)
+	}
+}
+
+// A renewed CA under the bound key renews at once, even while a failed renewal
+// is backing off.
+func TestRenewLoopRenewsOnBoundCAWhileBackingOff(t *testing.T) {
+	oldBase := renewalRetryBase
+	renewalRetryBase = 10 * time.Second
+	t.Cleanup(func() { renewalRetryBase = oldBase })
+
+	ca := newTestCA(t)
+	creds := publishedCredentials(t, ca, time.Hour)
+	renewedPEM := ca.issueSelf(t, 48*time.Hour).pem(t)
+	var mu sync.Mutex
+	servedPEM := ca.pem(t)
+	url := startFakeCAServer(t, func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		return servedPEM
+	})
+	attempts := stubObtainCertFailing(t)
+	cfg := config{
+		RenewInterval:        time.Hour,
+		UnnamedRenewInterval: 30 * time.Second,
+		CAWatchInterval:      10 * time.Millisecond,
+	}
+	startRenewLoop(t, cfg, url, creds)
+
+	// The fast poll renews the unnamed leaf; that renewal fails and the loop
+	// backs off renewalRetryBase.
+	waitForAttempts(t, attempts, 1)
+	mu.Lock()
+	servedPEM = renewedPEM
+	mu.Unlock()
+	changed := time.Now()
+
+	at := waitForAttempts(t, attempts, 2)
+	if gap := at[1].Sub(changed); gap < 0 || gap > time.Second {
+		t.Fatalf("renewed %v after cds served the renewed CA, want within a second of it", gap)
+	}
+}
+
+// A generation the loop cannot withdraw fails closed instead of being retried.
+func TestRenewLoopFailsClosedWhenWithdrawalFails(t *testing.T) {
+	v := credentialVolume{dir: t.TempDir(), leafName: "tls.crt", keyName: "tls.key", caName: "ca.crt"}
+	if err := os.MkdirAll(filepath.Join(v.pointerPath(), "held"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	creds := &credentials{volume: v, instanceID: testInstanceID}
+	expired, err := issueFor(newTestCA(t), creds, -time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issuer, err := issuerKeyIDOf(expired.CA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	creds.issuer, creds.current = issuer, expired
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- renewLoop(ctx, config{RenewInterval: time.Hour}, attestclient.Client{}, allowlistclient.Client{}, creds)
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("renewLoop returned nil with an unwithdrawable generation")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("renewLoop kept retrying with an unwithdrawable generation")
 	}
 }

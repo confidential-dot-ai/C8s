@@ -153,8 +153,9 @@ func TestApplySandboxPolicySelfSignedFailsMeshCA(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	cfg := config{sandboxID: id, meshCA: caPath}
 	oc := Outcome{Verified: true}
-	applySandboxPolicy(&oc, config{sandboxID: id, meshCA: caPath}, ev, operatorKeysReport{}, &verifyPlan{}, measurementsReport{})
+	applySandboxPolicy(&oc, cfg, ev, operatorKeysReport{}, mustPlan(t, cfg), measurementsReport{})
 	if oc.Verified {
 		t.Fatal("self-signed leaf claiming the pinned sandbox ID passed --mesh-ca")
 	}
@@ -250,8 +251,9 @@ func TestApplySandboxPolicyVerifiedAgainstMeshCA(t *testing.T) {
 	leaf, caPath := caSignedLeaf(t, id, serverAuthOnly)
 	ev := &evidence{leaf: leaf, sandboxID: id}
 
+	cfg := config{sandboxID: id, meshCA: caPath}
 	oc := Outcome{Verified: true}
-	applySandboxPolicy(&oc, config{sandboxID: id, meshCA: caPath}, ev, operatorKeysReport{}, &verifyPlan{}, measurementsReport{})
+	applySandboxPolicy(&oc, cfg, ev, operatorKeysReport{}, mustPlan(t, cfg), measurementsReport{})
 	if !oc.Verified {
 		t.Fatalf("verdict failed: %s", oc.Error)
 	}
@@ -264,15 +266,17 @@ func TestApplySandboxPolicyVerifiedAgainstMeshCA(t *testing.T) {
 
 	// The same leaf without the pin reports only the chain check, so the two
 	// runs cannot be confused for one another.
+	unpinnedCfg := config{meshCA: caPath}
 	unpinned := Outcome{Verified: true}
-	applySandboxPolicy(&unpinned, config{meshCA: caPath}, ev, operatorKeysReport{}, &verifyPlan{}, measurementsReport{})
+	applySandboxPolicy(&unpinned, unpinnedCfg, ev, operatorKeysReport{}, mustPlan(t, unpinnedCfg), measurementsReport{})
 	if strings.Contains(unpinned.SandboxIDNote, "--sandbox-id") {
 		t.Fatalf("note = %q, want no pin claim when --sandbox-id was not supplied", unpinned.SandboxIDNote)
 	}
 
 	// A different expected ID on the same chain-valid leaf must still fail.
+	mismatchCfg := config{sandboxID: "someother", meshCA: caPath}
 	mismatch := Outcome{Verified: true}
-	applySandboxPolicy(&mismatch, config{sandboxID: "someother", meshCA: caPath}, ev, operatorKeysReport{}, &verifyPlan{}, measurementsReport{})
+	applySandboxPolicy(&mismatch, mismatchCfg, ev, operatorKeysReport{}, mustPlan(t, mismatchCfg), measurementsReport{})
 	if mismatch.Verified {
 		t.Fatal("a mismatched --sandbox-id passed on a chain-valid leaf")
 	}
@@ -284,9 +288,10 @@ func TestApplySandboxPolicyMeshCARequiresServerAuth(t *testing.T) {
 	const id = "8d9f6c2b1a0e"
 	leaf, caPath := caSignedLeaf(t, id, []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth})
 
+	cfg := config{sandboxID: id, meshCA: caPath}
 	oc := Outcome{Verified: true}
-	applySandboxPolicy(&oc, config{sandboxID: id, meshCA: caPath}, &evidence{leaf: leaf, sandboxID: id},
-		operatorKeysReport{}, &verifyPlan{}, measurementsReport{})
+	applySandboxPolicy(&oc, cfg, &evidence{leaf: leaf, sandboxID: id},
+		operatorKeysReport{}, mustPlan(t, cfg), measurementsReport{})
 	if oc.Verified {
 		t.Fatal("a leaf the CA did not issue for serving TLS passed --mesh-ca")
 	}
@@ -299,8 +304,9 @@ func TestApplySandboxPolicyMeshCARequiresServerAuth(t *testing.T) {
 // than a silently skipped check reported as success.
 func TestApplySandboxPolicyMeshCANeedsALeaf(t *testing.T) {
 	_, caPath := caSignedLeaf(t, "abc", serverAuthOnly)
+	cfg := config{meshCA: caPath}
 	oc := Outcome{Verified: true}
-	applySandboxPolicy(&oc, config{meshCA: caPath}, &evidence{}, operatorKeysReport{}, &verifyPlan{}, measurementsReport{})
+	applySandboxPolicy(&oc, cfg, &evidence{}, operatorKeysReport{}, mustPlan(t, cfg), measurementsReport{})
 	if oc.Verified {
 		t.Fatal("--mesh-ca silently passed with no leaf to check")
 	}
@@ -319,19 +325,6 @@ func TestApplySandboxPolicyPinNeedsALeaf(t *testing.T) {
 	}
 }
 
-// An unreadable --operator-keys file fails the verdict at apply time too — the
-// pin the operator asked for can never be silently dropped.
-func TestApplySandboxPolicyUnreadableOperatorKeysFile(t *testing.T) {
-	oc := Outcome{Verified: true}
-	applySandboxPolicy(&oc, config{operatorKeys: filepath.Join(t.TempDir(), "absent")}, &evidence{}, operatorKeysReport{}, &verifyPlan{}, measurementsReport{})
-	if oc.Verified {
-		t.Fatal("an unreadable --operator-keys file passed at apply time")
-	}
-	if !strings.Contains(oc.Error, "--operator-keys") {
-		t.Fatalf("Error = %q, want it to name --operator-keys", oc.Error)
-	}
-}
-
 // --operator-keys compares against the list the attested target serves. Each
 // way that can fail must demote the verdict, and an unfetched list must say so
 // rather than compare against nothing.
@@ -341,7 +334,8 @@ func TestApplySandboxPolicyOperatorKeys(t *testing.T) {
 	if err := os.WriteFile(keysPath, pubPEM, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	expected, err := expectedOperatorKeysDigest(config{operatorKeys: keysPath})
+	cfg := config{operatorKeys: keysPath}
+	expected, err := expectedOperatorKeysDigest(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -359,7 +353,7 @@ func TestApplySandboxPolicyOperatorKeys(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			oc := Outcome{Verified: true}
-			applySandboxPolicy(&oc, config{operatorKeys: keysPath}, &evidence{}, tc.report, &verifyPlan{}, measurementsReport{})
+			applySandboxPolicy(&oc, cfg, &evidence{}, tc.report, mustPlan(t, cfg), measurementsReport{})
 			if oc.Verified != tc.want {
 				t.Fatalf("Verified = %v, want %v (error: %s)", oc.Verified, tc.want, oc.Error)
 			}
@@ -373,7 +367,7 @@ func TestApplySandboxPolicyOperatorKeys(t *testing.T) {
 	// --from-file target; the failure must still name a cause.
 	t.Run("never fetched with no gather note", func(t *testing.T) {
 		oc := Outcome{Verified: true}
-		applySandboxPolicy(&oc, config{operatorKeys: keysPath}, &evidence{}, operatorKeysReport{}, &verifyPlan{}, measurementsReport{})
+		applySandboxPolicy(&oc, cfg, &evidence{}, operatorKeysReport{}, mustPlan(t, cfg), measurementsReport{})
 		if oc.Verified || strings.HasSuffix(oc.Error, ": ") {
 			t.Fatalf("Error = %q, want a failure naming why the check could not run", oc.Error)
 		}
@@ -389,16 +383,17 @@ func TestApplySandboxPolicyOperatorKeysVerdictDistinguishesPinning(t *testing.T)
 	if err := os.WriteFile(keysPath, pubPEM, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	served, err := expectedOperatorKeysDigest(config{operatorKeys: keysPath})
+	cfg := config{operatorKeys: keysPath}
+	served, err := expectedOperatorKeysDigest(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	report := operatorKeysReport{fingerprints: []string{fp}, digest: served}
 
 	pinned := Outcome{Verified: true}
-	applySandboxPolicy(&pinned, config{operatorKeys: keysPath}, &evidence{}, report, &verifyPlan{}, measurementsReport{})
+	applySandboxPolicy(&pinned, cfg, &evidence{}, report, mustPlan(t, cfg), measurementsReport{})
 	unpinned := Outcome{Verified: true}
-	applySandboxPolicy(&unpinned, config{}, &evidence{}, report, &verifyPlan{}, measurementsReport{})
+	applySandboxPolicy(&unpinned, config{}, &evidence{}, report, mustPlan(t, config{}), measurementsReport{})
 
 	if !pinned.Verified || !unpinned.Verified {
 		t.Fatalf("both runs should pass: pinned error %q, unpinned error %q", pinned.Error, unpinned.Error)
@@ -424,8 +419,40 @@ func TestApplySandboxPolicyOperatorKeysUnpinnedNeedsKeys(t *testing.T) {
 	}
 }
 
-// An unreadable or empty --mesh-ca bundle fails the verdict rather than being
-// treated as "no CA supplied", which would silently downgrade the check.
+// The --operator-keys bundle is read exactly once, in the plan. A second read
+// would compare the served set against a file the plan never validated, so a
+// bundle swapped mid-run would be judged in the verdict and not in the plan.
+func TestOperatorKeysAreReadOnce(t *testing.T) {
+	pubPEM, _ := operatorPubPEM(t)
+	keysPath := filepath.Join(t.TempDir(), "op.pub")
+	if err := os.WriteFile(keysPath, pubPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config{operatorKeys: keysPath}
+	planned, err := expectedOperatorKeysDigest(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := mustPlan(t, cfg)
+
+	// Swap the bundle underneath for another key set.
+	otherPEM, _ := operatorPubPEM(t)
+	if err := os.WriteFile(keysPath, otherPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	oc := Outcome{Verified: true}
+	applySandboxPolicy(&oc, cfg, &evidence{}, operatorKeysReport{digest: planned}, plan, measurementsReport{})
+	if !oc.Verified {
+		t.Fatalf("verdict re-read the bundle instead of comparing against the planned digest: %s", oc.Error)
+	}
+	if oc.OperatorKeysNote != operatorKeysMatchedNote {
+		t.Fatalf("note = %q, want %q", oc.OperatorKeysNote, operatorKeysMatchedNote)
+	}
+}
+
+// An unreadable or empty --mesh-ca bundle is a usage error rather than
+// "no CA supplied", which would silently downgrade the check.
 func TestMeshCABundleErrors(t *testing.T) {
 	dir := t.TempDir()
 
@@ -441,12 +468,32 @@ func TestMeshCABundleErrors(t *testing.T) {
 	if _, err := buildPolicy(config{meshCA: notPEM}); err == nil {
 		t.Fatal("buildPolicy accepted a --mesh-ca file with no certificates")
 	}
+}
 
-	// And at policy-application time, where the file is read again.
-	leaf, _ := caSignedLeaf(t, "abc", serverAuthOnly)
+// The --mesh-ca bundle is read exactly once, in the plan. A second read would
+// check the leaf's chain against an anchor the plan never saw.
+func TestMeshCABundleIsReadOnce(t *testing.T) {
+	const id = "8d9f6c2b1a0e"
+	leaf, caPath := caSignedLeaf(t, id, serverAuthOnly)
+	cfg := config{sandboxID: id, meshCA: caPath}
+	plan := mustPlan(t, cfg)
+
+	// Swap the bundle underneath for a CA that signed nothing here.
+	_, otherCA := caSignedLeaf(t, id, serverAuthOnly)
+	other, err := os.ReadFile(otherCA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(caPath, other, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
 	oc := Outcome{Verified: true}
-	applySandboxPolicy(&oc, config{meshCA: notPEM}, &evidence{leaf: leaf}, operatorKeysReport{}, &verifyPlan{}, measurementsReport{})
-	if oc.Verified {
-		t.Fatal("an unusable --mesh-ca bundle passed at apply time")
+	applySandboxPolicy(&oc, cfg, &evidence{leaf: leaf, sandboxID: id}, operatorKeysReport{}, plan, measurementsReport{})
+	if !oc.Verified {
+		t.Fatalf("verdict re-read the bundle instead of using the planned anchor: %s", oc.Error)
+	}
+	if !strings.Contains(oc.SandboxIDNote, "verified: the leaf chains") {
+		t.Fatalf("note = %q, want the chain check recorded", oc.SandboxIDNote)
 	}
 }

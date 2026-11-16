@@ -20,7 +20,6 @@ package armtls
 
 import (
 	"bytes"
-	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
@@ -146,7 +145,8 @@ func UnmarshalMatchedWorkload(der []byte) (*MatchedWorkload, error) {
 // MatchedWorkloadFromCert returns the certificate's matched-workload stamp, or
 // nil when the certificate carries none. A present but malformed or duplicated
 // extension is an error, never nil — a verifier must not read damage as
-// absence.
+// absence. The caller must have verified cert against the mesh CA first: on a
+// self-issued leaf the stamp is whatever the peer chose.
 func MatchedWorkloadFromCert(cert *x509.Certificate) (*MatchedWorkload, error) {
 	var found *MatchedWorkload
 	for _, ext := range cert.Extensions {
@@ -163,56 +163,4 @@ func MatchedWorkloadFromCert(cert *x509.Certificate) (*MatchedWorkload, error) {
 		found = m
 	}
 	return found, nil
-}
-
-// CheckWorkloadPin enforces expectedName against a leaf whose CA chain the
-// caller has ALREADY verified. The stamp is placed by CDS in the signed area,
-// so the mesh CA signature — not the hardware evidence — is what authenticates
-// it. Calling this on an unverified (e.g. self-issued) leaf would pin an
-// attacker-chosen string.
-//
-// Empty expectedName is a no-op, so callers can invoke it unconditionally.
-func CheckWorkloadPin(cert *x509.Certificate, expectedName string) error {
-	if expectedName == "" {
-		return nil
-	}
-	m, err := MatchedWorkloadFromCert(cert)
-	if err != nil {
-		return fmt.Errorf("%w: %v", ErrPolicyViolation, err)
-	}
-	if m == nil {
-		return fmt.Errorf("%w: workload pin set but certificate carries no matched-workload extension", ErrPolicyViolation)
-	}
-	if m.Name != expectedName {
-		return fmt.Errorf("%w: certificate matched workload %q does not match pinned %q", ErrPolicyViolation, m.Name, expectedName)
-	}
-	return nil
-}
-
-// PeerMatchedWorkload returns the matched-workload stamp of the peer's leaf on
-// a live connection, for relying parties that route or authorize by name. The
-// stamp is CA-vouched, so the peer chain must have been verified by crypto/tls
-// against the mesh CA (VerifiedChains non-empty) — a self-signed armTLS peer's
-// extension is whatever it chose, and is refused here. nil with no error means
-// the verified peer carries no stamp.
-//
-// This means it only works on a ServerConfig.ClientCA listener, the one branch
-// that lets crypto/tls build the chain itself. It returns an error on every
-// other C8s connection today: a ClientPolicy listener verifies a self-issued
-// peer's own evidence, and every mesh client sets InsecureSkipVerify, so
-// neither populates VerifiedChains.
-//
-// That is the intended contract, not an oversight: on those connections there
-// is no chain for the stamp to be vouched by. Do NOT "fix" a caller by dropping
-// the VerifiedChains check — read the stamp off a leaf the caller has itself
-// verified against the mesh CA (MatchedWorkloadFromCert), or move the listener
-// to ClientCA. See docs/armtls.md, "Matched workload".
-func PeerMatchedWorkload(cs tls.ConnectionState) (*MatchedWorkload, error) {
-	if len(cs.PeerCertificates) == 0 {
-		return nil, fmt.Errorf("armtls: no peer certificate")
-	}
-	if len(cs.VerifiedChains) == 0 {
-		return nil, fmt.Errorf("armtls: peer certificate was not chain-verified; a matched-workload stamp is CA-vouched and cannot be read off an unverified leaf")
-	}
-	return MatchedWorkloadFromCert(cs.PeerCertificates[0])
 }

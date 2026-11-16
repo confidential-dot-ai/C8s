@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 	pkgroutes "github.com/confidential-dot-ai/c8s/pkg/routes"
 	"github.com/confidential-dot-ai/c8s/pkg/routesclient"
@@ -123,9 +124,7 @@ Name the backend in one of two ways:
 	f.BoolVar(&newManifest, "new", false, "start a new manifest when CDS stores none (the first route of a cluster)")
 	bindRevisionFlag(f, &revision)
 	f.BoolVar(&dryRun, "dry-run", false, "fetch the stored manifest from CDS and print the new one without storing it")
-	for _, name := range []string{"host", "path", "address"} {
-		_ = cmd.MarkFlagRequired(name)
-	}
+	cmdsutil.RequireFlags(cmd, "host", "path", "address")
 	return cmd
 }
 
@@ -159,9 +158,7 @@ removed. Pass --match when the host has both an exact and a prefix route at
 	f.StringVar(&match, "match", "", "exact or prefix; needed only when both exist at --path")
 	bindRevisionFlag(f, &revision)
 	f.BoolVar(&dryRun, "dry-run", false, "fetch the stored manifest from CDS and print the new one without storing it")
-	for _, name := range []string{"host", "path"} {
-		_ = cmd.MarkFlagRequired(name)
-	}
+	cmdsutil.RequireFlags(cmd, "host", "path")
 	return cmd
 }
 
@@ -208,9 +205,7 @@ pattern.`,
 	f.BoolVar(&newManifest, "new", false, "start a new manifest when CDS stores none")
 	bindRevisionFlag(f, &revision)
 	f.BoolVar(&dryRun, "dry-run", false, "fetch the stored manifest from CDS and print the new one without storing it")
-	for _, name := range []string{"host-suffix", "workload", "port"} {
-		_ = cmd.MarkFlagRequired(name)
-	}
+	cmdsutil.RequireFlags(cmd, "host-suffix", "workload", "port")
 	return cmd
 }
 
@@ -236,7 +231,7 @@ the pattern rule for --host-suffix, and store the next revision.`,
 	f.StringVar(&hostSuffix, "host-suffix", "", "host suffix of the pattern (required)")
 	bindRevisionFlag(f, &revision)
 	f.BoolVar(&dryRun, "dry-run", false, "fetch the stored manifest from CDS and print the new one without storing it")
-	_ = cmd.MarkFlagRequired("host-suffix")
+	cmdsutil.RequireFlags(cmd, "host-suffix")
 	return cmd
 }
 

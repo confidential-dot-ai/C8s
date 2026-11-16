@@ -78,10 +78,75 @@ func TestPodStartRequiresTheContainerInTheLiveInventory(t *testing.T) {
 func TestFinishPodStartStopsAtAFailedCredentialStart(t *testing.T) {
 	p, pod, ctr, _ := podStartFixture(t, true)
 	p.podBroker = nil
-	if err := p.finishPodStart(t.Context(), pod, ctr, "/credentials"); err == nil || !strings.Contains(err.Error(), "not initialized") {
+	if err := p.cvm().finishStart(t.Context(), pod, ctr, "/credentials"); err == nil || !strings.Contains(err.Error(), "not initialized") {
 		t.Fatalf("got %v", err)
 	}
 	if len(p.podStarts) != 0 {
 		t.Fatal("a failed credential start issued a start permission")
+	}
+}
+
+// A Pod guest runs only the sandbox its assignment names; a node runs what it is given.
+func TestPodSandboxMustMatchTheSignedAssignment(t *testing.T) {
+	assigned := makePod("tenant", "assigned")
+	assigned.Uid = "runtime-uid"
+
+	p := podCVMPlugin(t, assigned)
+	if err := p.RunPodSandbox(t.Context(), assigned); err != nil {
+		t.Fatalf("the assigned sandbox was refused: %v", err)
+	}
+	if p.podBroker.terminal != nil || p.inventory.denial(assigned.Id) != nil {
+		t.Fatalf("the assigned sandbox cost the identity: %v", p.podBroker.terminal)
+	}
+
+	for _, foreign := range []*api.PodSandbox{
+		func() *api.PodSandbox { f := makePod("tenant", "other"); f.Uid = "runtime-uid"; return f }(),
+		func() *api.PodSandbox { f := makePod("other", "assigned"); f.Uid = "runtime-uid"; return f }(),
+		makePod("tenant", "assigned"), // no runtime UID
+	} {
+		guest := podCVMPlugin(t, assigned)
+		err := guest.RunPodSandbox(t.Context(), foreign)
+		if err == nil || !strings.Contains(err.Error(), "does not match its assignment") {
+			t.Fatalf("sandbox %s/%s uid %q: %v", foreign.GetNamespace(), foreign.GetName(), foreign.GetUid(), err)
+		}
+		if guest.podBroker.terminal == nil || guest.podBroker.ctx.Err() == nil {
+			t.Fatal("an unassigned sandbox did not end the Pod identity")
+		}
+		if guest.inventory.denial(foreign.GetId()) == nil {
+			t.Fatal("an unassigned sandbox asserts an identity")
+		}
+
+		node := newTestPlugin(&config{Policy: policyConfig{Mode: ModeFailClosed}})
+		node.inventory = newAdmissionInventory(t.TempDir())
+		if err := node.RunPodSandbox(t.Context(), foreign); err != nil {
+			t.Fatalf("a node refused a sandbox it was given: %v", err)
+		}
+	}
+}
+
+// Packet protection that fails to install denies the sandbox on a Pod guest only.
+func TestUnprotectedSandboxDeniesOnlyOnAPodCVM(t *testing.T) {
+	pod := meshPod("default", "pod", testNetNS)
+	pod.Uid = "runtime-uid"
+
+	// Protection installs once in a sandbox's life, so a sandbox on record fails it.
+	guest := podCVMPlugin(t, pod)
+	guest.mesh, _ = gateWithPod(pod)
+	err := guest.RunPodSandbox(t.Context(), pod)
+	if err == nil || !strings.Contains(err.Error(), "on record already") {
+		t.Fatalf("a Pod guest admitted an unprotected sandbox: %v", err)
+	}
+	if guest.podBroker.terminal == nil || guest.inventory.denial(pod.Id) == nil {
+		t.Fatal("an unprotected sandbox kept the Pod identity")
+	}
+
+	node := newTestPlugin(&config{Policy: policyConfig{Mode: ModeFailClosed}})
+	node.inventory = newAdmissionInventory(t.TempDir())
+	node.mesh, _ = gateWithPod(pod)
+	if err := node.RunPodSandbox(t.Context(), pod); err != nil {
+		t.Fatalf("a node refused an unprotected sandbox instead of reporting it: %v", err)
+	}
+	if node.inventory.denial(pod.Id) != nil {
+		t.Fatal("a node recorded a denial for an unprotected sandbox")
 	}
 }

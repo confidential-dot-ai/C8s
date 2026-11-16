@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
 // Router selects the router's public hostnames and front-door limits. All
@@ -43,18 +44,6 @@ func (r Router) Empty() bool {
 // maxStagedHostnames bounds the hostnames file staging writes, and with it
 // the names one certificate is ordered for.
 const maxStagedHostnames = 100
-
-// frontDoorMode names which certificate the front door serves, and with it
-// the TLS snippet router/tls.conf includes.
-type frontDoorMode string
-
-const (
-	// modeCDS serves the leaf this cluster's CDS signs.
-	modeCDS frontDoorMode = "cds"
-	// modeACME serves the leaf the router's ACME account orders for the
-	// document's hostnames.
-	modeACME frontDoorMode = "acme"
-)
 
 // ValidRouter is a router block staging can publish: every field has been
 // checked by Validate, which is the only way to hold one.
@@ -179,9 +168,9 @@ func RouterOutputs(router Router) (map[string][]byte, error) {
 // outputs are the files the router reads, from a block that passed Validate.
 func (v ValidRouter) outputs() map[string][]byte {
 	router := v.router
-	mode := modeCDS
+	mode := types.FrontDoorModeCDS
 	if len(router.Hostnames) > 0 {
-		mode = modeACME
+		mode = types.FrontDoorModeACME
 	}
 	hostnames := []byte{}
 	if len(router.Hostnames) > 0 {

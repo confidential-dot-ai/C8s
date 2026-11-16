@@ -53,7 +53,7 @@ Every output is removed first, and again if any step fails.`,
 	}
 	cmd.Flags().StringVar(&document, "document", stagedLaunchFile, "the worker document: the measured launch file the initrd stages here")
 	cmd.Flags().StringVar(&bootstrapTokenFile, "bootstrap-token-file", "", "file holding the Kubernetes bootstrap token the kubelet joins with")
-	_ = cmd.MarkFlagRequired("bootstrap-token-file")
+	cmdsutil.RequireFlags(cmd, "bootstrap-token-file")
 	return cmd
 }
 

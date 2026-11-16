@@ -22,7 +22,7 @@ func ClassifyBundleMount(podUID, sandboxID, containerName string, m *api.Mount) 
 		Container: &api.Container{Name: containerName, PodSandboxId: sandboxID},
 		Storage:   noStorage{},
 	}
-	return newMountObserver(ctx.Storage, nodeMounts{}).observeMount(ctx, m).Class, true
+	return newMountObserver(ctx.Storage, enforcerMounts{}).observeMount(ctx, m).Class, true
 }
 
 // noStorage answers no storage evidence: classification does not need it.

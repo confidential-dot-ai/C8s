@@ -50,7 +50,7 @@ func TestNewCmdDefaults(t *testing.T) {
 func TestRunRejectsInvalidConfig(t *testing.T) {
 	cfg := validConfig(t)
 	cfg.CDSURL = ""
-	if err := run(cfg); err == nil {
+	if err := run(t.Context(), cfg); err == nil {
 		t.Fatal("an invalid config was accepted")
 	}
 }

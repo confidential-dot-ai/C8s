@@ -698,22 +698,58 @@ func TestChartAttestationApiDefaultsToNodeLocalSocket(t *testing.T) {
 	assertContainerMount(t, proxy, "socket-dir", "/run/nri-image-policy")
 	// HTTP (a locked node image denies every runc exec it was not granted), against
 	// the proxy's own health listener: the API's loopback bind is not
-	// kubelet-dialable, and this is the evidence path's only liveness signal.
-	for name, probe := range map[string]*corev1.Probe{"readiness": proxy.ReadinessProbe, "liveness": proxy.LivenessProbe} {
-		if probe == nil || probe.HTTPGet == nil {
-			t.Fatalf("attest-proxy must carry an HTTP %s probe; got %+v", name, probe)
-		}
-		if probe.HTTPGet.Path != "/healthz" || probe.HTTPGet.Port.StrVal != "health" {
-			t.Fatalf("attest-proxy %s probe = %+v, want GET /healthz on the health port", name, probe.HTTPGet)
-		}
-		// Kubelet's 1s default probe timeout would flap the healthcheck's 3s
-		// internal budget.
-		if probe.TimeoutSeconds != 5 {
-			t.Fatalf("attest-proxy %s probe timeoutSeconds = %d, want 5", name, probe.TimeoutSeconds)
-		}
-	}
-	if _, ok := findContainerPort(proxy, "health"); !ok {
+	// kubelet-dialable. Readiness covers the evidence path; each liveness
+	// covers only its own container.
+	api := renderedDaemonSetContainer(t, out, "c8s-attestation-api", "attestation-api")
+	health, ok := findContainerPort(proxy, "health")
+	if !ok {
 		t.Fatalf("attest-proxy must name its health port; got %+v", proxy.Ports)
+	}
+	// The API container has no port named "health", so its probes dial the
+	// proxy's port by number.
+	healthPort := intstr.FromInt32(health.ContainerPort)
+	for _, tc := range []struct {
+		name  string
+		probe *corev1.Probe
+		path  string
+		port  intstr.IntOrString
+	}{
+		{
+			name:  "attest-proxy readiness",
+			probe: proxy.ReadinessProbe,
+			path:  "/healthz",
+			port:  intstr.FromString("health"),
+		},
+		{
+			name:  "attest-proxy liveness",
+			probe: proxy.LivenessProbe,
+			path:  "/livez",
+			port:  intstr.FromString("health"),
+		},
+		{
+			name:  "attestation-api startup",
+			probe: api.StartupProbe,
+			path:  "/upstream/livez",
+			port:  healthPort,
+		},
+		{
+			name:  "attestation-api liveness",
+			probe: api.LivenessProbe,
+			path:  "/upstream/livez",
+			port:  healthPort,
+		},
+	} {
+		if tc.probe == nil || tc.probe.HTTPGet == nil {
+			t.Fatalf("%s must be an HTTP probe; got %+v", tc.name, tc.probe)
+		}
+		if tc.probe.HTTPGet.Path != tc.path || tc.probe.HTTPGet.Port != tc.port {
+			t.Fatalf("%s probe = %+v, want GET %s on %s", tc.name, tc.probe.HTTPGet, tc.path, tc.port.String())
+		}
+		// Kubelet's 1s default probe timeout would flap the handlers' 3s
+		// internal budget.
+		if tc.probe.TimeoutSeconds != 5 {
+			t.Fatalf("%s probe timeoutSeconds = %d, want 5", tc.name, tc.probe.TimeoutSeconds)
+		}
 	}
 	// uid 0 owns the socket (clients reject a foreign owner) and gid 65532 is
 	// the socket's group — the chgrp works by membership, all caps dropped.
@@ -727,11 +763,17 @@ func TestChartAttestationApiDefaultsToNodeLocalSocket(t *testing.T) {
 	if sc.ReadOnlyRootFilesystem == nil || !*sc.ReadOnlyRootFilesystem {
 		t.Fatalf("attest-proxy must mount its root filesystem read-only; got %+v", sc.ReadOnlyRootFilesystem)
 	}
-	// An httpGet probe would never pass against the loopback bind, so the
-	// proxy's exec probe is the only health signal.
-	api := renderedDaemonSetContainer(t, out, "c8s-attestation-api", "attestation-api")
-	if api.ReadinessProbe != nil || api.LivenessProbe != nil {
-		t.Fatalf("attestation-api container must not carry kubelet probes against its loopback bind; got %+v / %+v", api.ReadinessProbe, api.LivenessProbe)
+	// The proxy's readiness already covers the API end to end.
+	if api.ReadinessProbe != nil {
+		t.Fatalf("attestation-api container must leave readiness to attest-proxy; got %+v", api.ReadinessProbe)
+	}
+	// The API's probes fail whenever attest-proxy is down, so one attest-proxy
+	// restart at the kubelet's 300s maximum backoff must not restart the API.
+	const maxRestartBackoff = 300
+	for name, probe := range map[string]*corev1.Probe{"startup": api.StartupProbe, "liveness": api.LivenessProbe} {
+		if window := probeWindow(probe); window <= maxRestartBackoff {
+			t.Errorf("attestation-api %s window = %ds, want over %ds", name, window, maxRestartBackoff)
+		}
 	}
 }
 
@@ -866,7 +908,12 @@ func renderedPodSpecs(t *testing.T, manifest string) []renderedWorkload {
 		var obj struct {
 			docMeta
 			Spec struct {
-				Template corev1.PodTemplateSpec `json:"template"`
+				Template    corev1.PodTemplateSpec `json:"template"`
+				JobTemplate struct {
+					Spec struct {
+						Template corev1.PodTemplateSpec `json:"template"`
+					} `json:"spec"`
+				} `json:"jobTemplate"`
 			} `json:"spec"`
 		}
 		if err := sigsyaml.Unmarshal(doc, &obj); err != nil {
@@ -875,6 +922,12 @@ func renderedPodSpecs(t *testing.T, manifest string) []renderedWorkload {
 		switch obj.Kind {
 		case "Deployment", "DaemonSet", "StatefulSet", "Job":
 			out = append(out, renderedWorkload{obj.Kind, obj.Metadata.Name, obj.Spec.Template.Spec})
+		case "CronJob":
+			out = append(out, renderedWorkload{obj.Kind, obj.Metadata.Name, obj.Spec.JobTemplate.Spec.Template.Spec})
+		default:
+			if len(obj.Spec.Template.Spec.Containers) > 0 {
+				t.Fatalf("renderedPodSpecs: %s %s carries a pod template this helper does not collect", obj.Kind, obj.Metadata.Name)
+			}
 		}
 		return false
 	})
@@ -928,9 +981,9 @@ func TestChartAttestationApiPrivileged(t *testing.T) {
 
 // TestChartOperatorStartupProbeHoldsOffLiveness pins the operator's
 // startupProbe (#208). setupManager runs CRD discovery and the webhook PKI
-// bootstrap before /healthz is served, so without it liveness (~90s at the
-// defaults) can kill the operator mid-startup and, via failurePolicy=Fail,
-// block every pod admission while it restarts.
+// bootstrap before /healthz is served, so without it liveness can kill the
+// operator mid-startup and, via failurePolicy=Fail, block every pod admission
+// while it restarts.
 func TestChartOperatorStartupProbeHoldsOffLiveness(t *testing.T) {
 	t.Parallel()
 	out, err := helmTemplate(t)
@@ -2956,6 +3009,23 @@ func TestChartCertDependentPodStrategies(t *testing.T) {
 	if router.Spec.Strategy.Type != appsv1.RecreateDeploymentStrategyType {
 		t.Errorf("c8s-router strategy = %q, want Recreate (host-port binding forbids two concurrent pods on a node)", router.Spec.Strategy.Type)
 	}
+	assertRouterGracePeriodBelowDefault(t, router.Spec.Template.Spec)
+}
+
+// Both charts' router pods name a grace period below the Kubernetes default.
+func assertRouterGracePeriodBelowDefault(
+	t *testing.T,
+	pod corev1.PodSpec,
+) {
+	t.Helper()
+	grace := pod.TerminationGracePeriodSeconds
+	if grace == nil {
+		t.Errorf("the router pod names no termination grace period, so it takes the default %ds", corev1.DefaultTerminationGracePeriodSeconds)
+		return
+	}
+	if *grace >= corev1.DefaultTerminationGracePeriodSeconds {
+		t.Errorf("router termination grace period = %ds, want below the default %ds", *grace, corev1.DefaultTerminationGracePeriodSeconds)
+	}
 }
 
 // TestChartRouterHostPort pins nginx's TLS listener to the node's host port,
@@ -3527,17 +3597,10 @@ func TestChartDerivesComponentDigestsIntoAllowlist(t *testing.T) {
 	}
 
 	// The same derived base must reach the worker plugin's base,
-	// decoded as typed config (not substring-matched). The nri digest is
-	// excluded: base is digest-only admission, and the installer is
-	// argv-pinned by the seed.
+	// decoded as typed config (not substring-matched). The nri digest
+	// reaches it under the host sweep's argv pin alone.
 	worker := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker")
 	for digest, ref := range want {
-		if digest == nriD {
-			if _, ok := baseImages(worker.Allowlist.Base)[digest]; ok {
-				t.Errorf("worker base carries the nri digest — the argv pin would be bypassed\nfloor: %v", baseImages(worker.Allowlist.Base))
-			}
-			continue
-		}
 		if got := baseImages(worker.Allowlist.Base)[digest]; got != ref {
 			t.Errorf("worker base[%s] = %q, want %q\nfloor: %v", digest, got, ref, baseImages(worker.Allowlist.Base))
 		}
@@ -3660,9 +3723,9 @@ type installerBootConfig struct {
 		} `yaml:"push"`
 	} `yaml:"allowlist"`
 	Policy struct {
-		Mode               string   `yaml:"mode"`
-		ExemptNamespaces   []string `yaml:"exempt_namespaces"`
-		ExemptSnapshotPath string   `yaml:"exempt_snapshot_path"`
+		Mode               string              `yaml:"mode"`
+		ExemptNamespaces   []string            `yaml:"exempt_namespaces"`
+		ExemptRepositories map[string][]string `yaml:"exempt_repositories"`
 	} `yaml:"policy"`
 	Containerd struct {
 		Socket string `yaml:"socket"`
@@ -3740,30 +3803,32 @@ func TestChartBootConfigParsesAsPluginYAML(t *testing.T) {
 }
 
 // With exemptNamespaces cleared the rendered worker boot config admits by the
-// digest base alone: policy.exempt_namespaces is empty, and so is the
-// snapshot path that comes with it. The mesh policy's own exempt list is a
-// different key, so this reads the decoded values. The exempting render is
-// covered below.
+// digest base alone: policy.exempt_namespaces is empty, and so is the digest
+// set that comes with it. The mesh policy's own exempt list is a different key,
+// so this reads the decoded values. The exempting render is covered below.
 func TestChartBootConfigExemptsNoNamespaceFromImageAdmission(t *testing.T) {
 	out, err := helmTemplate(t, "--set-json", "nriImagePolicy.policy.exemptNamespaces=[]")
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
 	cfg := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker")
-	if len(cfg.Policy.ExemptNamespaces) != 0 || cfg.Policy.ExemptSnapshotPath != "" {
-		t.Errorf("worker boot config exempts %v from image admission, with snapshot %q",
-			cfg.Policy.ExemptNamespaces, cfg.Policy.ExemptSnapshotPath)
+	if len(cfg.Policy.ExemptNamespaces) != 0 || len(cfg.Policy.ExemptRepositories) != 0 {
+		t.Errorf("worker boot config exempts %v from image admission, admitting %v",
+			cfg.Policy.ExemptNamespaces, cfg.Policy.ExemptRepositories)
 	}
 }
 
 // Setting nriImagePolicy.policy.exemptNamespaces renders the exempt_namespaces
-// list, a snapshot path under the cache dir, and the install-time rm that
-// re-captures on a boot config rewrite. Decoding through yaml.v3 also proves
-// the block does not collide with the rest of the boot config.
+// list, and exemptRepositories the per-namespace repository prefixes admission
+// reads there. Decoding through yaml.v3 also proves the block does not collide
+// with the rest of the boot config.
 func TestChartBootConfigRendersExemptNamespaces(t *testing.T) {
 	t.Parallel()
+	const prefix = "mcr.microsoft.com/oss/kubernetes/"
 	out, err := helmTemplate(t,
 		"--set", "nriImagePolicy.policy.exemptNamespaces={kube-system,gatekeeper-system}",
+		"--set-string", "nriImagePolicy.policy.exemptRepositories.kube-system[0]="+prefix,
+		"--set-string", "nriImagePolicy.policy.exemptRepositories.gatekeeper-system[0]="+prefix,
 	)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
@@ -3772,14 +3837,92 @@ func TestChartBootConfigRendersExemptNamespaces(t *testing.T) {
 	if got := cfg.Policy.ExemptNamespaces; !slices.Equal(got, []string{"kube-system", "gatekeeper-system"}) {
 		t.Errorf("exempt_namespaces = %v, want [kube-system gatekeeper-system]", got)
 	}
-	if !strings.HasSuffix(cfg.Policy.ExemptSnapshotPath, "/exempt-snapshot.json") {
-		t.Errorf("exempt_snapshot_path = %q, want a .../exempt-snapshot.json path", cfg.Policy.ExemptSnapshotPath)
+	if got := cfg.Policy.ExemptRepositories; !slices.Equal(got["kube-system"], []string{prefix}) {
+		t.Errorf("exempt_repositories = %v, want kube-system: [%s]", got, prefix)
 	}
+}
 
-	ds := renderedDaemonSet(t, out, "c8s-nri-image-policy-worker")
-	script := strings.Join(containerArgs(t, &ds, "install"), "\n")
-	if !strings.Contains(script, "rm -f") || !strings.Contains(script, "exempt-snapshot.json") {
-		t.Error("install script must delete the exempt snapshot on a boot config change so it re-captures")
+// A stock platform file names the provider's add-on repositories, which the
+// render requires of every namespace it exempts.
+func TestChartRefusesAnExemptNamespaceWithoutRepositories(t *testing.T) {
+	t.Parallel()
+	out, err := helmTemplatePlatform(t, "aks-snp",
+		"--set", "nriImagePolicy.policy.exemptNamespaces={kube-system,gmp-system}",
+	)
+	if err == nil {
+		t.Fatalf("chart rendered an exemption that admits no image\n%s", out)
+	}
+	if !strings.Contains(out, "exemptRepositories.gmp-system is unset") {
+		t.Errorf("render failed without naming the namespace without repositories: %s", out)
+	}
+}
+
+// GKE serves its add-ons from the Artifact Registry release mirror, whose host
+// carries the cluster's region.
+const gkeReleaseMirror = "us-central1-artifactregistry.gcr.io/gke-release/gke-release/"
+
+// A platform file's exemption must admit the add-on images its provider runs in
+// kube-system on a fresh cluster: AKS 1.36.4, GKE 1.37.1-gke.1552000.
+func TestPlatformExemptionAdmitsTheProviderAddOns(t *testing.T) {
+	t.Parallel()
+	aksAddOns := []string{
+		"mcr.microsoft.com/oss/v2/kubernetes/kube-proxy:v1.36.4",
+		"mcr.microsoft.com/oss/v2/kubernetes-csi/azuredisk-csi:v1.33.3",
+		"mcr.microsoft.com/containernetworking/v2/azure-cns:v1.6.26",
+		"mcr.microsoft.com/oss/v2/azure/ip-masq-agent-v2:v0.1.16-22",
+		"mcr.microsoft.com/azurelinux/distroless/base:3.0",
+	}
+	addOns := map[string][]string{
+		"aks-snp": aksAddOns,
+		"aks-tdx": aksAddOns,
+		"gke-snp": {
+			gkeReleaseMirror + "kube-proxy:v1.37.1-gke.1552000",
+			gkeReleaseMirror + "gke-metrics-collector:1.2.3",
+			gkeReleaseMirror + "node_token_broker/init:v1.2.3@sha256:0000000000000000000000000000000000000000000000000000000000000001",
+		},
+	}
+	for _, platform := range cloudPlatforms {
+		t.Run(platform, func(t *testing.T) {
+			t.Parallel()
+			images := addOns[platform]
+			if len(images) == 0 {
+				t.Fatalf("no %s add-on images recorded, so its exemption is unproven", platform)
+			}
+			out, err := helmTemplatePlatform(t, platform)
+			if err != nil {
+				t.Fatalf("helm template: %v\n%s", err, out)
+			}
+			cfg := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker")
+			exempt := nriimagepolicy.ExemptRepositories(cfg.Policy.ExemptRepositories)
+			for _, image := range images {
+				if !exempt.Admits("kube-system", image) {
+					t.Errorf("%s denies %s in kube-system, which the provider runs there", platform, image)
+				}
+			}
+		})
+	}
+}
+
+// GKE runs its managed Prometheus and kube-state-metrics in namespaces of its
+// own, which the gke-snp exemption admits on the release mirror.
+func TestGKEExemptsItsManagedNamespacesOnTheReleaseMirror(t *testing.T) {
+	t.Parallel()
+	out, err := helmTemplatePlatform(t, "gke-snp")
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	cfg := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker")
+	exempt := nriimagepolicy.ExemptRepositories(cfg.Policy.ExemptRepositories)
+	for namespace, image := range map[string]string{
+		"gmp-system":      gkeReleaseMirror + "prometheus:v2.53.4",
+		"gke-managed-cim": gkeReleaseMirror + "kube-state-metrics:v2.10.1",
+	} {
+		if !slices.Contains(cfg.Policy.ExemptNamespaces, namespace) {
+			t.Errorf("exempt_namespaces = %v, want %s exempt", cfg.Policy.ExemptNamespaces, namespace)
+		}
+		if !exempt.Admits(namespace, image) {
+			t.Errorf("gke-snp denies %s in %s", image, namespace)
+		}
 	}
 }
 
@@ -3807,6 +3950,7 @@ func TestChartBootConfigLoadsInThePlugin(t *testing.T) {
 		t.Parallel()
 		out, err := helmTemplatePlatform(t, "gke-snp",
 			"--set", "nriImagePolicy.policy.exemptNamespaces={kube-system,"+workloadclaims.RouterNamespace+"}",
+			"--set-string", "nriImagePolicy.policy.exemptRepositories."+workloadclaims.RouterNamespace+"[0]=gke.gcr.io/",
 		)
 		if err == nil {
 			t.Fatalf("chart rendered a config the plugin refuses at start\n%s", out)
@@ -3817,22 +3961,26 @@ func TestChartBootConfigLoadsInThePlugin(t *testing.T) {
 	})
 }
 
-// nodeCDSAddressFile is where the installer stages this cluster's CDS address
-// beside the boot config.
-const nodeCDSAddressFile = "/etc/nri/conf.d/cds-address"
-
 // bootConfigAsStagedOnANode points the boot config at a CDS address file
 // holding what the installer mounts from the measurements ConfigMap, which is
 // the one input the plugin reads from the node rather than the config.
 func bootConfigAsStagedOnANode(t *testing.T, body []byte) []byte {
 	t.Helper()
+	var cfg installerBootConfig
+	if err := yaml.Unmarshal(body, &cfg); err != nil {
+		t.Fatalf("boot config does not parse: %v\n%s", err, body)
+	}
+	named := cfg.Allowlist.Pull.CDSAddressFile
+	if named == "" {
+		t.Fatalf("boot config names no CDS address file\n%s", body)
+	}
 	path := filepath.Join(t.TempDir(), "cds-address")
 	if err := os.WriteFile(path, []byte(baseCDSAddress), 0o600); err != nil {
 		t.Fatalf("stage the CDS address file: %v", err)
 	}
-	staged := strings.Replace(string(body), nodeCDSAddressFile, path, 1)
+	staged := strings.Replace(string(body), named, path, 1)
 	if staged == string(body) {
-		t.Fatalf("boot config names no %s\n%s", nodeCDSAddressFile, body)
+		t.Fatalf("boot config does not name %s where the plugin reads it\n%s", named, body)
 	}
 	return []byte(staged)
 }
@@ -3930,10 +4078,8 @@ func renderedResourceQuotas(t *testing.T, helmOut string) []corev1.ResourceQuota
 func TestChartCriticalPriorityPodsAreCoveredByAQuota(t *testing.T) {
 	t.Parallel()
 	wantPods := []string{
-		"DaemonSet/c8s-nri-image-policy-uninstall",
 		"DaemonSet/c8s-nri-image-policy-worker",
 		"DaemonSet/c8s-volumed",
-		"DaemonSet/c8s-volumed-teardown",
 	}
 	for _, platform := range cloudPlatforms {
 		t.Run(platform, func(t *testing.T) {
@@ -4052,11 +4198,21 @@ func TestChartImagePullSecretReachesEveryPodSpecWithoutCreatingASecret(t *testin
 		}
 		return false
 	})
-	// The default render ships at least the operator and router Deployments
-	// plus the attestation-api, armtls-mesh, and nri-image-policy DaemonSets;
-	// fewer means the decode regressed and the loop below passes vacuously.
-	if len(workloads) < 5 {
-		t.Fatalf("decoded only %d pod-bearing workloads, want >= 5", len(workloads))
+	// The pod-bearing workloads of a default render, so a decode that misses
+	// one cannot leave the loop below passing vacuously.
+	want := []string{
+		"DaemonSet/c8s-attestation-api",
+		"DaemonSet/c8s-nri-image-policy-worker",
+		"Deployment/c8s-operator",
+		"Deployment/c8s-router",
+	}
+	var decoded []string
+	for _, w := range workloads {
+		decoded = append(decoded, w.kind+"/"+w.name)
+	}
+	slices.Sort(decoded)
+	if !slices.Equal(decoded, want) {
+		t.Fatalf("decoded pod-bearing workloads = %v, want %v", decoded, want)
 	}
 
 	for _, w := range workloads {
@@ -4315,27 +4471,6 @@ func TestChartVolumedKubeletRoot(t *testing.T) {
 			if v.HostPath.Path != tc.want {
 				t.Errorf("kubelet-root hostPath = %q, want %q", v.HostPath.Path, tc.want)
 			}
-			// The teardown hook unmounts under the same root; a divergent
-			// path would sweep the wrong tree.
-			hook := renderedDaemonSet(t, out, "c8s-volumed-teardown").Spec.Template.Spec
-			hc, ok := findContainer(hook.InitContainers, "teardown")
-			if !ok {
-				t.Fatal("teardown init container missing")
-			}
-			hm, ok := containerVolumeMount(hc, "kubelet-root")
-			if !ok {
-				t.Fatal("no kubelet-root mount in the teardown hook")
-			}
-			if hm.MountPath != tc.want {
-				t.Errorf("hook kubelet-root mountPath = %q, want %q", hm.MountPath, tc.want)
-			}
-			hv, ok := podVolume(hook, "kubelet-root")
-			if !ok || hv.HostPath == nil {
-				t.Fatal("no kubelet-root hostPath volume in the teardown hook")
-			}
-			if hv.HostPath.Path != tc.want {
-				t.Errorf("hook kubelet-root hostPath = %q, want %q", hv.HostPath.Path, tc.want)
-			}
 		})
 	}
 }
@@ -4495,112 +4630,6 @@ func assertSchemaCovers(t *testing.T, values, node any, path string) {
 			continue
 		}
 		assertSchemaCovers(t, v, child, path+"."+k)
-	}
-}
-
-// volumed is the only component that unmaps a pod's dm-crypt/dm-verity stack,
-// so deleting the release under an open volume strands the mappings: they hold
-// the backing disk and the next install cannot reopen it. The pre-delete hook
-// reaps them while the release still exists — for any chart consumer, not just
-// `c8s uninstall`.
-func TestChartVolumedTeardownHook(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplate(t, "--set", "volumed.enabled=true")
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	ds := renderedDaemonSet(t, out, "c8s-volumed-teardown")
-
-	// pre-delete, so it runs while the mounts are still reachable; helm waits
-	// for Ready, which the pause container reaches only once the init
-	// container has swept the node.
-	if got := ds.Annotations["helm.sh/hook"]; got != "pre-delete" {
-		t.Errorf("helm.sh/hook = %q, want pre-delete", got)
-	}
-	if got := ds.Annotations["helm.sh/hook-delete-policy"]; !strings.Contains(got, "hook-succeeded") {
-		t.Errorf("helm.sh/hook-delete-policy = %q, want it to clean up after success", got)
-	}
-	// The nri-image-policy uninstaller restarts containerd, which would kill
-	// this pod mid-sweep, so this hook must sort ahead of it.
-	nriWeight := renderedDaemonSet(t, out, "c8s-nri-image-policy-uninstall").Annotations["helm.sh/hook-weight"]
-	weight, err := strconv.Atoi(ds.Annotations["helm.sh/hook-weight"])
-	if err != nil {
-		t.Fatalf("helm.sh/hook-weight is not an int: %v", err)
-	}
-	if nri, err := strconv.Atoi(nriWeight); err != nil || weight >= nri {
-		t.Errorf("teardown hook-weight = %d, want less than the nri uninstaller's %q", weight, nriWeight)
-	}
-
-	spec := ds.Spec.Template.Spec
-	c, ok := findContainer(spec.InitContainers, "teardown")
-	if !ok {
-		t.Fatalf("teardown init container missing; have %v", containerNames(spec.InitContainers))
-	}
-	// cryptsetup/veritysetup live only in volumed's own debian-slim image.
-	if !strings.Contains(c.Image, "/volumed") {
-		t.Errorf("teardown image = %q, want volumed's own image", c.Image)
-	}
-	if c.SecurityContext == nil || c.SecurityContext.Privileged == nil || !*c.SecurityContext.Privileged {
-		t.Error("teardown is not privileged; closing a dm target and unmounting need it")
-	}
-	if c.SecurityContext == nil || c.SecurityContext.RunAsUser == nil || *c.SecurityContext.RunAsUser != 0 {
-		t.Error("teardown must set runAsUser: 0; the nonroot image user has no effective capabilities")
-	}
-	// The image entrypoint is ["/app/c8s", "volumed"]; the hook runs a script.
-	if len(c.Command) == 0 || c.Command[0] != "/bin/sh" {
-		t.Errorf("teardown command = %v, want the shell (the image entrypoint is the daemon)", c.Command)
-	}
-
-	// The unmount happens in this pod's namespace and has to propagate back to
-	// the host, exactly as volumed's own mount does.
-	kubelet, ok := containerVolumeMount(c, "kubelet-root")
-	if !ok {
-		t.Fatal("no kubelet-root mount; the c8s volume mounts are not reachable")
-	}
-	if kubelet.MountPropagation == nil || *kubelet.MountPropagation != corev1.MountPropagationBidirectional {
-		t.Errorf("kubelet-root propagation = %v, want Bidirectional; the unmount would not reach the host", kubelet.MountPropagation)
-	}
-	if _, ok := containerVolumeMount(c, "dev"); !ok {
-		t.Error("missing dev mount; /dev/mapper is where the mappings live")
-	}
-
-	// The script must close both halves of the stack: verity is stacked on the
-	// crypt device, and the crypt device is what holds the disk.
-	script := strings.Join(c.Args, "\n")
-	for _, want := range []string{"c8s-verity-", "c8s-crypt-", "veritysetup", "cryptsetup", "umount"} {
-		if !strings.Contains(script, want) {
-			t.Errorf("teardown script does not mention %q:\n%s", want, script)
-		}
-	}
-}
-
-// The hook targets the nodes volumed ran on: a node selector or toleration
-// that does not track volumed's leaves those nodes' mappings behind.
-func TestChartVolumedTeardownHookTracksVolumedPlacement(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplate(t, "--set", "volumed.enabled=true")
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	volumed := renderedDaemonSet(t, out, "c8s-volumed").Spec.Template.Spec
-	teardown := renderedDaemonSet(t, out, "c8s-volumed-teardown").Spec.Template.Spec
-	if !reflect.DeepEqual(volumed.NodeSelector, teardown.NodeSelector) {
-		t.Errorf("teardown nodeSelector = %v, want volumed's %v", teardown.NodeSelector, volumed.NodeSelector)
-	}
-	if !reflect.DeepEqual(volumed.Tolerations, teardown.Tolerations) {
-		t.Errorf("teardown tolerations = %v, want volumed's %v", teardown.Tolerations, volumed.Tolerations)
-	}
-}
-
-// Nothing to reap where the daemon never ran.
-func TestChartVolumedTeardownHookOffWithVolumed(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplate(t)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	if renderedManifestHasNamedKind(t, out, "DaemonSet", "c8s-volumed-teardown") {
-		t.Error("volumed teardown hook rendered without volumed.enabled")
 	}
 }
 
@@ -4836,6 +4865,38 @@ func TestChartAcceptsAnEmptyAttestationDeviceList(t *testing.T) {
 	}
 }
 
+// A volume name is a DNS label, so the TDX guest device's underscore becomes a
+// dash there while the mount and host paths keep it.
+func TestChartMountsTheTDXGuestDevice(t *testing.T) {
+	t.Parallel()
+	args := slices.Concat(baseCDSPolicy(t), withoutPlatformKey("attestationApi.devices"),
+		[]string{"--set-string", "attestationApi.devices[0]=/dev/tdx_guest"})
+	out, err := renderCloudChart(t, cloudChartDir, args...)
+	if err != nil {
+		t.Fatalf("helm template refused /dev/tdx_guest: %v\n%s", err, out)
+	}
+	for _, want := range []string{
+		`- name: tdx-guest\s+mountPath: /dev/tdx_guest\n`,
+		`- name: tdx-guest\s+hostPath:\s+path: /dev/tdx_guest\n`,
+	} {
+		if !regexp.MustCompile(want).MatchString(out) {
+			t.Errorf("rendered chart lacks %s:\n%s", want, out)
+		}
+	}
+
+	for _, devices := range []string{
+		`["/dev/tdx_guest","/dev/tdx-guest"]`,
+		`["/dev/config"]`,
+		`["/dev/socket-dir"]`,
+	} {
+		args := slices.Concat(baseCDSPolicy(t), withoutPlatformKey("attestationApi.devices"),
+			[]string{"--set-json", "attestationApi.devices=" + devices})
+		if out, err := renderCloudChart(t, cloudChartDir, args...); err == nil || !strings.Contains(out, "kind=attestation_devices") {
+			t.Errorf("helm template of devices %s = %v, want a kind=attestation_devices refusal:\n%s", devices, err, out)
+		}
+	}
+}
+
 // withoutPlatformKey is basePlatformArgs less the pair setting key.
 func withoutPlatformKey(key string) []string {
 	var args []string
@@ -4857,6 +4918,9 @@ func TestChartValuesSchemaConstrainsTheEnumsAndRanges(t *testing.T) {
 		{"unknown TEE family", "nriImagePolicy.platform=sev"},
 		{"unknown evidence platform", "router.attest.platform=gcp-snp"},
 		{"a device outside /dev", "attestationApi.devices[0]=/etc/shadow"},
+		{"a device name that starts with a dash", "attestationApi.devices[0]=/dev/-x"},
+		{"a device name that ends with an underscore", "attestationApi.devices[0]=/dev/x_"},
+		{"a device name longer than a DNS label", "attestationApi.devices[0]=/dev/" + strings.Repeat("a", 64)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if out, err := helmTemplate(t, "--set-string", tc.set); err == nil {
@@ -5175,7 +5239,11 @@ func TestChartBootConfigRendersTheMeshPolicy(t *testing.T) {
 // plugin refuses.
 func TestChartBootConfigMeshExemptsEveryImagePolicyExemptNamespace(t *testing.T) {
 	t.Parallel()
-	out, err := helmTemplate(t, "--set", "nriImagePolicy.policy.exemptNamespaces={kube-system,gmp-system}")
+	out, err := helmTemplate(t,
+		"--set", "nriImagePolicy.policy.exemptNamespaces={kube-system,gmp-system}",
+		"--set-string", "nriImagePolicy.policy.exemptRepositories.kube-system[0]=gke.gcr.io/",
+		"--set-string", "nriImagePolicy.policy.exemptRepositories.gmp-system[0]=gke.gcr.io/",
+	)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
@@ -5237,14 +5305,12 @@ func TestChartRouterDefaultIgnoresLaunchFiles(t *testing.T) {
 }
 
 // confidentialNodeWorkloads are the cloud chart's pods that must run inside a
-// node's TEE: the node agents, their uninstall hooks, and the router.
+// node's TEE: the node agents and the router.
 var confidentialNodeWorkloads = []string{
 	"c8s-attestation-api",
-	"c8s-nri-image-policy-uninstall",
 	"c8s-nri-image-policy-worker",
 	"c8s-router",
 	"c8s-volumed",
-	"c8s-volumed-teardown",
 }
 
 // Every one of them selects the nodes its stock file marks as confidential.
@@ -5292,6 +5358,21 @@ func stockConfidentialNodeSelector(t *testing.T, platform string) map[string]str
 		t.Fatalf("values-%s.yaml marks no confidential node", platform)
 	}
 	return values.ConfidentialNodeSelector
+}
+
+// The injector selects the same confidential nodes as the node agents.
+func TestChartGivesTheOperatorTheConfidentialNodeLabels(t *testing.T) {
+	t.Parallel()
+	for _, platform := range cloudPlatforms {
+		out, err := helmTemplatePlatform(t, platform)
+		if err != nil {
+			t.Fatalf("helm template %s: %v\n%s", platform, err, out)
+		}
+		args := renderedOperatorArgs(t, out)
+		for label, value := range stockConfidentialNodeSelector(t, platform) {
+			assertContainerHasArg(t, "operator", args, fmt.Sprintf("--confidential-node-selector=%s=%s", label, value))
+		}
+	}
 }
 
 // The schema requires the labels.

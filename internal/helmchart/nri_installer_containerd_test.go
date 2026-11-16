@@ -10,17 +10,30 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Host containerd configs the installer meets. COS ships an NRI table of its
-// own, with a validator subtable, ahead of other tables.
+// Host containerd configs the installer meets. A GKE node's own one has no NRI
+// table, so containerd runs its NRI defaults and requires no plugin.
 const (
 	cosContainerdConfig = `version = 2
+required_plugins = ["io.containerd.grpc.v1.cri"]
+disabled_plugins = ["io.containerd.internal.v1.restart"]
+
+[plugins."io.containerd.grpc.v1.cri"]
+  sandbox_image = "registry.k8s.io/pause:3.10"
+[plugins."io.containerd.grpc.v1.cri".cni]
+  bin_dir = "/home/kubernetes/bin"
+  conf_dir = "/etc/cni/net.d"
+[plugins."io.containerd.grpc.v1.cri".containerd]
+  default_runtime_name = "runc"
+`
+	// A host NRI table with a validator subtable, ahead of the other tables.
+	hostNRIContainerdConfig = `version = 2
 
 [plugins."io.containerd.grpc.v1.cri"]
   sandbox_image = "registry.k8s.io/pause:3.10"
 
 [plugins."io.containerd.nri.v1.nri"]
   disable = false
-  plugin_path = "/home/kubernetes/bin/nri"
+  plugin_path = "/usr/local/nri/plugins"
   socket_path = "/var/run/nri/nri.sock"
 
 [plugins."io.containerd.nri.v1.nri".default_validator]
@@ -91,22 +104,22 @@ func TestChartNriInstallerEditsContainerdConfigOnce(t *testing.T) {
 		name, config, hostTableLine, keptLine string
 	}{
 		{
-			"COS with an NRI table, version 2",
-			cosContainerdConfig,
+			"a host NRI table, version 2",
+			hostNRIContainerdConfig,
 			`[plugins."io.containerd.nri.v1.nri".default_validator]`,
 			"\n[plugins.\"io.containerd.grpc.v1.cri\".containerd]\n  default_runtime_name = \"runc\"\n",
+		},
+		{
+			"a GKE node's own config",
+			cosContainerdConfig,
+			"",
+			"\ndisabled_plugins = [\"io.containerd.internal.v1.restart\"]\n",
 		},
 		{
 			"an NRI table, version 3",
 			v3ContainerdConfig,
 			`[plugins.'io.containerd.nri.v1.nri']`,
 			"\n  enable_selinux = false\n",
-		},
-		{
-			"no NRI table",
-			plainContainerdConfig,
-			"",
-			"\n  sandbox_image = \"registry.k8s.io/pause:3.10\"\n",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

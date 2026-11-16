@@ -104,9 +104,9 @@ func denyArgvs(t *testing.T, seed *pkgallowlist.Allowlist, digest string, argv [
 }
 
 // Every container the chart runs from the nri-image-policy image — the
-// installer DaemonSet's install init and pause, the uninstall hook's
-// uninstall init and pause — must be admitted by the seed under its exact
-// rendered argv, and nothing else from that image may be admitted.
+// installer DaemonSet's install init and its plugin-ready pause — must be
+// admitted by the seed under its exact rendered argv, and nothing else from
+// that image may be admitted.
 func TestChartPinnedSeedAdmitsNriInstallerArgv(t *testing.T) {
 	t.Parallel()
 	out, err := helmTemplate(t)
@@ -119,15 +119,13 @@ func TestChartPinnedSeedAdmitsNriInstallerArgv(t *testing.T) {
 	for _, c := range allContainers(&worker) {
 		admitPlatformContainer(t, seed, baseNRIDigest, c)
 	}
-	uninstall := renderedDaemonSet(t, out, "c8s-nri-image-policy-uninstall")
-	for _, c := range allContainers(&uninstall) {
-		admitPlatformContainer(t, seed, baseNRIDigest, c)
-	}
 
 	// The pin is argv-exact: any other command line from the same image is denied.
 	denyArgvs(t, seed, baseNRIDigest, []string{"/bin/sh", "-c", "rm -rf /"})
 	denyArgvs(t, seed, baseNRIDigest, []string{"/bin/sh", "/tmp/x"})
 	denyArgvs(t, seed, baseNRIDigest, []string{"sleep", "infinity"}) // argv[0] must be /bin/sh
+	// The sweep's /bin/sleep pause is the one pinned holder for this image.
+	denyArgvs(t, seed, baseNRIDigest, []string{"/bin/sh", "-c", "sleep infinity"})
 }
 
 // The install script's shell carries $ throughout, escaped against the
@@ -150,10 +148,8 @@ func TestChartPinnedSeedAdmitsInstallerUnderKubeletExpansion(t *testing.T) {
 	}
 }
 
-// base is digest-only admission — carrying an argv-pinned image there
-// would bypass the pin. Neither the installer image nor any busybox may
-// appear.
-func TestChartPinnedDigestsAbsentFromBootConfig(t *testing.T) {
+// A busybox in the base admits any command line on any pod.
+func TestChartBootConfigCarriesNoOpenShell(t *testing.T) {
 	t.Parallel()
 	out, err := helmTemplate(t)
 	if err != nil {
@@ -164,9 +160,6 @@ func TestChartPinnedDigestsAbsentFromBootConfig(t *testing.T) {
 		t.Fatal("base must stay non-empty (pull bootstrap)")
 	}
 	for digest, image := range baseImages(cfg.Allowlist.Base) {
-		if digest == baseNRIDigest {
-			t.Error("installer image self-allowed in base: the argv pin would be bypassed")
-		}
 		if strings.Contains(image, "busybox") {
 			t.Errorf("busybox %s in base: admits any command line on any pod", digest)
 		}
@@ -177,17 +170,19 @@ func TestChartPinnedDigestsAbsentFromBootConfig(t *testing.T) {
 // across entries): the derive loop must never emit one for the installer image
 // — the argvPinned skip is the only thing between the pin and a silent
 // any-argv shadow.
-func TestChartPinnedSeedHasNoAnyArgvShadow(t *testing.T) {
+func TestChartPinnedDigestHasNoAnyArgvShadow(t *testing.T) {
 	t.Parallel()
 	out, err := helmTemplate(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	seed := renderedSeed(t, out)
-	for name, w := range seed.Workloads {
-		for _, c := range append(append([]pkgallowlist.Container{}, w.Containers...), w.InitContainers...) {
-			if c.Digest.String() == baseNRIDigest && c.AnyArgv() {
-				t.Errorf("entry %q grants any argv for pinned digest %s — the pin is void", name, baseNRIDigest[:19])
+	cfg := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker")
+	for _, document := range []*pkgallowlist.Allowlist{renderedSeed(t, out), &cfg.Allowlist.Base} {
+		for name, w := range document.Workloads {
+			for _, c := range append(append([]pkgallowlist.Container{}, w.Containers...), w.InitContainers...) {
+				if c.Digest.String() == baseNRIDigest && c.AnyArgv() {
+					t.Errorf("entry %q grants any argv for pinned digest %s — the pin is void", name, baseNRIDigest[:19])
+				}
 			}
 		}
 	}

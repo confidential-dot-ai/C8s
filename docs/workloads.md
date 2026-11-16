@@ -52,7 +52,7 @@ c8s cds ca $PIN --out mesh-ca.pem
 Secret and volume writes hold CDS to that bundle. The read takes whatever
 answered under the pin: record the certificate SHA-256 it prints on stderr and
 compare it on later reads. CDS makes the mesh CA in process, so a restart replaces it and the bundle
-has to be read again ([operator.md](operator.md#cds-is-a-singleton) lists what
+has to be read again ([operator.md](operator.md#cds-runs-as-one-vm) lists what
 else a restart drops).
 
 ## 2. Write a workload entry
@@ -141,7 +141,7 @@ c8s volume create --name weights --source ./weights --out ./weights.img \
 
 Keep the escrow file: it and the CDS process hold the only copies of the
 volume's key, and a CDS restart drops the stored one
-([operator.md](operator.md#cds-is-a-singleton)). A run that builds the image but
+([operator.md](operator.md#cds-runs-as-one-vm)). A run that builds the image but
 cannot store the key leaves both files and says so; store the key with
 `c8s secrets put <path> --from-file <escrow>`, since `--out` refuses a second
 build.

@@ -19,7 +19,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -41,6 +40,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/routing"
 	"github.com/confidential-dot-ai/c8s/internal/server"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/overenc"
 	"github.com/confidential-dot-ai/c8s/pkg/routes"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
@@ -211,9 +211,6 @@ type Config struct {
 	// /.well-known/c8s/routes (E4). Off, that path answers 404: the manifest
 	// names hosts and backends a private deployment may not want public.
 	PublishRoutes bool
-	// DisableAttestEndpoints leaves attest-pq, attest-lb and the tunnel
-	// unregistered, for a router that runs only the routing listener.
-	DisableAttestEndpoints bool
 	// SessionTTL is the idle TTL: a session unused for this long is dropped.
 	SessionTTL time.Duration
 	// SessionMaxAge is the absolute session lifetime from establishment,
@@ -229,14 +226,6 @@ type Config struct {
 	// is never cut off and a stalled one cannot hold tunnel budget. Defaults
 	// to defaultTunnelIOTimeout.
 	TunnelIOTimeout time.Duration
-}
-
-type establishedSession struct {
-	channel   *overenc.Channel
-	bound     routing.Binding
-	createdAt time.Time
-	lastUsed  time.Time
-	client    string
 }
 
 // Server serves the c8s-verify endpoints.
@@ -360,9 +349,6 @@ func (s *Server) Handler() http.Handler {
 	// throttle the probe under externalTrafficPolicy: Cluster, which SNATs
 	// every client onto the node. The cache below is what bounds a flood.
 	r.Get("/readyz", s.handleReadyz)
-	if s.cfg.DisableAttestEndpoints {
-		return r
-	}
 	r.Method(http.MethodPost, wellKnownPrefix+"/attest-pq", s.establishing(http.HandlerFunc(s.handleAttestPQ)))
 	// The pre-client-first shape. Kept registered so a stale client gets the
 	// explicit 400 — never a 404 it might treat as transient, and never an
@@ -874,10 +860,11 @@ func (l *servedLeaves) findLocked(hash [sha256.Size]byte) (servedLeaf, bool) {
 }
 
 // servingLeaf reads the acme serving-leaf PEM nginx serves new connections:
-// the leaf first, then the rest of its chain. It is read per request so a
-// renewal is picked up without restarting the sidecar. Exactly one
-// leaf is committed; per-SNI or multi-certificate serving is unsupported and
-// fails the client's exact-DER comparison closed.
+// the first CERTIFICATE block, then the rest of its chain, as
+// ssl_certificate reads the same file. It is read per request so a renewal is
+// picked up without restarting the sidecar. Exactly one leaf is committed;
+// per-SNI or multi-certificate serving is unsupported and fails the client's
+// exact-DER comparison closed.
 func (s *Server) servingLeaf() (*x509.Certificate, servedLeaf, error) {
 	if s.cfg.ServingCertFile == "" {
 		return nil, servedLeaf{}, fmt.Errorf("no --serving-cert-file configured")
@@ -886,26 +873,12 @@ func (s *Server) servingLeaf() (*x509.Certificate, servedLeaf, error) {
 	if err != nil {
 		return nil, servedLeaf{}, fmt.Errorf("read serving cert: %w", err)
 	}
-	block, rest := pem.Decode(pemBytes)
-	if block == nil || block.Type != "CERTIFICATE" {
-		return nil, servedLeaf{}, fmt.Errorf("serving cert %q is not a PEM certificate", s.cfg.ServingCertFile)
-	}
-	cert, err := x509.ParseCertificate(block.Bytes)
+	certs, err := certutil.ParsePEMCertificates(pemBytes)
 	if err != nil {
-		return nil, servedLeaf{}, fmt.Errorf("parse serving cert: %w", err)
+		return nil, servedLeaf{}, fmt.Errorf("serving cert %q: %w", s.cfg.ServingCertFile, err)
 	}
-	var chain []*x509.Certificate
-	for block, rest = pem.Decode(rest); block != nil; block, rest = pem.Decode(rest) {
-		if block.Type != "CERTIFICATE" {
-			continue
-		}
-		issuer, err := x509.ParseCertificate(block.Bytes)
-		if err != nil {
-			return nil, servedLeaf{}, fmt.Errorf("parse serving cert chain: %w", err)
-		}
-		chain = append(chain, issuer)
-	}
-	return cert, servedLeaf{der: cert.Raw, expires: chainExpiry(cert, chain...)}, nil
+	leaf, chain := certs[0], certs[1:]
+	return leaf, servedLeaf{der: leaf.Raw, expires: chainExpiry(leaf, chain...)}, nil
 }
 
 // handleReadyz gates readiness on the committed mesh identity, not the outer
@@ -992,38 +965,14 @@ func (s *Server) refuseSession(w http.ResponseWriter, err error) {
 // envelope, forwards the reconstructed request by the applied route manifest,
 // and seals the response back to the client.
 func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
-	// A refusal before the body is read closes the connection, so net/http
-	// does not wait on the unread body.
-	refuse := func(status int, code, msg string) {
-		w.Header().Set("Connection", "close")
-		writeErr(w, status, code, msg)
-	}
 	id := r.Header.Get(sessionHeader)
-	session, ok := s.useSession(id)
+	session, release, ok := s.admitTunnelSession(w, r, id)
 	if !ok {
-		refuse(http.StatusUnauthorized, types.ErrorCodeChannelError, "no over-encryption session")
-		return
-	}
-	channel := session.channel
-	if r.ContentLength > tunnelBodyLimit {
-		refuse(http.StatusRequestEntityTooLarge, types.ErrorCodeChannelError, "tunnel record exceeds 8 MiB; send a smaller request")
-		return
-	}
-	// Budget goes only to a request naming a live session. Anyone can open
-	// one, so the per-client share is what bounds a single client.
-	recordBytes := r.ContentLength
-	if recordBytes < 0 {
-		recordBytes = tunnelBodyLimit
-	}
-	release, ok := s.routes.Acquire(clientBucket(r), recordBytes)
-	if !ok {
-		refuse(http.StatusServiceUnavailable, types.ErrorCodeTunnelBusy, "too many tunnelled requests in flight")
 		return
 	}
 	defer release()
 	rc := http.NewResponseController(w)
-	ioDeadline := func() time.Time { return time.Now().Add(s.cfg.TunnelIOTimeout) }
-	if err := errors.Join(rc.SetReadDeadline(ioDeadline()), rc.SetWriteDeadline(ioDeadline())); err != nil {
+	if err := errors.Join(rc.SetReadDeadline(s.tunnelIODeadline()), rc.SetWriteDeadline(s.tunnelIODeadline())); err != nil {
 		s.log.Error("tunnel deadlines unsupported", "error", err)
 		writeErr(w, http.StatusInternalServerError, types.ErrorCodeInternal, "tunnel deadlines unsupported")
 		return
@@ -1037,83 +986,147 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 		_ = rc.SetWriteDeadline(time.Time{})
 	}()
 
+	env, seq, ok := s.openTunnelRequest(w, r, rc, session.channel)
+	if !ok {
+		return
+	}
+	resp, ok := s.forwardTunnelRequest(w, r, id, env, session.bound)
+	if !ok {
+		return
+	}
+	sealed := sealTunnelResponse(session.channel, resp, seq)
+	s.writeTunnelRecord(w, rc, sealed)
+}
+
+func (s *Server) tunnelIODeadline() time.Time {
+	return time.Now().Add(s.cfg.TunnelIOTimeout)
+}
+
+// admitTunnelSession returns the acquired tunnel budget's release, non-nil
+// whenever it admits.
+func (s *Server) admitTunnelSession(w http.ResponseWriter, r *http.Request, id string) (establishedSession, func(), bool) {
+	// A refusal before the body is read closes the connection, so net/http
+	// does not wait on the unread body.
+	refuse := func(status int, code, msg string) {
+		w.Header().Set("Connection", "close")
+		writeErr(w, status, code, msg)
+	}
+	session, ok := s.useSession(id)
+	if !ok {
+		refuse(http.StatusUnauthorized, types.ErrorCodeChannelError, "no over-encryption session")
+		return establishedSession{}, nil, false
+	}
+	if r.ContentLength > tunnelBodyLimit {
+		refuse(http.StatusRequestEntityTooLarge, types.ErrorCodeChannelError, "tunnel record exceeds 8 MiB; send a smaller request")
+		return establishedSession{}, nil, false
+	}
+	// Budget goes only to a request naming a live session. Anyone can open
+	// one, so the per-client share is what bounds a single client.
+	recordBytes := r.ContentLength
+	if recordBytes < 0 {
+		recordBytes = tunnelBodyLimit
+	}
+	release, ok := s.routes.Acquire(clientBucket(r), recordBytes)
+	if !ok {
+		refuse(http.StatusServiceUnavailable, types.ErrorCodeTunnelBusy, "too many tunnelled requests in flight")
+		return establishedSession{}, nil, false
+	}
+	return session, release, true
+}
+
+// openTunnelRequest returns the request envelope the sealed record carries,
+// under the sequence the response must echo.
+func (s *Server) openTunnelRequest(w http.ResponseWriter, r *http.Request, rc *http.ResponseController, channel *overenc.Channel) (types.TunnelRequest, uint64, bool) {
 	// MaxBytesReader, unlike a LimitReader, fails an oversized body and makes
 	// net/http close the connection rather than drain the rest with no
 	// deadline while the budget is held.
-	body := deadlineReader{ReadCloser: r.Body, extend: func() error { return rc.SetReadDeadline(ioDeadline()) }}
+	body := deadlineReader{
+		ReadCloser: r.Body,
+		extend: func() error {
+			return rc.SetReadDeadline(s.tunnelIODeadline())
+		},
+	}
 	recBytes, err := io.ReadAll(http.MaxBytesReader(w, body, tunnelBodyLimit))
 	var tooLarge *http.MaxBytesError
 	switch {
 	case errors.As(err, &tooLarge):
 		writeErr(w, http.StatusRequestEntityTooLarge, types.ErrorCodeChannelError, "tunnel record exceeds 8 MiB; send a smaller request")
-		return
+		return types.TunnelRequest{}, 0, false
 	case err != nil:
 		writeErr(w, http.StatusBadRequest, types.ErrorCodeChannelError, "read record")
-		return
+		return types.TunnelRequest{}, 0, false
 	}
-	// The body reached EOF. An expired read deadline would cancel r's context
-	// mid-forward.
-	_ = rc.SetReadDeadline(time.Time{})
 	var rec overenc.Record
 	if err := cbor.Unmarshal(recBytes, &rec); err != nil {
 		writeErr(w, http.StatusBadRequest, types.ErrorCodeChannelError, "invalid record")
-		return
+		return types.TunnelRequest{}, 0, false
 	}
 	plaintext, err := channel.OpenRequest(rec)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, types.ErrorCodeChannelError, "decrypt failed")
-		return
+		return types.TunnelRequest{}, 0, false
 	}
-
 	var env types.TunnelRequest
 	if err := cbor.Unmarshal(plaintext, &env); err != nil {
 		writeErr(w, http.StatusBadRequest, types.ErrorCodeChannelError, "invalid request envelope")
-		return
+		return types.TunnelRequest{}, 0, false
 	}
 	// The backend trusts this header to name the channel the request arrived
 	// on, so a client-supplied value is dropped, never forwarded.
 	env.Headers = setHeaderField(env.Headers, routing.ExporterHeader,
 		base64.RawURLEncoding.EncodeToString(channel.Exporter()))
+	return env, rec.Seq, true
+}
 
-	resp, err := s.routes.Forward(r, env, session.bound)
+// forwardTunnelRequest returns the response to seal: the backend's, or the 502
+// a forwarding failure becomes.
+func (s *Server) forwardTunnelRequest(w http.ResponseWriter, r *http.Request, id string, env types.TunnelRequest, bound routing.Binding) (types.TunnelResponse, bool) {
+	resp, err := s.routes.Forward(r, env, bound)
 	var changed *routing.BindingChangedError
 	if errors.As(err, &changed) {
 		// The client attests again rather than ride a session it did not verify.
 		s.endSession(id)
 		writeErr(w, http.StatusServiceUnavailable, changed.Code, "the router no longer routes by what this session attested; attest again")
-		return
+		return types.TunnelResponse{}, false
 	}
 	if err != nil {
 		s.log.Warn("backend forward failed", "method", env.Method, "path", env.Path, "error", err)
-		resp = types.TunnelResponse{Status: http.StatusBadGateway, Body: []byte("backend error")}
+		return types.TunnelResponse{Status: http.StatusBadGateway, Body: []byte("backend error")}, true
 	}
+	return resp, true
+}
 
+func sealTunnelResponse(channel *overenc.Channel, resp types.TunnelResponse, seq uint64) []byte {
+	// seq is the sequence OpenRequest accepted, so never zero, and these types always encode.
 	respCBOR, err := cbor.Marshal(resp)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, types.ErrorCodeInternal, "marshal response envelope")
-		return
+		panic("cdsattest: marshal response envelope: " + err.Error())
 	}
-	out, err := channel.SealResponse(respCBOR, rec.Seq)
+	out, err := channel.SealResponse(respCBOR, seq)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, types.ErrorCodeInternal, "seal failed")
-		return
+		panic("cdsattest: seal tunnel response: " + err.Error())
 	}
 	outCBOR, err := cbor.Marshal(out)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, types.ErrorCodeInternal, "marshal failed")
-		return
+		panic("cdsattest: marshal sealed record: " + err.Error())
 	}
+	return outCBOR
+}
+
+// writeTunnelRecord writes record in chunks, each restarting the write
+// deadline, so a client that keeps reading is never cut off.
+func (s *Server) writeTunnelRecord(w http.ResponseWriter, rc *http.ResponseController, record []byte) {
 	w.Header().Set("Content-Type", "application/cbor")
-	w.Header().Set("Content-Length", strconv.Itoa(len(outCBOR)))
+	w.Header().Set("Content-Length", strconv.Itoa(len(record)))
 	w.WriteHeader(http.StatusOK)
-	for len(outCBOR) > 0 {
-		n := min(len(outCBOR), tunnelWriteChunk)
-		_ = rc.SetWriteDeadline(ioDeadline())
+	for len(record) > 0 {
+		n := min(len(record), tunnelWriteChunk)
+		_ = rc.SetWriteDeadline(s.tunnelIODeadline())
 		// A failed write has no one left to tell.
-		if _, err := w.Write(outCBOR[:n]); err != nil || rc.Flush() != nil {
+		if _, err := w.Write(record[:n]); err != nil || rc.Flush() != nil {
 			return
 		}
-		outCBOR = outCBOR[n:]
+		record = record[n:]
 	}
 }
 
@@ -1141,112 +1154,6 @@ func setHeaderField(fields []types.HeaderField, name, value string) []types.Head
 		}
 	}
 	return append(kept, types.HeaderField{Name: name, Value: value})
-}
-
-// sweep evicts idle and over-age established sessions and expired attest-lb
-// bindings.
-func (s *Server) sweep() {
-	s.bindings.prune()
-	now := time.Now()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for k, v := range s.sessions {
-		if now.Sub(v.lastUsed) > s.cfg.SessionTTL || now.Sub(v.createdAt) > s.cfg.SessionMaxAge {
-			s.dropSession(k)
-		}
-	}
-}
-
-// sessionRoom reports why a session for client may not be admitted.
-// handleAttestPQ asks before it mints anything, and addSession decides again
-// under the lock that inserts.
-func (s *Server) sessionRoom(client string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.sessionsBy.count(client) >= maxSessionsPerClient {
-		return errSessionsFull
-	}
-	if len(s.sessions) >= maxSessions {
-		if _, ok := s.sessionsBy.admit(maxSessions, client); !ok {
-			return errStoreFull
-		}
-	}
-	return nil
-}
-
-// addSession stores an established channel under id. An established session is
-// never evicted for a new one; a client at its own bound is refused.
-func (s *Server) addSession(client, id string, entry establishedSession) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, taken := s.sessions[id]; taken {
-		return errSessionInUse
-	}
-	if s.sessionsBy.count(client) >= maxSessionsPerClient {
-		return errSessionsFull
-	}
-	if len(s.sessions) >= maxSessions {
-		over, ok := s.sessionsBy.admit(maxSessions, client)
-		if !ok {
-			return errStoreFull
-		}
-		s.dropSession(idlestSessionOf(s.sessions, s.sessionsBy.keys(over)))
-	}
-	entry.client = client
-	s.sessions[id] = entry
-	s.sessionsBy.add(client, id)
-	return nil
-}
-
-// useSession returns the session id names, refreshing its idle deadline. An
-// idle-expired or over-age session is dropped and reported as absent: use
-// refreshes the idle deadline but never the absolute one, so no amount of
-// traffic keeps one key schedule alive past SessionMaxAge.
-func (s *Server) useSession(id string) (establishedSession, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	entry, ok := s.sessions[id]
-	if !ok {
-		return establishedSession{}, false
-	}
-	now := time.Now()
-	if now.Sub(entry.lastUsed) > s.cfg.SessionTTL || now.Sub(entry.createdAt) > s.cfg.SessionMaxAge {
-		s.dropSession(id)
-		return establishedSession{}, false
-	}
-	entry.lastUsed = now
-	s.sessions[id] = entry
-	return entry, true
-}
-
-func (s *Server) endSession(id string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.dropSession(id)
-}
-
-func (s *Server) dropSession(id string) {
-	entry, ok := s.sessions[id]
-	if !ok {
-		return
-	}
-	delete(s.sessions, id)
-	s.sessionsBy.remove(entry.client, id)
-}
-
-func idlestSessionOf(sessions map[string]establishedSession, held map[string]struct{}) string {
-	var chosen string
-	var at time.Time
-	for id := range held {
-		entry, ok := sessions[id]
-		if !ok {
-			continue
-		}
-		if at.IsZero() || entry.lastUsed.Before(at) {
-			chosen, at = id, entry.lastUsed
-		}
-	}
-	return chosen
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

@@ -18,6 +18,22 @@ import (
 // and the new launches are all admitted.
 func TestChartConfigOnlyUpgradeAdmitsOldAndNewShapes(t *testing.T) {
 	t.Parallel()
+	for name, change := range map[string][]string{
+		"webhook exclusions": {"--set", "controlPlane.webhook.extraExcluded={local-path-storage,tenant-tools}"},
+		"provider exemptions": {
+			"--set", "nriImagePolicy.policy.exemptNamespaces={provider-tools}",
+			"--set-string", "nriImagePolicy.policy.exemptRepositories.provider-tools[0]=registry.example/provider/",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			assertConfigUpgradeAdmitsOldAndNewShapes(t, change)
+		})
+	}
+}
+
+func assertConfigUpgradeAdmitsOldAndNewShapes(t *testing.T, change []string) {
+	t.Helper()
 	var args []string
 	for valuePath, digest := range componentTestDigests {
 		args = append(args, "--set", valuePath+".digest="+digest)
@@ -26,7 +42,7 @@ func TestChartConfigOnlyUpgradeAdmitsOldAndNewShapes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, before)
 	}
-	upgraded := append(slices.Clone(args), "--set", "controlPlane.webhook.extraExcluded={local-path-storage,tenant-tools}")
+	upgraded := slices.Concat(args, change)
 	after, err := helmTemplate(t, upgraded...)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, after)

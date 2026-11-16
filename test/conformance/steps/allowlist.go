@@ -45,15 +45,22 @@ func registerAllowlist(sc *godog.ScenarioContext) {
 	sc.Step(`^a workload entry admitting image "([^"]*)" under any argv is added to the served allowlist$`, entryAdded)
 }
 
-// lastMutation is this process's last change to the served allowlist: when it
-// happened and the version the CDS served the operator after it, which is the
-// version nodes are served the node delay later. It outlives the scenario
-// because one scenario's restore is what the next scenario's applied sentence
-// has to wait out.
-var lastMutation struct {
-	at      time.Time
-	version string
+// mutation is a change to the served allowlist: when it happened and the tag
+// of the document the CDS served the operator after it, the document nodes
+// are served the node delay later.
+type mutation struct {
+	at          time.Time
+	documentTag string
 }
+
+// pending reports whether a write of this process's is still waiting to take
+// effect on nodes.
+func (m mutation) pending() bool { return m.documentTag != "" }
+
+// lastMutation is this process's last change to the served allowlist. It
+// outlives the scenario because one scenario's restore is what the next
+// scenario's applied sentence has to wait out.
+var lastMutation mutation
 
 // writtenName is the entry's allowlist workload name at CDS: the scenario's
 // name, or the base an entry was given instead of it, suffixed so that two
@@ -458,7 +465,7 @@ func (w *world) deleteEntry(name string) error {
 	return w.noteMutation()
 }
 
-// noteMutation records a change to the served allowlist and the version the
+// noteMutation records a change to the served allowlist and the document the
 // CDS serves the operator after it, so a wait for nodes to be served that
 // write compares against it rather than against a later read.
 func (w *world) noteMutation() error {
@@ -467,7 +474,7 @@ func (w *world) noteMutation() error {
 	if err != nil {
 		return err
 	}
-	lastMutation.version = r.version
+	lastMutation.documentTag = r.tag
 	return nil
 }
 
@@ -584,9 +591,10 @@ func (w *world) sync() error {
 // awaitApplied waits for the plugin to hold what the CDS serves now, and
 // records the version it holds. A write takes effect on nodes the CDS's node
 // delay after it is written (workloads specification J9), so it waits for the
-// CDS to serve nodes the version the last write left, then polls the version
-// the plugin reports until it reaches it, failing when the pull loop has not
-// followed within the node delay and three pull intervals of that write.
+// CDS to serve nodes the document the last write left, then polls the version
+// the plugin reports until it reaches the version nodes are served it at,
+// failing when the pull loop has not followed within the node delay and
+// three pull intervals of that write.
 // Where nothing can be observed, the wait is the clock: the node delay and
 // two pull intervals, so a pull that started just before the write took
 // effect has been followed by one that saw it. That is the case where the
@@ -646,31 +654,39 @@ func (w *world) pullTiming() (interval, delay time.Duration, err error) {
 	return interval, delay, nil
 }
 
-// awaitInEffect waits until the CDS serves nodes the version the last write
-// left it serving the operator, and returns the version nodes are served.
-// Not observable where the backend cannot read what the CDS serves.
+// awaitInEffect waits until the CDS serves nodes the document the last write
+// left it serving the operator, and returns the version nodes are served it
+// at. Not observable where the backend cannot read what the CDS serves.
+//
+// Nodes are served only journaled writes: the newest journaled document the
+// node delay after its write, at that write's version. A write that leaves
+// the document unchanged journals nothing, so there is nothing to wait for.
 func (w *world) awaitInEffect() (version int, observable bool, err error) {
 	interval, delay, err := w.pullTiming()
 	if err != nil {
 		return 0, false, err
 	}
-	var want int
-	if lastMutation.version != "" {
-		if want, err = strconv.Atoi(lastMutation.version); err != nil {
-			return 0, false, fmt.Errorf("version written %q: %w", lastMutation.version, err)
-		}
+	var served struct {
+		documentTag string
+		version     int
 	}
-	served := 0
-	inEffect, err := pollEvery(interval/pollsPerInterval, pollBudget(interval, delay, 1), func() (bool, error) {
+	readNodes := func() (bool, error) {
 		r, err := w.read("", asNode)
 		if err != nil {
 			return false, err
 		}
-		if served, err = strconv.Atoi(r.version); err != nil {
+		if served.version, err = strconv.Atoi(r.version); err != nil {
 			return false, fmt.Errorf("version served to nodes %q: %w", r.version, err)
 		}
-		return served >= want, nil
-	})
+		served.documentTag = r.tag
+		return served.documentTag == lastMutation.documentTag, nil
+	}
+	inEffect := true
+	if lastMutation.pending() {
+		inEffect, err = pollEvery(interval/pollsPerInterval, pollBudget(interval, delay, 1), readNodes)
+	} else {
+		_, err = readNodes()
+	}
 	if errors.Is(err, godog.ErrSkip) {
 		return 0, false, nil
 	}
@@ -678,9 +694,9 @@ func (w *world) awaitInEffect() (version int, observable bool, err error) {
 		return 0, false, err
 	}
 	if !inEffect {
-		return 0, false, fmt.Errorf("the CDS serves nodes allowlist version %d, not the written %d, %s after the write with a node delay of %s", served, want, time.Since(lastMutation.at).Round(time.Millisecond), delay)
+		return 0, false, fmt.Errorf("the CDS serves nodes allowlist document %s at version %d, not the written %s, %s after the write with a node delay of %s", served.documentTag, served.version, lastMutation.documentTag, time.Since(lastMutation.at).Round(time.Millisecond), delay)
 	}
-	return served, true, nil
+	return served.version, true, nil
 }
 
 // observeApplied polls the plugin's applied version until it is at or past
@@ -691,7 +707,7 @@ func (w *world) observeApplied(interval, delay time.Duration) (bool, error) {
 	if w.cdsBlocked {
 		return false, nil
 	}
-	served, observable, err := w.awaitInEffect()
+	nodeVersion, observable, err := w.awaitInEffect()
 	if err != nil || !observable {
 		return false, err
 	}
@@ -703,20 +719,20 @@ func (w *world) observeApplied(interval, delay time.Duration) (bool, error) {
 			return false, err
 		}
 		applied, err = strconv.Atoi(answer)
-		return err == nil && applied >= served, nil
+		return err == nil && applied >= nodeVersion, nil
 	})
 	if errors.Is(err, godog.ErrSkip) {
-		w.appliedVersion = strconv.Itoa(served)
+		w.appliedVersion = strconv.Itoa(nodeVersion)
 		return false, nil
 	}
 	if err != nil {
 		return false, err
 	}
 	if !caughtUp {
-		return false, fmt.Errorf("the admission plugin still reports allowlist version %q while the CDS serves nodes %d, %s after the write with a node delay of %s and a pull every %s", answer, served, time.Since(lastMutation.at).Round(time.Millisecond), delay, interval)
+		return false, fmt.Errorf("the admission plugin still reports allowlist version %q while the CDS serves nodes %d, %s after the write with a node delay of %s and a pull every %s", answer, nodeVersion, time.Since(lastMutation.at).Round(time.Millisecond), delay, interval)
 	}
 	w.appliedVersion = answer
-	return applied == served, nil
+	return applied == nodeVersion, nil
 }
 
 // servedVersion is the version of the allowlist the CDS serves now.

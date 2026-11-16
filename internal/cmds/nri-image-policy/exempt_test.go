@@ -1,106 +1,48 @@
 package nriimagepolicy
 
-import (
-	"os"
-	"path/filepath"
-	"testing"
-)
+import "testing"
 
-func TestExemptSnapshot_AdmitsIsNamespaceScoped(t *testing.T) {
-	s := newExemptSnapshot([]string{"kube-system"})
-	s.add("kube-system", pushDigestA)
-
-	if !s.admits("kube-system", pushDigestA) {
-		t.Error("a captured digest must admit in its own namespace")
-	}
-	if s.admits("default", pushDigestA) {
-		t.Error("a digest captured in kube-system must not admit in another namespace")
-	}
-	if s.admits("kube-system", pushDigestB) {
-		t.Error("an uncaptured digest must not admit")
-	}
-}
-
-func TestExemptSnapshot_AddIgnoresBlankAndDedupes(t *testing.T) {
-	s := newExemptSnapshot([]string{"kube-system"})
-	s.add("kube-system", "")
-	s.add("kube-system", pushDigestA)
-	s.add("kube-system", pushDigestA)
-
-	if s.count() != 1 {
-		t.Fatalf("count = %d, want 1 (blank dropped, duplicate folded)", s.count())
-	}
-	if got := s.Digests["kube-system"]; len(got) != 1 || got[0] != pushDigestA {
-		t.Fatalf("Digests[kube-system] = %v, want [%s]", got, pushDigestA)
-	}
-}
-
-func TestExemptSnapshot_NilAdmitsNothing(t *testing.T) {
-	var s *exemptSnapshot
-	if s.admits("kube-system", pushDigestA) {
-		t.Error("a nil snapshot must admit nothing")
-	}
-	if !s.empty() {
-		t.Error("a nil snapshot is empty")
-	}
-}
-
-func TestExemptSnapshot_PersistLoadRoundTrip(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "state", "exempt-snapshot.json")
-	s := newExemptSnapshot([]string{"kube-system", "gmp-system"})
-	s.add("kube-system", pushDigestA)
-	s.add("kube-system", pushDigestB)
-	s.add("gmp-system", pushDigestC)
-	if err := s.persist(path); err != nil {
-		t.Fatalf("persist: %v", err)
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := info.Mode().Perm(); got != 0o600 {
-		t.Fatalf("snapshot mode = %o, want 600", got)
-	}
-
-	loaded, err := loadExemptSnapshot(path)
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	if loaded == nil {
-		t.Fatal("load returned nil for a written file")
-	}
+func TestExemptRepositoriesAdmits(t *testing.T) {
+	exempt := ExemptRepositories{"kube-system": {
+		"mcr.microsoft.com/oss/kubernetes/",
+		"mcr.microsoft.com/azurelinux/distroless/base/",
+		"mcr.microsoft.com/oss/v2/azure/ip-masq-agent-v2/",
+		"*-artifactregistry.gcr.io/gke-release/gke-release/",
+		"gke.gcr.io/",
+		"docker.io/rancher/",
+	}}
 	for _, tc := range []struct {
-		ns, digest string
+		name      string
+		namespace string
+		imageRef  string
+		want      bool
 	}{
-		{"kube-system", pushDigestA},
-		{"kube-system", pushDigestB},
-		{"gmp-system", pushDigestC},
+		{"a repository under the prefix", "kube-system", "mcr.microsoft.com/oss/kubernetes/kube-proxy:v1.31.0", true},
+		{"a deeper path under the prefix", "kube-system", "mcr.microsoft.com/oss/kubernetes/autoscaler/addon-resizer:1.8.23", true},
+		{"a digested reference", "kube-system", "gke.gcr.io/kube-proxy@" + pushDigestA, true},
+		{"the registry the prefix names alone", "kube-system", "gke.gcr.io/pause:3.10", true},
+		{"the prefix's own path as a repository", "kube-system", "mcr.microsoft.com/oss/kubernetes:v1.31.0", true},
+		{"a path segment the prefix only starts", "kube-system", "mcr.microsoft.com/oss/kubernetes-csi/azuredisk:v1.33.0", false},
+		{"the single repository a prefix names in full", "kube-system", "mcr.microsoft.com/azurelinux/distroless/base:3.0", true},
+		{"a sibling of that repository", "kube-system", "mcr.microsoft.com/azurelinux/distroless/base-nonroot:3.0", false},
+		{"the masq agent's own repository", "kube-system", "mcr.microsoft.com/oss/v2/azure/ip-masq-agent-v2:v0.1.16-22", true},
+		{"a regional mirror the wildcard host names", "kube-system", "us-central1-artifactregistry.gcr.io/gke-release/gke-release/kube-proxy:v1.37.1-gke.1552000", true},
+		{"another region's mirror", "kube-system", "europe-west4-artifactregistry.gcr.io/gke-release/gke-release/gke-metrics-collector:1.2.3", true},
+		{"a mirror image by tag and digest", "kube-system", "us-central1-artifactregistry.gcr.io/gke-release/gke-release/node_token_broker/init:v1.2.3@" + pushDigestA, true},
+		{"a dotted label where the wildcard stands", "kube-system", "us.central1-artifactregistry.gcr.io/gke-release/gke-release/kube-proxy:v1.37.1", false},
+		{"the mirror host without that label", "kube-system", "artifactregistry.gcr.io/gke-release/gke-release/kube-proxy:v1.37.1", false},
+		{"another path on a regional mirror", "kube-system", "us-central1-artifactregistry.gcr.io/gke-release/kube-proxy:v1.37.1", false},
+		{"a registry whose host the prefix only starts", "kube-system", "gke.gcr.io.example.com/kube-proxy:v1.31.0", false},
+		{"a short Docker Hub reference the prefix names in full", "kube-system", "rancher/local-path-provisioner:v0.0.31", true},
+		{"a repository outside every prefix", "kube-system", "docker.io/library/nginx:1.29", false},
+		{"a bare image ID", "kube-system", pushDigestA, false},
+		{"a reference that does not parse", "kube-system", "Kube-Proxy:v1", false},
+		{"a namespace with no prefixes", "default", "gke.gcr.io/kube-proxy:v1.31.0", false},
 	} {
-		if !loaded.admits(tc.ns, tc.digest) {
-			t.Errorf("loaded snapshot does not admit %s in %s", tc.digest, tc.ns)
-		}
-	}
-	if loaded.admits("gmp-system", pushDigestA) {
-		t.Error("load must preserve namespace scoping")
-	}
-}
-
-func TestExemptSnapshot_LoadAbsentReturnsNil(t *testing.T) {
-	loaded, err := loadExemptSnapshot(filepath.Join(t.TempDir(), "does-not-exist.json"))
-	if err != nil {
-		t.Fatalf("an absent file is not an error: %v", err)
-	}
-	if loaded != nil {
-		t.Fatal("an absent file must load as nil so the caller captures")
-	}
-}
-
-func TestExemptSnapshot_LoadCorruptErrors(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "exempt-snapshot.json")
-	if err := os.WriteFile(path, []byte("{not json"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := loadExemptSnapshot(path); err == nil {
-		t.Fatal("a corrupt snapshot must surface as an error, not be silently recaptured")
+		t.Run(tc.name, func(t *testing.T) {
+			if got := exempt.Admits(tc.namespace, tc.imageRef); got != tc.want {
+				t.Errorf("Admits(%q, %q) = %v, want %v", tc.namespace, tc.imageRef, got, tc.want)
+			}
+		})
 	}
 }

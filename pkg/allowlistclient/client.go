@@ -24,20 +24,12 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
-// requestTimeout bounds one CDS call; the peer decides whether it ever answers.
-const requestTimeout = 30 * time.Second
-
 // Client is an HTTP client for the CDS allowlist API.
 type Client struct {
 	baseURL    string
 	httpClient *http.Client
 	// query is appended to GET /allowlist.
 	query string
-}
-
-// NewClient creates a new allowlist client.
-func NewClient(baseURL string) Client {
-	return Client{baseURL: strings.TrimRight(baseURL, "/"), httpClient: &http.Client{Timeout: requestTimeout}}
 }
 
 // NewClientWithHTTP creates a new allowlist client with a custom HTTP client.

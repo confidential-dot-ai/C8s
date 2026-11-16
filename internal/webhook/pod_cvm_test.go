@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"maps"
 	"reflect"
 	"strings"
 	"testing"
@@ -19,7 +20,7 @@ import (
 const podCVMTestImage = "registry.example/app@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 func podCVMConfig() Config {
-	cfg := meshConfig()
+	cfg := confidentialNodeConfig()
 	cfg.PodCVMProviderEnabled = true
 	return cfg
 }
@@ -82,8 +83,9 @@ func TestPodCVMCreateRoutesWithoutHostInjection(t *testing.T) {
 			if mutated.UID != "" || mutated.Spec.NodeName != "" {
 				t.Fatal("CREATE supplied identity or bypassed the Kubernetes scheduler")
 			}
-			if mutated.Spec.NodeSelector[AnnotationPodCVM] != "true" || mutated.Spec.NodeSelector["topology.kubernetes.io/zone"] != "zone-a" {
-				t.Fatal("mutation did not combine the virtual node selector with existing scheduling constraints")
+			wantSelector := map[string]string{AnnotationPodCVM: "true", "topology.kubernetes.io/zone": "zone-a"}
+			if !maps.Equal(mutated.Spec.NodeSelector, wantSelector) {
+				t.Fatalf("nodeSelector = %v, want the virtual node beside the pod's own %v", mutated.Spec.NodeSelector, wantSelector)
 			}
 			if !reflect.DeepEqual(mutated.Spec.Affinity, pod.Spec.Affinity) || len(mutated.Spec.Tolerations) != 2 || mutated.Spec.Tolerations[0] != pod.Spec.Tolerations[0] {
 				t.Fatal("mutation discarded the workload's scheduler constraints")
@@ -110,6 +112,53 @@ func TestPodCVMValidatorRequiresRoutingWithoutMutator(t *testing.T) {
 	response := validate(t, v, pod, "tenant")
 	if response.Allowed || !strings.Contains(response.Result.Message, "missing its required") {
 		t.Fatalf("unrouted Pod accepted: %+v", response.Result)
+	}
+}
+
+// Either half of the Pod CVM routing alone is not routing: the validator
+// refuses a Pod whose selector or toleration is missing.
+func TestPodCVMValidatorRequiresBothRoutingHalves(t *testing.T) {
+	_, v := meshHandlers(t, podCVMConfig())
+	for name, drop := range map[string]func(*corev1.Pod){
+		"toleration missing": func(p *corev1.Pod) { p.Spec.Tolerations = nil },
+		"selector missing":   func(p *corev1.Pod) { delete(p.Spec.NodeSelector, AnnotationPodCVM) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			pod := podCVMWorkload()
+			if err := addPodCVMRouting(pod); err != nil {
+				t.Fatal(err)
+			}
+			drop(pod)
+			response := validate(t, v, pod, "tenant")
+			if response.Allowed || !strings.Contains(response.Result.Message, "missing its required") {
+				t.Fatalf("half-routed Pod accepted: %+v", response.Result)
+			}
+		})
+	}
+}
+
+// A Pod that names the Pod CVM node on its own terms in both halves is refused
+// for its selector, so the refusal names the first thing wrong.
+func TestPodCVMRefusesTheSelectorConflictFirst(t *testing.T) {
+	pod := podCVMWorkload()
+	pod.Spec.NodeSelector = map[string]string{AnnotationPodCVM: "false"}
+	pod.Spec.Tolerations = []corev1.Toleration{{Key: AnnotationPodCVM, Operator: corev1.TolerationOpExists}}
+	assertPodCVMResponse(t, podCVMConfig(), podCVMRequest(t, nil, pod, ""), false, "selector conflicts")
+}
+
+// An ordinary Pod updated without its previous object in the request is none
+// of Pod CVM's business: both webhooks leave it to the injection path.
+func TestPodCVMUpdateWithoutPreviousPodLeavesOrdinaryPod(t *testing.T) {
+	m, _ := meshHandlers(t, podCVMConfig())
+	pod := podWithApp()
+	req := podCVMRequest(t, nil, pod, "")
+	req.Operation = admissionv1.Update
+	for name, router := range map[string]podCVMRouter{"mutator": mutatingPodCVM{}, "validator": validatingPodCVM{}} {
+		t.Run(name, func(t *testing.T) {
+			if response, handled := handlePodCVM(req, pod.DeepCopy(), m.decoder, podCVMConfig(), router); handled {
+				t.Fatalf("Pod CVM answered for an ordinary Pod: %+v", response.Result)
+			}
+		})
 	}
 }
 
@@ -147,6 +196,9 @@ func TestPodCVMRejectsUnsupportedGuestRequests(t *testing.T) {
 		{"toleration conflict", func(p *corev1.Pod) { p.Spec.Tolerations[0].Value = "false" }, "exact NoSchedule"},
 		{"host injection", func(p *corev1.Pod) { p.Annotations[AnnotationInjected] = "true" }, "host-side injection"},
 		{"host secret request", func(p *corev1.Pod) { p.Annotations[AnnotationSecrets] = "TOKEN=/workload/token" }, "host-side injection"},
+		{"exec probe", func(p *corev1.Pod) {
+			p.Spec.Containers[0].StartupProbe = &corev1.Probe{ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: []string{"true"}}}}
+		}, "exec probe"},
 		{"platform container", func(p *corev1.Pod) { p.Spec.Containers[0].Name = workloadclaims.MeshContainerName }, "reserved"},
 		{"foreign namespace", func(p *corev1.Pod) { p.Namespace = "other" }, "namespace"},
 		{"client document not base64", func(p *corev1.Pod) { p.Annotations[workloadclaims.AnnotationClientDocument] = "not base64!" }, "standard base64"},
@@ -160,7 +212,7 @@ func TestPodCVMRejectsUnsupportedGuestRequests(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pod := podCVMWorkload()
-			if err := routePodCVM(pod, true); err != nil {
+			if err := addPodCVMRouting(pod); err != nil {
 				t.Fatal(err)
 			}
 			tc.change(pod)
@@ -206,7 +258,7 @@ func TestScheduledPodCVMFreezesWorkloadAndReferencedMetadata(t *testing.T) {
 		{Name: "RELEASE", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.labels['release']"}}},
 		{Name: "CONFIG", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.annotations['tenant/config']"}}},
 	}
-	if err := routePodCVM(old, true); err != nil {
+	if err := addPodCVMRouting(old); err != nil {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
@@ -239,7 +291,7 @@ func TestScheduledPodCVMFreezesWorkloadAndReferencedMetadata(t *testing.T) {
 func TestPodCVMClientDocumentIsFixedAtCreation(t *testing.T) {
 	old := podCVMWorkload()
 	old.Annotations[workloadclaims.AnnotationClientDocument] = base64.StdEncoding.EncodeToString([]byte("client document"))
-	if err := routePodCVM(old, true); err != nil {
+	if err := addPodCVMRouting(old); err != nil {
 		t.Fatal(err)
 	}
 	assertPodCVMResponse(t, podCVMConfig(), podCVMRequest(t, nil, old, ""), true, "")
@@ -257,7 +309,7 @@ func TestPodCVMClientDocumentIsFixedAtCreation(t *testing.T) {
 
 func TestPodCVMSchedulerCanBindPendingPod(t *testing.T) {
 	old := podCVMWorkload()
-	if err := routePodCVM(old, true); err != nil {
+	if err := addPodCVMRouting(old); err != nil {
 		t.Fatal(err)
 	}
 	bound := old.DeepCopy()

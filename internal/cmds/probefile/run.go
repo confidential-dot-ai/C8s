@@ -11,6 +11,7 @@
 package probefile
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -43,11 +44,11 @@ probed this way should still use atomic rename (write to a temp file and
 rename into place) so the probe never sees a torn write.`,
 		Args:         cobra.ExactArgs(1),
 		SilenceUsage: true,
-		RunE: func(_ *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			if !wait {
 				return probe(args[0])
 			}
-			return waitFor(args[0], interval, timeout)
+			return waitFor(cmd.Context(), args[0], interval, timeout)
 		},
 	}
 	cmd.Flags().BoolVar(&wait, "wait", false, "block until <path> passes the check instead of probing once")
@@ -74,9 +75,10 @@ func probe(path string) error {
 }
 
 // waitFor blocks until path passes probe, or returns an error once timeout
-// elapses (timeout <= 0 waits forever). It fails closed: the caller container
-// only exits 0 — releasing the workload it gates — once the file is present.
-func waitFor(path string, interval, timeout time.Duration) error {
+// elapses (timeout <= 0 waits forever) or ctx is done. It fails closed: the
+// caller container only exits 0 — releasing the workload it gates — once the
+// file is present.
+func waitFor(ctx context.Context, path string, interval, timeout time.Duration) error {
 	if interval <= 0 {
 		interval = time.Second
 	}
@@ -90,6 +92,10 @@ func waitFor(path string, interval, timeout time.Duration) error {
 		} else if timeout > 0 && time.Now().After(deadline) {
 			return fmt.Errorf("%s: not ready after %s: %w", path, timeout, err)
 		}
-		time.Sleep(interval)
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("%s: not ready: %w", path, ctx.Err())
+		case <-time.After(interval):
+		}
 	}
 }

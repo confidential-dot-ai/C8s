@@ -64,7 +64,7 @@ func bindRoutingFlags(f *pflag.FlagSet, cfg *routingConfig) {
 	f.StringVar(&cfg.operatorKeysFile, "operator-keys-file", "", "PEM operator public keys a route manifest must be signed under, used when the node's launch configuration carries none; unset, the keys come from the verified CDS's GET /operator-keys")
 	f.DurationVar(&cfg.pollInterval, "routes-poll-interval", 30*time.Second, "how often to poll the CDS for the route manifest")
 	f.StringVar(&cfg.host, "routing-host", "127.0.0.1", "routing listener host (loopback: nginx proxies application requests to it)")
-	f.IntVar(&cfg.port, "routing-port", 0, "routing listener port; 0 disables the listener (the tunnel still routes by the applied manifest)")
+	f.IntVar(&cfg.port, "routing-port", 0, "REQUIRED: routing listener port")
 	f.DurationVar(&cfg.backendTimeout, "backend-timeout", time.Hour, "how long a request or upgraded connection on the routing listener may go with no data moving either way; a tunnelled request, whose response is buffered whole, gets this long in total")
 	f.StringSliceVar(&cfg.reservedPaths, "reserved-paths", defaultReservedPaths, "reserved paths the router serves itself; a request under one matches no manifest route")
 	f.Var(&cfg.tunnelBudget, "tunnel-budget", "bytes tunnelled requests in flight in this replica may buffer, as a quantity such as 32Gi; each reserves three copies of its record and four of the largest response (32 MiB), one client (by X-Real-IP) holds at most a quarter, and a request over either gets 503 tunnel_busy; unset means 75% of the container memory limit, or 32Gi without one")
@@ -73,19 +73,11 @@ func bindRoutingFlags(f *pflag.FlagSet, cfg *routingConfig) {
 
 func checkRoutingFlags(cfg config) error {
 	r := cfg.routing
-	switch {
-	case r.publish && r.cdsURL == "":
+	if r.publish && r.cdsURL == "" {
 		return errors.New("--publish-routes requires --cds-url: it publishes the manifest polled from CDS")
-	case r.publish && cfg.attestOff:
-		return errors.New("--publish-routes requires --attest-endpoints=true: the route publication is served beside the attestation endpoints")
-	case cfg.measuredPolicies != "" && cfg.attestOff:
-		return errors.New("--measured-policies-file requires --attest-endpoints=true: only the attestation bundles carry the list")
 	}
 	if r.cdsURL == "" {
 		return errors.New("--cds-url is required: no node hands this router a CDS endpoint, and it routes only by the route manifest it polls from one")
-	}
-	if cfg.attestOff && r.port == 0 {
-		return errors.New("--attest-endpoints=false requires --routing-port: without it the process serves nothing")
 	}
 	// routes.Compile requires normalized reserved paths.
 	for _, p := range r.reservedPaths {
@@ -105,8 +97,8 @@ func checkRoutingFlags(cfg config) error {
 	if full := routing.TunnelReservation(tunnelBodyLimit); r.tunnelBudget.set && r.tunnelBudget.bytes < full {
 		return fmt.Errorf("--tunnel-budget must cover one full-size request, %d bytes", full)
 	}
-	if r.port < 0 || r.port > 65535 {
-		return fmt.Errorf("--routing-port must be between 0 and 65535, got %d", r.port)
+	if r.port < 1 || r.port > 65535 {
+		return fmt.Errorf("--routing-port must be between 1 and 65535, got %d", r.port)
 	}
 	if ip := net.ParseIP(r.host); ip == nil || !ip.IsLoopback() {
 		return fmt.Errorf("--routing-host must be a loopback IP, got %q", r.host)
@@ -115,7 +107,7 @@ func checkRoutingFlags(cfg config) error {
 }
 
 // routingEngine is the manifest routing a cds-attest process runs: the poller,
-// the proxy the tunnel shares, and the optional routing listener.
+// the proxy the tunnel shares, and the routing listener.
 type routingEngine struct {
 	cfg    routingConfig
 	log    *slog.Logger
@@ -354,17 +346,14 @@ func loadKeys(path string) error {
 	return err
 }
 
-// start runs the poller and, when a port is set, the routing listener. Errors
-// from the listener arrive on errc.
+// start runs the poller and the routing listener. Errors from the listener
+// arrive on errc.
 func (e *routingEngine) start(ctx context.Context, readHeaderTimeout time.Duration, errc chan<- error) error {
 	go e.poller.Run(ctx)
 	if e.kube != nil {
 		go routing.WatchAgents(ctx, e.kube, e.agents, e.log)
 	} else {
 		e.log.Warn("agent discovery off: not running in a Kubernetes cluster")
-	}
-	if e.cfg.port == 0 {
-		return nil
 	}
 	addr := net.JoinHostPort(e.cfg.host, strconv.Itoa(e.cfg.port))
 	ln, err := net.Listen("tcp", addr)

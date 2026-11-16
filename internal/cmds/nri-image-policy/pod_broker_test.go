@@ -161,7 +161,7 @@ func TestAfterPodStartRefusalEndsThePodIdentity(t *testing.T) {
 	pod := sandboxedPod()
 	p := podBrokerPlugin(t)
 	p.podBroker = nil
-	if err := p.afterPodStart(pod, "/credentials"); err == nil || !strings.Contains(err.Error(), "not initialized") {
+	if err := (podCVM{p: p}).afterStart(pod, "/credentials"); err == nil || !strings.Contains(err.Error(), "not initialized") {
 		t.Fatalf("got %v", err)
 	}
 	if !p.podEnded.Load() {

@@ -23,6 +23,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/credvolume"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
@@ -80,9 +81,7 @@ pod's own addresses, and answers with the application's status code alone.`,
 	flags.StringVar(&cfg.chainPath, "cert-path", "", "path get-cert publishes the certificate chain PEM at")
 	flags.StringVar(&cfg.keyPath, "key-path", "", "path get-cert publishes the private key PEM at")
 	flags.StringVar(&cfg.caPath, "ca-path", "", "path get-cert publishes the mesh CA PEM at")
-	for _, name := range []string{"cert-path", "key-path", "ca-path"} {
-		_ = cmd.MarkFlagRequired(name)
-	}
+	cmdsutil.RequireFlags(cmd, "cert-path", "key-path", "ca-path")
 	return cmd
 }
 

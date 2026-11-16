@@ -1,7 +1,7 @@
-// `ha status`: what every replica of a cluster reports about it, one line
-// each, and a line for every alarm a replica raises. A status is one
-// replica's own word, so the command compares them and refuses a cluster
-// whose replicas do not agree.
+// `ha status`: what every replica of a cluster reports about it, one table row
+// each, a line for every alarm a replica raises, and a line saying whether
+// they describe one cluster. A status is one replica's own word, so the
+// command compares them and refuses a cluster whose replicas do not agree.
 
 package cds
 
@@ -9,6 +9,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"slices"
+	"strconv"
+	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 
@@ -25,12 +28,12 @@ func newStatusCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "status",
 		Short: "Report every replica of a cluster, and what it says is wrong",
-		Long: "Reads every replica of the cluster over armTLS and prints one line per replica, then a line for\n" +
-			"each alarm it raises: a replica that does not serve, one that stopped following the log, and a\n" +
-			"cluster whose replicas hold different state. Only the leader knows the voter seats, the roll\n" +
-			"gate and what the state digests say, so the other replicas report none of them, which the\n" +
-			"line carries as -.\n\n" +
-			"Every value a replica reports is quoted, because the replica is what the command audits.",
+		Long: "Reads every replica of the cluster over armTLS and prints one row per replica, a line for each\n" +
+			"alarm a replica raises, and a last line saying whether the replicas describe one cluster: one\n" +
+			"leader, one set of voter seats and one applied version. A replica that answers nothing, that\n" +
+			"does not serve, or that reports a column it cannot know carries - in that column.\n\n" +
+			"--json prints each replica's whole report. Every value a replica reports is quoted, because\n" +
+			"the replica is what the command audits.",
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -88,42 +91,109 @@ func (o statusOptions) print(w io.Writer, reports []replicaReport) error {
 	if o.asJSON {
 		return printJSON(w, reports)
 	}
-	for _, report := range reports {
-		printReport(w, report)
-	}
+	printSummary(w, reports)
 	return nil
 }
 
-// One replica's line, then one line per alarm. Every value the replica
-// supplies is quoted, so nothing it reports can read as a field of its own.
-func printReport(w io.Writer, report replicaReport) {
-	if report.Status == nil {
-		fmt.Fprintf(w, "%s unreachable\n", report.Address)
-		printAlarm(w, report.Address, report.Error)
+// The cluster as its replicas describe it: one row each, the alarms they
+// raise, and whether they describe one cluster.
+func printSummary(w io.Writer, reports []replicaReport) {
+	if len(reports) == 0 {
 		return
 	}
+	printRows(w, reports)
+	for _, report := range reports {
+		for _, alarm := range alarms(report) {
+			fmt.Fprintf(w, "%s ALARM: %s\n", report.Address, alarm)
+		}
+	}
+	fmt.Fprintln(w, clusterLine(reports))
+}
+
+func printRows(w io.Writer, reports []replicaReport) {
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "ADDRESS\tMEMBER\tROLE\tVOTER\tVERSION\tHEALTH")
+	for _, report := range reports {
+		row := rowOf(report)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
+			row.address, row.member, row.role, row.voter, row.version, row.health)
+	}
+	tw.Flush()
+}
+
+// replicaRow is one replica's row. Every value the replica supplies is
+// quoted, so nothing it reports can read as a column of its own.
+type replicaRow struct {
+	address string
+	member  string
+	role    string
+	voter   string
+	version string
+	health  string
+}
+
+func rowOf(report replicaReport) replicaRow {
+	if report.Status == nil {
+		return replicaRow{
+			address: report.Address,
+			member:  "-",
+			role:    "-",
+			voter:   "-",
+			version: "-",
+			health:  fmt.Sprintf("unreachable: %q", report.Error),
+		}
+	}
 	reported := *report.Status
-	fmt.Fprintf(w, "%s cluster=%q member=%q state=%q joined=%t serving=%t version=%d node_images_version=%d ca=%q voters=%s non_voters=%s applied=%d term=%d leader=%q roll_safe=%s checkpoint=%s\n",
-		report.Address, reported.ClusterID, reported.ID, reported.State,
-		reported.Joined, reported.Serving.OK, reported.Version, reported.NodeImagesVersion, reported.CAFingerprint,
-		reportedCount(reported.Voters), reportedCount(reported.NonVoters),
-		reported.AppliedIndex, reported.Term, reported.Leader, reportedRollSafe(reported.RollSafe),
-		reportedCheckpoint(reported.Checkpoint))
-	for _, alarm := range alarms(reported) {
-		printAlarm(w, report.Address, alarm)
+	return replicaRow{
+		address: report.Address,
+		member:  fmt.Sprintf("%q", reported.ID),
+		role:    reportedRole(reported),
+		voter:   reportedVote(reported),
+		version: strconv.FormatUint(reported.Version, 10),
+		health:  reportedHealth(reported),
 	}
 }
 
-func printAlarm(w io.Writer, address, alarm string) {
-	fmt.Fprintf(w, "%s ALARM: %s\n", address, alarm)
+// Whether this replica leads, follows, or knows no leader at all.
+func reportedRole(reported cdsha.Status) string {
+	switch reported.Leader {
+	case "":
+		return "-"
+	case reported.ID:
+		return "leader"
+	}
+	return "follower"
 }
 
-// In the words the replica reports them.
-func alarms(reported cdsha.Status) []string {
+// Whether this replica fills one of the voter seats it names, and none from
+// one that names no seats at all.
+func reportedVote(reported cdsha.Status) string {
+	if len(reported.Voters) == 0 {
+		return "-"
+	}
+	if slices.Contains(reported.Voters, reported.ID) {
+		return "yes"
+	}
+	return "no"
+}
+
+// What the replica says of its own service, in its words where it serves
+// nothing.
+func reportedHealth(reported cdsha.Status) string {
+	if reported.Serving.OK {
+		return "serving"
+	}
+	return fmt.Sprintf("does not serve: %q", reported.Serving.Reason)
+}
+
+// The alarms a replica raises, in the words it reports them. What it serves
+// is its row's health, so no alarm restates it.
+func alarms(report replicaReport) []string {
+	if report.Status == nil {
+		return nil
+	}
+	reported := *report.Status
 	var raised []string
-	if !reported.Serving.OK {
-		raised = append(raised, "this replica does not serve its cluster: "+reported.Serving.Reason)
-	}
 	if reported.Stuck != "" {
 		raised = append(raised, "this replica stopped following the log: "+reported.Stuck)
 	}
@@ -136,29 +206,70 @@ func alarms(reported cdsha.Status) []string {
 	return raised
 }
 
-// None from a replica that named no seats at all.
-func reportedCount(members []string) string {
-	if len(members) == 0 {
-		return "-"
+// clusterLine is the answer the operator reads: the cluster the replicas
+// describe together, or the first thing they do not agree on. The exit status
+// is disagreement's, which holds the cluster to more than this.
+func clusterLine(reports []replicaReport) string {
+	answered, whole := everyReplicaAnswered(reports)
+	switch {
+	case !whole:
+		return "the replicas do not agree: one of them answered nothing"
+	case !oneOfThemLeads(answered):
+		return "the replicas do not agree: they name no one leader"
+	case !theyNameOneVoterSet(answered):
+		return "the replicas do not agree: they name different voter seats"
+	case !theyHoldOneVersion(answered):
+		return "the replicas do not agree: they have applied different versions"
 	}
-	return fmt.Sprintf("%d", len(members))
+	agreed := answered[0]
+	return fmt.Sprintf("the replicas agree: leader %q, %d voter seats, version %d",
+		agreed.Leader, len(agreed.Voters), agreed.Version)
 }
 
-// The log index and the digest, and none from a replica that recorded no
-// checkpoint.
-func reportedCheckpoint(point cdsha.Point) string {
-	if point == (cdsha.Point{}) {
-		return "-"
+// The statuses of every replica, and whether each of them answered one.
+func everyReplicaAnswered(reports []replicaReport) ([]cdsha.Status, bool) {
+	answered := make([]cdsha.Status, 0, len(reports))
+	for _, report := range reports {
+		if report.Status == nil {
+			return nil, false
+		}
+		answered = append(answered, *report.Status)
 	}
-	return fmt.Sprintf("%q", fmt.Sprintf("%d:%s", point.Index, point.State))
+	return answered, true
 }
 
-// None from a replica that does not lead and cannot know.
-func reportedRollSafe(safe *cdsha.RollSafety) string {
-	if safe == nil {
-		return "-"
+// One member every replica follows, and one replica that is it.
+func oneOfThemLeads(answered []cdsha.Status) bool {
+	leader := answered[0].Leader
+	if leader == "" {
+		return false
 	}
-	return fmt.Sprintf("%t", safe.OK)
+	led := false
+	for _, reported := range answered {
+		if reported.Leader != leader {
+			return false
+		}
+		led = led || reported.ID == leader
+	}
+	return led
+}
+
+func theyNameOneVoterSet(answered []cdsha.Status) bool {
+	seats := answered[0].Voters
+	return !slices.ContainsFunc(answered, func(reported cdsha.Status) bool {
+		return !sameMembers(reported.Voters, seats)
+	})
+}
+
+func sameMembers(members, others []string) bool {
+	return slices.Equal(slices.Sorted(slices.Values(members)), slices.Sorted(slices.Values(others)))
+}
+
+func theyHoldOneVersion(answered []cdsha.Status) bool {
+	version := answered[0].Version
+	return !slices.ContainsFunc(answered, func(reported cdsha.Status) bool {
+		return reported.Version != version
+	})
 }
 
 // Why the operator cannot act on the replicas as one cluster. A replica that

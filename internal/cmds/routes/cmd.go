@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cdsconn"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 	pkgroutes "github.com/confidential-dot-ai/c8s/pkg/routes"
 	"github.com/confidential-dot-ai/c8s/pkg/routesclient"
@@ -64,17 +65,20 @@ public keys you trust. 'show' verifies against them when given; 'add' and
 routes.
 
 Point --url at CDS itself, with no path, because the router does not relay
-/routes. A port-forward to the CDS Service works; pin the CDS launch digest
-with --measurements.`,
+/routes, and pin CDS with --image-policy-file cds-pin.json, the pin
+'c8s cds config new' wrote.`,
 		SilenceUsage: true,
 	}
 	pf := cmd.PersistentFlags()
 	cdsconn.BindFlags(pf, &o.Options)
 	pf.StringVar(&o.operatorKeys, "operator-keys", "", "PEM file of trusted operator public keys; verifies the write token of every fetched route manifest")
 
+	digest := newDigestCmd()
+	cmdsutil.HideUnreadFlags(digest, pf)
+
 	cmd.AddCommand(
 		newShowCmd(o),
-		newDigestCmd(),
+		digest,
 		newPutCmd(o),
 		newAddCmd(o),
 		newRmCmd(o),

@@ -15,6 +15,21 @@ controlPlane:
       admissions.enforcer/disabled: "true"
 nriImagePolicy:
   platform: tdx
+  policy:
+    ## AKS owns kube-system; its add-on images are not on the C8s allowlist.
+    ## An add-on outside these repositories is denied; `c8s install` names it.
+    exemptNamespaces:
+      - kube-system
+    exemptRepositories:
+      kube-system:
+        - mcr.microsoft.com/aks/
+        - mcr.microsoft.com/azurelinux/distroless/base/
+        - mcr.microsoft.com/containernetworking/
+        - mcr.microsoft.com/oss/kubernetes/
+        - mcr.microsoft.com/oss/kubernetes-csi/
+        - mcr.microsoft.com/oss/v2/azure/ip-masq-agent-v2/
+        - mcr.microsoft.com/oss/v2/kubernetes/
+        - mcr.microsoft.com/oss/v2/kubernetes-csi/
 router:
   attest:
     platform: az-tdx

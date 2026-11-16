@@ -149,13 +149,13 @@ func TestEndpointStartWakesTheBrokerOnlyAfterItsFirstIssuance(t *testing.T) {
 	}
 	p := podBrokerPlugins(t, base)()
 	pod := sandboxedPod()
-	if err := p.afterPodStart(pod, source); err != nil {
+	if err := (podCVM{p: p}).afterStart(pod, source); err != nil {
 		t.Fatal(err)
 	}
 	if len(p.podBroker.changes) != 0 {
 		t.Fatal("the first issuance was asked for twice")
 	}
-	if err := p.afterPodStart(pod, source); err != nil {
+	if err := (podCVM{p: p}).afterStart(pod, source); err != nil {
 		t.Fatal(err)
 	}
 	if len(p.podBroker.changes) != 1 {

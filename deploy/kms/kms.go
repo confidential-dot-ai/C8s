@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/confidential-dot-ai/c8s/internal/readutil"
 	"github.com/confidential-dot-ai/c8s/pkg/secretbroker"
 )
 
@@ -124,9 +125,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req secretbroker.ReleaseRequest
-	dec := json.NewDecoder(io.LimitReader(r.Body, maxRequest))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
+	if err := decodeRelease(r.Body, &req); err != nil {
 		refuse(w, http.StatusBadRequest, "malformed release request")
 		return
 	}
@@ -139,6 +138,22 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer clear(value)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(secretbroker.ReleaseResponse{Version: secretbroker.ReleaseVersion, Value: value})
+}
+
+func decodeRelease(body io.Reader, out *secretbroker.ReleaseRequest) error {
+	data, err := readutil.ReadAll(body, maxRequest)
+	if err != nil {
+		return err
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(out); err != nil {
+		return err
+	}
+	if dec.Decode(new(any)) != io.EOF {
+		return errors.New("trailing data after the release request")
+	}
+	return nil
 }
 
 // release makes the decision. The order is: CDS vouches for the pod and the

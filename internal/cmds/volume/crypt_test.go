@@ -2,9 +2,11 @@ package volume
 
 import (
 	"bytes"
+	"context"
 	"crypto/aes"
 	"crypto/rand"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,6 +23,16 @@ func sectors(n int) []byte {
 	return b
 }
 
+func tempImage(t *testing.T) *os.File {
+	t.Helper()
+	out, err := os.Create(filepath.Join(t.TempDir(), "img"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = out.Close() })
+	return out
+}
+
 func testKey() []byte {
 	k := make([]byte, KeyBytes)
 	for i := range k {
@@ -34,7 +46,7 @@ func TestEncryptDecryptRoundTrips(t *testing.T) {
 	for _, n := range []int{1, 2, 17} {
 		plain := sectors(n)
 		var ct, back bytes.Buffer
-		if err := Encrypt(&ct, bytes.NewReader(plain), key); err != nil {
+		if err := encrypt(&ct, bytes.NewReader(plain), key); err != nil {
 			t.Fatalf("%d sectors: encrypt: %v", n, err)
 		}
 		if ct.Len() != len(plain) {
@@ -43,7 +55,7 @@ func TestEncryptDecryptRoundTrips(t *testing.T) {
 		if bytes.Equal(ct.Bytes(), plain) {
 			t.Fatalf("%d sectors: ciphertext equals plaintext", n)
 		}
-		if err := Decrypt(&back, bytes.NewReader(ct.Bytes()), key); err != nil {
+		if err := decrypt(&back, bytes.NewReader(ct.Bytes()), key); err != nil {
 			t.Fatalf("%d sectors: decrypt: %v", n, err)
 		}
 		if !bytes.Equal(back.Bytes(), plain) {
@@ -58,7 +70,7 @@ func TestEncryptDecryptRoundTrips(t *testing.T) {
 func TestEncryptTweaksPerSector(t *testing.T) {
 	plain := make([]byte, 4*SectorSize) // all zero: every sector identical
 	var ct bytes.Buffer
-	if err := Encrypt(&ct, bytes.NewReader(plain), testKey()); err != nil {
+	if err := encrypt(&ct, bytes.NewReader(plain), testKey()); err != nil {
 		t.Fatalf("encrypt: %v", err)
 	}
 	out := ct.Bytes()
@@ -79,7 +91,7 @@ func TestEncryptMatchesRawXTSPerSectorTweak(t *testing.T) {
 	plain := sectors(3)
 
 	var got bytes.Buffer
-	if err := Encrypt(&got, bytes.NewReader(plain), key); err != nil {
+	if err := encrypt(&got, bytes.NewReader(plain), key); err != nil {
 		t.Fatalf("encrypt: %v", err)
 	}
 
@@ -100,16 +112,16 @@ func TestEncryptMatchesRawXTSPerSectorTweak(t *testing.T) {
 // Padding an unaligned payload would change the bytes dm-verity was formatted
 // over, so it is refused instead.
 func TestEncryptRejectsUnalignedPayload(t *testing.T) {
-	var out bytes.Buffer
-	err := Encrypt(&out, strings.NewReader(strings.Repeat("x", SectorSize+7)), testKey())
+	out := tempImage(t)
+	err := EncryptAt(t.Context(), out, strings.NewReader(strings.Repeat("x", SectorSize+7)), testKey(), 1)
 	if !errors.Is(err, ErrUnaligned) {
 		t.Fatalf("got %v, want ErrUnaligned", err)
 	}
 }
 
 func TestEncryptRejectsWrongKeyLength(t *testing.T) {
-	var out bytes.Buffer
-	if err := Encrypt(&out, bytes.NewReader(sectors(1)), make([]byte, 32)); err == nil {
+	out := tempImage(t)
+	if err := EncryptAt(t.Context(), out, bytes.NewReader(sectors(1)), make([]byte, 32), 1); err == nil {
 		t.Fatal("accepted a 32-byte key")
 	}
 }
@@ -134,16 +146,71 @@ func TestGenerateKeyIsFreshAndFullLength(t *testing.T) {
 func TestDecryptWithWrongKeyDoesNotRecoverPlaintext(t *testing.T) {
 	plain := sectors(2)
 	var ct, back bytes.Buffer
-	if err := Encrypt(&ct, bytes.NewReader(plain), testKey()); err != nil {
+	if err := encrypt(&ct, bytes.NewReader(plain), testKey()); err != nil {
 		t.Fatalf("encrypt: %v", err)
 	}
 	wrong := make([]byte, KeyBytes)
-	if err := Decrypt(&back, bytes.NewReader(ct.Bytes()), wrong); err != nil {
+	if err := decrypt(&back, bytes.NewReader(ct.Bytes()), wrong); err != nil {
 		t.Fatalf("decrypt: %v", err)
 	}
 	if bytes.Equal(back.Bytes(), plain) {
 		t.Fatal("wrong key recovered the plaintext")
 	}
+}
+
+// Cancelling ctx must reach the caller as an error rather than a volume that is
+// silently short. Which of the reader's two ready cases wins is a random
+// select, so only the verdict is pinned, not how much was written.
+func TestEncryptAtStopsOnCancelledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	plain := make([]byte, 4*chunkSize)
+	src := &cancellingReader{
+		src:    bytes.NewReader(plain),
+		after:  chunkSize,
+		cancel: cancel,
+	}
+
+	err := EncryptAt(ctx, tempImage(t), src, testKey(), 2)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("got %v, want context.Canceled", err)
+	}
+}
+
+// A worker that dies on its first write must not leave the reader blocked
+// handing out the rest of a payload larger than the buffer pool.
+func TestEncryptAtReportsWriteFailure(t *testing.T) {
+	plain := make([]byte, 5*chunkSize)
+
+	err := EncryptAt(t.Context(), failingWriterAt{}, bytes.NewReader(plain), testKey(), 1)
+	if !errors.Is(err, errWriteFailed) {
+		t.Fatalf("got %v, want errWriteFailed", err)
+	}
+}
+
+// cancellingReader cancels the encryption once it has served after bytes.
+type cancellingReader struct {
+	src    io.Reader
+	after  int
+	read   int
+	cancel context.CancelFunc
+}
+
+func (r *cancellingReader) Read(p []byte) (int, error) {
+	n, err := r.src.Read(p)
+	r.read += n
+	if r.read >= r.after {
+		r.cancel()
+	}
+	return n, err
+}
+
+var errWriteFailed = errors.New("image is full")
+
+type failingWriterAt struct{}
+
+func (failingWriterAt) WriteAt(p []byte, off int64) (int, error) {
+	return 0, errWriteFailed
 }
 
 // The parallel path must be byte-identical to the serial one for every job
@@ -155,7 +222,7 @@ func TestEncryptAtMatchesEncrypt(t *testing.T) {
 		t.Fatal(err)
 	}
 	var want bytes.Buffer
-	if err := Encrypt(&want, bytes.NewReader(plain), key); err != nil {
+	if err := encrypt(&want, bytes.NewReader(plain), key); err != nil {
 		t.Fatalf("encrypt: %v", err)
 	}
 	for _, jobs := range []int{1, 2, 3, 8} {
@@ -172,7 +239,7 @@ func TestEncryptAtMatchesEncrypt(t *testing.T) {
 			t.Fatal(err)
 		}
 		if !bytes.Equal(got, want.Bytes()) {
-			t.Fatalf("jobs=%d: output differs from Encrypt", jobs)
+			t.Fatalf("jobs=%d: output differs from the serial reference", jobs)
 		}
 	}
 	out, err := os.Create(filepath.Join(t.TempDir(), "img"))

@@ -1,7 +1,7 @@
 # shellcheck shell=sh
-# NRI image-policy containerd config helpers, shared by the installer, its
-# pre-delete hook and the C8s host sweep. Each caller sets RESTART_COMMAND
-# before it restarts containerd.
+# NRI image-policy containerd config helpers, shared by the installer and the
+# C8s host sweep. Each caller sets RESTART_COMMAND before it restarts
+# containerd.
 
 MARK_BEGIN='# BEGIN c8s-nri-image-policy (managed)'
 MARK_END='# END c8s-nri-image-policy (managed)'

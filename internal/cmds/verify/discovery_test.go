@@ -17,6 +17,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/confidential-dot-ai/c8s/internal/routerdiscovery"
 )
 
 func TestEvidenceFromDiscovery_Malformed(t *testing.T) {
@@ -314,7 +316,7 @@ func TestGatherFromDiscoveryProbesFrontDoor(t *testing.T) {
 		target := discoveryServer(t, attestedCert, docClaims("cds"))
 		srv := discoveryServer(t, attestedCert, docClaims("cds"))
 		srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			http.Redirect(w, r, target.URL+defaultDiscoveryPath, http.StatusFound)
+			http.Redirect(w, r, target.URL+routerdiscovery.DefaultPath, http.StatusFound)
 		})
 		_, err := gatherFromDiscovery(context.Background(), srv.URL, "", "", 5*time.Second, leafTrust{})
 		if err == nil || !isConnectError(err) {

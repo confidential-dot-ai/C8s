@@ -8,6 +8,9 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "render": {
+          "type": "boolean"
+        },
         "annotations": {
           "type": "object",
           "additionalProperties": {

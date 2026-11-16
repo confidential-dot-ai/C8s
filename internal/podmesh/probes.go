@@ -55,7 +55,10 @@ func RejectRenderedProbeInput(pod *corev1.Pod) error {
 	return nil
 }
 
-// ValidateProbes refuses probes and hooks the endpoint cannot forward.
+// ValidateProbes refuses probes and hooks the endpoint cannot forward, and
+// exec probes and hooks, which no c8s node runs: the runtime starts no process
+// in a running container (docs/node-exec-mode.md), and neither does a pod
+// CVM's guest.
 func ValidateProbes(pod *corev1.Pod) error {
 	for _, c := range WorkloadContainers(pod) {
 		if err := rejectContainerProbeShapes(c); err != nil {
@@ -74,6 +77,9 @@ func rejectContainerProbeShapes(c *corev1.Container) error {
 			if hook != nil && hook.HTTPGet != nil {
 				return fmt.Errorf("HTTP lifecycle hook %s cannot be forwarded; use an HTTP startup, readiness or liveness probe", name)
 			}
+			if hook != nil && hook.Exec != nil {
+				return fmt.Errorf("exec lifecycle hook %s cannot run on a c8s node", name)
+			}
 		}
 	}
 	for _, probe := range []*corev1.Probe{c.StartupProbe, c.ReadinessProbe, c.LivenessProbe} {
@@ -82,6 +88,9 @@ func rejectContainerProbeShapes(c *corev1.Container) error {
 		}
 		if probe.TCPSocket != nil || probe.GRPC != nil {
 			return fmt.Errorf("tcpSocket and grpc probes cannot be forwarded; use an HTTP probe with an application path and port")
+		}
+		if probe.Exec != nil {
+			return fmt.Errorf("an exec probe cannot run on a c8s node; use an HTTP probe")
 		}
 		if !probesThePod(probe) {
 			continue

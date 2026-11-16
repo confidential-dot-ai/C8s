@@ -49,7 +49,7 @@ func TestPodImageBindingIgnoresMutableRuntimeNames(t *testing.T) {
 	p := newTestPlugin(&config{Pod: &podConfig{UID: "signed-uid", Namespace: pod.Namespace, Name: pod.Name, Images: map[string]string{"app": pushDigestA}}})
 	for _, annotation := range []string{"registry/repo:latest", "registry/repo@" + pushDigestB, "", "not an image"} {
 		ctr.Annotations[annotationImageName] = annotation
-		if got, err := p.containerImage(pod, ctr); err != nil || got != pushDigestA {
+		if got, err := p.cvm().imageOf(pod, ctr); err != nil || got != pushDigestA {
 			t.Fatalf("annotation %q selected %q, %v", annotation, got, err)
 		}
 	}
@@ -63,7 +63,7 @@ func TestPodImageBindingIgnoresMutableRuntimeNames(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			p2, c2 := proto.Clone(pod).(*api.PodSandbox), proto.Clone(ctr).(*api.Container)
 			tc.change(p2, c2)
-			if _, err := p.containerImage(p2, c2); err == nil {
+			if _, err := p.cvm().imageOf(p2, c2); err == nil {
 				t.Fatal("container outside its staged binding accepted")
 			}
 		})

@@ -37,7 +37,7 @@ runtime measurement registers, RTMR[0] to RTMR[3], extendable in the guest.
 | `RTMR[0]` | TD HOB and VMM ACPI tables. It varies with the VM's vCPU and memory shape, so nothing pins it. | — |
 | `RTMR[1]` | The guest kernel. | `--rtmr 1=<HEX>`, `--image-manifest`, config `rtmr[1]` |
 | `RTMR[2]` | The kernel command line, which carries the dm-verity root hash of the read-only root. | `--rtmr 2=<HEX>`, `--image-manifest`, config `rtmr[2]` |
-| `RTMR[3]` | The launch file the node was started with, then any workload images a measurer extended, then the allowlist policies it applied. | `--rtmr 3=<HEX>` or `--operator-pkey`, both needing `--image-manifest`; `--pin-policy` or `--trust-operator` then judge the replayed policies |
+| `RTMR[3]` | The launch file the node was started with, then any workload images a measurer extended, then the allowlist policies it applied. | `--rtmr 3=<HEX>` or `--operator-pkey`, both needing `--image-manifest`; `--pin-policy`, or `--trust-operator` with `--trust-operator-keys`, then judge the replayed policies |
 | `REPORTDATA` | As SEV-SNP's `REPORT_DATA`. | Derived by the verifier |
 
 Pinning MRTD alone leaves the guest unpinned: it covers the firmware, so a host
@@ -78,7 +78,8 @@ attestation extension, and as `measured_policies` in the bundle from attest-pq
 or attest-lb, the router's two attested handshakes
 ([routes-evidence.md](routes-evidence.md)). `c8s verify --operator-pkey`
 derives the seed, replays the list and reports the longest prefix the register
-proves; `--pin-policy` or `--trust-operator` then judge the policies. Without
+proves; `--pin-policy`, or `--trust-operator` with `--trust-operator-keys`,
+then judge the policies. Without
 one of those, a non-empty history leaves the verdict partial: the register is
 accounted for, the policies are not ([verify.md](verify.md)).
 

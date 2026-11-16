@@ -80,6 +80,22 @@ func HostSweepScript() string {
 	return strings.TrimRight(strings.Join(parts, "\n"), "\n") + "\n"
 }
 
+// The install script embeds the node's boot base, which quotes the sweep
+// script, so the sweep's shape is the one without the installer's banner.
+const (
+	hostSweepBanner = "c8s host sweep"
+	installerBanner = "nri-image-policy installer starting"
+)
+
+// IsHostSweepScript reports whether an argv the chart pins runs the host sweep.
+func IsHostSweepScript(argv []string) bool {
+	if len(argv) == 0 {
+		return false
+	}
+	script := argv[len(argv)-1]
+	return strings.Contains(script, hostSweepBanner) && !strings.Contains(script, installerBanner)
+}
+
 // ExtractTemp writes the embedded charts to a new temporary directory and
 // returns it; the caller removes it.
 func ExtractTemp() (string, error) {

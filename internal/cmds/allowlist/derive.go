@@ -3,6 +3,7 @@ package allowlist
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"slices"
 	"strings"
@@ -249,10 +250,17 @@ func unknownContainerErr(kind, name string) error {
 	return fmt.Errorf("%s policy names unknown container %q", kind, name)
 }
 
+type deriveFlags struct {
+	label      string
+	secrets    []string
+	envMode    string
+	envFile    string
+	mountsMode string
+	mountsFile string
+}
+
 func newDeriveCmd(_ *options) *cobra.Command {
-	var secrets []string
-	var label string
-	var envMode, envFile, mountsMode, mountsFile string
+	var f deriveFlags
 	cmd := &cobra.Command{
 		Use:   "derive <name> <file|->",
 		Short: "Build an entry from a live Kubernetes object",
@@ -295,152 +303,276 @@ spec does not state a nonzero uid is named on stderr too: a C8s node refuses a
 container that runs as uid 0.`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			data, err := readFileOrStdin(cmd, args[1])
-			if err != nil {
-				return err
-			}
-			spec, err := podSpecOf(data)
-			if err != nil {
-				return err
-			}
-			var dropped, mains []string
-			spec.InitContainers, dropped = dropInjected(spec.InitContainers)
-			spec.Containers, mains = dropInjected(spec.Containers)
-			dropped = append(dropped, mains...)
-			if len(dropped) > 0 {
-				fmt.Fprintf(cmd.ErrOrStderr(), "dropped %s: injected by c8s\n", strings.Join(dropped, ", "))
-			}
-			for _, warning := range rootUIDWarnings(spec) {
-				fmt.Fprintln(cmd.ErrOrStderr(), warning)
-			}
-			requireCrane := sync.OnceValue(crane.Require)
-			resolve := func(image string) ([]string, []string, error) {
-				if err := requireCrane(); err != nil {
-					return nil, nil, err
-				}
-				cfg, err := crane.Config(ctx(cmd), image)
-				if err != nil {
-					return nil, nil, err
-				}
-				return cfg.Config.Entrypoint, cfg.Config.Cmd, nil
-			}
-			containers, err := deriveContainers(spec.Containers, resolve)
-			if err != nil {
-				return err
-			}
-			initContainers, err := deriveContainers(spec.InitContainers, resolve)
-			if err != nil {
-				return err
-			}
-			if (envMode == "") == (envFile == "") {
-				return fmt.Errorf("specify exactly one of --env=any|deny or --env-file")
-			}
-			if mountsMode != "" && mountsMode != allowlist.PolicyAny && mountsMode != allowlist.PolicyDeny {
-				return fmt.Errorf("--mounts must be any or deny; use --mounts-file for exact rules")
-			}
-			if mountsMode == "" && mountsFile == "" {
-				msg := `mounts: no policy given; every container is "deny", which admits platform mounts alone`
-				if len(workloadclaims.SplitList(spec.annotations[workloadclaims.AnnotationSecrets])) > 0 {
-					msg = `mounts: no policy given; every container admits platform mounts and the c8s secrets mount alone`
-				}
-				fmt.Fprintln(cmd.ErrOrStderr(), msg)
-			}
-			var policies map[string]allowlist.EnvPolicy
-			var mountPolicies map[string]allowlist.MountPolicy
-			if mountsFile != "" {
-				data, err := os.ReadFile(mountsFile)
-				if err != nil {
-					return err
-				}
-				mountPolicies, err = allowlist.ParseMountPoliciesJSON(data)
-				if err != nil {
-					return err
-				}
-			}
-			if envFile != "" {
-				data, err := os.ReadFile(envFile)
-				if err != nil {
-					return err
-				}
-				policies, err = allowlist.ParseEnvPoliciesJSON(data)
-				if err != nil {
-					return err
-				}
-			} else if envMode != allowlist.PolicyAny && envMode != allowlist.PolicyDeny {
-				return fmt.Errorf("--env must be any or deny; use --env-file for exact or match policies")
-			}
-			used := map[string]bool{}
-			usedMounts := map[string]bool{}
-			type derivedContainerGroup struct {
-				templates  []templateContainer
-				containers []allowlist.Container
-			}
-			for _, part := range []derivedContainerGroup{{spec.InitContainers, initContainers}, {spec.Containers, containers}} {
-				for i, c := range part.templates {
-					p := allowlist.EnvPolicy{Policy: envMode}
-					if envFile != "" {
-						var ok bool
-						p, ok = policies[c.Name]
-						if !ok {
-							return fmt.Errorf("missing env policy for container %q", c.Name)
-						}
-						used[c.Name] = true
-					}
-					part.containers[i].Env = p
-					switch {
-					case mountsFile != "":
-						mount, ok := mountPolicies[c.Name]
-						if !ok {
-							return fmt.Errorf("missing mount policy for container %q", c.Name)
-						}
-						part.containers[i].Mounts = mount
-						usedMounts[c.Name] = true
-					case mountsMode != "":
-						part.containers[i].Mounts = allowlist.MountPolicy{Policy: mountsMode}
-					}
-					mounts, err := withInjectedMounts(part.containers[i].Mounts, spec.annotations, c)
-					if err != nil {
-						return err
-					}
-					part.containers[i].Mounts = mounts
-				}
-			}
-			for name := range policies {
-				if !used[name] {
-					return unknownContainerErr("env", name)
-				}
-			}
-			for name := range mountPolicies {
-				if !usedMounts[name] {
-					return unknownContainerErr("mount", name)
-				}
-			}
-			w := allowlist.Workload{
-				Label:          label,
-				InitContainers: initContainers,
-				Containers:     containers,
-			}
-			if err := w.CheckVariableEvidenceBudget(); err != nil {
-				return err
-			}
-			if len(secrets) > 0 {
-				w.Secrets = &allowlist.SecretsPolicy{
-					Policy: allowlist.PolicyAllow,
-					Read:   secrets,
-				}
-			}
-			enc := json.NewEncoder(cmd.OutOrStdout())
-			enc.SetIndent("", "  ")
-			return enc.Encode(map[string]allowlist.Workload{args[0]: w})
+			return deriveEntry(cmd, args[0], args[1], f)
 		},
 	}
-	cmd.Flags().StringArrayVar(&secrets, "secret-read", nil,
+	cmd.Flags().StringArrayVar(&f.secrets, "secret-read", nil,
 		"grant read on this secret path (repeatable); omit for no secrets block")
-	cmd.Flags().StringVar(&envMode, "env", "", "environment policy for every container: any or deny")
-	cmd.Flags().StringVar(&envFile, "env-file", "", "JSON map of container names to explicit env policies (including exact and match)")
-	cmd.Flags().StringVar(&mountsMode, "mounts", "", "mount policy for every container: any or deny (default deny)")
-	cmd.Flags().StringVar(&mountsFile, "mounts-file", "", "JSON map of container names to explicit mount policies")
-	cmd.Flags().StringVar(&label, "label", "", "optional entry label")
+	cmd.Flags().StringVar(&f.envMode, "env", "", "environment policy for every container: any or deny")
+	cmd.Flags().StringVar(&f.envFile, "env-file", "", "JSON map of container names to explicit env policies (including exact and match)")
+	cmd.Flags().StringVar(&f.mountsMode, "mounts", "", "mount policy for every container: any or deny (default deny)")
+	cmd.Flags().StringVar(&f.mountsFile, "mounts-file", "", "JSON map of container names to explicit mount policies")
+	cmd.Flags().StringVar(&f.label, "label", "", "optional entry label")
 	cmd.MarkFlagsMutuallyExclusive("mounts", "mounts-file")
 	return cmd
+}
+
+func deriveEntry(cmd *cobra.Command, name, file string, f deriveFlags) error {
+	spec, err := readPodSpec(cmd, file)
+	if err != nil {
+		return err
+	}
+	spec = dropInjectedFromSpec(cmd.ErrOrStderr(), spec)
+	for _, warning := range rootUIDWarnings(spec) {
+		fmt.Fprintln(cmd.ErrOrStderr(), warning)
+	}
+	resolve := craneImageArgv(cmd)
+	containers, err := derivedFrom(spec.Containers, resolve)
+	if err != nil {
+		return err
+	}
+	initContainers, err := derivedFrom(spec.InitContainers, resolve)
+	if err != nil {
+		return err
+	}
+	policies, err := f.readPolicies(cmd.ErrOrStderr(), spec.annotations)
+	if err != nil {
+		return err
+	}
+	if err := policies.applyToPod(&initContainers, &containers); err != nil {
+		return err
+	}
+	w, err := f.workload(initContainers.entries, containers.entries)
+	if err != nil {
+		return err
+	}
+	return writeJSON(cmd.OutOrStdout(), map[string]allowlist.Workload{name: w})
+}
+
+func readPodSpec(cmd *cobra.Command, file string) (podTemplate, error) {
+	data, err := readFileOrStdin(cmd, file)
+	if err != nil {
+		return podTemplate{}, err
+	}
+	return podSpecOf(data)
+}
+
+func dropInjectedFromSpec(stderr io.Writer, spec podTemplate) podTemplate {
+	var droppedInit, droppedMain []string
+	spec.InitContainers, droppedInit = dropInjected(spec.InitContainers)
+	spec.Containers, droppedMain = dropInjected(spec.Containers)
+	if dropped := slices.Concat(droppedInit, droppedMain); len(dropped) > 0 {
+		fmt.Fprintf(stderr, "dropped %s: injected by c8s\n", strings.Join(dropped, ", "))
+	}
+	return spec
+}
+
+func craneImageArgv(cmd *cobra.Command) imageArgv {
+	requireCrane := sync.OnceValue(crane.Require)
+	return func(image string) (entrypoint, imageCmd []string, err error) {
+		if err := requireCrane(); err != nil {
+			return nil, nil, err
+		}
+		cfg, err := crane.Config(ctx(cmd), image)
+		if err != nil {
+			return nil, nil, err
+		}
+		return cfg.Config.Entrypoint, cfg.Config.Cmd, nil
+	}
+}
+
+// derivedContainers holds the entry derived from templates[i] at entries[i].
+type derivedContainers struct {
+	templates []templateContainer
+	entries   []allowlist.Container
+}
+
+func derivedFrom(templates []templateContainer, resolve imageArgv) (derivedContainers, error) {
+	entries, err := deriveContainers(templates, resolve)
+	if err != nil {
+		return derivedContainers{}, err
+	}
+	return derivedContainers{templates: templates, entries: entries}, nil
+}
+
+type containerPolicies struct {
+	envs   policySource[allowlist.EnvPolicy]
+	mounts policySource[allowlist.MountPolicy]
+	// annotations decide the mounts c8s injects.
+	annotations map[string]string
+}
+
+// The order of readPolicies' checks decides which error a bad invocation
+// reports.
+func (f deriveFlags) readPolicies(
+	stderr io.Writer,
+	annotations map[string]string,
+) (containerPolicies, error) {
+	if !f.setsOneEnvSource() {
+		return containerPolicies{}, fmt.Errorf("specify exactly one of --env=any|deny or --env-file")
+	}
+	mounts, err := f.mountPolicies(stderr, annotations)
+	if err != nil {
+		return containerPolicies{}, err
+	}
+	envs, err := f.envPolicies()
+	if err != nil {
+		return containerPolicies{}, err
+	}
+	return containerPolicies{envs: envs, mounts: mounts, annotations: annotations}, nil
+}
+
+func (f deriveFlags) setsOneEnvSource() bool {
+	return (f.envMode == "") != (f.envFile == "")
+}
+
+// applyToPod fails on a file policy that no container of the pod claimed.
+func (p containerPolicies) applyToPod(initContainers, containers *derivedContainers) error {
+	if err := p.apply(initContainers); err != nil {
+		return err
+	}
+	if err := p.apply(containers); err != nil {
+		return err
+	}
+	if err := p.envs.requireAllClaimed(); err != nil {
+		return err
+	}
+	return p.mounts.requireAllClaimed()
+}
+
+func (p containerPolicies) apply(derived *derivedContainers) error {
+	for i, c := range derived.templates {
+		env, err := p.envs.policyFor(c.Name)
+		if err != nil {
+			return err
+		}
+		derived.entries[i].Env = env
+		mount, err := p.mounts.policyFor(c.Name)
+		if err != nil {
+			return err
+		}
+		derived.entries[i].Mounts, err = withInjectedMounts(mount, p.annotations, c)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// With no mount flag every container keeps the zero policy, which applies as
+// deny.
+func (f deriveFlags) mountPolicies(
+	stderr io.Writer,
+	annotations map[string]string,
+) (policySource[allowlist.MountPolicy], error) {
+	if f.mountsMode != "" && f.mountsMode != allowlist.PolicyAny && f.mountsMode != allowlist.PolicyDeny {
+		return nil, fmt.Errorf("--mounts must be any or deny; use --mounts-file for exact rules")
+	}
+	if f.mountsMode == "" && f.mountsFile == "" {
+		fmt.Fprintln(stderr, noMountPolicyNote(annotations))
+	}
+	if f.mountsFile == "" {
+		return samePolicy[allowlist.MountPolicy]{policy: allowlist.MountPolicy{Policy: f.mountsMode}}, nil
+	}
+	data, err := os.ReadFile(f.mountsFile)
+	if err != nil {
+		return nil, err
+	}
+	byName, err := allowlist.ParseMountPoliciesJSON(data)
+	if err != nil {
+		return nil, err
+	}
+	return newPolicyFile("mount", byName), nil
+}
+
+func noMountPolicyNote(annotations map[string]string) string {
+	if len(workloadclaims.SplitList(annotations[workloadclaims.AnnotationSecrets])) > 0 {
+		return `mounts: no policy given; every container admits platform mounts and the c8s secrets mount alone`
+	}
+	return `mounts: no policy given; every container is "deny", which admits platform mounts alone`
+}
+
+func (f deriveFlags) envPolicies() (policySource[allowlist.EnvPolicy], error) {
+	if f.envFile == "" {
+		if f.envMode != allowlist.PolicyAny && f.envMode != allowlist.PolicyDeny {
+			return nil, fmt.Errorf("--env must be any or deny; use --env-file for exact or match policies")
+		}
+		return samePolicy[allowlist.EnvPolicy]{policy: allowlist.EnvPolicy{Policy: f.envMode}}, nil
+	}
+	data, err := os.ReadFile(f.envFile)
+	if err != nil {
+		return nil, err
+	}
+	byName, err := allowlist.ParseEnvPoliciesJSON(data)
+	if err != nil {
+		return nil, err
+	}
+	return newPolicyFile("env", byName), nil
+}
+
+type policySource[P any] interface {
+	policyFor(container string) (P, error)
+	requireAllClaimed() error
+}
+
+type samePolicy[P any] struct {
+	policy P
+}
+
+func (s samePolicy[P]) policyFor(string) (P, error) {
+	return s.policy, nil
+}
+
+func (samePolicy[P]) requireAllClaimed() error {
+	return nil
+}
+
+type policyFile[P any] struct {
+	kind    string
+	byName  map[string]P
+	claimed map[string]bool
+}
+
+func newPolicyFile[P any](kind string, byName map[string]P) *policyFile[P] {
+	return &policyFile[P]{kind: kind, byName: byName, claimed: map[string]bool{}}
+}
+
+func (p *policyFile[P]) policyFor(container string) (P, error) {
+	policy, ok := p.byName[container]
+	if !ok {
+		var none P
+		return none, fmt.Errorf("missing %s policy for container %q", p.kind, container)
+	}
+	p.claimed[container] = true
+	return policy, nil
+}
+
+func (p *policyFile[P]) requireAllClaimed() error {
+	for name := range p.byName {
+		if !p.claimed[name] {
+			return unknownContainerErr(p.kind, name)
+		}
+	}
+	return nil
+}
+
+func (f deriveFlags) workload(
+	initContainers []allowlist.Container,
+	containers []allowlist.Container,
+) (allowlist.Workload, error) {
+	w := allowlist.Workload{
+		Label:          f.label,
+		InitContainers: initContainers,
+		Containers:     containers,
+	}
+	if err := w.CheckVariableEvidenceBudget(); err != nil {
+		return allowlist.Workload{}, err
+	}
+	if len(f.secrets) > 0 {
+		w.Secrets = &allowlist.SecretsPolicy{
+			Policy: allowlist.PolicyAllow,
+			Read:   f.secrets,
+		}
+	}
+	return w, nil
 }

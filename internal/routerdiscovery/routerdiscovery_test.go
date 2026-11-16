@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -31,6 +32,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/internal/localverify"
+	"github.com/confidential-dot-ai/c8s/internal/readutil"
 	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
@@ -69,7 +71,7 @@ func discoveryDoc(t *testing.T, cert *x509.Certificate, challenge []byte, mode, 
 	doc, err := json.Marshal(types.DiscoveryDocument{
 		Version: "1",
 		PublicTLS: types.PublicTLSDiscovery{
-			Mode: mode,
+			Mode: types.FrontDoorMode(mode),
 		},
 		CDSTLS: types.CDSTLSDiscovery{
 			CertificatePEM: string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw})),
@@ -385,6 +387,84 @@ func TestNewAttestedTransportConfig(t *testing.T) {
 	}
 	if tr.MaxIdleConns != 1 || tr.MaxConnsPerHost != 1 {
 		t.Errorf("MaxIdleConns/MaxConnsPerHost = %d/%d, want 1/1", tr.MaxIdleConns, tr.MaxConnsPerHost)
+	}
+}
+
+// recordingFrontDoor reports the server name each ClientHello carried.
+func recordingFrontDoor(t *testing.T, servingCert tls.Certificate) (*httptest.Server, <-chan string) {
+	t.Helper()
+	hello := make(chan string, 1)
+	cfg := &tls.Config{
+		Certificates: []tls.Certificate{servingCert},
+		GetConfigForClient: func(info *tls.ClientHelloInfo) (*tls.Config, error) {
+			hello <- info.ServerName
+			return nil, nil
+		},
+	}
+	return lbServer(t, cfg, http.NotFoundHandler()), hello
+}
+
+func TestDialFrontDoorRefusesTLS12(t *testing.T) {
+	servingCert, _ := plainServingCert(t)
+	cfg := &tls.Config{
+		Certificates: []tls.Certificate{servingCert},
+		MaxVersion:   tls.VersionTLS12,
+	}
+	srv := lbServer(t, cfg, http.NotFoundHandler())
+
+	conn, err := DialFrontDoor(context.Background(), srv.Listener.Addr().String(), "", frontDoorDialTimeout)
+	if err == nil {
+		conn.Close()
+		t.Fatal("a TLS 1.2-only front door must be refused")
+	}
+}
+
+// What the front door sees in the ClientHello: the caller's server name, or
+// the hostname in addr when the caller names none.
+func TestDialFrontDoorServerName(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		host       string
+		serverName string
+		want       string
+	}{
+		{name: "the caller's server name", host: "127.0.0.1", serverName: "lb.example.com", want: "lb.example.com"},
+		{name: "the hostname in addr", host: "localhost", serverName: "", want: "localhost"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			servingCert, _ := plainServingCert(t)
+			srv, hello := recordingFrontDoor(t, servingCert)
+			_, port, err := net.SplitHostPort(srv.Listener.Addr().String())
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			conn, err := DialFrontDoor(context.Background(), net.JoinHostPort(tc.host, port), tc.serverName, frontDoorDialTimeout)
+			if err != nil {
+				t.Fatalf("DialFrontDoor: %v", err)
+			}
+			defer conn.Close()
+			if got := <-hello; got != tc.want {
+				t.Fatalf("ClientHello server name = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDialFrontDoorDefaultsToTheRouterPort(t *testing.T) {
+	for _, tc := range []struct {
+		host string
+		want string
+	}{
+		{host: "lb.example.com", want: "lb.example.com:443"},
+		{host: "lb.example.com:8443", want: "lb.example.com:8443"},
+		{host: "::1", want: "[::1]:443"},
+	} {
+		t.Run(tc.host, func(t *testing.T) {
+			if got := withDefaultPort(tc.host); got != tc.want {
+				t.Fatalf("withDefaultPort(%q) = %q, want %q", tc.host, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -773,4 +853,34 @@ func send(hc *http.Client, method, url, body string) error {
 		return fmt.Errorf("%s %s = %d", method, url, resp.StatusCode)
 	}
 	return nil
+}
+
+// A document read past maxDocumentBytes is refused as unread, and NOT as
+// ErrNoDiscovery, which would let the caller fall back to direct armTLS
+// verification on a target that does serve a document.
+func TestNewVerifiedHTTPClient_RefusesADocumentOverTheCap(t *testing.T) {
+	servingCert, leaf := plainServingCert(t)
+	complete := discoveryDoc(t, leaf, []byte("challenge"), "", string(teetypes.PlatformAzSNP), `{"hcl_report":"fake"}`)
+	paddedToTheCap := append(complete, bytes.Repeat([]byte(" "), maxDocumentBytes-len(complete))...)
+
+	for _, tc := range []struct {
+		name string
+		doc  []byte
+	}{
+		{name: "body past the cap", doc: bytes.Repeat([]byte("x"), maxDocumentBytes+1)},
+		{name: "complete document then trailing data", doc: append(paddedToTheCap, []byte("trailing")...)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lb := fakeLB(t, servingCert, tc.doc)
+			_, err := NewVerifiedHTTPClient(context.Background(), lb.URL,
+				[][]byte{bytes.Repeat([]byte{0x42}, armtls.SNPMeasurementSize)},
+				approvingVerify(bytes.Repeat([]byte{0x42}, armtls.SNPMeasurementSize)))
+			if !errors.Is(err, readutil.ErrTooLarge) {
+				t.Fatalf("err = %v, want a refused read", err)
+			}
+			if errors.Is(err, ErrNoDiscovery) {
+				t.Fatal("a document that does not fit must not signal ErrNoDiscovery (would allow fallback)")
+			}
+		})
+	}
 }

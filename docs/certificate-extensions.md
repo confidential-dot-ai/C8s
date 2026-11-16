@@ -109,8 +109,10 @@ records which containers ran in which pod sandbox
 ([armtls.md](armtls.md#sandbox-identity)). The
 [Pod CVM issuance profile](armtls.md#pod-cvm-issuance) instead derives a
 separate Pod identity from verified guest claims; that identity confers no
-node-inventory or secret-release authority. A certificate carrying two of them, or one that does not parse, is an error and
-never read as absence.
+node-inventory or secret-release authority. A Pod identity begins with `pcvm-`,
+and CDS refuses a node's sandbox token whose ID begins with it. A certificate
+carrying two of them, or one that does not parse, is an error and never read as
+absence.
 
 For a CSR with no DNS or IP SAN and no common name, the issued common name is
 the lowercase hex SHA-256 of this ID. Names authorize nothing in the mesh.

@@ -204,10 +204,6 @@ the named-leaf lifetime cap. Otherwise it is the unnamed membership leaf: no
 match, more than one match, or an image no single entry lists. Neither a
 status quote nor a node inventory token substitutes for this profile.
 
-This is a proposed change to the Pod CVM profile, whose leaves were always
-unnamed and whose claims carried image digests only. Naming a Pod lets a
-relying party pin which workload a Pod CVM runs, like any other workload.
-
 Measured Pod launch keys remain separate from node and operator authority. In
 an HA cluster, that boundary also applies to signed node-image replacements.
 A replacement sharing a Pod launch key makes the entire node set untrusted

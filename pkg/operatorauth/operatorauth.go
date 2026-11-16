@@ -104,6 +104,11 @@ func NewSignerFromKeyPEM(keyPEM []byte) (*Signer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse operator key: %w", err)
 	}
+	return NewSigner(key)
+}
+
+// NewSigner builds a Signer from an EC private key.
+func NewSigner(key *ecdsa.PrivateKey) (*Signer, error) {
 	method, err := esMethodFor(key.Curve)
 	if err != nil {
 		return nil, err

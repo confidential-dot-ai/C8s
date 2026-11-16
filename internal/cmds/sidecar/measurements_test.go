@@ -1,11 +1,30 @@
 package sidecar
 
 import (
+	"bytes"
+	"log/slog"
 	"strings"
 	"testing"
 
 	"github.com/confidential-dot-ai/c8s/internal/testutil"
 )
+
+// The sidecars announce the set they resolved; the conformance steps read
+// their output as one stream.
+func TestParsePinsAnnouncesTheResolvedSet(t *testing.T) {
+	var logged bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	cfg := Config{MeasurementsConfigJSON: testutil.CDSPinDocument(testutil.TestMeasurement, testutil.CDSLaunchFile)}
+	if _, err := cfg.ParsePins(t.Context()); err != nil {
+		t.Fatalf("ParsePins: %v", err)
+	}
+	line := logged.String()
+	if !strings.Contains(line, `msg="CDS pins resolved"`) || !strings.Contains(line, "from_node=false") {
+		t.Fatalf("logged %q, want the resolved pins line", line)
+	}
+}
 
 // Where no node pins CDS and nothing names a pin, the sidecar reaches no CDS
 // it can hold to anything.

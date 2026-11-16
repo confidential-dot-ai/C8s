@@ -77,8 +77,8 @@ volumes:
       type: DirectoryOrCreate
 {{- end -}}
 
-{{/* The pod spec volumed and its teardown hook share beside their
-     containers: the confidential nodes, whatever their taints. */}}
+{{/* Where volumed's pod runs: the confidential nodes, whatever their
+     taints. */}}
 {{- define "c8s.volumedNodePlacement" -}}
 priorityClassName: {{ include "c8s.criticalPriorityClass" . }}
 {{- include "c8s.imagePullSecrets" . }}

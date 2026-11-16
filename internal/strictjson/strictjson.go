@@ -95,6 +95,17 @@ func Validate(data []byte) error {
 	return nil
 }
 
+// Unmarshal validates data with Validate and decodes it into out, refusing any
+// field out does not name.
+func Unmarshal(data []byte, out any) error {
+	if err := Validate(data); err != nil {
+		return err
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	return dec.Decode(out)
+}
+
 // encoding/json replaces unpaired surrogates with U+FFFD. Reject them rather
 // than allowing distinct policy strings to silently collapse during decoding.
 func validateUnicodeEscapes(data []byte) error {

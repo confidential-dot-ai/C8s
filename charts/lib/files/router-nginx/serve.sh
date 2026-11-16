@@ -4,7 +4,12 @@ interval=5
 watched="/etc/c8s/certs/tls.crt /etc/c8s/certs/tls.key /etc/c8s/certs/ca.crt"
 # The launch file's front-door mode picks the certificate tls.conf names.
 # In cds mode the acme sidecar stands by and writes no ACME files.
-if [ "$(cat /run/c8s-node/router/front-door-mode)" = acme ]; then
+front_door_mode=cds
+mode_file=/run/c8s-node/router/front-door-mode
+if [ -r "$mode_file" ]; then
+    front_door_mode=$(cat "$mode_file")
+fi
+if [ "$front_door_mode" = acme ]; then
     watched="$watched /etc/c8s-acme-tls/cert.pem /etc/c8s-acme-key/key.pem"
 fi
 

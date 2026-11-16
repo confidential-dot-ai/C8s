@@ -24,6 +24,8 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/c8s/internal/localverify"
+	"github.com/confidential-dot-ai/c8s/internal/pendingattestation"
+	"github.com/confidential-dot-ai/c8s/internal/readutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/overenc"
@@ -184,9 +186,7 @@ func gatherFromARMTLSCert(ctx context.Context, addr, serverName string, timeout 
 func openARMTLS(ctx context.Context, addr, serverName string, timeout time.Duration, trust leafTrust) (*tls.Conn, *evidence, error) {
 	dialer := &tls.Dialer{
 		NetDialer: &net.Dialer{Timeout: timeout},
-		// INVARIANT: PKI verification is intentionally skipped — the armTLS
-		// attestation in the cert extension is the trust anchor, verified below.
-		Config: &tls.Config{MinVersion: tls.VersionTLS13, InsecureSkipVerify: true, ServerName: serverName}, //nolint:gosec
+		Config:    pendingattestation.TLSConfig(serverName),
 	}
 	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
@@ -344,7 +344,7 @@ func podLeafEvidence(cert *x509.Certificate, source string, trust leafTrust) (*e
 // attestation in the payload, not PKI on the hop.
 func insecureClient(serverName string, timeout time.Duration) *http.Client {
 	return &http.Client{Timeout: timeout, Transport: &http.Transport{
-		TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS13, InsecureSkipVerify: true, ServerName: serverName}, //nolint:gosec
+		TLSClientConfig: pendingattestation.TLSConfig(serverName),
 	}}
 }
 
@@ -390,7 +390,7 @@ func gatherFromEndpoint(ctx context.Context, base, serverName string, timeout ti
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		return nil, &connectError{err: fmt.Errorf("POST %s returned %d: %s", endpoint, resp.StatusCode, strings.TrimSpace(string(body)))}
 	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	data, err := readutil.ReadAll(resp.Body, 1<<20)
 	if err != nil {
 		return nil, &connectError{err: fmt.Errorf("read response: %w", err)}
 	}

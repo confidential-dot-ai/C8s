@@ -3,9 +3,10 @@
 C8s releases as one unit.
 
 A `vX.Y.Z` tag versions the `c8s` CLI, the component images, the Helm chart, and
-the measured node images — the guest images a node boots — together, all built
-from one commit. Releases are automatic: maintainers do not calculate or push
-release tags. Terms are defined in [glossary.md](glossary.md).
+the measured guest images — the worker image a node boots and the CDS image a
+cluster's clients pin — together, all built from one commit. Releases are
+automatic: maintainers do not calculate or push release tags. Terms are defined
+in [glossary.md](glossary.md).
 
 ## Version rules
 
@@ -31,24 +32,27 @@ gate.
 |---|---|
 | Component images: `c8s-operator`, `cds`, `get-cert`, `armtls-mesh`, `nri-image-policy`, `volumed` | `ghcr.io/confidential-dot-ai/<name>`, tagged `vX.Y.Z`, `X.Y.Z`, and the 7-character commit SHA |
 | Helm chart | `ghcr.io/confidential-dot-ai/charts/c8s-cloud`, version `X.Y.Z`, carrying the release's component image digests, packaged byte-reproducibly from the release commit |
-| Guest images | `ghcr.io/confidential-dot-ai/guests/worker:vX.Y.Z-{tdx,sev-snp}[-kubevirt]` |
-| GitHub release | `release-statement.json`, `release-statement.sigstore.json` |
+| Guest images | `ghcr.io/confidential-dot-ai/guests/worker:vX.Y.Z-{tdx,sev-snp}[-kubevirt]` and `ghcr.io/confidential-dot-ai/guests/cds:vX.Y.Z[-kubevirt]` |
+| GitHub release | `release-statement.json`, `release-statement.sigstore.json`, and the CLI as `c8s-linux-amd64` and `c8s-darwin-arm64` |
 
 A release also moves the `X.Y` image alias when it is the newest patch of that
 series, and `latest` when it is the newest stable release across all series. It
-adds no moving guest-image alias: it only creates the exact
-`vX.Y.Z-<tee>[-kubevirt]` tags. The floating
-`guests/worker:{tdx,sev-snp}[-kubevirt]` tags track `main` builds, so pin the
-exact release whose measurement you accept.
+adds no moving guest-image alias: it only creates the exact tags above, where
+the CDS tags name no TEE because one CDS image serves both. The floating
+`guests/worker:{tdx,sev-snp}[-kubevirt]` and `guests/cds:main[-kubevirt]` tags
+track `main` builds, so pin the exact release whose measurement you accept.
 
 Every component image is rebuilt from the release commit under a commit-scoped
 staging tag and promoted by digest; an exact release tag that already exists
 must resolve to that same digest. The chart's `values.yaml` names each
 component by the digest its image build pushed. The CLI ships inside the
-`c8s-operator` image, and a released binary prints its tag with
-`c8s --version`. The release workflow stamps that tag; a plain `go build` of
-the same commit prints `dev`. A released `c8s install` reads the image digests
-from the chart of its own version; any other build needs `--chart`.
+`c8s-operator` image and as a GitHub release asset for each platform above. The
+two are separate builds of the release commit, and only the release assets are
+listed in the statement and reproducible. A
+released binary prints its tag with `c8s --version`. The release workflow
+stamps that tag; a plain `go build` of the same commit prints `dev`. A released
+`c8s install` reads the image digests from the chart of its own version; any
+other build needs `--chart`.
 
 ## Verify a release
 
@@ -56,11 +60,13 @@ Each release from `v0.36.0` on has a GitHub release carrying
 `release-statement.json`:
 
 ```json
-{"chart":"ghcr.io/confidential-dot-ai/charts/c8s-cloud@sha256:<DIGEST>","commit":"<SHA>","repository":"confidential-dot-ai/C8s","tag":"vX.Y.Z"}
+{"chart":"ghcr.io/confidential-dot-ai/charts/c8s-cloud@sha256:<DIGEST>","cli":{"darwin-arm64":{"asset":"c8s-darwin-arm64","sha256":"<HEX>"},"linux-amd64":{"asset":"c8s-linux-amd64","sha256":"<HEX>"}},"commit":"<SHA>","repository":"confidential-dot-ai/C8s","tag":"vX.Y.Z"}
 ```
 
 `chart` names the published chart by its manifest digest, which a Flux
-`OCIRepository` can pin.
+`OCIRepository` can pin. `cli` names each CLI asset and its SHA-256, keyed by
+`<os>-<arch>`. A statement without `cli` belongs to a release older than the
+CLI assets; published statements do not change, so build that CLI from source.
 
 and `release-statement.sigstore.json`, a Sigstore bundle over those bytes,
 signed keyless through GitHub Actions OIDC, so there is no release key. A
@@ -112,16 +118,51 @@ jq -e --arg tag "$TAG" --arg commit "$COMMIT" \
 true
 ```
 
+### Verify a CLI binary
+
+After the two checks above, download the binary for your platform and compare
+it with the digest the statement lists. `PLATFORM` is `linux-amd64` or
+`darwin-arm64`; on macOS use `shasum -a 256 -c -` in place of `sha256sum -c -`:
+
+```sh
+PLATFORM=linux-amd64
+gh release download "$TAG" --repo confidential-dot-ai/C8s --pattern "c8s-$PLATFORM"
+jq -r --arg p "$PLATFORM" '.cli[$p] | "\(.sha256)  \(.asset)"' release-statement.json \
+  | sha256sum -c -
+chmod +x "c8s-$PLATFORM"
+```
+
+```text
+c8s-linux-amd64: OK
+```
+
+A platform the statement does not list fails this check.
+
+The build is reproducible for a given toolchain, so you can also rebuild a
+binary and compare it. A release builds the CLI with the newest Go patch its
+runner has, and the binary records that toolchain. In a checkout of the
+release commit, with Go and network access to download that toolchain:
+
+```sh
+GO_VERSION=$(go version "c8s-$PLATFORM" | awk '{ print $NF }')
+.github/scripts/release-cli.sh "$TAG" "$GO_VERSION" rebuilt "$PLATFORM"
+cmp "rebuilt/c8s-$PLATFORM" "c8s-$PLATFORM"
+```
+
+`cmp` prints nothing when the files are equal.
+[`release-cli.sh`](../.github/scripts/release-cli.sh) fixes every build input,
+so the same commit, tag, toolchain and platform give the same bytes on any host.
+
 ## Beta releases
 
 A push to the protected `beta` branch runs the same pipeline and releases
 `vX.Y.Z-beta.N`, where `vX.Y.Z` is the stable version the same commits would
 get on `main` and `N` counts the betas of that base. A beta publishes exact
 image and chart tags, guest-image aliases
-`guests/worker:vX.Y.Z-beta.N-{tdx,sev-snp}[-kubevirt]`, and a GitHub prerelease
-with its own statement. It never moves `latest`, an `X.Y` alias, a stable tag,
-or a floating guest-image tag, and beta tags never change the stable baseline on
-`main`.
+`guests/worker:vX.Y.Z-beta.N-{tdx,sev-snp}[-kubevirt]` and
+`guests/cds:vX.Y.Z-beta.N[-kubevirt]`, and a GitHub prerelease with its own
+statement. It never moves `latest`, an `X.Y` alias, a stable tag, or a floating
+guest-image tag, and beta tags never change the stable baseline on `main`.
 
 A beta is signed under its own identity, so a verifier pinning the `main`
 identity does not accept one: verify it as above with
@@ -152,9 +193,15 @@ A release needs:
 Creating `refs/tags/vX.Y.Z` reserves the version before any registry write.
 Registry publication is not a transaction, so a failure after that can leave a
 release incomplete. Re-run the failed **Docker** workflow to repair component
-and chart publication and the signed statement; re-run the
-**c8s-image** workflow to repair node-image aliases. Missing aliases are
-created and matching ones verified by digest; neither workflow moves a Git tag,
+and chart publication, the CLI assets and the signed statement; re-run the
+**c8s-image** workflow to repair guest-image aliases. Missing aliases are
+created and matching ones verified by digest. A re-run rebuilds the CLI with the
+toolchain of the published binary and
+requires each published binary and the published statement to equal what it
+built; it uploads only what is missing. If an interrupted first run left a draft
+release, a re-run cannot read its binaries and builds with the current Go
+patch: when that differs, the re-run fails on the binary comparison, so delete
+the draft release and re-run. Neither workflow moves a Git tag,
 overwrites an exact image tag whose digest differs, or rolls `X.Y` or `latest`
 backward.
 

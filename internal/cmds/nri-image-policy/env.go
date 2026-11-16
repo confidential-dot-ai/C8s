@@ -18,8 +18,8 @@ import (
 // Together with containerd's required_plugins configuration this prevents a
 // plugin disconnect between creation and start from bypassing launch admission.
 func (p *plugin) ValidateContainerAdjustment(ctx context.Context, req *api.ValidateContainerAdjustmentRequest) error {
-	defer p.lockPodAdmission()()
-	if err := p.refuseDisconnectedPod(); err != nil {
+	defer p.cvm().lockAdmission()()
+	if err := p.cvm().refuseLapsedRuntime(); err != nil {
 		return err
 	}
 	if req.GetContainer() == nil || req.GetPod() == nil {
@@ -29,17 +29,23 @@ func (p *plugin) ValidateContainerAdjustment(ctx context.Context, req *api.Valid
 		return p.denyContainerCreation(req.GetPod().GetId(), req.GetContainer().GetName(), err)
 	}
 	ctr, env := adjustedLaunchContainer(req)
-	imageRef, err := p.containerImage(req.GetPod(), ctr)
+	imageRef, err := p.cvm().imageOf(req.GetPod(), ctr)
 	if err != nil {
 		return p.denyContainerCreation(req.GetPod().GetId(), ctr.GetName(), err)
 	}
-	mounts := p.adjustedMounts(req, ctr)
-	// The gate and the static-pod check run ahead of admission; all three
-	// share one lookup, so they judge one digest.
-	lookup := p.digestLookup(ctx, imageRef)
+	observed := observedContainer{
+		pod:      req.GetPod(),
+		ctr:      ctr,
+		imageRef: imageRef,
+		env:      env,
+		mounts:   p.adjustedMounts(req, ctr),
+		// The gate and the static-pod check run ahead of admission; all three
+		// share one lookup, so they judge one digest.
+		lookup: p.digestLookup(ctx, imageRef),
+	}
 	// The gate runs ahead of the admission check and independently of
 	// policy.mode: a protected pod's container runs only once it is verified.
-	if err := p.gateMesh(req, ctr, lookup, env, mounts); err != nil {
+	if err := p.gateMesh(ctx, req, observed); err != nil {
 		// A pre-existing pod recovery has not yet reached is off the gate's
 		// record: refuse the create, but transiently, so the retry after
 		// recovery is not met by a denial recorded for the pod's life. A
@@ -50,15 +56,15 @@ func (p *plugin) ValidateContainerAdjustment(ctx context.Context, req *api.Valid
 		}
 		return p.denyContainer(req.GetPod().GetId(), err)
 	}
-	if err := p.unpinnedStaticPod(p.cfg, req.GetPod(), ctr, lookup, env, mounts); err != nil {
+	if err := p.unpinnedStaticPod(ctx, p.cfg, observed); err != nil {
 		return p.denyContainerCreation(req.GetPod().GetId(), ctr.GetName(), err)
 	}
 	snap := p.policy.current()
-	verdict, reason := p.checkContainerObserved(ctx, p.cfg, snap, req.GetPod(), ctr, imageRef, lookup, launchFinal, env, mounts)
+	verdict, reason := p.checkContainerObserved(ctx, p.cfg, snap, observed, launchFinal)
 	if verdict == verdictDeny && p.cfg.Policy.Mode != ModeAudit {
 		return p.denyContainerCreation(req.GetPod().GetId(), ctr.GetName(), fmt.Errorf("%s", reason))
 	}
-	p.noteCapabilityGrant(p.cfg, ctr, lookup, snap, env, mounts)
+	p.noteCapabilityGrant(ctx, p.cfg, snap, observed)
 	// No inventory record here: later validators can still reject creation, and
 	// CDI transformations under an any policy have not happened yet.
 	return nil
@@ -70,13 +76,14 @@ func (p *plugin) ValidateContainerAdjustment(ctx context.Context, req *api.Valid
 // create, and the wrapper reads the record before the start check runs. It
 // reads the digest and snapshot admission judged; with no allowlist nothing
 // declares a capability, so it looks up no digest.
-func (p *plugin) noteCapabilityGrant(cfg *config, ctr *api.Container, lookup func() (string, error), snap *policySnapshot, env *allowlist.EnvObservation, mounts []allowlist.ObservedMount) {
+func (p *plugin) noteCapabilityGrant(ctx context.Context, cfg *config, snap *policySnapshot, observed observedContainer) {
 	var declared [][]string
 	if cfg.AllowlistEnabled() {
-		declared = p.policy.declaredCapabilities(snap, lookedUpLaunch(lookup, ctr, env, mounts))
+		declared = p.policy.declaredCapabilities(snap, p.observedLaunch(ctx, observed))
 	}
-	if err := p.capGrants.note(ctr.GetId(), declared); err != nil {
-		p.logger.Error("cannot record the container's capability grant; the runtime wrapper refuses it every capability beyond the node's default set", "container", ctr.GetId(), "error", err)
+	id := observed.ctr.GetId()
+	if err := p.capGrants.note(id, declared); err != nil {
+		p.logger.Error("cannot record the container's capability grant; the runtime wrapper refuses it every capability beyond the node's default set", "container", id, "error", err)
 	}
 }
 
@@ -93,11 +100,11 @@ func refuseSourceEdit(adjust *api.ContainerAdjustment) error {
 
 // unpinnedStaticPod refuses, on a worker, a static pod's container whose launch
 // no base entry pins: c8s-runc's floor leaves a static pod to its template.
-func (p *plugin) unpinnedStaticPod(cfg *config, pod *api.PodSandbox, ctr *api.Container, lookup func() (string, error), env *allowlist.EnvObservation, mounts []allowlist.ObservedMount) error {
-	if !cfg.Worker || !staticPod(pod) {
+func (p *plugin) unpinnedStaticPod(ctx context.Context, cfg *config, observed observedContainer) error {
+	if !cfg.Worker || !staticPod(observed.pod) {
 		return nil
 	}
-	if p.policy.baseAdmitsPinned(lookedUpLaunch(lookup, ctr, env, mounts)) {
+	if p.policy.baseAdmitsPinned(p.observedLaunch(ctx, observed)) {
 		return nil
 	}
 	return errors.New("a worker runs a static pod only on a launch a base entry pins")
@@ -106,29 +113,21 @@ func (p *plugin) unpinnedStaticPod(cfg *config, pod *api.PodSandbox, ctr *api.Co
 // gateMesh applies the mesh startup gate at the one hook whose error always
 // rejects a creation: a create notification can time out and a closed plugin
 // lets the create proceed, while a validator's refusal is the answer.
-func (p *plugin) gateMesh(req *api.ValidateContainerAdjustmentRequest, ctr *api.Container, lookup func() (string, error), env *allowlist.EnvObservation, mounts []allowlist.ObservedMount) error {
-	pod := req.GetPod()
+func (p *plugin) gateMesh(ctx context.Context, req *api.ValidateContainerAdjustmentRequest, observed observedContainer) error {
+	pod, ctr := observed.pod, observed.ctr
 	if !p.mesh.hosts(pod) {
 		return nil
 	}
-	launch := lookedUpLaunch(lookup, ctr, env, mounts)
+	launch := p.observedLaunch(ctx, observed)
 	adjusted := req.GetAdjust().GetLinux()
 	// The role, and the mount set a declaration pins, are read from the mounts
 	// the pod itself asks for: a credential client of any pod also carries the
 	// binds this enforcer adds (credentialMounts), which no declaration names.
 	declared := launch
 	declared.Mounts = p.observedMounts(pod, req.GetContainer())
-	role := p.roleOf(declared)
-	if p.cfg.podRole() {
-		// The Pod endpoint receives no node mounts. Its final adjusted mounts
-		// must retain the exact private RAM volume, even under an any policy.
-		role = p.roleOf(launch)
-		if _, err := p.podCredentialSource(pod, ctr, role, mounts); err != nil {
-			return err
-		}
-		if err := p.podSecretReader(pod, ctr, role, mounts); err != nil {
-			return err
-		}
+	role, err := p.cvm().adjustmentRole(pod, ctr, launch, declared, observed.mounts)
+	if err != nil {
+		return err
 	}
 	return p.mesh.admit(pod, ctr, gatedContainer{
 		role:         role,

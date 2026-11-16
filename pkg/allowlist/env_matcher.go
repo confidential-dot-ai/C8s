@@ -1,7 +1,6 @@
 package allowlist
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 
@@ -60,9 +59,7 @@ func (m *EnvMatcher) UnmarshalJSON(data []byte) error {
 }
 
 func decodeEnvMatcher(data []byte, matcher envMatcherBehavior) bool {
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
-	return dec.Decode(matcher) == nil && matcher.valid()
+	return strictjson.Unmarshal(data, matcher) == nil && matcher.valid()
 }
 
 // UnmarshalYAML takes an unquoted numeric exact value by its literal text, so

@@ -1,0 +1,18 @@
+# The workers' GPU metrics: every GPU worker's dcgm-exporter static pod, on
+# its metrics port. Whoever can reach the Service reads each GPU's
+# utilisation, memory and power.
+apiVersion: v1
+kind: Service
+metadata:
+  name: dcgm-exporter
+  namespace: kube-system
+  labels:
+    k8s-app: dcgm-exporter
+spec:
+  selector:
+    k8s-app: dcgm-exporter
+  ports:
+  - name: metrics
+    port: 9400
+    protocol: TCP
+    targetPort: metrics

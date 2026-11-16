@@ -21,6 +21,12 @@ const (
 	otherTag = `"sha256:` + "2222222222222222222222222222222222222222222222222222222222222222" + `"`
 )
 
+// newClient is the tests' client against a local server; cases that need a
+// transport deadline pass their own client to NewClientWithHTTP.
+func newClient(baseURL string) Client {
+	return NewClientWithHTTP(baseURL, &http.Client{})
+}
+
 type stubAuth struct{}
 
 func (stubAuth) Authorization(method, path string, body []byte) (string, error) {
@@ -36,7 +42,7 @@ func TestList(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	al, version, err := NewClient(srv.URL).List(context.Background())
+	al, version, err := newClient(srv.URL).List(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +71,7 @@ func TestFetchServedDigestsServedBytes(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	served, notModified, err := NewClient(srv.URL).FetchServed(context.Background(), "")
+	served, notModified, err := newClient(srv.URL).FetchServed(context.Background(), "")
 	if err != nil || notModified {
 		t.Fatalf("FetchServed = nm=%v err=%v", notModified, err)
 	}
@@ -90,7 +96,7 @@ func TestFetchServedDigestsExactBytes(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	served, _, err := NewClient(srv.URL).FetchServed(context.Background(), "")
+	served, _, err := newClient(srv.URL).FetchServed(context.Background(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +122,7 @@ func TestFetchNotModified(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	served, notModified, err := NewClient(srv.URL).FetchServed(context.Background(), testTag)
+	served, notModified, err := newClient(srv.URL).FetchServed(context.Background(), testTag)
 	if err != nil || !notModified {
 		t.Fatalf("expected notModified, got nm=%v err=%v", notModified, err)
 	}
@@ -156,7 +162,7 @@ func TestFetchServedStatus(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			served, notModified, err := NewClient(srv.URL).FetchServed(context.Background(), testTag)
+			served, notModified, err := newClient(srv.URL).FetchServed(context.Background(), testTag)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("FetchServed() error = %v, want error %v", err, tt.wantErr)
 			}
@@ -187,7 +193,7 @@ func TestObjectChecksTheDigest(t *testing.T) {
 		w.Write(body)
 	}))
 	defer srv.Close()
-	c := NewClient(srv.URL)
+	c := newClient(srv.URL)
 
 	got, err := c.Object(context.Background(), sum)
 	if err != nil || len(got.Workloads["cds"].Containers) != 1 {
@@ -256,7 +262,7 @@ func TestReplaceAllBindsBody(t *testing.T) {
 			Args:    allowlist.ArgvPolicy{Policy: allowlist.PolicyAny},
 		}}}},
 	}
-	if err := NewClient(srv.URL).ReplaceAll(context.Background(), al, "", stubAuth{}); err != nil {
+	if err := newClient(srv.URL).ReplaceAll(context.Background(), al, "", stubAuth{}); err != nil {
 		t.Fatal(err)
 	}
 	if gotMethod != http.MethodPut {
@@ -274,7 +280,7 @@ func TestReplaceAllBindsBody(t *testing.T) {
 }
 
 func TestMutateRejectsNilAuthorizer(t *testing.T) {
-	err := NewClient("http://x").ReplaceAll(context.Background(), &allowlist.Allowlist{Schema: allowlist.Schema}, "", nil)
+	err := newClient("http://x").ReplaceAll(context.Background(), &allowlist.Allowlist{Schema: allowlist.Schema}, "", nil)
 	if err == nil || !strings.Contains(err.Error(), "nil Authorizer") {
 		t.Fatalf("expected nil-authorizer error, got %v", err)
 	}

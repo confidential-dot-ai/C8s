@@ -1,7 +1,6 @@
 // Package crane wraps the crane CLI (github.com/google/go-containerregistry):
-// digest resolution, image config, manifest existence, and the error shapes
-// callers key behaviour on. crane handles registry auth, manifest lists, and
-// the registry HTTP protocol.
+// digest resolution, image config, and manifest existence. crane handles
+// registry auth, manifest lists, and the registry HTTP protocol.
 package crane
 
 import (
@@ -101,20 +100,6 @@ type ImageConfig struct {
 		Cmd        []string `json:"Cmd"`
 		Env        []string `json:"Env"`
 	} `json:"config"`
-}
-
-// IsNotFound reports whether a resolve error means the reference does not
-// exist in the registry (as opposed to auth/network trouble). crane surfaces
-// the registry's OCI error codes verbatim: MANIFEST_UNKNOWN for a missing
-// tag, NAME_UNKNOWN for a missing repository. Matching them lets callers
-// attach guidance only when the reference is genuinely absent — a 401 or a
-// DNS failure gets the raw error instead.
-func IsNotFound(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "MANIFEST_UNKNOWN") || strings.Contains(msg, "NAME_UNKNOWN")
 }
 
 // craneError attaches the subcommand, reference, and captured stderr — the

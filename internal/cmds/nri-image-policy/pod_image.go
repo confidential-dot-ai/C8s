@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/containerd/nri/pkg/api"
 	"k8s.io/apimachinery/pkg/util/validation"
 
 	"github.com/confidential-dot-ai/c8s/pkg/types"
@@ -41,22 +40,4 @@ func (c *config) validatePodImages() error {
 		return fmt.Errorf("pod.images must bind the mesh endpoint to its measured image")
 	}
 	return nil
-}
-
-// containerImage chooses Pod identity only from the staged manifest. The CRI
-// image-name annotation may name a mutable alias even for a pinned request.
-func (p *plugin) containerImage(pod *api.PodSandbox, ctr *api.Container) (string, error) {
-	if !p.cfg.podRole() {
-		return ctr.GetAnnotations()[annotationImageName], nil
-	}
-	assigned := p.cfg.Pod
-	if pod.GetId() == "" || ctr.GetId() == "" || ctr.GetPodSandboxId() != pod.GetId() ||
-		pod.GetNamespace() != assigned.Namespace || pod.GetName() != assigned.Name {
-		return "", fmt.Errorf("container does not belong to the assigned Pod")
-	}
-	digest, exists := assigned.Images[ctr.GetName()]
-	if !exists || !types.IsCanonicalDigest(digest) {
-		return "", fmt.Errorf("container %q has no staged image pin", ctr.GetName())
-	}
-	return digest, nil
 }

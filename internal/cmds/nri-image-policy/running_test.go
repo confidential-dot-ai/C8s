@@ -196,3 +196,42 @@ func (m pausingMeasurer) MeasureOnce(string) (bool, error) {
 }
 
 func (pausingMeasurer) Digests() []string { return nil }
+
+// A revoked running container costs a Pod guest its identity, and a node nothing.
+func TestKillRevokedEndsThePodIdentity(t *testing.T) {
+	pod := makePod("tenant", "assigned")
+	pod.Uid = "runtime-uid"
+	revoked := runningCtr(pod, "app", pushDigestB)
+
+	guest, store, killed := revocationPlugin(enforcing)
+	guest.cfg.Pod = &podConfig{UID: "signed-uid", Namespace: pod.Namespace, Name: pod.Name, Images: map[string]string{"app": pushDigestB}}
+	guest.inventory = newAdmissionInventory(t.TempDir())
+	guest.inventory.recordSandbox(pod.Id)
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	guest.podBroker = &podCredentialBroker{ctx: ctx, cancel: cancel, pod: pod}
+	guest.running.add(pod, revoked)
+
+	store.apply(anyAllowlist(map[string]string{pushDigestA: "image-a"}), 2)
+	guest.KillRevoked(t.Context())
+
+	if !slices.Equal(*killed, []string{revoked.Id}) {
+		t.Fatalf("killed %v, want %s", *killed, revoked.Id)
+	}
+	if guest.inventory.denial(pod.Id) == nil || guest.podBroker.terminal == nil {
+		t.Fatal("a revoked running container kept the Pod identity")
+	}
+
+	node, nodeStore, nodeKilled := revocationPlugin(enforcing)
+	node.inventory = newAdmissionInventory(t.TempDir())
+	node.inventory.recordSandbox(pod.Id)
+	node.running.add(pod, runningCtr(pod, "app", pushDigestB))
+	nodeStore.apply(anyAllowlist(map[string]string{pushDigestA: "image-a"}), 2)
+	node.KillRevoked(t.Context())
+	if !slices.Equal(*nodeKilled, []string{revoked.Id}) {
+		t.Fatalf("node killed %v, want %s", *nodeKilled, revoked.Id)
+	}
+	if node.inventory.denial(pod.Id) != nil {
+		t.Fatal("a node recorded a lifetime denial for a revoked running container")
+	}
+}

@@ -16,9 +16,9 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
-	"github.com/confidential-dot-ai/c8s/internal/attestation"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
@@ -104,7 +104,7 @@ func TestPodAttestIssuesBoundNamedLeafWithoutNodeAuthority(t *testing.T) {
 	if len(binder.calls) != 0 {
 		t.Fatal("Pod profile gained node callback ledger authority")
 	}
-	csr, err := attestation.ParseAndVerifyCSR(req.CSR)
+	csr, err := certutil.ParseCSRPEM([]byte(req.CSR))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,6 +153,117 @@ func TestPodAttestRejectsAuthorityAndMeasurementConfusion(t *testing.T) {
 				t.Fatal("unauthorized profile issued")
 			}
 		})
+	}
+}
+
+// Every condition that makes a request carrying pod claims something other
+// than a Pod attestation: refused as a denied CSR, with the cause in the log.
+func TestPodAttestProfileRefusesEachConfusion(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(*AttestHandler, *types.AttestRequestBody)
+		reason string
+	}{
+		{
+			name:   "claims that do not decode",
+			change: func(_ *AttestHandler, r *types.AttestRequestBody) { r.PodClaims = json.RawMessage(`{"version":1}`) },
+			reason: "pod claims:",
+		},
+		{
+			name:   "sandbox token beside the claims",
+			change: func(_ *AttestHandler, r *types.AttestRequestBody) { r.SandboxToken = json.RawMessage(`{}`) },
+			reason: "a sandbox token accompanies the pod claims",
+		},
+		{
+			name:   "node runtime log beside the claims",
+			change: func(_ *AttestHandler, r *types.AttestRequestBody) { r.RuntimeExtensions = []string{wlDigestA} },
+			reason: "runtime_extensions accompany the pod claims",
+		},
+		{
+			name:   "evidence from another platform",
+			change: func(_ *AttestHandler, r *types.AttestRequestBody) { r.Evidence.Platform = "snp" },
+			reason: "evidence is not from TDX",
+		},
+		{
+			name:   "no pod image policy",
+			change: func(h *AttestHandler, _ *types.AttestRequestBody) { h.PodImages = nil },
+			reason: "no pod image policy is configured",
+		},
+		{
+			name: "CSR carrying extensions",
+			change: func(_ *AttestHandler, r *types.AttestRequestBody) {
+				r.CSR, _ = generateCSRWith(t, pkix.Name{}, []string{"pod.mesh.svc"}, nil)
+			},
+			reason: "the CSR carries extensions",
+		},
+		{
+			name:   "CSR carrying a subject",
+			change: func(_ *AttestHandler, r *types.AttestRequestBody) { r.CSR, _ = generateCSR(t) },
+			reason: "the CSR carries a subject",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := podTestClaims(t, wlDigestA)
+			h, _ := podTestHandler(t, p)
+			req := podRequest(t, h, p)
+			tc.change(&h, &req)
+
+			logs := captureSlog(t)
+			wantRefusal(t, postPodRequest(t, h, req), http.StatusForbidden, types.ErrorCodeCSRDenied)
+			record := logRecord(t, logs, "Pod attestation profile refused")
+			if got, _ := record["reason"].(string); !strings.Contains(got, tc.reason) {
+				t.Fatalf("refusal reason = %#v, want one naming %q", record["reason"], tc.reason)
+			}
+		})
+	}
+}
+
+// anyChallenge redeems a challenge of any length. CDS's own store mints the
+// 32 bytes the claims binding requires, so nothing else reaches it.
+type anyChallenge struct{}
+
+func (anyChallenge) Create() ([32]byte, error) { return [32]byte{}, nil }
+func (anyChallenge) Consume([]byte) bool       { return true }
+
+// Claims no quote can bind are a denied CSR, not a malformed request: the
+// profile is authorized and only the binding fails.
+func TestPodAttestRefusesClaimsThatDoNotBind(t *testing.T) {
+	p := podTestClaims(t, wlDigestA)
+	h, _ := podTestHandler(t, p)
+	h.Challenges = anyChallenge{}
+	req := podRequest(t, h, p)
+	req.Challenge = base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{1}, 16))
+
+	wantRefusal(t, postPodRequest(t, h, req), http.StatusForbidden, types.ErrorCodeCSRDenied)
+}
+
+// A pod whose launch measurement is outside PodImages is refused on its
+// measurement, whatever its claims say.
+func TestPodAttestRefusesUnpinnedPodImage(t *testing.T) {
+	p := podTestClaims(t, wlDigestA)
+	h, stub := podTestHandler(t, p)
+	unpinned := podTestVerdict(t, p)
+	unpinned.Claims.LaunchDigest = strings.Repeat("cd", 48)
+	stub.SetVerdict(unpinned)
+
+	wantRefusal(t, postPodRequest(t, h, podRequest(t, h, p)), http.StatusForbidden, types.ErrorCodeMeasurementDenied)
+}
+
+// The leaf's client document is audit-relevant, so the issuance record names
+// the digest the quote bound.
+func TestPodAttestRecordsTheClientDocumentDigest(t *testing.T) {
+	document := sha256.Sum256([]byte("client document"))
+	p := podTestClaims(t, wlDigestA)
+	p.ClientDocumentDigest = hex.EncodeToString(document[:])
+	h, _ := podTestHandler(t, p)
+
+	logs := captureSlog(t)
+	if w := postPodRequest(t, h, podRequest(t, h, p)); w.Code != http.StatusOK {
+		t.Fatalf("status=%d %s", w.Code, w.Body.String())
+	}
+	record := logRecord(t, logs, issuanceRecordMsg)
+	if got := record["client_document_digest"]; got != p.ClientDocumentDigest {
+		t.Fatalf("issuance record client_document_digest = %#v, want %q", got, p.ClientDocumentDigest)
 	}
 }
 
@@ -207,7 +318,7 @@ func TestPodAttestStampsOnlyTheQuotedClientDocument(t *testing.T) {
 	tampered.ClientDocumentDigest = hex.EncodeToString(other[:])
 	forged := quoted
 	forged.PodClaims, _ = tampered.Canonical()
-	csr, err := attestation.ParseAndVerifyCSR(quoted.CSR)
+	csr, err := certutil.ParseCSRPEM([]byte(quoted.CSR))
 	if err != nil {
 		t.Fatal(err)
 	}

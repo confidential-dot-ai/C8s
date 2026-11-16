@@ -108,7 +108,7 @@ func TestValidationRecordsTheCapabilityGrant(t *testing.T) {
 	p := capabilityPlugin(t, SandboxEnforce)
 	p.SetReady()
 	dir := t.TempDir()
-	p.capGrants = &capabilityGrants{dir: dir}
+	p.capGrants = newCapabilityGrantRecords(dir)
 	// A mesh-exempt namespace: the gate's own record is a node fixture.
 	pod := sandboxedPod()
 	pod.Namespace = "kube-system"
@@ -139,6 +139,135 @@ func TestValidationRecordsTheCapabilityGrant(t *testing.T) {
 	}
 	if granted, err := ReadCapabilityGrant(dir, containerID); err != nil || granted != nil {
 		t.Fatalf("a launch no declaration grants holds %v, %v", granted, err)
+	}
+}
+
+// The grant is recorded for the launch as the cumulative NRI edits leave it:
+// the declaring entry admits only the environment the adjustment sets.
+func TestValidationGrantsTheAdjustedLaunch(t *testing.T) {
+	const containerID = "4a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f9"
+	tracer := allowlist.Container{
+		Digest:       mustDigest(t, pushDigestB),
+		Command:      allowlist.ArgvPolicy{Policy: allowlist.PolicyExact, Argv: []string{"/app"}},
+		Args:         allowlist.ArgvPolicy{Policy: allowlist.PolicyDeny},
+		Mounts:       allowlist.MountPolicy{Policy: allowlist.PolicyDeny},
+		Env:          allowlist.EnvPolicy{Policy: allowlist.PolicyExact, Values: map[string]string{"MODE": "declared"}},
+		Capabilities: allowlist.CapabilityList{"SYS_PTRACE"},
+	}
+	base := &allowlist.Allowlist{Schema: allowlist.Schema, Workloads: map[string]allowlist.Workload{
+		"tracer": {Containers: []allowlist.Container{tracer}},
+	}}
+	if err := base.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config{
+		Allowlist: allowlistConfig{Base: base, NodeTCB: true},
+		Policy:    policyConfig{Mode: ModeFailClosed, Sandbox: SandboxEnforce},
+	}
+	p, _ := newCachedPlugin(cfg, &allowlist.Allowlist{Schema: allowlist.Schema})
+	dir := t.TempDir()
+	p.capGrants = newCapabilityGrantRecords(dir)
+	// A mesh-exempt namespace: the gate's own record is a node fixture.
+	pod := sandboxedPod()
+	pod.Namespace = "kube-system"
+	ctr := sandboxedContainer()
+	ctr.Id = containerID
+	ctr.Mounts = mountsADenyPolicyAdmits(ctr)
+	ctr.Annotations = map[string]string{annotationImageName: "registry/repo@" + pushDigestB}
+	ctr.Args = []string{"/app"}
+	ctr.Env = []string{"MODE=own"}
+	req := &api.ValidateContainerAdjustmentRequest{
+		Pod:       pod,
+		Container: ctr,
+		Adjust:    &api.ContainerAdjustment{Env: []*api.KeyValue{{Key: "MODE", Value: "declared"}}},
+	}
+	if err := p.ValidateContainerAdjustment(t.Context(), req); err != nil {
+		t.Fatalf("the adjusted launch was refused: %v", err)
+	}
+	granted, err := ReadCapabilityGrant(dir, containerID)
+	if err != nil || len(granted) != 1 || !slices.Equal(granted[0], []string{"SYS_PTRACE"}) {
+		t.Fatalf("ReadCapabilityGrant = %v, %v, want [[SYS_PTRACE]]", granted, err)
+	}
+	req.Adjust = nil
+	if err := p.ValidateContainerAdjustment(t.Context(), req); err == nil {
+		t.Fatal("the environment the container itself declares was admitted")
+	}
+}
+
+// On a Pod CVM the capability grant comes from the image the hook admitted the
+// container by, the digest its signed assignment stages, and not from the
+// host-written CRI annotation.
+func TestPodValidationGrantsTheAdmittedImage(t *testing.T) {
+	const containerID = "3f2e1d0c9b8a7968574635241302f1e0d9c8b7a695847362514039281716e5d4"
+	declaring := func(digest, capability string) allowlist.Container {
+		return allowlist.Container{
+			Digest:       mustDigest(t, digest),
+			Command:      allowlist.ArgvPolicy{Policy: allowlist.PolicyExact, Argv: []string{"/app"}},
+			Args:         allowlist.ArgvPolicy{Policy: allowlist.PolicyDeny},
+			Mounts:       allowlist.MountPolicy{Policy: allowlist.PolicyDeny},
+			Env:          allowlist.EnvPolicy{Policy: allowlist.PolicyDeny},
+			Capabilities: allowlist.CapabilityList{capability},
+		}
+	}
+	for _, tc := range []struct {
+		name   string
+		staged allowlist.Container
+		want   [][]string
+	}{
+		{
+			name:   "the staged pin declares a capability",
+			staged: declaring(pushDigestA, "SYS_ADMIN"),
+			want:   [][]string{{"SYS_ADMIN"}},
+		},
+		{
+			name: "the staged pin declares none",
+			staged: allowlist.Container{
+				Digest:  mustDigest(t, pushDigestA),
+				Command: allowlist.ArgvPolicy{Policy: allowlist.PolicyAny},
+				Args:    allowlist.ArgvPolicy{Policy: allowlist.PolicyAny},
+				Mounts:  allowlist.MountPolicy{Policy: allowlist.PolicyAny},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base := &allowlist.Allowlist{Schema: allowlist.Schema, Workloads: map[string]allowlist.Workload{
+				"staged":    {Containers: []allowlist.Container{tc.staged}},
+				"annotated": {Containers: []allowlist.Container{declaring(pushDigestB, "SYS_PTRACE")}},
+			}}
+			if err := base.Normalize(); err != nil {
+				t.Fatal(err)
+			}
+			// A mesh-exempt namespace: the gate's own record is a node fixture.
+			pod := sandboxedPod()
+			pod.Namespace = "kube-system"
+			ctr := sandboxedContainer()
+			ctr.Id = containerID
+			ctr.PodSandboxId = pod.Id
+			ctr.Mounts = mountsADenyPolicyAdmits(ctr)
+			ctr.Annotations = map[string]string{annotationImageName: "registry/repo@" + pushDigestB}
+			ctr.Args = []string{"/app"}
+			cfg := &config{
+				Pod: &podConfig{
+					UID:       pod.Uid,
+					Namespace: pod.Namespace,
+					Name:      pod.Name,
+					Images:    map[string]string{ctr.Name: pushDigestA},
+				},
+				Allowlist: allowlistConfig{Base: base, NodeTCB: true},
+				Policy:    policyConfig{Mode: ModeFailClosed, Sandbox: SandboxEnforce},
+			}
+			p, _ := newCachedPlugin(cfg, &allowlist.Allowlist{Schema: allowlist.Schema})
+			dir := t.TempDir()
+			p.capGrants = newCapabilityGrantRecords(dir)
+			req := &api.ValidateContainerAdjustmentRequest{Pod: pod, Container: ctr}
+			if err := p.ValidateContainerAdjustment(t.Context(), req); err != nil {
+				t.Fatalf("the staged launch was refused: %v", err)
+			}
+			granted, err := ReadCapabilityGrant(dir, containerID)
+			if err != nil || !slices.EqualFunc(granted, tc.want, slices.Equal) {
+				t.Fatalf("ReadCapabilityGrant = %v, %v, want %v", granted, err, tc.want)
+			}
+		})
 	}
 }
 
@@ -307,7 +436,7 @@ func gpuCapabilityPlugin(t *testing.T) (*plugin, string) {
 	p.SetReady()
 	p.cdiSpecDirs = writeCDISpecs(t, map[string]string{"gpu.json": gpuSpec})
 	dir := t.TempDir()
-	p.capGrants = &capabilityGrants{dir: dir}
+	p.capGrants = newCapabilityGrantRecords(dir)
 	return p, dir
 }
 

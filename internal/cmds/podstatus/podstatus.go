@@ -11,33 +11,26 @@ import (
 	"context"
 	"crypto"
 	"crypto/ecdsa"
-	"crypto/rand"
-	"crypto/sha256"
 	"crypto/sha512"
 	"crypto/tls"
-	"crypto/x509"
-	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"os"
-	"slices"
 	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/nodeservices"
-	"github.com/confidential-dot-ai/c8s/internal/guestverify"
 	"github.com/confidential-dot-ai/c8s/internal/launchbinding"
 	"github.com/confidential-dot-ai/c8s/internal/podlaunch"
+	"github.com/confidential-dot-ai/c8s/internal/readutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
@@ -115,7 +108,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if allow(w, r, http.MethodGet) {
 			if h.assignment == nil {
 				http.Error(w, "assignment unavailable", http.StatusServiceUnavailable)
-			} else {
+			} else if !h.identityEnded(w, r) {
 				h.assignment.serveNonce(w, r)
 			}
 		}
@@ -123,7 +116,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if allow(w, r, http.MethodPost) {
 			if h.assignment == nil {
 				http.Error(w, "assignment unavailable", http.StatusServiceUnavailable)
-			} else {
+			} else if !h.identityEnded(w, r) {
 				h.assignment.serveAssign(w, r)
 			}
 		}
@@ -139,6 +132,21 @@ func allow(w http.ResponseWriter, r *http.Request, method string) bool {
 	w.Header().Set("Allow", method)
 	http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	return false
+}
+
+// identityEnded answers 503 on an assignment route of a guest whose pod
+// identity the plugin ended, before any assignment check. An unassigned guest
+// runs no plugin and is not asked; a plugin that cannot answer leaves the
+// route to its assignment checks.
+func (h Handler) identityEnded(w http.ResponseWriter, r *http.Request) bool {
+	if h.IdentityEnded == nil || h.assignment.assignedUID() == "" {
+		return false
+	}
+	if ended, err := h.IdentityEnded(r.Context()); err != nil || !ended {
+		return false
+	}
+	http.Error(w, "pod identity ended", http.StatusServiceUnavailable)
+	return true
 }
 
 func (h Handler) servePod(w http.ResponseWriter, r *http.Request) {
@@ -201,10 +209,8 @@ func (h Handler) serveMeasurements(w http.ResponseWriter) {
 }
 
 func (h Handler) serveEvidence(w http.ResponseWriter, r *http.Request) {
-	var req types.NonceRequest
-	dec := json.NewDecoder(io.LimitReader(r.Body, 4096))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil || len(req.Nonce) != 32 {
+	req, err := nonceRequest(r.Body)
+	if err != nil {
 		http.Error(w, "want {\"nonce\": <32 bytes, base64>}", http.StatusBadRequest)
 		return
 	}
@@ -228,6 +234,26 @@ func (h Handler) serveEvidence(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set(BindingHeader, BindingVersion)
 	_, _ = w.Write(evidence)
+}
+
+func nonceRequest(body io.Reader) (types.NonceRequest, error) {
+	var req types.NonceRequest
+	data, err := readutil.ReadAll(body, 4096)
+	if err != nil {
+		return req, err
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		return req, err
+	}
+	if dec.Decode(new(any)) != io.EOF {
+		return req, errors.New("trailing data after the nonce request")
+	}
+	if len(req.Nonce) != 32 {
+		return req, errors.New("nonce is not 32 bytes")
+	}
+	return req, nil
 }
 
 func writeJSON(w http.ResponseWriter, body any) {
@@ -324,6 +350,13 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 			return json.Marshal(resp.Envelope())
 		},
 	}
+	// The provider pins the serving key an assignment arrives over, so the
+	// certificate keeps one key for the process: rotation renews the
+	// certificate and its quote, never the key.
+	servingKey, _, err := armtls.GenerateKeyPair()
+	if err != nil {
+		return fmt.Errorf("generate serving key: %w", err)
+	}
 	// The certificate's quote binds its own key and lists the journal as its
 	// runtime extensions, so a client can replay the register from the
 	// certificate alone. The attest func reads resp.Platform, so it serves
@@ -331,6 +364,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	return armtls.Serve(ctx, cfg.ListenAddr, h, &armtls.ServerConfig{
 		Platform:             family.String(),
 		AttestFunc:           attestclient.MakeSNPARMTLSAttestFunc(api, cfg.AttestationAPIURL),
+		Key:                  servingKey,
 		Logger:               slog.Default(),
 		MeasuredPoliciesFile: cfg.JournalPath,
 	})
@@ -367,7 +401,11 @@ func kubeletPods(base, certFile string) func(context.Context) ([]byte, error) {
 		if resp.StatusCode != http.StatusOK {
 			return nil, fmt.Errorf("kubelet /pods: %s", resp.Status)
 		}
-		return io.ReadAll(io.LimitReader(resp.Body, maxBody))
+		pods, err := readutil.ReadAll(resp.Body, maxBody)
+		if err != nil {
+			return nil, fmt.Errorf("kubelet /pods: %w", err)
+		}
+		return pods, nil
 	}
 }
 
@@ -393,269 +431,5 @@ func verifyPinnedCertificate(cs tls.ConnectionState, certFile string) error {
 	return fmt.Errorf("%s holds no certificate", certFile)
 }
 
-// AttestConfig configures the client.
-type AttestConfig struct {
-	Node              string
-	LaunchKeyPubPath  string
-	ImageManifestPath string
-	ExpectDigests     []string
-	Timeout           time.Duration
-}
-
-// Report is what Attest proves about the pod CVM.
-type Report struct {
-	Image           string   `json:"image"`
-	LaunchKeySHA256 string   `json:"launch_key_sha256"`
-	MeasuredDigests []string `json:"measured_digests"`
-	RTMR3           string   `json:"rtmr3,omitempty"`
-}
-
-// Seams for tests.
-var (
-	newClient             = guestverify.NewClient
-	verifyFresh           = guestverify.VerifyEvidence
-	loadMeasuredLaunchKey = launchbinding.LoadMeasuredOperatorKey
-)
-
-// Attest verifies fresh evidence from the pod CVM and its measured digest
-// list, returning the report and the verified channel for further reads.
-func Attest(ctx context.Context, cfg AttestConfig) (_ *Report, _ *http.Client, err error) {
-	if cfg.Node == "" || cfg.LaunchKeyPubPath == "" || cfg.ImageManifestPath == "" {
-		return nil, nil, errors.New("cfg.Node, cfg.LaunchKeyPubPath and cfg.ImageManifestPath are required")
-	}
-	if cfg.Timeout <= 0 {
-		return nil, nil, errors.New("cfg.Timeout must be positive")
-	}
-	if strings.ContainsAny(cfg.Node, "/?#@") {
-		return nil, nil, fmt.Errorf("cfg.Node must be a host or IP, got %q", cfg.Node)
-	}
-	expect := make([]string, 0, len(cfg.ExpectDigests))
-	for _, ref := range cfg.ExpectDigests {
-		d, err := runtimemeasure.CanonicalDigest(ref)
-		if err != nil {
-			return nil, nil, fmt.Errorf("cfg.ExpectDigests: %w", err)
-		}
-		expect = append(expect, d)
-	}
-	pub, err := os.ReadFile(cfg.LaunchKeyPubPath)
-	if err != nil {
-		return nil, nil, fmt.Errorf("launch key: %w", err)
-	}
-	// One gate for the channel and the evidence: the image the manifest pins
-	// and the launch key, bound as every c8s verifier binds a node's. The
-	// channel replays the list the serving certificate carries as a prefix
-	// of the register; the fresh evidence replays the list read from the
-	// guest.
-	exp, err := guestverify.PolicyFor(cfg.ImageManifestPath, pub, nil)
-	if err != nil {
-		return nil, nil, err
-	}
-	exp = exp.WithMeasuredPolicies(nil)
-	client := newClient(exp, cfg.Timeout)
-	// The transport has no idle timeout, so a failed attestation must not
-	// leave its sockets to the retry; client is the pinned clone once the
-	// serving key is fixed.
-	defer func() {
-		if err != nil {
-			client.CloseIdleConnections()
-		}
-	}()
-	base := "https://" + hostPort(cfg.Node)
-	ctx, cancel := context.WithTimeout(ctx, cfg.Timeout)
-	defer cancel()
-
-	// The first answer fixes the serving key: every connection after it,
-	// here and over the returned client, must present that key. Otherwise a
-	// host could answer the later reads from another pod CVM launched with
-	// the same launch key, whose certificate passes the same checks.
-	before, peer, err := fetchDigests(ctx, client, base)
-	if err != nil {
-		return nil, nil, err
-	}
-	unpinned := client
-	if client, err = pinServingKey(client, peer); err != nil {
-		return nil, nil, err
-	}
-	// The unpinned transport served its one request.
-	unpinned.CloseIdleConnections()
-
-	// A container may start between the quote and the list; read the list
-	// on both sides of the quote and retry until they agree.
-	var digests []string
-	var envelope, reportData []byte
-	for attempt := 0; ; attempt++ {
-		nonce := make([]byte, 32)
-		if _, err := rand.Read(nonce); err != nil {
-			return nil, nil, err
-		}
-		reqBody, _ := json.Marshal(types.NonceRequest{Nonce: nonce})
-		var peer crypto.PublicKey
-		if envelope, peer, err = postEvidence(ctx, client, base, reqBody); err != nil {
-			return nil, nil, fmt.Errorf("fresh evidence: %w", err)
-		}
-		// The quote must bind this channel's certificate key and our nonce.
-		rd, err := EvidenceReportData(peer, nonce)
-		if err != nil {
-			return nil, nil, err
-		}
-		reportData = rd[:]
-		if digests, _, err = fetchDigests(ctx, client, base); err != nil {
-			return nil, nil, err
-		}
-		if slices.Equal(before, digests) {
-			break
-		}
-		if attempt == 2 {
-			return nil, nil, errors.New("measured digests kept changing during attestation; retry")
-		}
-		before = digests
-	}
-	res, err := verifyFresh(envelope, reportData, exp.WithMeasuredPolicies(digests))
-	if err != nil {
-		return nil, nil, fmt.Errorf("evidence: %w", err)
-	}
-	// The gate accepts any replaying prefix; here the list was read on both
-	// sides of the quote and agreed, so the whole of it must replay. A list
-	// that ran ahead of the register fails here and only here: that is a
-	// recorded extend the guest has not made yet.
-	if err := runtimemeasure.VerifyBinding(res, pub, digests); err != nil {
-		return nil, nil, fmt.Errorf("measured digests do not explain the attested register: %w", err)
-	}
-	if cfg.ExpectDigests != nil && !sameSet(expect, digests) {
-		return nil, nil, fmt.Errorf("measured digests %v, expected %v", digests, expect)
-	}
-	sum := sha256.Sum256(pub)
-	report := &Report{Image: res.Claims.LaunchDigest, LaunchKeySHA256: hex.EncodeToString(sum[:]), MeasuredDigests: digests}
-	if res.Platform.HasRegisters() {
-		reg, err := runtimemeasure.Binding(res)
-		if err != nil {
-			return nil, nil, err
-		}
-		report.RTMR3 = hex.EncodeToString(reg)
-	}
-	return report, client, nil
-}
-
-// pinServingKey returns a client that accepts only connections served with
-// peer, before the checks client already makes. Every pod CVM launched with
-// one launch key presents a certificate that passes those checks; the pin
-// tells the attested one apart.
-func pinServingKey(client *http.Client, peer crypto.PublicKey) (*http.Client, error) {
-	want, err := x509.MarshalPKIXPublicKey(peer)
-	if err != nil {
-		return nil, fmt.Errorf("pin serving key: %w", err)
-	}
-	base, ok := client.Transport.(*http.Transport)
-	if !ok {
-		return nil, errors.New("pin serving key: the attested client has no TLS transport")
-	}
-	tr := base.Clone()
-	if tr.TLSClientConfig == nil {
-		tr.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
-	}
-	verify := tr.TLSClientConfig.VerifyConnection
-	tr.TLSClientConfig.VerifyConnection = func(cs tls.ConnectionState) error {
-		if len(cs.PeerCertificates) == 0 {
-			return errors.New("server presented no certificate")
-		}
-		got, err := x509.MarshalPKIXPublicKey(cs.PeerCertificates[0].PublicKey)
-		if err != nil || !bytes.Equal(got, want) {
-			return errors.New("serving key differs from the attested one: another guest answered")
-		}
-		if verify != nil {
-			return verify(cs)
-		}
-		return nil
-	}
-	client.CloseIdleConnections()
-	return &http.Client{Timeout: client.Timeout, CheckRedirect: client.CheckRedirect, Transport: tr}, nil
-}
-
-func sameSet(a, b []string) bool {
-	a, b = slices.Clone(a), slices.Clone(b)
-	slices.Sort(a)
-	slices.Sort(b)
-	return slices.Equal(slices.Compact(a), slices.Compact(b))
-}
-
-// fetchDigests also returns the key of the certificate that served the list.
-func fetchDigests(ctx context.Context, client *http.Client, base string) ([]string, crypto.PublicKey, error) {
-	body, peer, _, err := doPeer(ctx, client, http.MethodGet, base+MeasurementsPath, nil)
-	if err != nil {
-		return nil, nil, fmt.Errorf("measurements: %w", err)
-	}
-	var m Measurements
-	if err := json.Unmarshal(body, &m); err != nil {
-		return nil, nil, fmt.Errorf("measurements: %w", err)
-	}
-	return m.Digests, peer, nil
-}
-
-func do(ctx context.Context, client *http.Client, method, url string, body []byte) ([]byte, error) {
-	data, _, _, err := doPeer(ctx, client, method, url, body)
-	return data, err
-}
-
-func postEvidence(ctx context.Context, client *http.Client, base string, reqBody []byte) ([]byte, crypto.PublicKey, error) {
-	body, peer, binding, err := doPeer(ctx, client, http.MethodPost, base+EvidencePath, reqBody)
-	if err != nil {
-		return nil, nil, err
-	}
-	if binding != BindingVersion {
-		return nil, nil, fmt.Errorf("guest evidence binding is %q, this client needs %q: guest and client c8s are different builds", binding, BindingVersion)
-	}
-	return body, peer, nil
-}
-
-// doPeer also returns the public key of the certificate the server
-// presented on the connection that carried this request.
-func doPeer(ctx context.Context, client *http.Client, method, url string, body []byte) ([]byte, crypto.PublicKey, string, error) {
-	req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(body))
-	if err != nil {
-		return nil, nil, "", err
-	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, nil, "", fmt.Errorf("attested request (image or channel not verified): %w", err)
-	}
-	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBody))
-	if err != nil {
-		return nil, nil, "", err
-	}
-	if resp.StatusCode != http.StatusOK {
-		// The body is peer-controlled; keep only its head in the error.
-		const maxErrBody = 512
-		msg := strings.TrimSpace(string(data))
-		if len(msg) > maxErrBody {
-			msg = msg[:maxErrBody] + "..."
-		}
-		return nil, nil, "", fmt.Errorf("%s: %s", resp.Status, msg)
-	}
-	if resp.TLS == nil || len(resp.TLS.PeerCertificates) == 0 {
-		return nil, nil, "", errors.New("response did not arrive over TLS")
-	}
-	return data, resp.TLS.PeerCertificates[0].PublicKey, resp.Header.Get(BindingHeader), nil
-}
-
-// Get attests the pod CVM, then returns its /v1/pod body.
-func Get(ctx context.Context, cfg AttestConfig) ([]byte, error) {
-	_, client, err := Attest(ctx, cfg)
-	if err != nil {
-		return nil, err
-	}
-	defer client.CloseIdleConnections()
-	ctx, cancel := context.WithTimeout(ctx, cfg.Timeout)
-	defer cancel()
-	return do(ctx, client, http.MethodGet, "https://"+hostPort(cfg.Node)+PodPath, nil)
-}
-
-func hostPort(node string) string {
-	if _, _, err := net.SplitHostPort(node); err == nil {
-		return node
-	}
-	return net.JoinHostPort(strings.Trim(node, "[]"), "8443")
-}
+// loadMeasuredLaunchKey is a seam for tests.
+var loadMeasuredLaunchKey = launchbinding.LoadMeasuredOperatorKey

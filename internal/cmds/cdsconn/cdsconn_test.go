@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
@@ -205,7 +206,7 @@ func writeTestKey(t *testing.T) string {
 
 func TestSignerMissingKeyFile(t *testing.T) {
 	o := Options{OperatorKey: filepath.Join(t.TempDir(), "nope.key")}
-	if _, err := o.Signer(); err == nil || !strings.Contains(err.Error(), "read operator key") {
+	if _, err := o.Signer(); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expected a read error, got %v", err)
 	}
 }
@@ -216,7 +217,7 @@ func TestSignerRejectsGarbagePEM(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 	o := Options{OperatorKey: path, Measurements: []string{"abababababababababababababababababababababababababababababababababababababababababababababababab"}}
-	if _, err := o.Signer(); err == nil || !strings.Contains(err.Error(), "load operator key") {
+	if _, err := o.Signer(); err == nil || !strings.Contains(err.Error(), "no PEM block") {
 		t.Fatalf("expected a key-parse error, got %v", err)
 	}
 }

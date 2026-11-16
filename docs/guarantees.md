@@ -54,7 +54,8 @@ policy keeps host namespaces away from tenant pods
 - **Admission plugin** (`nri-image-policy`): checks every container at
   creation, adjustment validation, and start, and the runtime starts no
   container while it is disconnected: on the measured node image from boot, on
-  `gke` and `aks` once the installer has run on that boot.
+  `aks` from boot once an install has staged the node, and on `gke` once the
+  installer has run on that boot.
 - **Base allowlist**: the entries the plugin holds in its own boot config, so a
   node admits the platform before CDS is reachable.
 - **Host privilege**: the measured node image refuses host namespaces, binds,
@@ -62,18 +63,37 @@ policy keeps host namespaces away from tenant pods
   own measured components.
 
 All three are [allowlist-and-capabilities.md](allowlist-and-capabilities.md).
-Two openings are the operator's: a `gke` or `aks` install admits `kube-system`
-by the digests those pods ran at the plugin's first connect, and
-`nriImagePolicy.policy.mode: audit` logs a denial instead of enforcing it.
+Two openings are the operator's. A `gke` or `aks` install admits the provider's
+own namespaces by image repository: `kube-system` on `aks`, and `kube-system`,
+`gmp-system` and `gke-managed-cim` on `gke`, where the provider runs its managed
+Prometheus and kube-state-metrics. Any image under the add-on repositories the
+chart's `values-<platform>.yaml` names runs there at any version and with any
+command line, and the node host-privilege policy is off on those lanes. So a
+confidential node trusts the provider for everything it publishes under those
+paths, and trusts anyone who can create a pod in those namespaces to pick one.
+The other opening is `nriImagePolicy.policy.mode: audit`, which logs a denial
+instead of enforcing it.
 
 On a `gke` or `aks` node, a pod whose sandbox the runtime created before the
-plugin registered gets no identity, certificate or secret until it is deleted,
-even for its containers that start later. A denied image may run until the
-plugin is ready and stops it. That window opens on a reboot, on a fresh node,
-and for as long as the plugin is down on a running node. On COS each boot
-repeats the `kube-system` digest capture, from what ran in that window. The
-measured node image has no boot window: its CNI needs the plugin before any pod
-sandbox gets a network.
+plugin registered gets no identity, certificate or secret, even for its later
+containers. The plugin deletes such a pod; a controller that owns one replaces
+it with a pod this node admits. That delete goes as the node, under the
+credential the kubelet's kubeconfig names — on `gke` a credential helper the
+plugin runs. A helper that fails leaves the pod named in the plugin's log for an
+operator to delete; a helper that never returns holds that node's deletes with
+no such line. A denied image may run until the plugin is
+ready and stops it. That window opens on a fresh node, for as long as the
+plugin is down on a running node, and on every `gke` reboot: a `gke` node
+rebuilds its containerd configuration in tmpfs `/etc` at boot, so until the
+installer has run on that boot nothing launches the plugin and nothing
+requires it. An `aks` node keeps that configuration, so after a boot
+containerd starts no container until the plugin registers, while a sandbox
+created before it registered still loses its identity. The host chooses when a
+node boots and how soon the installer runs. An install on a provider's stock
+node image is for test and evaluation: the files that name the plugin and its
+policy are the host's, under no measurement. Production runs the measured node
+image — on bare metal, or as a custom VM image on GKE — which has no boot
+window: its CNI needs the plugin before any pod sandbox gets a network.
 
 ## Identity comes from hardware evidence
 
