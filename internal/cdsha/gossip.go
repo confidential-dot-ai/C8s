@@ -31,27 +31,42 @@ func (r *Replica) Run(ctx context.Context) {
 
 // checkBuild holds this replica's own attestation to each accepted build
 // not judged yet. A check that gets no answer is retried and evicts nothing.
+// SelfCheck asks the attestation API, which may take its whole request
+// timeout, far longer than T: it runs without r.mu (Replica.mu), so reads and
+// gossip answers never wait for it.
 func (r *Replica) checkBuild(ctx context.Context) {
-	r.mu.Lock()
-	var todo []string
-	if r.state != nil {
-		for _, b := range r.state.Accepted {
-			if _, judged := r.own[b.Measurements]; !judged {
-				todo = append(todo, b.Measurements)
-			}
-		}
-	}
-	r.mu.Unlock()
-	for _, m := range todo {
+	for _, m := range r.unjudged() {
 		ok, err := r.cfg.SelfCheck(ctx, m)
 		if err != nil {
 			slog.Warn("CDS replica cannot check its own build yet", "error", err)
 			continue
 		}
-		r.mu.Lock()
-		r.own[m] = ok
-		r.mu.Unlock()
+		r.judge(m, ok)
 	}
+}
+
+// unjudged is the measurements of every accepted build this replica has
+// not held its own attestation to yet.
+func (r *Replica) unjudged() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.state == nil {
+		return nil
+	}
+	var todo []string
+	for _, b := range r.state.Accepted {
+		if _, judged := r.own[b.Measurements]; !judged {
+			todo = append(todo, b.Measurements)
+		}
+	}
+	return todo
+}
+
+// judge records whether this replica's own attestation passes measurements.
+func (r *Replica) judge(measurements string, ok bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.own[measurements] = ok
 }
 
 // Pending is what a replica that holds no chain publishes: its member key
@@ -59,25 +74,23 @@ func (r *Replica) checkBuild(ctx context.Context) {
 type Pending struct {
 	Cluster   string   `json:"cluster"`
 	Endpoints []string `json:"endpoints"`
-	CAKey     string   `json:"caKey"`
+	CAKey     string   `json:"ca_key"`
 	Member    string   `json:"member"`
 }
 
 // findChain records whether the store of a replica that holds no chain
-// already holds one: it then waits for a giver and is no genesis.
+// already holds one: it then waits for a giver and is no genesis. It reads
+// the store under r.mu (Replica.mu names this exception).
 func (r *Replica) findChain(ctx context.Context) {
 	r.mu.Lock()
-	st, pending := r.store, r.state == nil
-	r.mu.Unlock()
-	if !pending || st == nil {
+	defer r.mu.Unlock()
+	if r.state != nil || r.store == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(ctx, r.cfg.StoreTimeout)
 	defer cancel()
-	if head, err := st.GetHead(ctx); err == nil && head != nil {
-		r.mu.Lock()
+	if head, err := r.store.GetHead(ctx); err == nil && head != nil {
 		r.joining = true
-		r.mu.Unlock()
 	}
 }
 
@@ -90,7 +103,12 @@ func (r *Replica) Pending(genesis bool) (*Pending, error) {
 		return nil, nil
 	}
 	ca, err := cdschain.PublicKeyPEM(r.cfg.Mesh.Current().CA.Key.Public())
-	return &Pending{Cluster: r.cfg.Cluster, Endpoints: r.cfg.Endpoints, CAKey: ca, Member: r.memberPEM}, err
+	return &Pending{
+		Cluster:   r.cfg.Cluster,
+		Endpoints: r.cfg.Endpoints,
+		CAKey:     ca,
+		Member:    r.memberPEM,
+	}, err
 }
 
 // Handoff is the chain a pending replica starts from.
@@ -98,8 +116,8 @@ type Handoff struct {
 	Entries []cdschain.Entry `json:"entries"`
 }
 
-// round is where the other members' heads come from. Without gossip none
-// answers, so a write is done only in a set of one.
+// round asks the other members for their heads. This replica does not
+// gossip yet, so none answers and a write is done only in a set of one.
 func (r *Replica) round(context.Context) map[int]cdschain.Head { return nil }
 
 // Start makes a pending replica a member by a genesis, which its own CA must
@@ -121,17 +139,13 @@ func (r *Replica) Start(h Handoff) error {
 		return fmt.Errorf("%w: the chain is of another cluster or endpoint list", ErrInvalid)
 	case state.Members[r.slot()] != r.memberPEM:
 		return fmt.Errorf("%w: the chain does not name this replica the member of slot %d", ErrInvalid, r.slot())
+	case !state.CAKey.Equal(r.cfg.Mesh.Current().CA.Key.Public()):
+		return fmt.Errorf("%w: the genesis names another CA key", ErrInvalid)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.state != nil {
+	if r.state != nil || r.joining {
 		return ErrNotPending
-	}
-	if r.joining {
-		return ErrNotPending
-	}
-	if !state.CAKey.Equal(r.cfg.Mesh.Current().CA.Key.Public()) {
-		return fmt.Errorf("%w: the genesis names another CA key", ErrInvalid)
 	}
 	r.chain, r.state = h.Entries, state
 	r.adoptedLocked()

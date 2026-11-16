@@ -49,7 +49,8 @@ type Config struct {
 	// SelfCheck reports whether this replica's own attestation passes one
 	// build's pins; an error is "no answer", which evicts nothing.
 	SelfCheck func(ctx context.Context, measurements string) (bool, error)
-	// OnState is told every state the replica adopts.
+	// OnState is told every state the replica adopts, in chain order: it
+	// runs under Replica.mu, so it must not call back into the replica.
 	OnState func(*cdschain.State)
 	// Validate checks an entry's payload beyond the chain's rules.
 	Validate func(cdschain.Body) error
@@ -84,6 +85,16 @@ type Replica struct {
 	memberPEM string
 	self      atomic.Int64 // the slot, -1 until learnt
 
+	// mu guards the fields below, the replica's memory, and is never held
+	// across store, peer or attestation I/O, so a slow store, peer or
+	// verifier never stalls reads or gossip answers. A caller copies what it
+	// needs under mu, does the I/O, then applies the result in one locked
+	// step that re-checks it against the memory as it is then: adopt
+	// verifies entries after the current head, and the store itself orders
+	// writes by its compare-and-swap on the head. A stale copy thus costs a
+	// refusal or a retry, never a wrong state. findChain is the one
+	// exception: a pending replica serves nothing, so it reads the store
+	// under mu. Methods named *Locked expect mu held.
 	mu         sync.Mutex
 	store      Store
 	credential []byte
@@ -120,8 +131,14 @@ func New(cfg Config, store Store) (*Replica, error) {
 		return nil, err
 	}
 	r := &Replica{
-		cfg: cfg, member: key, memberPEM: memberPEM, store: store,
-		heard: map[int]heard{}, dropped: map[cdschain.Hash]uint64{}, own: map[string]bool{}, handing: map[int]bool{},
+		cfg:       cfg,
+		member:    key,
+		memberPEM: memberPEM,
+		store:     store,
+		heard:     map[int]heard{},
+		dropped:   map[cdschain.Hash]uint64{},
+		own:       map[string]bool{},
+		handing:   map[int]bool{},
 	}
 	r.self.Store(int64(cfg.Self))
 	return r, nil
@@ -186,7 +203,8 @@ func (r *Replica) memberAheadLocked() uint64 {
 	return ahead
 }
 
-// freshLocked: a majority, counting self, answered a ping sent within T.
+// freshLocked reports whether a majority, counting self, answered a
+// ping sent within T.
 func (r *Replica) freshLocked() bool {
 	recent := 1
 	for slot, h := range r.heard {
