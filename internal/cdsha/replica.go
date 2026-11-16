@@ -112,6 +112,10 @@ type Replica struct {
 	cut uint64
 	// stateErr is OnState's error for the held state.
 	stateErr error
+	// policies indexes the allowlists of the chain's first indexed entries
+	// by digest (Policy).
+	policies map[string][]byte
+	indexed  int
 }
 
 // New starts a pending replica with a fresh member key.
@@ -165,22 +169,24 @@ func (r *Replica) State() *cdschain.State {
 // Policy returns the allowlist of a policy entry in the chain whose digest
 // ("sha256:<hex>" of its canonical bytes) is digest, so any replica answers
 // for an allowlist a leaf was stamped under before it started.
+// Each entry is decoded once, on the first lookup after it is adopted.
 func (r *Replica) Policy(digest string) ([]byte, bool) {
 	r.mu.Lock()
-	chain := slices.Clone(r.chain)
-	r.mu.Unlock()
-	for _, e := range chain {
+	defer r.mu.Unlock()
+	if r.policies == nil {
+		r.policies = map[string][]byte{}
+	}
+	for ; r.indexed < len(r.chain); r.indexed++ {
 		var p cdschain.Policy
-		b, err := e.Decode()
+		b, err := r.chain[r.indexed].Decode()
 		if err != nil || b.Type != cdschain.TypePolicy || cdschain.DecodeStrict(b.Payload, &p) != nil {
 			continue
 		}
 		sum := sha256.Sum256(p.Allowlist)
-		if "sha256:"+hex.EncodeToString(sum[:]) == digest {
-			return p.Allowlist, true
-		}
+		r.policies["sha256:"+hex.EncodeToString(sum[:])] = p.Allowlist
 	}
-	return nil, false
+	allowlist, ok := r.policies[digest]
+	return allowlist, ok
 }
 
 // Identity is the chain identity this replica answers a client pinning pin
@@ -719,6 +725,7 @@ func (r *Replica) Resolve(seq uint64, keep, drop cdschain.Hash) error {
 			return err
 		}
 		r.chain, r.state, r.cut = r.chain[:seq], state, seq
+		r.policies, r.indexed = nil, 0
 		r.adoptedLocked()
 	}
 	r.dropped[drop] = seq
