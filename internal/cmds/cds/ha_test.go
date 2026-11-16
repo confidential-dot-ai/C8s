@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -397,4 +398,89 @@ func TestReplicaServesTheChainsRouteManifest(t *testing.T) {
 			t.Fatalf("revision %d: the store serves %q %q (%v)", revision, got.Manifest, got.Token, err)
 		}
 	}
+}
+
+// failingStore is a chain store whose head reads fail while down is set.
+type failingStore struct {
+	cdsha.Store
+	down atomic.Bool
+}
+
+func (f *failingStore) GetHead(ctx context.Context) ([]byte, error) {
+	if f.down.Load() {
+		return nil, errors.New("connection refused")
+	}
+	return f.Store.GetHead(ctx)
+}
+
+// /readyz fails while the replica's store reads fail, as its gated reads do.
+func TestReadyzFailsDuringAStoreOutage(t *testing.T) {
+	operator, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mesh, err := issuer.NewMeshCA("lane", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := &failingStore{Store: cdsha.NewMemory()}
+	replica, err := cdsha.New(cdsha.Config{
+		Cluster: "lane", Endpoints: []string{"a:1"},
+		OperatorKeys: []*ecdsa.PublicKey{&operator.PublicKey},
+		Gossip:       100 * time.Millisecond, PeerTimeout: 100 * time.Millisecond, StoreTimeout: time.Second,
+		Mesh:      mesh,
+		SelfCheck: func(context.Context, string) (bool, error) { return true, nil },
+	}, st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := replica.Pending(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opPEM, _ := cdschain.PublicKeyPEM(&operator.PublicKey)
+	genesis, _ := json.Marshal(cdschain.Genesis{
+		Endpoints: []string{"a:1"}, Members: []string{pending.Member}, OperatorKeys: opPEM, CAKey: pending.CAKey,
+		Accepted: []cdschain.Build{{Measurements: testutil.CDSPinDocument(strings.Repeat("a1", 48), "launch"), Version: "v1.0.0"}},
+	})
+	entry, err := cdschain.Sign(operator, cdschain.Body{Cluster: "lane", Type: cdschain.TypeGenesis, Payload: genesis})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := replica.Start(cdsha.Handoff{Entries: []cdschain.Entry{entry}}); err != nil {
+		t.Fatal(err)
+	}
+	router := newRouter(dependencies{
+		HA:               replica,
+		AllowlistHandler: allowlist.Handler{Store: inMemoryStore(t)},
+		ReadyFn:          func() bool { return true },
+		MeshCA:           mesh,
+		RateLimiter:      newTestRateLimiter(t),
+		ChallengeLimiter: newTestRateLimiter(t),
+		MaxRequestSize:   65536,
+	})
+	readyz := func() int {
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+		return w.Code
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go replica.Run(ctx)
+	waitFor := func(what string, cond func() bool) {
+		t.Helper()
+		for deadline := time.Now().Add(5 * time.Second); !cond(); time.Sleep(20 * time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatalf("timed out waiting for %s", what)
+			}
+		}
+	}
+	waitFor("the replica to be ready", func() bool { return readyz() == http.StatusOK })
+	st.down.Store(true)
+	waitFor("the store error", func() bool { return replica.Status().StoreError != "" })
+	if code := readyz(); code != http.StatusServiceUnavailable {
+		t.Fatalf("/readyz = %d during a store outage, want 503", code)
+	}
+	st.down.Store(false)
+	waitFor("the replica to be ready again", func() bool { return readyz() == http.StatusOK })
 }
