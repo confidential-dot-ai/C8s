@@ -134,6 +134,23 @@ func TestSlowSelfCheckBlocksNoRead(t *testing.T) {
 	}
 }
 
+// A store rolled back to an older head of the chain is written forward,
+// and the replica never serves below the head it holds.
+func TestStoreRollbackIsWrittenForward(t *testing.T) {
+	s := newSet(t, 1)
+	s.bootstrap()
+	old, _ := s.store.GetHead(context.Background())
+	s.write(0)
+	head := s.write(0)
+	s.setHead(old)
+	if got, err := s.serves(0); err != nil || got != head {
+		t.Fatalf("served %+v %v after the store rolled back, want %+v", got, err, head)
+	}
+	if got := s.storeHead(); got.Seq != head.Seq || got.Hash != head.Hash {
+		t.Fatalf("store head %+v, not written forward to %+v", got, head)
+	}
+}
+
 // A replica refuses a resolution dropping an entry it answered done.
 func TestResolveRefusesDoneEntry(t *testing.T) {
 	s := newSet(t, 1)
