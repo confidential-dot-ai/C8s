@@ -39,18 +39,18 @@ type Chain struct {
 type Status struct {
 	Slot         int             `json:"slot"`
 	Member       string          `json:"member"`
-	Pending      bool            `json:"genesisPending"`
+	Pending      bool            `json:"genesis_pending"`
 	Held         *cdschain.Head  `json:"held,omitempty"`
-	Floor        uint64          `json:"servedFloor"`
+	Floor        uint64          `json:"served_floor"`
 	Halted       string          `json:"halted,omitempty"`
 	Fresh        bool            `json:"fresh"`
-	IsMember     bool            `json:"isMember"`
-	StoreError   string          `json:"storeError,omitempty"`
+	IsMember     bool            `json:"is_member"`
+	StoreError   string          `json:"store_error,omitempty"`
 	Fork         *Fork           `json:"fork,omitempty"`
 	Confirmed    []cdschain.Head `json:"confirmed,omitempty"`
 	Evicted      string          `json:"evicted,omitempty"`
-	ChainEntries int             `json:"chainEntries"`
-	ChainBytes   int64           `json:"chainBytes"`
+	ChainEntries int             `json:"chain_entries"`
+	ChainBytes   int64           `json:"chain_bytes"`
 	Build        string          `json:"build,omitempty"`
 	Serving      string          `json:"serving,omitempty"`
 }

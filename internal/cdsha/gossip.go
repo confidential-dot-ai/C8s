@@ -313,8 +313,8 @@ func (r *Replica) Pending(genesis bool) (*Pending, error) {
 // resolve dropped and the store credential.
 type Handoff struct {
 	Entries    []cdschain.Entry         `json:"entries"`
-	CACert     []byte                   `json:"caCert"`
-	CAKey      []byte                   `json:"caKey"`
+	CACert     []byte                   `json:"ca_cert"`
+	CAKey      []byte                   `json:"ca_key"`
 	Dropped    map[cdschain.Hash]uint64 `json:"dropped,omitempty"`
 	Credential []byte                   `json:"credential,omitempty"`
 }
