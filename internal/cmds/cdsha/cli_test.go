@@ -653,3 +653,20 @@ func TestWriteRoutesIsConditional(t *testing.T) {
 		t.Fatalf("a write conditional on the chain's manifest: %v", err)
 	}
 }
+
+// Through a router that answers /ha/status itself (503 before a route
+// manifest applies), the CDS is not taken for a replica set: the old write
+// is sent, which a replica set would refuse.
+func TestWriteEntryIsNotHandledWithoutAnHAStatus(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	_, key := testChain(t, 1)
+	router := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "no route manifest", http.StatusServiceUnavailable)
+	}))
+	defer router.Close()
+	opts := &cdsconn.Options{URL: router.URL, Insecure: true, OperatorKey: writeOperatorKey(t, key), Timeout: 5 * time.Second}
+	if handled, err := writeEntry(context.Background(), opts, cdschain.TypePolicy, nil); handled {
+		t.Fatalf("a router without routes was taken for a replica set: %v", err)
+	}
+}

@@ -546,9 +546,9 @@ func routeDigest(manifest []byte) string {
 }
 
 // writeEntry appends payload(state) through the replica at opts, unless the
-// CDS there answers no HA status (a single CDS: not handled). An error before
-// that answer is handled: the old write would reach the same CDS, and a
-// replica set refuses it.
+// CDS there answers no HA status (a single CDS, or a router that does not
+// route /ha: not handled; a replica set refuses the old write). An error
+// before any answer is handled: the old write would reach the same CDS.
 func writeEntry(ctx context.Context, opts *cdsconn.Options, typ cdschain.Type, payload func(*cdschain.State) (any, error)) (bool, error) {
 	o := &options{Options: *opts}
 	w, err := o.writer(ctx)
@@ -557,9 +557,9 @@ func writeEntry(ctx context.Context, opts *cdsconn.Options, typ cdschain.Type, p
 	}
 	var status haapi.Status
 	err = haapi.Call(ctx, w.client, http.MethodGet, w.url+haapi.StatusPath, nil, &status)
-	// A single CDS answers no HA status; every replica names its member key.
+	// Every replica answers its status, naming its member key.
 	var se *operatorauth.StatusError
-	if (errors.As(err, &se) && se.Status == http.StatusNotFound) || (err == nil && status.Member == "") {
+	if errors.As(err, &se) || (err == nil && status.Member == "") {
 		return false, nil
 	}
 	if err != nil {
