@@ -252,27 +252,148 @@ func (o *options) resolve(ctx context.Context, out io.Writer, urls []string, seq
 	if cluster == "" {
 		return errors.New("no replica of --endpoints holds a chain")
 	}
-	rec, err := o.record(cluster)
-	if err != nil {
-		return err
-	}
-	drop, err := planResolution(statuses, seq, kept, assumeLost, rec)
-	if err != nil {
-		return err
-	}
 	held, err := refreshAbove(statuses, assumeLost, lostHead, lostHeadSet)
 	if err != nil {
 		return err
 	}
-	reqs := resolutions(statuses, cluster, seq, kept, drop)
+	plan, err := o.plan(cluster)
+	switch {
+	case err != nil:
+		return err
+	case plan != nil && (plan.Seq != seq || plan.Keep != kept):
+		path, _ := o.planPath(cluster)
+		return fmt.Errorf("the resolve of seq %d keeping %s is not finished: run it again first, or remove %s to abandon it", plan.Seq, plan.Keep, path)
+	case plan != nil:
+		// A rerun: the first run may have cleared forks and cut chains, so
+		// the plan, not the statuses now, says what was dropped and held.
+		plan.Held = max(plan.Held, held)
+	default:
+		rec, err := o.record(cluster)
+		if err != nil {
+			return err
+		}
+		ackedAt, err := o.ackedAt(ctx, urls, statuses, seq, rec)
+		if err != nil {
+			return err
+		}
+		drop, err := planResolution(statuses, seq, kept, assumeLost, ackedAt)
+		if err != nil {
+			return err
+		}
+		plan = &resolvePlan{Seq: seq, Keep: kept, Drop: drop, Held: held}
+	}
+	if err := o.savePlan(cluster, plan); err != nil {
+		return err
+	}
+	reqs := resolutions(statuses, cluster, seq, kept, plan.Drop)
 	for _, slot := range slices.Sorted(maps.Keys(reqs)) {
 		body, _ := json.Marshal(reqs[slot])
 		if err := o.operatorPost(ctx, urls[slot], haapi.ResolvePath, body); err != nil {
-			return fmt.Errorf("slot %d: %w", slot, err)
+			return fmt.Errorf("slot %d: %w; run the resolve again", slot, err)
 		}
 		fmt.Fprintf(out, "slot %d: resolved, keeping %s at seq %d\n", slot, kept, seq)
 	}
-	return o.afterResolve(ctx, urls, held, time.Now().Add(settle))
+	if err := o.afterResolve(ctx, urls, plan.Held, settle); err != nil {
+		return err
+	}
+	return o.savePlan(cluster, nil)
+}
+
+// resolvePlan is a resolve in progress, kept as <cluster>.resolve until the
+// set took the allowlist refresh, so a rerun after a failure resumes it.
+type resolvePlan struct {
+	Seq  uint64        `json:"seq"`
+	Keep cdschain.Hash `json:"keep"`
+	Drop cdschain.Hash `json:"drop"`
+	// Held is the highest seq a replica held before the first run cut any
+	// chain (refreshAbove).
+	Held uint64 `json:"held"`
+}
+
+func (o *options) planPath(cluster string) (string, error) {
+	dir, err := o.recordDir()
+	return filepath.Join(dir, cluster+".resolve"), err
+}
+
+// plan reads the cluster's resolve in progress, nil when there is none.
+func (o *options) plan(cluster string) (*resolvePlan, error) {
+	path, err := o.planPath(cluster)
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var p resolvePlan
+	return &p, json.Unmarshal(data, &p)
+}
+
+// savePlan keeps p, or removes the plan when p is nil.
+func (o *options) savePlan(cluster string, p *resolvePlan) error {
+	path, err := o.planPath(cluster)
+	if err != nil {
+		return err
+	}
+	if p == nil {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return nil
+	}
+	data, err := json.Marshal(p)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return fileutil.WriteAtomic(path, append(data, '\n'), 0o600)
+}
+
+// ackedAt is the entry at seq on the chain of this CLI's acknowledged head,
+// zero when that head is below seq. Above seq, a replica holding the head
+// shows it: its chain from seq links up to the head by prev hashes.
+func (o *options) ackedAt(ctx context.Context, urls []string, statuses []*haapi.Status, seq uint64, rec *record) (cdschain.Hash, error) {
+	switch {
+	case rec == nil || rec.Acknowledged.Seq < seq:
+		return cdschain.Hash{}, nil
+	case rec.Acknowledged.Seq == seq:
+		return rec.Acknowledged.Hash, nil
+	}
+	ack := rec.Acknowledged
+	for slot, s := range statuses {
+		if s == nil || s.Held == nil || s.Held.Seq < ack.Seq {
+			continue
+		}
+		client, err := o.client(ctx, urls[slot])
+		if err != nil {
+			continue
+		}
+		entries, err := haapi.ReadChain(ctx, client, urls[slot], seq)
+		if err == nil && linksUpTo(entries, seq, ack) {
+			return entries[0].Hash(), nil
+		}
+	}
+	return cdschain.Hash{}, fmt.Errorf("no replica answers with this CLI's acknowledged head %d (%s): it cannot tell whether --keep drops it", ack.Seq, ack.Hash)
+}
+
+// linksUpTo: entries, from seq on, are linked by their prev hashes up to head.
+func linksUpTo(entries []cdschain.Entry, seq uint64, head cdschain.Head) bool {
+	n := head.Seq - seq
+	if uint64(len(entries)) <= n || entries[n].Hash() != head.Hash {
+		return false
+	}
+	for i := uint64(1); i <= n; i++ {
+		b, err := entries[i].Decode()
+		if err != nil || b.Seq != seq+i || b.Prev != entries[i-1].Hash() {
+			return false
+		}
+	}
+	return true
 }
 
 // refreshAbove is the highest seq any replica may have held before the
@@ -293,13 +414,16 @@ func refreshAbove(statuses []*haapi.Status, assumeLost []int, lostHead uint64, l
 }
 
 // afterResolve waits until a replica of urls takes the allowlist refresh
-// (refreshPolicy) or the deadline passes. A replica still halted on a fork
+// (refreshPolicy), for at most settle. A replica still halted on a fork
 // ends it: the resolve settled a fork above the one the chains split at.
-func (o *options) afterResolve(ctx context.Context, urls []string, held uint64, deadline time.Time) error {
+func (o *options) afterResolve(ctx context.Context, urls []string, held uint64, settle time.Duration) error {
 	key, err := o.OperatorPrivateKey()
 	if err != nil {
 		return err
 	}
+	parent := ctx
+	ctx, cancel := context.WithTimeout(ctx, settle)
+	defer cancel()
 	for {
 		for slot, s := range o.statuses(ctx, urls) {
 			if s != nil && s.Fork != nil {
@@ -316,10 +440,16 @@ func (o *options) afterResolve(ctx context.Context, urls []string, held uint64, 
 				return nil
 			}
 		}
-		if time.Now().After(deadline) {
+		if parent.Err() != nil {
+			return parent.Err()
+		}
+		if ctx.Err() != nil {
 			return fmt.Errorf("the set did not take the allowlist refresh before --settle-timeout; run the resolve again: %w", err)
 		}
-		time.Sleep(time.Second)
+		select {
+		case <-ctx.Done():
+		case <-time.After(time.Second):
+		}
 	}
 }
 
@@ -346,8 +476,10 @@ func (w *writer) refreshPolicy(ctx context.Context, held uint64) error {
 }
 
 // planResolution is the entry a resolution drops: every replica must
-// answer unless assumed lost, and nothing dropped may have been answered done.
-func planResolution(statuses []*haapi.Status, seq uint64, keep cdschain.Hash, assumeLost []int, rec *record) (cdschain.Hash, error) {
+// answer unless assumed lost, and nothing dropped may have been answered done,
+// nor be on the chain of this CLI's acknowledged head (ackedAt, its entry at
+// seq).
+func planResolution(statuses []*haapi.Status, seq uint64, keep cdschain.Hash, assumeLost []int, ackedAt cdschain.Hash) (cdschain.Hash, error) {
 	var drop cdschain.Hash
 	for slot, s := range statuses {
 		switch {
@@ -376,8 +508,8 @@ func planResolution(statuses []*haapi.Status, seq uint64, keep cdschain.Hash, as
 			}
 		}
 	}
-	if rec != nil && rec.Acknowledged.Seq == seq && rec.Acknowledged.Hash == drop {
-		return drop, fmt.Errorf("the dropped entry is this CLI's acknowledged head %d", seq)
+	if ackedAt == drop {
+		return drop, fmt.Errorf("the dropped entry %s is on the chain of this CLI's acknowledged head", drop)
 	}
 	return drop, nil
 }

@@ -158,12 +158,13 @@ func TestGenesisStartsThePendingReplicas(t *testing.T) {
 	}
 }
 
-// A resolve keeps the named entry, and writes the kept chain's allowlist again
-// above every head a replica held, so a node that pulled a dropped allowlist
-// sees a newer version.
-func TestResolveRewritesTheAllowlistAboveTheDroppedBranch(t *testing.T) {
-	l := newLiveReplica(t)
-	o := l.options()
+// forkedReplica is a replica that holds a policy entry and then halts on a
+// fork right above it: mine, which it answered done, against another
+// writer's entry on its store.
+func forkedReplica(t *testing.T) (l *liveReplica, o *options, seq uint64, mine cdschain.Entry) {
+	t.Helper()
+	l = newLiveReplica(t)
+	o = l.options()
 	pin := []byte(testutil.CDSPinDocument(testutil.TestMeasurement, "launch"))
 	if err := o.genesis(context.Background(), &bytes.Buffer{}, []string{l.url}, "lane", "v1.0.0", pin, ""); err != nil {
 		t.Fatal(err)
@@ -183,8 +184,8 @@ func TestResolveRewritesTheAllowlistAboveTheDroppedBranch(t *testing.T) {
 		}
 		return e
 	}
-	seq := state.Head.Seq + 1
-	mine := entryAt("")
+	seq = state.Head.Seq + 1
+	mine = entryAt("")
 	if _, done, err := l.replica.Submit(context.Background(), mine); err != nil || !done {
 		t.Fatalf("submit: %v %v", done, err)
 	}
@@ -208,6 +209,15 @@ func TestResolveRewritesTheAllowlistAboveTheDroppedBranch(t *testing.T) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+	return l, o, seq, mine
+}
+
+// A resolve keeps the named entry, and writes the kept chain's allowlist again
+// above every head a replica held, so a node that pulled a dropped allowlist
+// sees a newer version.
+func TestResolveRewritesTheAllowlistAboveTheDroppedBranch(t *testing.T) {
+	l, o, seq, mine := forkedReplica(t)
+	ctx := context.Background()
 	var out bytes.Buffer
 	if err := o.resolve(ctx, &out, []string{l.url}, seq, mine.Hash(), nil, 0, false, 10*time.Second); err != nil {
 		t.Fatal(err)
@@ -215,7 +225,7 @@ func TestResolveRewritesTheAllowlistAboveTheDroppedBranch(t *testing.T) {
 	if !strings.Contains(out.String(), "slot 0: resolved") {
 		t.Fatalf("printed %q", out.String())
 	}
-	state = l.waitServing(t)
+	state := l.waitServing(t)
 	if state.Head.Seq <= seq || state.PolicySeq <= seq || state.Head.Seq != state.PolicySeq {
 		t.Fatalf("head %d, policy at %d: want the allowlist written again above seq %d", state.Head.Seq, state.PolicySeq, seq)
 	}
@@ -241,7 +251,7 @@ func TestResolveRefusals(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(haapi.Status{Fork: &haapi.Fork{Seq: 4, Mine: cdschain.Hash{1}, Theirs: cdschain.Hash{2}}})
 	}))
 	defer halted.Close()
-	err := l.options().afterResolve(context.Background(), []string{halted.URL}, 3, time.Now().Add(time.Second))
+	err := l.options().afterResolve(context.Background(), []string{halted.URL}, 3, time.Second)
 	if err == nil || !strings.Contains(err.Error(), "resolve seq 4 next") {
 		t.Fatalf("after a resolve with a replica still halted: %v", err)
 	}
@@ -396,4 +406,61 @@ func (f *racedReplica) head() cdschain.Head {
 	defer f.mu.Unlock()
 	state, _ := cdschain.Verify(f.entries)
 	return state.Head
+}
+
+// A resolve whose first run failed after it reached the replicas (their forks
+// cleared, their chains cut) resumes from its saved plan: the rerun neither
+// refuses for want of a fork nor computes the refresh bound from the cut
+// chains. The plan is gone once the set took the refresh.
+func TestResolveResumesFromItsPlan(t *testing.T) {
+	l, o, seq, mine := forkedReplica(t)
+	ctx := context.Background()
+	held := l.replica.Status().Held.Seq
+	if err := o.resolve(ctx, io.Discard, []string{l.url}, seq, mine.Hash(), nil, 0, false, 0); err == nil {
+		t.Fatal("a resolve with no time to settle succeeded")
+	}
+	if p, err := o.plan("lane"); err != nil || p == nil || p.Held != held || p.Keep != mine.Hash() {
+		t.Fatalf("plan after the failed run: %+v %v, want held %d", p, err, held)
+	}
+	if err := o.resolve(ctx, io.Discard, []string{l.url}, seq+1, mine.Hash(), nil, 0, false, 10*time.Second); err == nil || !strings.Contains(err.Error(), "not finished") {
+		t.Fatalf("another resolve over an unfinished one: %v", err)
+	}
+	if err := o.resolve(ctx, io.Discard, []string{l.url}, seq, mine.Hash(), nil, 0, false, 10*time.Second); err != nil {
+		t.Fatalf("the rerun: %v", err)
+	}
+	if state := l.waitServing(t); state.PolicySeq <= held {
+		t.Fatalf("policy at %d after the rerun, want it above the held head %d", state.PolicySeq, held)
+	}
+	if p, err := o.plan("lane"); err != nil || p != nil {
+		t.Fatalf("plan after the resolve finished: %+v %v", p, err)
+	}
+}
+
+// Above the fork, the acknowledged head's entry at the fork's seq is read
+// from a replica that holds the head, its chain linked up to it; with no
+// such replica the resolve cannot tell what it drops.
+func TestAckedAtReadsTheAcknowledgedChain(t *testing.T) {
+	entries, _ := testChain(t, 5)
+	srv := httptest.NewServer(&racedReplica{entries: entries})
+	defer srv.Close()
+	o := &options{Options: cdsconn.Options{Insecure: true, Timeout: 5 * time.Second}}
+	urls := []string{"http://127.0.0.1:1", srv.URL}
+	statuses := []*haapi.Status{nil, {Held: &cdschain.Head{Seq: 4}}}
+	ack := &record{Acknowledged: cdschain.Head{Seq: 4, Hash: entries[4].Hash()}}
+	if got, err := o.ackedAt(context.Background(), urls, statuses, 2, ack); err != nil || got != entries[2].Hash() {
+		t.Fatalf("acked at seq 2: %s %v, want %s", got, err, entries[2].Hash())
+	}
+	if got, err := o.ackedAt(context.Background(), urls, statuses, 4, ack); err != nil || got != entries[4].Hash() {
+		t.Fatalf("acked at its own seq: %s %v", got, err)
+	}
+	if got, err := o.ackedAt(context.Background(), urls, statuses, 5, ack); err != nil || got != (cdschain.Hash{}) {
+		t.Fatalf("acked below the fork: %s %v", got, err)
+	}
+	other := &record{Acknowledged: cdschain.Head{Seq: 4, Hash: cdschain.Hash{9}}}
+	if _, err := o.ackedAt(context.Background(), urls, statuses, 2, other); err == nil || !strings.Contains(err.Error(), "cannot tell") {
+		t.Fatalf("an acknowledged head no replica holds: %v", err)
+	}
+	if linksUpTo([]cdschain.Entry{entries[2], entries[4]}, 2, cdschain.Head{Seq: 3, Hash: entries[4].Hash()}) {
+		t.Fatal("entries not linked by their prev hashes passed")
+	}
 }

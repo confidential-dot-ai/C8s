@@ -89,17 +89,18 @@ func TestPlanResolution(t *testing.T) {
 		name     string
 		statuses []*haapi.Status
 		lost     []int
-		rec      *record
+		ackedAt  cdschain.Hash
 		want     string
 	}{
-		{"ok", []*haapi.Status{forkOn(keep, drop), forkOn(drop, keep), {}}, nil, nil, ""},
-		{"a replica does not answer", []*haapi.Status{forkOn(keep, drop), nil, {}}, nil, nil, "does not answer"},
-		{"assumed lost", []*haapi.Status{forkOn(keep, drop), nil, {}}, []int{1}, nil, ""},
-		{"drops a done entry", []*haapi.Status{forkOn(keep, drop), forkOn(drop, keep, cdschain.Head{Seq: 5}), {}}, nil, nil, "done"},
-		{"drops the acknowledged head", []*haapi.Status{forkOn(keep, drop), forkOn(drop, keep), {}}, nil, &record{Acknowledged: cdschain.Head{Seq: 5, Hash: drop}}, "acknowledged"},
-		{"keeps an unseen entry", []*haapi.Status{forkOn(cdschain.Hash{3}, drop), {}, {}}, nil, nil, "neither"},
+		{"ok", []*haapi.Status{forkOn(keep, drop), forkOn(drop, keep), {}}, nil, cdschain.Hash{}, ""},
+		{"a replica does not answer", []*haapi.Status{forkOn(keep, drop), nil, {}}, nil, cdschain.Hash{}, "does not answer"},
+		{"assumed lost", []*haapi.Status{forkOn(keep, drop), nil, {}}, []int{1}, cdschain.Hash{}, ""},
+		{"drops a done entry", []*haapi.Status{forkOn(keep, drop), forkOn(drop, keep, cdschain.Head{Seq: 5}), {}}, nil, cdschain.Hash{}, "done"},
+		{"drops the acknowledged head", []*haapi.Status{forkOn(keep, drop), forkOn(drop, keep), {}}, nil, drop, "acknowledged"},
+		{"keeps the acknowledged chain", []*haapi.Status{forkOn(keep, drop), forkOn(drop, keep), {}}, nil, keep, ""},
+		{"keeps an unseen entry", []*haapi.Status{forkOn(cdschain.Hash{3}, drop), {}, {}}, nil, cdschain.Hash{}, "neither"},
 	} {
-		got, err := planResolution(tc.statuses, 5, keep, tc.lost, tc.rec)
+		got, err := planResolution(tc.statuses, 5, keep, tc.lost, tc.ackedAt)
 		if tc.want == "" && (err != nil || got != drop) {
 			t.Errorf("%s: %v %v", tc.name, got, err)
 		}
@@ -696,6 +697,23 @@ func TestGenesisPinForAnOperatorWithoutARecord(t *testing.T) {
 	}
 	if _, err := w.verified(context.Background()); err != nil {
 		t.Fatalf("the recorded genesis: %v", err)
+	}
+}
+
+// An interrupted wait after a resolve ends at once with the interrupt, not
+// as a --settle-timeout.
+func TestAfterResolveEndsOnTheInterrupt(t *testing.T) {
+	_, key := testChain(t, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "unconfirmed", http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+	o := &options{Options: cdsconn.Options{URL: srv.URL, Insecure: true, OperatorKey: writeOperatorKey(t, key), Timeout: 5 * time.Second}, stateDir: t.TempDir()}
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(200*time.Millisecond, cancel)
+	start := time.Now()
+	if err := o.afterResolve(ctx, []string{srv.URL}, 3, time.Minute); !errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "settle-timeout") || time.Since(start) > 10*time.Second {
+		t.Fatalf("after the interrupt: %v after %s", err, time.Since(start))
 	}
 }
 
