@@ -33,7 +33,10 @@ import (
 // ErrNotConfirmed is a write that may have been applied: the replica
 // answered "committed, not confirmed" (202), or nothing after the entry
 // was sent. It is never recorded as acknowledged; `c8s` exits 3.
-var ErrNotConfirmed = errors.New("the write may have been applied but is not confirmed: check the replicas' heads with c8s cds ha status before writing again")
+var ErrNotConfirmed error = &cmdsutil.ExitStatusError{
+	Status: cmdsutil.ExitNotConfirmed,
+	Err:    errors.New("the write may have been applied but is not confirmed: check the replicas' heads with c8s cds ha status before writing again"),
+}
 
 // writer appends operator-signed entries through one replica.
 type writer struct {

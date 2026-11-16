@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -25,6 +26,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cdschain"
 	haapi "github.com/confidential-dot-ai/c8s/internal/cdsha"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cdsconn"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
@@ -714,6 +716,13 @@ func TestAfterResolveEndsOnTheInterrupt(t *testing.T) {
 	start := time.Now()
 	if err := o.afterResolve(ctx, []string{srv.URL}, 3, time.Minute); !errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "settle-timeout") || time.Since(start) > 10*time.Second {
 		t.Fatalf("after the interrupt: %v after %s", err, time.Since(start))
+	}
+}
+
+// A write that may have been applied exits 3 through every caller.
+func TestNotConfirmedExitStatus(t *testing.T) {
+	if got := cmdsutil.ExitStatus(fmt.Errorf("writing: %w", ErrNotConfirmed)); got != cmdsutil.ExitNotConfirmed {
+		t.Fatalf("exit status %d", got)
 	}
 }
 
