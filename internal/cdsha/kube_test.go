@@ -3,6 +3,7 @@ package cdsha
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
+	"github.com/confidential-dot-ai/c8s/internal/readutil"
 )
 
 // The store credential is a kubeconfig cut down to data; anything that
@@ -56,23 +58,31 @@ current-context: x
 	}
 }
 
-// An API server answer is capped.
+// An API server answer is capped: one past the cap fails whole instead of
+// reaching the decoder cut short.
 func TestKubeAnswersAreCapped(t *testing.T) {
+	size := MaxStoreAnswer
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write(make([]byte, 2*MaxStoreAnswer))
+		_, _ = w.Write(make([]byte, size))
 	}))
 	defer srv.Close()
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, srv.URL, nil)
-	if err != nil {
-		t.Fatal(err)
+	get := func() ([]byte, error) {
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, srv.URL, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := capped{http.DefaultTransport}.RoundTrip(req)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+		return io.ReadAll(resp.Body)
 	}
-	resp, err := capped{http.DefaultTransport}.RoundTrip(req)
-	if err != nil {
-		t.Fatal(err)
+	if data, err := get(); err != nil || len(data) != MaxStoreAnswer {
+		t.Fatalf("negative control: an answer at the cap read %d bytes, %v", len(data), err)
 	}
-	defer resp.Body.Close() // before srv.Close: the server is still writing
-	data, _ := io.ReadAll(resp.Body)
-	if len(data) != MaxStoreAnswer {
-		t.Fatalf("read %d bytes, cap %d", len(data), MaxStoreAnswer)
+	size = MaxStoreAnswer + 1
+	if data, err := get(); !errors.Is(err, readutil.ErrTooLarge) {
+		t.Fatalf("an answer past the cap read %d bytes, %v; want %v", len(data), err, readutil.ErrTooLarge)
 	}
 }

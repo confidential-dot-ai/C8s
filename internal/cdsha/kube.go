@@ -1,6 +1,7 @@
 package cdsha
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -19,6 +20,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/confidential-dot-ai/c8s/internal/cdschain"
+	"github.com/confidential-dot-ai/c8s/internal/readutil"
 )
 
 // Kube keeps the chain in ConfigMaps: cds-<cluster>-head and, immutable,
@@ -181,16 +183,20 @@ func OpenKube(credential []byte, cluster string) (*Kube, error) {
 	return &Kube{ConfigMaps: client.CoreV1().ConfigMaps(namespace), Cluster: cluster}, nil
 }
 
-// capped bounds every API server answer.
+// capped bounds every API server answer (readutil.ReadAll): one that is
+// larger fails whole, never truncated.
 type capped struct{ next http.RoundTripper }
 
 func (c capped) RoundTrip(r *http.Request) (*http.Response, error) {
 	resp, err := c.next.RoundTrip(r)
-	if err == nil {
-		resp.Body = struct {
-			io.Reader
-			io.Closer
-		}{io.LimitReader(resp.Body, MaxStoreAnswer), resp.Body}
+	if err != nil {
+		return nil, err
 	}
-	return resp, err
+	defer resp.Body.Close()
+	body, err := readutil.ReadAll(resp.Body, MaxStoreAnswer)
+	if err != nil {
+		return nil, fmt.Errorf("kubernetes answer: %w", err)
+	}
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+	return resp, nil
 }
