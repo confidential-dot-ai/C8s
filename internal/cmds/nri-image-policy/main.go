@@ -375,9 +375,9 @@ func allowlistPullHTTPClient(cfg pullConfig, clusterDNS netip.Addr) (*http.Clien
 }
 
 // cdsHTTPClientWithLeaf is a CDS client presenting clientCert as its TLS
-// client certificate. Its pins are read on every handshake: the chain's once
-// chain has followed it, else the launch pins, so it follows the builds the
-// replica set accepts.
+// client certificate. Its pins are read on every handshake: the chain's pins
+// document once the node has followed the replica set's chain, else the
+// launch pins, so it follows the builds the replica set accepts.
 func cdsHTTPClientWithLeaf(cfg pullConfig, clusterDNS netip.Addr, chain *chainPins, clientCert func(*tls.CertificateRequestInfo) (*tls.Certificate, error)) (*http.Client, error) {
 	launch := cfg.CDSMeasurementsConfig
 	client, err := armtls.NewFollowingHTTPClient(func() (armtls.Pins, error) {
