@@ -27,6 +27,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cdsconn"
 	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
 // Only a 200 naming the entry is done; a 202 or a broken answer
@@ -617,5 +618,38 @@ func TestAppendHoldsTheAnswerToTheEntry(t *testing.T) {
 			t.Errorf("an answer naming another %s was recorded at %d", name, rec.Acknowledged.Seq)
 		}
 		srv.Close()
+	}
+}
+
+// A conditional route manifest write lands only on the manifest it was read
+// from, as the single CDS's If-Match: an edit landing in between, or no
+// manifest at all, refuses it.
+func TestWriteRoutesIsConditional(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	entries, key := testChain(t, 1)
+	replica := &racedReplica{entries: entries}
+	srv := httptest.NewServer(replica)
+	defer srv.Close()
+	signer, err := operatorauth.NewSigner(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := &cdsconn.Options{URL: srv.URL, Insecure: true, OperatorKey: writeOperatorKey(t, key), Timeout: 5 * time.Second}
+	first, second := []byte(`{"routes":[]}`), []byte(`{"routes":[{}]}`)
+	if _, err := WriteRoutes(context.Background(), opts, first, signer, routeDigest(first)); !errors.Is(err, ErrRoutesChanged) {
+		t.Fatalf("a conditional write with no manifest on the chain: %v", err)
+	}
+	if _, err := WriteRoutes(context.Background(), opts, first, signer, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := WriteRoutes(context.Background(), opts, second, signer, routeDigest(second)); !errors.Is(err, ErrRoutesChanged) {
+		t.Fatalf("a write conditional on a manifest the chain does not hold: %v", err)
+	}
+	if replica.head().Seq != 1 {
+		t.Fatalf("head %d: a refused write was appended", replica.head().Seq)
+	}
+	if _, err := WriteRoutes(context.Background(), opts, second, signer, routeDigest(first)); err != nil {
+		t.Fatalf("a write conditional on the chain's manifest: %v", err)
 	}
 }

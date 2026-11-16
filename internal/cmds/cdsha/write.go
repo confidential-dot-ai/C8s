@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdsa"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -514,17 +515,34 @@ func WritePolicy(ctx context.Context, opts *cdsconn.Options, doc *pkgallowlist.A
 	return handled, err
 }
 
+// ErrRoutesChanged is a route manifest write conditional on a manifest the
+// chain no longer holds, as a single CDS's 412.
+var ErrRoutesChanged = errors.New("the route manifest changed since it was read")
+
 // WriteRoutes writes a route manifest, in the envelope the router verifies,
-// as a routes entry when the CDS at opts is a replica set (handled).
-func WriteRoutes(ctx context.Context, opts *cdsconn.Options, manifest []byte, signer operatorauth.Authorizer) (bool, error) {
+// as a routes entry when the CDS at opts is a replica set (handled). With
+// ifMatch set, the chain's manifest must be the one of that hex route digest.
+func WriteRoutes(ctx context.Context, opts *cdsconn.Options, manifest []byte, signer operatorauth.Authorizer, ifMatch string) (bool, error) {
 	token, err := signer.Authorization(http.MethodPut, routes.Path, manifest)
 	if err != nil {
 		return false, err
 	}
 	token, _ = strings.CutPrefix(token, "Bearer ")
-	return writeEntry(ctx, opts, cdschain.TypeRoutes, func(*cdschain.State) (any, error) {
+	handled, err := writeEntry(ctx, opts, cdschain.TypeRoutes, func(state *cdschain.State) (any, error) {
+		if ifMatch != "" && (state.Routes == nil || routeDigest(state.Routes.Manifest) != ifMatch) {
+			return nil, ErrRoutesChanged
+		}
 		return cdschain.Routes{Manifest: manifest, Token: token}, nil
 	})
+	if ifMatch != "" && errors.Is(err, errHeadMoved) {
+		err = fmt.Errorf("%w: %w", ErrRoutesChanged, err)
+	}
+	return handled, err
+}
+
+func routeDigest(manifest []byte) string {
+	d := routes.Digest(manifest)
+	return hex.EncodeToString(d[:])
 }
 
 // writeEntry appends payload(state) through the replica at opts, unless the

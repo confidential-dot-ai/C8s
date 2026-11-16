@@ -368,7 +368,7 @@ func TestWriteRoutesCarriesATokenForTheManifest(t *testing.T) {
 	}
 	manifest := []byte(`{"routes":[]}`)
 	opts := &cdsconn.Options{URL: srv.URL, Insecure: true, OperatorKey: writeOperatorKey(t, key), Timeout: 5 * time.Second}
-	if handled, err := WriteRoutes(context.Background(), opts, manifest, signer); !handled || err != nil {
+	if handled, err := WriteRoutes(context.Background(), opts, manifest, signer, ""); !handled || err != nil {
 		t.Fatalf("handled=%v %v", handled, err)
 	}
 	replica.mu.Lock()
