@@ -312,3 +312,39 @@ func TestChainPullFailsClosedWithoutATransport(t *testing.T) {
 		t.Fatalf("a pull with no transport: err %v, reached the CDS %v", err, served)
 	}
 }
+
+// A restarted plugin rewrites the pods' pins document in place: a pod started
+// before the restart bind-mounts its inode, and must read what the plugin
+// writes now and on every later chain update.
+func TestPrepareCDSPinsKeepsTheInodePodsMount(t *testing.T) {
+	renderInTempDir(t)
+	pin := testCDSPinFile(t)
+	p := testPlugin(t, &config{
+		Platform:       "tdx",
+		WorkloadClaims: workloadClaimsConfig{SocketDir: t.TempDir()},
+		Allowlist:      allowlistConfig{Pull: pullConfig{CDSMeasurementsConfig: pin}},
+	})
+	path := filepath.Join(enforcerRuntimeDir, renderedCDSPinsName)
+	if err := os.WriteFile(path, []byte("pins of the previous run"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mounted, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mounted.Close()
+	if err := p.prepareCDSPins(); err != nil {
+		t.Fatal(err)
+	}
+	seen, err := io.ReadAll(mounted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(seen) != string(want) || string(seen) == "pins of the previous run" {
+		t.Fatalf("a pod mounted before the restart reads %q", seen)
+	}
+}
