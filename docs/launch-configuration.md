@@ -57,6 +57,7 @@ entry itself:
 c8s cds ha accept-node \
     --url https://cds-1.example.org:8443 \
     --operator-key operator.key \
+    --image-policy-file cds-pin.json \
     --worker-document worker.yaml \
     --worker-image worker-image.json
 ```
@@ -85,7 +86,10 @@ no new entry; a changed document, such as one naming a new CA, is admitted
 beside the old one.
 
 A single CDS certifies the node images its configuration's `nodes` names: add
-the bound worker image entry there.
+the bound worker image entry there. On a replica set, every entry of the
+configuration's `nodes` must bind a launch (`approver_key`, `launch_file` or
+`launch_file_digest`), as every `nodes` entry of the chain does
+([cds-ha.md](cds-ha.md#configuration)).
 
 A cluster whose nodes are all workers has no set in force before its first
 worker: its launch file names no nodes (`c8s cds config new` without
