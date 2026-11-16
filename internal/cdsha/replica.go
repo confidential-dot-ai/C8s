@@ -170,8 +170,8 @@ func (r *Replica) Identity(pin string) string {
 
 func majority(n int) int { return n/2 + 1 }
 
-// servingLocked is why the replica serves nothing now, nil when it serves.
-func (r *Replica) servingLocked() error {
+// refusalLocked is why the replica serves nothing now, nil when it serves.
+func (r *Replica) refusalLocked() error {
 	switch {
 	case r.state == nil:
 		return fmt.Errorf("%w: the replica holds no chain yet", ErrUnavailable)
@@ -181,9 +181,9 @@ func (r *Replica) servingLocked() error {
 		return fmt.Errorf("%w: halted: two entries at seq %d (%s, %s from %s); resolve the fork", ErrUnavailable, r.fork.Seq, r.fork.Mine, r.fork.Theirs, r.fork.Source)
 	case r.state.Members[r.slot()] != r.memberPEM:
 		return fmt.Errorf("%w: this replica is not the member of slot %d", ErrUnavailable, r.slot())
-	case r.buildLocked() == "":
+	case r.ownBuildVersionLocked() == "":
 		return fmt.Errorf("%w: this replica's build is not accepted at head %d", ErrUnavailable, r.state.Head.Seq)
-	case !r.freshLocked():
+	case !r.majorityHeardLocked():
 		return fmt.Errorf("%w: no gossip from enough replicas within %v", ErrUnavailable, r.cfg.Gossip)
 	case r.state.Head.Seq < r.cut:
 		return fmt.Errorf("%w: a resolve cut the chain at seq %d; it serves again once it holds the kept entry", ErrUnavailable, r.cut)
@@ -191,9 +191,9 @@ func (r *Replica) servingLocked() error {
 	return nil
 }
 
-// memberAheadLocked is the highest head seq a current member's pong named
+// memberAheadSeqLocked is the highest head seq a current member's pong named
 // within T, if it is above the store's last read head; else 0.
-func (r *Replica) memberAheadLocked() uint64 {
+func (r *Replica) memberAheadSeqLocked() uint64 {
 	ahead := uint64(0)
 	for slot, h := range r.heard {
 		if h.key == r.state.Members[slot] && time.Since(h.at) < r.cfg.Gossip && h.seq > r.storeSeq {
@@ -203,9 +203,9 @@ func (r *Replica) memberAheadLocked() uint64 {
 	return ahead
 }
 
-// freshLocked reports whether a majority, counting self, answered a
+// majorityHeardLocked reports whether a majority, counting self, answered a
 // ping sent within T.
-func (r *Replica) freshLocked() bool {
+func (r *Replica) majorityHeardLocked() bool {
 	recent := 1
 	for slot, h := range r.heard {
 		if h.key == r.state.Members[slot] && time.Since(h.at) < r.cfg.Gossip {
@@ -215,9 +215,9 @@ func (r *Replica) freshLocked() bool {
 	return recent >= majority(len(r.cfg.Endpoints))
 }
 
-// buildLocked is the version of an accepted build this replica's own
+// ownBuildVersionLocked is the version of an accepted build this replica's own
 // attestation passes, "" when none does.
-func (r *Replica) buildLocked() string {
+func (r *Replica) ownBuildVersionLocked() string {
 	for _, b := range r.state.Accepted {
 		if r.own[b.Measurements] {
 			return b.Version
@@ -234,7 +234,7 @@ func (r *Replica) Current(ctx context.Context) (*cdschain.State, error) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if err := r.servingLocked(); err != nil {
+	if err := r.refusalLocked(); err != nil {
 		return nil, err
 	}
 	return r.state, nil
@@ -262,7 +262,7 @@ func (r *Replica) refresh(ctx context.Context) ([]byte, error) {
 	switch {
 	case errors.Is(err, ErrHalted):
 		r.mu.Lock()
-		err = fmt.Errorf("%w: %w", ErrHalted, r.servingLocked())
+		err = fmt.Errorf("%w: %w", ErrHalted, r.refusalLocked())
 		r.mu.Unlock()
 	case err != nil && !errors.Is(err, ErrUnavailable):
 		err = fmt.Errorf("%w: the store is unreachable: %w", ErrUnavailable, err)
@@ -291,7 +291,7 @@ func (r *Replica) reconcile(ctx context.Context, st Store, raw []byte) ([]byte, 
 	}
 	r.mu.Lock()
 	r.storeSeq = h.Seq
-	held, from := r.state.Head, r.fromLocked(h.Seq)
+	held, from := r.state.Head, r.walkFromLocked(h.Seq)
 	inChain := r.holdsLocked(h)
 	r.mu.Unlock()
 	switch {
@@ -313,9 +313,9 @@ func (r *Replica) reconcile(ctx context.Context, st Store, raw []byte) ([]byte, 
 	return raw, nil
 }
 
-// fromLocked is the lowest seq a fetch of a head at seq must start at to
+// walkFromLocked is the lowest seq a fetch of a head at seq must start at to
 // meet this replica's chain, or a branch a resolve dropped.
-func (r *Replica) fromLocked(seq uint64) uint64 {
+func (r *Replica) walkFromLocked(seq uint64) uint64 {
 	from := min(seq, r.state.Head.Seq+1)
 	for _, s := range r.dropped {
 		from = min(from, s)
@@ -433,7 +433,7 @@ func (r *Replica) adopt(entries []cdschain.Entry, source string) error {
 func (r *Replica) haltLocked(f Fork) {
 	if r.fork == nil {
 		r.fork = &f
-		slog.Error("CDS replica HALTED; issuance and writes stop until an operator resolves the fork", "reason", r.servingLocked())
+		slog.Error("CDS replica HALTED; issuance and writes stop until an operator resolves the fork", "reason", r.refusalLocked())
 	}
 }
 
@@ -551,10 +551,10 @@ func (r *Replica) swap(ctx context.Context, entry func(*cdschain.State) (cdschai
 			return cdschain.Head{}, e, err
 		}
 		r.mu.Lock()
-		state, halted, st, ahead := r.state, r.fork != nil, r.store, r.memberAheadLocked()
+		state, halted, st, ahead := r.state, r.fork != nil, r.store, r.memberAheadSeqLocked()
 		var notServing error
 		if serving && !halted {
-			notServing = r.servingLocked()
+			notServing = r.refusalLocked()
 		}
 		r.mu.Unlock()
 		if halted {
