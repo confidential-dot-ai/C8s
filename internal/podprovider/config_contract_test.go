@@ -80,4 +80,12 @@ func TestConfigurationBoundsAndDefaults(t *testing.T) {
 	if base.ReservedMemoryMiB != 1024 || base.PublicIP != "shared" || strings.HasSuffix(base.CloudURL, "/") {
 		t.Fatal("documented defaults not applied")
 	}
+	// The ID becomes a label value on the Node and on every record.
+	for _, id := range []string{"", "cloud/pods", "cloud pods", strings.Repeat("a", 64)} {
+		named := fixtureConfig(t)
+		named.ProviderID = id
+		if err := named.validate(); err == nil {
+			t.Fatalf("provider ID %q was accepted", id)
+		}
+	}
 }

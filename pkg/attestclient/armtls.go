@@ -42,11 +42,9 @@ func MakeSNPARMTLSAttestFunc(client Client, attestationApiURL string) func(conte
 // AttestationExtension builds a nonce-free armTLS attestation extension
 // binding pub via the local attestation-api, for embedding in a CSR
 // (docs/armtls.md). CDS copies the extension onto the issued leaf, which is how
-// a workload leaf carries hardware evidence a verifier can re-check — the same
-// embed the mesh client uses for its own leaf
-// (cdsclient.attestationExtension). It is nonce-free by design: the serving
-// cert carries no per-request nonce, so [armtls.VerifyCert] recomputes the
-// anchor with nonce=nil.
+// a workload leaf carries hardware evidence a verifier can re-check. It is
+// nonce-free by design: the serving cert carries no per-request nonce, so
+// [armtls.VerifyCert] recomputes the anchor with nonce=nil.
 func (c Client) AttestationExtension(ctx context.Context, attestationApiURL string, pub crypto.PublicKey) (pkix.Extension, error) {
 	reportData, err := agarmtls.ReportDataForKey(pub, nil)
 	if err != nil {

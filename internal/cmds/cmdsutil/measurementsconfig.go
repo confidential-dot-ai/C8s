@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"strings"
 
@@ -127,6 +128,18 @@ func ResolveCDSPins(ctx context.Context, nodePolicy string, source ImagePolicySo
 		return nil, false, fmt.Errorf("%s %w", suppliedPinSource(source), err)
 	}
 	return armtls.FixedPins(values), false, nil
+}
+
+// ClientCDSPins is ResolveCDSPins and the line a credential client logs about
+// the set it resolved. The conformance probe resolves silently
+// (internal/cmds/secretprobe).
+func ClientCDSPins(ctx context.Context, nodePolicy string, source ImagePolicySource) (armtls.PinSource, error) {
+	pins, fromNode, err := ResolveCDSPins(ctx, nodePolicy, source)
+	if err != nil {
+		return nil, err
+	}
+	slog.Info("CDS pins resolved", "from_node", fromNode)
+	return pins, nil
 }
 
 // suppliedPinSource names where the refused pins came from, so a client is

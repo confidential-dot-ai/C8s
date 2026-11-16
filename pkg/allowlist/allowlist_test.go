@@ -357,6 +357,22 @@ func TestWorkloadNameBoundIsWritePathOnly(t *testing.T) {
 	}
 }
 
+// An authored refusal names the field it came from, since an operator fixes the
+// document before it is stored.
+func TestAuthoredRefusalNamesTheFailedField(t *testing.T) {
+	for field, doc := range map[string][]byte{
+		"egress":    egressDocument(`,"egress":[{"cidr":"203.0.113.7/24","port":443}]`),
+		"hostPorts": hostPortsDocument(`,"hostPorts":[{"protocol":"ICMP","hostPort":443,"containerPort":8443}]`),
+	} {
+		t.Run(field, func(t *testing.T) {
+			want := `workload "w" ` + field + ": "
+			if _, err := ParseJSON(doc); err == nil || !strings.Contains(err.Error(), want) {
+				t.Errorf("ParseJSON = %v, want a refusal naming %s", err, want)
+			}
+		})
+	}
+}
+
 // The grammar itself is not relaxed on either path: the name is a URL path
 // segment.
 func TestParseServedJSON_StillRejectsBadWorkloadNameGrammar(t *testing.T) {

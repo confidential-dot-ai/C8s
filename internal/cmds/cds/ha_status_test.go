@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -53,6 +54,7 @@ func (c operatorCluster) unreachable() replica {
 	}
 }
 
+// Every replica of the fixture follows "first", the leader of its cluster.
 func (c operatorCluster) serving(member string, version uint64) cdsha.Status {
 	return cdsha.Status{
 		ClusterID:         c.clusterID,
@@ -63,6 +65,7 @@ func (c operatorCluster) serving(member string, version uint64) cdsha.Status {
 		NodeImagesVersion: version - 1,
 		State:             "Follower",
 		Term:              4,
+		Leader:            "first",
 		AppliedIndex:      12,
 		Voters:            []string{"first", "second", "third"},
 		CAFingerprint:     "ca12",
@@ -88,7 +91,45 @@ func (c operatorCluster) reportStatus(t *testing.T, o statusOptions, replicas []
 	})
 }
 
-func TestStatusPrintsOneLinePerReplicaAndAnAlarmBeside(t *testing.T) {
+func TestStatusPrintsARowPerReplicaThenTheClusterLine(t *testing.T) {
+	c := newReplicatedCluster(t)
+	replicas := c.replicasServing(t,
+		map[string]any{statusPath: c.serving("first", 7)},
+		map[string]any{statusPath: c.serving("second", 7)},
+	)
+
+	printed, err := c.reportStatus(t, statusOptions{}, replicas)
+	if err != nil {
+		t.Fatalf("status on a cluster whose replicas agree: %v", err)
+	}
+	rows := printedRows(t, printed, 2)
+	want := []printedRow{
+		{
+			address: replicas[0].address,
+			member:  `"first"`,
+			role:    "leader",
+			voter:   "yes",
+			version: "7",
+			health:  "serving",
+		},
+		{
+			address: replicas[1].address,
+			member:  `"second"`,
+			role:    "follower",
+			voter:   "yes",
+			version: "7",
+			health:  "serving",
+		},
+	}
+	if !reflect.DeepEqual(rows, want) {
+		t.Errorf("status printed rows %+v, want %+v", rows, want)
+	}
+	if last := lastLine(printed); last != `the replicas agree: leader "first", 3 voter seats, version 7` {
+		t.Errorf("the cluster line is %q", last)
+	}
+}
+
+func TestStatusRowCarriesWhyAReplicaServesNothing(t *testing.T) {
 	c := newReplicatedCluster(t)
 	stuck := c.serving("second", 7)
 	stuck.Serving = cdsha.Serving{
@@ -105,12 +146,8 @@ func TestStatusPrintsOneLinePerReplicaAndAnAlarmBeside(t *testing.T) {
 	if err == nil {
 		t.Fatal("a cluster with a replica that serves nothing read as one the operator may act on")
 	}
-	lines := strings.Split(strings.TrimSpace(printed), "\n")
-	if len(lines) != 4 {
-		t.Fatalf("status printed %d lines, want one per replica and one per alarm:\n%s", len(lines), printed)
-	}
-	if !strings.Contains(lines[0], `member="first" state="Follower" joined=true serving=true version=7 node_images_version=6`) {
-		t.Errorf("the serving replica's line is %q", lines[0])
+	if !strings.Contains(printed, `does not serve: "this replica stopped following the log"`) {
+		t.Errorf("the replica's row does not say why it serves nothing:\n%s", printed)
 	}
 	if !strings.Contains(printed, "ALARM: this replica stopped following the log: its allowlist database failed") {
 		t.Errorf("no alarm names the fault the replica reports:\n%s", printed)
@@ -119,44 +156,21 @@ func TestStatusPrintsOneLinePerReplicaAndAnAlarmBeside(t *testing.T) {
 
 func TestStatusQuotesWhatAReplicaReports(t *testing.T) {
 	c := newReplicatedCluster(t)
-	forging := c.serving(`first" serving=false version=0 `, 7)
+	forging := c.serving("first\"\tleader\tyes\t0\tserving\nelsewhere", 7)
 	replicas := c.replicasServing(t, map[string]any{statusPath: forging})
 
 	printed, _ := c.reportStatus(t, statusOptions{}, replicas)
-	line := strings.TrimSpace(printed)
-	member := fmt.Sprintf("%q", forging.ID)
-	if !strings.Contains(line, "member="+member) {
-		t.Fatalf("the member id the replica reported is not one quoted value: %q", line)
+	row := printedRows(t, printed, 1)[0]
+	if row.member != fmt.Sprintf("%q", forging.ID) {
+		t.Fatalf("the member id the replica reported is not one quoted column: %+v", row)
 	}
-	// Outside that value, the line carries only fields the command wrote.
-	if beside := strings.Replace(line, member, "", 1); strings.Contains(beside, "serving=false") {
-		t.Errorf("a member id the replica chose added a field to its line: %q", line)
-	}
-}
-
-func TestStatusAcceptsReplicasThatHoldOneState(t *testing.T) {
-	c := newReplicatedCluster(t)
-	leading := c.serving("first", 9)
-	leading.State = "Leader"
-	leading.RollSafe = &cdsha.RollSafety{OK: true}
-	replicas := c.replicasServing(t,
-		map[string]any{statusPath: leading},
-		map[string]any{statusPath: c.serving("second", 9)},
-	)
-
-	printed, err := c.reportStatus(t, statusOptions{}, replicas)
-	if err != nil {
-		t.Fatalf("status on a cluster whose replicas agree: %v", err)
-	}
-	if !strings.Contains(printed, `state="Leader"`) || !strings.Contains(printed, "roll_safe=true") {
-		t.Errorf("the leader's line carries neither its state nor the roll gate:\n%s", printed)
-	}
-	if !strings.Contains(printed, "roll_safe=-") {
-		t.Errorf("a replica that does not lead reports a roll gate it cannot know:\n%s", printed)
+	// Every other column is what the command wrote, not what the id forged.
+	if row.role != "follower" || row.voter != "no" || row.version != "7" || row.health != "serving" {
+		t.Errorf("a member id the replica chose wrote columns of its own: %+v", row)
 	}
 }
 
-func TestStatusReportsNoSeatsFromAReplicaThatNamesNone(t *testing.T) {
+func TestStatusReportsNoVoteFromAReplicaThatNamesNoSeats(t *testing.T) {
 	c := newReplicatedCluster(t)
 	unjoined := cdsha.Status{
 		ClusterID: c.clusterID,
@@ -169,28 +183,130 @@ func TestStatusReportsNoSeatsFromAReplicaThatNamesNone(t *testing.T) {
 	replicas := c.replicasServing(t, map[string]any{statusPath: unjoined})
 
 	printed, _ := c.reportStatus(t, statusOptions{}, replicas)
-	if !strings.Contains(printed, "voters=- non_voters=-") {
-		t.Errorf("a replica that named no seats reports a count of them:\n%s", printed)
+	row := printedRows(t, printed, 1)[0]
+	if row.role != "-" || row.voter != "-" {
+		t.Errorf("a replica that named no seats reports a role and a vote: %+v", row)
 	}
 }
 
-func TestStatusReportsTheCheckpointAndADivergence(t *testing.T) {
+func TestStatusReportsADivergenceAsAnAlarm(t *testing.T) {
 	c := newReplicatedCluster(t)
 	leading := c.serving("first", 9)
-	leading.Checkpoint = cdsha.Point{
-		Index: 12,
-		State: cdsha.Digests{}.State,
-	}
 	leading.Divergence = "member second holds another state at log index 12"
 	replicas := c.replicasServing(t, map[string]any{statusPath: leading})
 
 	printed, _ := c.reportStatus(t, statusOptions{}, replicas)
-	if !strings.Contains(printed, `checkpoint="12:`) {
-		t.Errorf("the line carries no checkpoint:\n%s", printed)
-	}
 	if !strings.Contains(printed, "ALARM: the replicas of this cluster hold different state: member second holds another state") {
 		t.Errorf("the divergence the leader found raises no alarm:\n%s", printed)
 	}
+}
+
+func TestStatusSaysWhatTheReplicasDoNotAgreeOn(t *testing.T) {
+	c := newReplicatedCluster(t)
+	noLeader := c.serving("second", 7)
+	noLeader.Leader = ""
+	otherSeats := c.serving("second", 7)
+	otherSeats.Voters = []string{"first", "second"}
+	for name, replicas := range map[string]struct {
+		served []map[string]any
+		says   string
+	}{
+		"no one leader": {
+			served: []map[string]any{
+				{statusPath: c.serving("first", 7)},
+				{statusPath: noLeader},
+			},
+			says: "they name no one leader",
+		},
+		"different voter seats": {
+			served: []map[string]any{
+				{statusPath: c.serving("first", 7)},
+				{statusPath: otherSeats},
+			},
+			says: "they name different voter seats",
+		},
+		"different versions": {
+			served: []map[string]any{
+				{statusPath: c.serving("first", 7)},
+				{statusPath: c.serving("second", 8)},
+			},
+			says: "they have applied different versions",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			printed, _ := c.reportStatus(t, statusOptions{}, c.replicasServing(t, replicas.served...))
+			if last := lastLine(printed); !strings.Contains(last, replicas.says) {
+				t.Errorf("the cluster line is %q, want it to say %q", last, replicas.says)
+			}
+		})
+	}
+}
+
+// printedRow is one replica's row, cut at the header's columns as a reader
+// sees them.
+type printedRow struct {
+	address string
+	member  string
+	role    string
+	voter   string
+	version string
+	health  string
+}
+
+// The rows of as many replicas as the status covers.
+func printedRows(t *testing.T, printed string, replicas int) []printedRow {
+	t.Helper()
+	lines := strings.Split(strings.TrimRight(printed, "\n"), "\n")
+	if len(lines) < replicas+1 {
+		t.Fatalf("status printed %d lines, want a header and %d rows:\n%s", len(lines), replicas, printed)
+	}
+	columns := columnStarts(t, lines[0])
+	rows := make([]printedRow, 0, replicas)
+	for _, line := range lines[1 : replicas+1] {
+		cells := cutAt(line, columns)
+		rows = append(rows, printedRow{
+			address: cells[0],
+			member:  cells[1],
+			role:    cells[2],
+			voter:   cells[3],
+			version: cells[4],
+			health:  cells[5],
+		})
+	}
+	return rows
+}
+
+func columnStarts(t *testing.T, header string) []int {
+	t.Helper()
+	starts := make([]int, 0, 6)
+	for _, column := range []string{"ADDRESS", "MEMBER", "ROLE", "VOTER", "VERSION", "HEALTH"} {
+		at := strings.Index(header, column)
+		if at < 0 {
+			t.Fatalf("the table has no %s column: %q", column, header)
+		}
+		starts = append(starts, at)
+	}
+	return starts
+}
+
+func cutAt(line string, starts []int) []string {
+	cells := make([]string, 0, len(starts))
+	for i, start := range starts {
+		end := len(line)
+		if i+1 < len(starts) && starts[i+1] < end {
+			end = starts[i+1]
+		}
+		if start > len(line) {
+			start = len(line)
+		}
+		cells = append(cells, strings.TrimSpace(line[start:end]))
+	}
+	return cells
+}
+
+func lastLine(printed string) string {
+	lines := strings.Split(strings.TrimRight(printed, "\n"), "\n")
+	return lines[len(lines)-1]
 }
 
 func TestStatusRefusesReplicasThatHoldDifferentState(t *testing.T) {
@@ -232,8 +348,11 @@ func TestStatusReportsAReplicaThatAnswersNothing(t *testing.T) {
 	if err == nil {
 		t.Fatal("status read a cluster with an unreachable replica as a whole one")
 	}
-	if !strings.Contains(printed, "127.0.0.1:1 unreachable") {
-		t.Errorf("the unreachable replica has no line of its own:\n%s", printed)
+	if !strings.Contains(printed, "127.0.0.1:1") {
+		t.Errorf("the unreachable replica has no row of its own:\n%s", printed)
+	}
+	if !strings.Contains(printed, `unreachable: "Get `) {
+		t.Errorf("its row does not carry what the read reported:\n%s", printed)
 	}
 }
 

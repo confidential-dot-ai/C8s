@@ -47,18 +47,8 @@ type podCredentialBroker struct {
 
 var runGuestCredentials = getcert.RunGuest
 
-func (p *plugin) lockPodAdmission() func() {
-	if !p.cfg.podRole() {
-		return func() {}
-	}
-	p.podMu.Lock()
-	return p.podMu.Unlock
-}
-
-func (p *plugin) afterPodStart(pod *api.PodSandbox, source string) error {
-	if !p.cfg.podRole() {
-		return nil
-	}
+func (c podCVM) afterStart(pod *api.PodSandbox, source string) error {
+	p := c.p
 	if source != "" {
 		claiming := p.podBroker != nil && p.podBroker.pod == nil
 		if err := p.startPodCredentials(pod, source); err != nil {
@@ -245,7 +235,7 @@ func (p *plugin) podSnapshot(ctx context.Context) (workloadclaims.PodClaims, err
 	if err := ctx.Err(); err != nil {
 		return workloadclaims.PodClaims{}, err
 	}
-	if err := p.refuseDisconnectedPod(); err != nil {
+	if err := p.cvm().refuseLapsedRuntime(); err != nil {
 		return workloadclaims.PodClaims{}, err
 	}
 	return p.podSnapshotLocked()
@@ -300,7 +290,7 @@ func (p *plugin) podSnapshotLost(err error) (workloadclaims.PodClaims, error) {
 func (p *plugin) commitPodCredentials(claims workloadclaims.PodClaims, publish func() error) error {
 	p.podMu.Lock()
 	defer p.podMu.Unlock()
-	if err := p.refuseDisconnectedPod(); err != nil {
+	if err := p.cvm().refuseLapsedRuntime(); err != nil {
 		return err
 	}
 	current, err := p.podSnapshotLocked()

@@ -35,7 +35,7 @@ func TestSANFileFailsBeforeNetworkOrOutputs(t *testing.T) {
 			if err := os.WriteFile(path, []byte(value), 0644); err != nil {
 				t.Fatal(err)
 			}
-			err := run(config{
+			err := run(t.Context(), config{
 				SANFile:  path,
 				CDSURL:   "invalid",
 				CertPath: filepath.Join(root, "out", "cert.pem"),

@@ -200,7 +200,8 @@ intent=$(jq -er .decree.intent_id genesis.json)
 # serves this one cluster at one version under one mesh CA.
 serves_as_one() { ha status > status.txt 2>&1; }
 waiting "the cluster never served from every replica" serves_as_one
-[ "$(grep -c 'state="Leader"' status.txt)" = 1 ] || { cat status.txt; fail "not exactly one leader"; }
+leaders() { ha status --json "$@" | jq -r '[.[] | select(.status.state == "Leader")] | length'; }
+[ "$(leaders)" = 1 ] || { cat status.txt; fail "not exactly one leader"; }
 cat status.txt
 waiting "three ready guests never entered client endpoints" routing_ready 3
 ha status --json > original.json
@@ -233,7 +234,10 @@ done
 echo "losing the leader's VM, $lost"
 kubectl -n "$NS" delete vm "$lost" --wait=true --timeout=180s
 
-elected() { ha status "${survivors[@]}" > survivors.txt 2>&1 && grep -q 'state="Leader"' survivors.txt; }
+elected() {
+  ha status "${survivors[@]}" > survivors.txt 2>&1 || return
+  [ "$(leaders "${survivors[@]}")" = 1 ]
+}
 waiting "the replicas that stayed elected no leader" elected
 cat survivors.txt
 

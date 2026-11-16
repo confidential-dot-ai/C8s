@@ -74,7 +74,7 @@ parses it with, then written to --out, or to stdout without one.`,
 	f.StringVar(&d.kubernetes.PodCIDR, "pod-cidr", "", "the cluster's pod range, an IPv4 CIDR")
 	f.StringVar(&d.kubernetes.ServiceCIDR, "service-cidr", "", "the cluster's Service range, an IPv4 CIDR")
 	f.StringVar(&d.kubernetes.ClusterDNS, "cluster-dns", "", "the cluster DNS Service's IPv4 address, inside --service-cidr")
-	for _, name := range []string{
+	cmdsutil.RequireFlags(cmd,
 		"cds-address",
 		"cds-pin",
 		"tls-san",
@@ -83,9 +83,7 @@ parses it with, then written to --out, or to stdout without one.`,
 		"pod-cidr",
 		"service-cidr",
 		"cluster-dns",
-	} {
-		_ = cmd.MarkFlagRequired(name)
-	}
+	)
 	return cmd
 }
 
@@ -163,9 +161,7 @@ open, takes a mount the control plane fills, or names a file under
 	f.StringVar(&renderDir, "render-dir", "", "the --output-dir of 'c8s node-image render'")
 	f.StringVar(&staticPodDir, "static-pods", "", "the worker image's static pod templates, as stage reads them")
 	f.StringVar(&out, "out", "", "file to write the worker's floor to")
-	for _, name := range []string{"floor-template", "render-dir", "static-pods", "out"} {
-		_ = cmd.MarkFlagRequired(name)
-	}
+	cmdsutil.RequireFlags(cmd, "floor-template", "render-dir", "static-pods", "out")
 	return cmd
 }
 

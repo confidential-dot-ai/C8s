@@ -17,17 +17,12 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
-
-	utilnet "k8s.io/apimachinery/pkg/util/net"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
@@ -36,7 +31,6 @@ import (
 	ctrdresolver "github.com/confidential-dot-ai/c8s/internal/containerd"
 	"github.com/confidential-dot-ai/c8s/internal/launchbinding"
 	"github.com/confidential-dot-ai/c8s/internal/version"
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
@@ -84,9 +78,9 @@ func startupSourceMode(cfg *config) string {
 	return strings.Join(sources, "+")
 }
 
-// Run executes the nri-image-policy binary. args is the slice of CLI args
-// after the program name.
-func Run(args []string) error {
+// Run executes the nri-image-policy binary under ctx. args is the slice of
+// CLI args after the program name.
+func Run(ctx context.Context, args []string) error {
 	if len(args) > 0 {
 		switch args[0] {
 		case checkConfigVerb:
@@ -94,7 +88,7 @@ func Run(args []string) error {
 		case checkContainerdConfigVerb:
 			return runCheckContainerdConfig(args[1:], os.Stdin)
 		case pluginReadyVerb:
-			return runPluginReady(args[1:])
+			return runPluginReady(ctx, args[1:])
 		case pluginRunningVerb:
 			return runPluginRunning(args[1:])
 		}
@@ -104,7 +98,7 @@ func Run(args []string) error {
 	healthAddr := fs.String("health-addr", ":8080", "health check listen address")
 	readTimeout := fs.Duration("read-timeout", 5*time.Second, "HTTP server read timeout")
 	writeTimeout := fs.Duration("write-timeout", 10*time.Second, "HTTP server write timeout")
-	if err := cmdsutil.ParseFlags(fs, args); err != nil {
+	if err := parseOnlyFlags(fs, args); err != nil {
 		return err
 	}
 
@@ -129,8 +123,6 @@ func Run(args []string) error {
 		"mode", startupSourceMode(cfg),
 	)
 
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
 	return runConfigured(ctx, cfg, logger, healthServerConfig{
 		addr:         *healthAddr,
 		readTimeout:  *readTimeout,
@@ -138,10 +130,25 @@ func Run(args []string) error {
 	})
 }
 
+// parseOnlyFlags parses args into fs and refuses a word left over: the daemon
+// and its helper verbs take flags only.
+func parseOnlyFlags(fs *flag.FlagSet, args []string) error {
+	if err := cmdsutil.ParseFlags(fs, args); err != nil {
+		return err
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("unknown command %q for %q", fs.Arg(0), fs.Name())
+	}
+	return nil
+}
+
 // runConfigured is the startup path after configuration validation.
 func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health healthServerConfig) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	if err := createSocketDir(cfg.WorkloadClaims.SocketDir); err != nil {
+		return err
+	}
 	logger.Debug("initializing containerd resolver",
 		"socket", cfg.Containerd.Socket,
 		"namespace", cfg.Containerd.Namespace,
@@ -208,10 +215,7 @@ func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health
 		clear(plugin.podStarts)
 		plugin.podMu.Unlock()
 	}()
-	var applyPolicy func(context.Context, *allowlist.Allowlist, uint64) error
-	if cfg.podRole() {
-		applyPolicy = plugin.applyPodPolicy
-	}
+	target := policyTargetFor(cfg, plugin)
 	// Before the plugin serves a single container creation: a pod admitted
 	// without this mount would read no pins at all.
 	if err := plugin.prepareCDSPins(cdsPins); err != nil {
@@ -270,14 +274,20 @@ func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health
 	// that misses its registration timeout.
 	plugin.serveAfterFirstDecreeLook(decrees)
 	pollForNewerDecrees(ctx, decrees, logger)
+	if cfg.Worker {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			runWorkerRouterPlacement(ctx, cfg, cdsHTTPClient, logger)
+		}()
+	}
 
 	measure := policyMeasurer(cfg, logger)
 	var initialETag string
 	if cfg.PullEnabled() {
 		initialETag, err = pullInitial(ctx, pullArgs{
 			client:      wlClient,
-			store:       store,
-			apply:       applyPolicy,
+			target:      target,
 			measure:     measure,
 			pull:        pull,
 			timeout:     cfg.Allowlist.Pull.Timeout,
@@ -318,16 +328,13 @@ func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health
 			defer workers.Done()
 			runPullLoop(ctx, pullLoopArgs{
 				client:   wlClient,
-				store:    store,
-				apply:    applyPolicy,
+				target:   target,
 				measure:  measure,
 				pull:     pull,
 				interval: cfg.Allowlist.Pull.Interval,
 				timeout:  cfg.Allowlist.Pull.Timeout,
 				etag:     initialETag,
 				logger:   logger,
-
-				killRevoked: plugin.KillRevoked,
 			})
 		}()
 	}
@@ -431,205 +438,6 @@ func cdsHTTPClientWithLeaf(cfg pullConfig, pins armtls.PinSource, clusterDNS net
 	}, nil
 }
 
-type pullArgs struct {
-	apply       func(context.Context, *allowlist.Allowlist, uint64) error
-	client      allowlistclient.Client
-	store       *policyStore
-	measure     func(digest string) error // nil measures nothing
-	pull        *allowlistPull
-	timeout     time.Duration
-	pluginErrCh <-chan error
-	logger      *slog.Logger
-}
-
-// pullInitial fetches the startup allowlist with bounded retries and
-// returns the response ETag for the steady-state poll loop.
-//
-// INVARIANT: a nil error return means args.store holds the pulled document.
-// Context cancellation surfaces as ctx.Err(); callers must not mark the
-// plugin ready on that path.
-func pullInitial(ctx context.Context, args pullArgs) (string, error) {
-	delay := allowlistApiInitialDelay
-	for attempt := 1; attempt <= allowlistApiMaxRetries; attempt++ {
-		select {
-		case err := <-args.pluginErrCh:
-			return "", fmt.Errorf("%w: %w", errPluginDied, err)
-		case <-ctx.Done():
-			args.logger.Info("shutdown requested during allowlist init")
-			return "", ctx.Err()
-		default:
-		}
-
-		reqCtx, reqCancel := context.WithTimeout(ctx, args.timeout)
-		args.logger.Info("fetching initial allowlist from CDS", "attempt", attempt)
-		served, notModified, err := args.client.FetchServed(reqCtx, "")
-		wl, etag := served.Allowlist, served.ETag
-		reqCancel()
-		if err == nil {
-			if notModified {
-				err = errInitialAllowlistNotModified
-			} else if wl == nil {
-				err = errInitialAllowlistNil
-			} else if err = measureWith(args.measure, served.Digest); err == nil {
-				version := parseVersion(served.Version)
-				if args.apply != nil {
-					err = args.apply(ctx, wl, version)
-				} else {
-					args.store.apply(wl, version)
-				}
-				if err == nil {
-					args.pull.reached()
-					args.logger.Info("initial allowlist pulled from CDS",
-						"workloads", len(wl.Workloads),
-						"version", version,
-						"etag", etag,
-						"digest", served.Digest,
-					)
-					return etag, nil
-				}
-			}
-		}
-
-		args.pull.failed(err)
-		args.logger.Error("allowlist fetch failed", "attempt", attempt, "error", err)
-		if errors.Is(err, errPolicyRefused) {
-			return "", err // retrying cannot succeed
-		}
-		if attempt >= allowlistApiMaxRetries {
-			return "", fmt.Errorf("allowlist fetch failed after %d attempts: %w", allowlistApiMaxRetries, err)
-		}
-		select {
-		case <-time.After(delay):
-		case <-ctx.Done():
-			args.logger.Info("shutdown requested during allowlist init")
-			return "", ctx.Err()
-		}
-		delay *= 2
-	}
-	return "", nil
-}
-
-type pullLoopArgs struct {
-	apply    func(context.Context, *allowlist.Allowlist, uint64) error
-	client   allowlistclient.Client
-	store    *policyStore
-	measure  func(digest string) error // nil measures nothing
-	pull     *allowlistPull
-	interval time.Duration
-	timeout  time.Duration
-	etag     string
-	logger   *slog.Logger
-
-	// killRevoked runs after each applied document.
-	killRevoked func(context.Context)
-}
-
-// runPullLoop polls CDS with If-None-Match. 200 rebuilds the index from the
-// pulled document, advances the ETag and kills the running containers it no
-// longer admits — unless the pulled version is below the applied
-// one (epoch rollback), which is ignored so the ETag keeps re-fetching until a
-// forward version arrives. 304 raises the applied version to the one CDS
-// serves the document at; it and errors leave the index untouched. A
-// version the measurer refuses for good also advances the ETag and is logged
-// once per digest.
-func runPullLoop(ctx context.Context, args pullLoopArgs) {
-	ticker := time.NewTicker(args.interval)
-	defer ticker.Stop()
-
-	etag := args.etag
-	var refused, failing string // digests last logged as refused or unmeasured
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		}
-
-		reqCtx, cancel := context.WithTimeout(ctx, args.timeout)
-		served, notModified, err := args.client.FetchServed(reqCtx, etag)
-		wl, newETag := served.Allowlist, served.ETag
-		cancel()
-		if err != nil {
-			args.pull.failed(err)
-			args.logger.Warn("pull loop fetch failed", "error", err)
-			continue
-		}
-		if notModified {
-			args.store.raiseAppliedVersion(parseVersion(served.Version))
-			args.pull.reached()
-			args.logger.Debug("pull loop: not modified", "etag", etag, "version", served.Version)
-			continue
-		}
-		if wl == nil {
-			args.logger.Warn("pull loop fetch returned nil allowlist")
-			continue
-		}
-		version := parseVersion(served.Version)
-		// A rolled-back document is never enforced, so it is not measured.
-		if args.store.rolledBack(version) {
-			args.logger.Warn("pull loop: ignoring rolled-back allowlist; keeping current index",
-				"pulled_version", version, "etag", newETag)
-			continue
-		}
-		if err := measureWith(args.measure, served.Digest); err != nil {
-			if !errors.Is(err, errPolicyRefused) {
-				// Retried every tick; logged at Error once per digest.
-				level := slog.LevelError
-				if served.Digest == failing {
-					level = slog.LevelDebug
-				}
-				failing = served.Digest
-				args.pull.failed(err)
-				args.logger.Log(ctx, level, "pull loop: not applying an allowlist this node could not measure",
-					"digest", served.Digest, "error", err)
-				continue
-			}
-			// Advance past the refused version so later ticks get 304
-			// instead of downloading it again.
-			etag = newETag
-			failing = "" // a later failure is news again
-			args.pull.failed(err)
-			if served.Digest != refused {
-				refused = served.Digest
-				args.logger.Error("pull loop: allowlist refused; keeping current policy",
-					"digest", served.Digest, "etag", etag, "error", err)
-			}
-			continue
-		}
-		if args.apply != nil {
-			if err := args.apply(ctx, wl, version); err != nil {
-				args.pull.failed(err)
-				args.logger.Warn("pull loop: retained Pod policy refused update", "error", err)
-				continue
-			}
-		} else {
-			args.store.apply(wl, version)
-		}
-		args.pull.reached()
-		etag, failing = newETag, ""
-		args.logger.Info("pull loop: allowlist refreshed",
-			"workloads", len(wl.Workloads),
-			"version", version,
-			"etag", etag,
-			"digest", served.Digest,
-		)
-		if args.apply == nil {
-			args.killRevoked(ctx)
-		}
-	}
-}
-
-// parseVersion reads the CDS mutation counter a pull was served at, used for
-// epoch anti-rollback. An unparseable version yields 0, which can only be
-// rejected as a rollback once a real version has been applied.
-func parseVersion(version string) uint64 {
-	n, err := strconv.ParseUint(version, 10, 64)
-	if err != nil {
-		return 0
-	}
-	return n
-}
-
 type healthServerConfig struct {
 	logger       *slog.Logger
 	plugin       *plugin
@@ -670,7 +478,7 @@ func startHealthServer(ctx context.Context, cfg healthServerConfig) error {
 			AllowlistVersion: cfg.plugin.AppliedAllowlistVersion(),
 			AllowlistStall:   cfg.allowlistStall(),
 		}
-		if cfg.plugin.cfg.Pod != nil {
+		if cfg.plugin.cfg.podRole() {
 			body.PodUID = cfg.plugin.cfg.Pod.UID
 			body.PodRegistered = cfg.plugin.podRegistered.Load() && !cfg.plugin.podStartDisconnected.Load()
 			body.PodEnded = cfg.plugin.podEnded.Load()
@@ -708,246 +516,23 @@ func startHealthServer(ctx context.Context, cfg healthServerConfig) error {
 	return nil
 }
 
-// Node-side retry timing; vars so tests can shrink them.
-var (
-	nodeRetryMinDelay     = time.Second
-	nodeRetryMaxDelay     = time.Minute
-	nodeIPRecheckInterval = time.Minute
-)
-
-// chooseHostInterface and writeNodeIPFile are package vars so tests can fake
-// the host's routes and a failed write.
-var (
-	chooseHostInterface = utilnet.ChooseHostInterface
-	writeNodeIPFile     = writeInPlace
-)
-
-// nodeIPPublisher keeps NodeIPFile current: a DHCP node may have no default
-// route when containerd starts, and its address may change later. Components
-// restart when the file names another address, and a restarted CDS that
-// reads it regenerates the mesh CA, so a transient failure never touches the
-// file and a change is published only once it held for two rechecks. A
-// resolver that alternates between two addresses therefore never publishes.
-type nodeIPPublisher struct {
-	cfg    *config
-	logger *slog.Logger
-	delay  time.Duration // current failure backoff, 0 after a success
-
-	kubelet string // the last address a host kubelet's --node-ip supplied
-	pending string // a changed address seen once, published if it holds
-	settled bool   // the file holds an address this process resolved
-}
-
-// publish makes one attempt and returns the wait before the next: the recheck
-// interval after a success, a doubling backoff after a failure.
-func (p *nodeIPPublisher) publish() time.Duration {
-	path := filepath.Join(p.cfg.WorkloadClaims.SocketDir, NodeIPFile)
-	host, source, err := p.resolve()
-	if err == nil && !usableNodeIP(net.ParseIP(host)) {
-		// Not transient: advertise_host names an address no pod can dial.
-		p.pending = ""
-		p.delay = min(max(2*p.delay, nodeRetryMinDelay), nodeRetryMaxDelay)
-		p.logger.Error("node-ip emptied: the node address is not a unicast address other pods can dial; running components keep the address they read, and components that start will not until an address is published",
-			"address", host, "source", source, "error", emptyIfExists(path), "retry_in", p.delay)
-		return p.delay
-	}
-	if err == nil {
-		err = p.write(path, host, source)
-	}
-	if err != nil {
-		p.delay = min(max(2*p.delay, nodeRetryMinDelay), nodeRetryMaxDelay)
-		p.logger.Error("node-ip not updated; it keeps its last address, and components that read none will not start until it is published", "error", err, "retry_in", p.delay)
-		return p.delay
-	}
-	p.delay = 0
-	return nodeIPRecheckInterval
-}
-
-// write publishes host unless the file holds it already. A file naming
-// another address keeps it until a second recheck resolves host again. The
-// first write of a process skips that wait unless host came from the default
-// route: the file then predates this process, while a default route seen
-// before the kubelet is back from a node restart may name another interface.
-func (p *nodeIPPublisher) write(path, host, source string) error {
-	current := ""
-	if b, err := os.ReadFile(path); err == nil {
-		current = strings.TrimSpace(string(b))
-	}
-	if current == host {
-		p.pending = ""
-		p.settled = true
+// createSocketDir creates the directory the plugin serves its sockets in,
+// leaving one that exists as its owner made it.
+func createSocketDir(dir string) error {
+	if dir == "" {
 		return nil
 	}
-	debounce := p.settled || source == "default_route"
-	if current != "" && debounce && p.pending != host {
-		p.pending = host
-		p.logger.Warn("node address changed; publishing it if the next recheck agrees", "address", host, "source", source, "published", current, "recheck_in", nodeIPRecheckInterval)
+	if info, err := os.Stat(dir); err == nil && info.IsDir() {
 		return nil
 	}
-	if err := writeNodeIP(p.cfg.WorkloadClaims.SocketDir, path, host); err != nil {
-		return err
-	}
-	p.pending = ""
-	p.settled = true
-	p.logger.Info("node-ip published", "address", host, "source", source)
-	return nil
-}
-
-// resolve returns the node's address and the source that supplied it:
-// advertise_host when it is an IP, else the --node-ip of a kubelet in the
-// host's mount namespace, which is the Node's registered InternalIP and its
-// pods' status.hostIP, else the default-route interface's address, which a
-// kubelet without --node-ip usually registers. Once a kubelet supplied an
-// address, a recheck that finds no kubelet keeps it rather than fall back to
-// the default route: the kubelet is restarting, and its address has not
-// changed. k3s runs its kubelet inside the k3s process, so a k3s node with
-// several interfaces needs advertise_host. A pod could otherwise pick the
-// attestation verifier components dial.
-func (p *nodeIPPublisher) resolve() (host, source string, err error) {
-	if host := p.cfg.WorkloadClaims.AdvertiseHost; net.ParseIP(host) != nil {
-		return host, "advertise_host", nil
-	}
-	host, running := kubeletNodeIP(p.cfg.WorkloadClaims.ProcRoot)
-	switch {
-	case host != "":
-		p.kubelet = host
-		return host, "kubelet", nil
-	case running:
-		// A kubelet that runs without a usable --node-ip picks its address
-		// as the default route does.
-		p.kubelet = ""
-	case p.kubelet != "":
-		return p.kubelet, "kubelet_last_seen", nil
-	}
-	ip, err := chooseHostInterface()
-	if err != nil {
-		return "", "", fmt.Errorf("resolve node address: %w", err)
-	}
-	if !usableNodeIP(ip) {
-		// Likely a link-local address before DHCP completes: retry.
-		return "", "", fmt.Errorf("resolve node address: default route address %s is not one other pods can dial", ip)
-	}
-	return ip.String(), "default_route", nil
-}
-
-// run repeats publish until ctx is done, waiting wait before the first attempt.
-func (p *nodeIPPublisher) run(ctx context.Context, wait time.Duration) {
-	for sleepCtx(ctx, wait) {
-		wait = p.publish()
-	}
-}
-
-// kubeletNodeIP is the first address of a host kubelet's --node-ip flag, read
-// from procRoot (default /proc), or "" when no host kubelet passes a usable
-// one; running reports whether a host kubelet runs at all. A pod's processes
-// show up in procRoot too and can name themselves kubelet, but cannot join
-// the host's mount namespace, which is init's. --node-ip=:: or 0.0.0.0
-// selects an address family, not an address.
-func kubeletNodeIP(procRoot string) (host string, running bool) {
-	if procRoot == "" {
-		procRoot = "/proc"
-	}
-	hostMounts, err := os.Readlink(filepath.Join(procRoot, "1", "ns", "mnt"))
-	if err != nil {
-		return "", false
-	}
-	entries, err := os.ReadDir(procRoot)
-	if err != nil {
-		return "", false
-	}
-	for _, e := range entries {
-		if _, err := strconv.Atoi(e.Name()); err != nil {
-			continue
-		}
-		dir := filepath.Join(procRoot, e.Name())
-		comm, err := os.ReadFile(filepath.Join(dir, "comm"))
-		if err != nil || strings.TrimSpace(string(comm)) != "kubelet" {
-			continue
-		}
-		if mounts, err := os.Readlink(filepath.Join(dir, "ns", "mnt")); err != nil || mounts != hostMounts {
-			continue
-		}
-		cmdline, err := os.ReadFile(filepath.Join(dir, "cmdline"))
-		if err != nil {
-			continue
-		}
-		running = true
-		args := strings.Split(strings.TrimRight(string(cmdline), "\x00"), "\x00")
-		for i, arg := range args {
-			value, ok := strings.CutPrefix(arg, "--node-ip=")
-			if !ok && arg == "--node-ip" && i+1 < len(args) {
-				value, ok = args[i+1], true
-			}
-			if !ok {
-				continue
-			}
-			first, _, _ := strings.Cut(value, ",")
-			if ip := net.ParseIP(first); usableNodeIP(ip) {
-				return ip.String(), true
-			}
-		}
-	}
-	return "", running
-}
-
-// usableNodeIP reports whether components can dial ip as the node: an
-// unspecified or loopback address reaches the dialing pod's own network
-// namespace instead.
-func usableNodeIP(ip net.IP) bool {
-	return ip != nil && ip.IsGlobalUnicast()
-}
-
-// writeNodeIP writes host to path in place: components bind-mount the file
-// itself, so a renamed replacement would leave their mount on the old inode.
-// A write can fail after it changed the file, so a failed one puts the
-// previous content back, or empties a file that held none.
-func writeNodeIP(dir, path, host string) error {
 	if err := os.MkdirAll(dir, 0o711); err != nil {
-		return err
+		return fmt.Errorf("create the plugin's socket directory: %w", err)
 	}
-	previous, readErr := os.ReadFile(path)
-	// World-readable: non-root components read it.
-	err := writeNodeIPFile(path, []byte(host+"\n"), 0o644)
-	if err == nil {
-		return nil
+	// 0711 whatever the umask: the non-root get-cert sidecar needs o+x.
+	if err := os.Chmod(dir, 0o711); err != nil {
+		return fmt.Errorf("set the mode of the plugin's socket directory: %w", err)
 	}
-	err = fmt.Errorf("write %s: %w", path, err)
-	if readErr != nil {
-		return errors.Join(err, emptyIfExists(path))
-	}
-	if restoreErr := writeNodeIPFile(path, previous, 0o644); restoreErr != nil {
-		return errors.Join(err, fmt.Errorf("restore %s: %w", path, restoreErr))
-	}
-	return err
-}
-
-// writeInPlace replaces path's content without replacing its inode, so a bind
-// mount of the file sees the change. A reader may see a partial write;
-// cmdsutil.WatchNodeIP acts only on a value it reads twice.
-func writeInPlace(path string, data []byte, mode os.FileMode) error {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|syscall.O_NOFOLLOW, mode)
-	if err != nil {
-		return err
-	}
-	_, err = f.WriteAt(data, 0)
-	if err == nil {
-		err = f.Truncate(int64(len(data)))
-	}
-	if err == nil {
-		err = f.Chmod(mode)
-	}
-	return errors.Join(err, f.Close())
-}
-
-func emptyIfExists(path string) error {
-	f, err := os.OpenFile(path, os.O_WRONLY|syscall.O_NOFOLLOW, 0)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	return errors.Join(f.Truncate(0), f.Close())
+	return nil
 }
 
 // sleepCtx waits d and reports whether ctx is still live.

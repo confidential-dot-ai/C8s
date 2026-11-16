@@ -9,8 +9,6 @@ import (
 	"slices"
 
 	toml "github.com/pelletier/go-toml/v2"
-
-	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 )
 
 // checkConfigVerb selects a check of a config file in place of the plugin
@@ -29,7 +27,7 @@ const NRIPluginID = "io.containerd.nri.v1.nri"
 func runCheckConfig(args []string) error {
 	fs := flag.NewFlagSet("nri-image-policy "+checkConfigVerb, flag.ContinueOnError)
 	configPath := fs.String("config", DefaultConfigPath, "path to the config file to check")
-	if err := cmdsutil.ParseFlags(fs, args); err != nil {
+	if err := parseOnlyFlags(fs, args); err != nil {
 		return err
 	}
 	data, err := os.ReadFile(*configPath)
@@ -67,7 +65,7 @@ func runCheckContainerdConfig(args []string, stdin io.Reader) error {
 	fs := flag.NewFlagSet("nri-image-policy "+checkContainerdConfigVerb, flag.ContinueOnError)
 	pluginDir := fs.String("plugin-dir", "", "directory containerd must launch NRI plugins from")
 	plugin := fs.String("required-plugin", "", "plugin name containerd's NRI validator must require")
-	if err := cmdsutil.ParseFlags(fs, args); err != nil {
+	if err := parseOnlyFlags(fs, args); err != nil {
 		return err
 	}
 	if *pluginDir == "" || *plugin == "" {

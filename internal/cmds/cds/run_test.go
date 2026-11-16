@@ -25,7 +25,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -255,7 +254,7 @@ func TestRun_ErrorPaths(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := validRunConfig(t, api.URL)
 			tc.mutate(t, &cfg)
-			err := run(cfg)
+			err := run(t.Context(), cfg)
 			if err == nil {
 				t.Fatalf("run() succeeded, want error containing %q", tc.wantSub)
 			}
@@ -267,15 +266,16 @@ func TestRun_ErrorPaths(t *testing.T) {
 }
 
 // Full startup from a measured configuration, with SAN validation enabled.
-// run() must serve /healthz and exit cleanly on SIGTERM.
-func TestRun_ServesAndShutsDownOnSIGTERM(t *testing.T) {
+// run() must serve /healthz and exit cleanly once its context is cancelled.
+func TestRun_ServesAndShutsDownWhenCancelled(t *testing.T) {
 	cfg := armTLSRunConfig(t)
 	cfg.allowedCNPattern = `^.*$`
 	cfg.sanValidation = true
 	client := armTLSClient(nil)
 
+	ctx, stop := context.WithCancel(t.Context())
 	errCh := make(chan error, 1)
-	go func() { errCh <- run(cfg) }()
+	go func() { errCh <- run(ctx, cfg) }()
 
 	base := fmt.Sprintf("https://127.0.0.1:%d", cfg.port)
 	deadline := time.Now().Add(15 * time.Second)
@@ -330,21 +330,19 @@ func TestRun_ServesAndShutsDownOnSIGTERM(t *testing.T) {
 		t.Errorf("GET /operator-keys = %d, want 200", resp.StatusCode)
 	}
 
-	if err := syscall.Kill(syscall.Getpid(), syscall.SIGTERM); err != nil {
-		t.Fatalf("send SIGTERM: %v", err)
-	}
+	stop()
 	select {
 	case err := <-errCh:
 		if err != nil {
 			t.Fatalf("run() returned error on shutdown: %v", err)
 		}
 	case <-time.After(15 * time.Second):
-		t.Fatal("run() did not shut down after SIGTERM")
+		t.Fatal("run() did not shut down after its context was cancelled")
 	}
 }
 
 // startRunServer launches run(cfg) on its armTLS listener, waits for /healthz,
-// and registers a cleanup that SIGTERMs the process and requires a clean exit.
+// and registers a cleanup that cancels run and requires a clean exit.
 // It returns the base URL and the client that reaches it.
 func startRunServer(t *testing.T, cfg config) (string, *http.Client) {
 	t.Helper()
@@ -358,8 +356,9 @@ func startRunServer(t *testing.T, cfg config) (string, *http.Client) {
 // reach: base carries the scheme, and client the TLS configuration.
 func startRunServerOn(t *testing.T, cfg config, base string, client *http.Client) {
 	t.Helper()
+	ctx, stop := context.WithCancel(t.Context())
 	errCh := make(chan error, 1)
-	go func() { errCh <- run(cfg) }()
+	go func() { errCh <- run(ctx, cfg) }()
 
 	deadline := time.Now().Add(15 * time.Second)
 	for {
@@ -382,16 +381,14 @@ func startRunServerOn(t *testing.T, cfg config, base string, client *http.Client
 	}
 
 	t.Cleanup(func() {
-		if err := syscall.Kill(syscall.Getpid(), syscall.SIGTERM); err != nil {
-			t.Fatalf("send SIGTERM: %v", err)
-		}
+		stop()
 		select {
 		case err := <-errCh:
 			if err != nil {
 				t.Fatalf("run() returned error on shutdown: %v", err)
 			}
 		case <-time.After(15 * time.Second):
-			t.Fatal("run() did not shut down after SIGTERM")
+			t.Fatal("run() did not shut down after its context was cancelled")
 		}
 	})
 }
@@ -411,7 +408,7 @@ func TestRun_LogsNodeImagePinning(t *testing.T) {
 	}
 	orig := os.Stdout
 	os.Stdout = w
-	runErr := run(cfg)
+	runErr := run(t.Context(), cfg)
 	os.Stdout = orig
 	// run() left slog's default pointed at the pipe; detach it before closing.
 	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -616,15 +613,17 @@ func TestRun_ARMTLSWarmupFailureFailsClosed(t *testing.T) {
 	cfg.port = freePort(t)
 	cfg.armtlsPlatform = "sev-snp"
 
+	ctx, stop := context.WithCancel(t.Context())
+	defer stop()
 	errCh := make(chan error, 1)
-	go func() { errCh <- run(cfg) }()
+	go func() { errCh <- run(ctx, cfg) }()
 	select {
 	case err := <-errCh:
 		if err == nil || !strings.Contains(err.Error(), "warm up") {
 			t.Fatalf("run() error = %v, want warm-up failure", err)
 		}
 	case <-time.After(20 * time.Second):
-		_ = syscall.Kill(syscall.Getpid(), syscall.SIGTERM)
+		stop()
 		<-errCh
 		t.Fatal("run() kept serving after armTLS warm-up failure")
 	}

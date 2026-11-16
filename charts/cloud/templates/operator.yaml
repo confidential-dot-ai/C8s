@@ -31,7 +31,10 @@ containers:
       - --webhook-service-name={{ include "c8s.operatorName" . }}
       - --webhook-service-namespace={{ .Release.Namespace }}
       - --attestation-api-url={{ include "c8s.attestationApiURL" . }}
-      {{- range .Values.controlPlane.webhook.extraExcluded }}
+      {{- range $label, $value := .Values.confidentialNodeSelector }}
+      - --confidential-node-selector={{ $label }}={{ $value }}
+      {{- end }}
+      {{- range (include "c8s.cloudAdditionalExcludedNamespaces" . | fromYamlArray) }}
       - --exclude-namespaces={{ . }}
       {{- end }}
       - --cert-fs-group={{ include "c8s.certFsGroup" "" }}
@@ -64,9 +67,12 @@ containers:
     readinessProbe:
       httpGet: { path: /readyz, port: health }
       initialDelaySeconds: 3
+    # Liveness window >= startup window (kubernetes/kubernetes#141155), so a
+    # wedged operator, and with it admission, takes up to 300s to restart.
     livenessProbe:
       httpGet: { path: /healthz, port: health }
       periodSeconds: 30
+      failureThreshold: 10
     resources:
       requests:
         cpu: 100m

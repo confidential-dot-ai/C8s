@@ -149,7 +149,8 @@ func (w podClaimsWire) claims() PodClaims {
 }
 
 // PodInstancePrefix starts every Pod CVM instance ID, the sandbox ID a Pod
-// CVM leaf names.
+// CVM leaf names. It is reserved: only InstanceID produces it, and CDS refuses
+// a node sandbox token that carries it.
 const PodInstancePrefix = "pcvm-"
 
 // InstanceID names one guest boot and runtime sandbox. Its framing is JSON,
@@ -197,10 +198,8 @@ func DecodePodClaims(raw []byte) (PodClaims, error) {
 	if len(raw) > MaxPodClaimsBytes || strictjson.Validate(raw) != nil {
 		return p, fmt.Errorf("invalid Pod claims JSON")
 	}
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.DisallowUnknownFields()
 	var wire podClaimsWire
-	if err := dec.Decode(&wire); err != nil {
+	if err := strictjson.Unmarshal(raw, &wire); err != nil {
 		return PodClaims{}, fmt.Errorf("invalid Pod claims fields")
 	}
 	p = wire.claims()

@@ -35,8 +35,8 @@ const maxArgv0 = 4096
 func runPluginRunning(args []string) error {
 	fs := flag.NewFlagSet("nri-image-policy "+pluginRunningVerb, flag.ContinueOnError)
 	procRoot := fs.String("proc-root", "/proc", "procfs to scan; the pod must share the host PID namespace")
-	if err := cmdsutil.ParseFlags(fs, args); err != nil {
-		return err
+	if err := parseOnlyFlags(fs, args); err != nil {
+		return &cmdsutil.ExitStatusError{Status: pluginUnknownStatus, Err: err}
 	}
 	running, err := anyPluginRunning(*procRoot)
 	if err != nil {

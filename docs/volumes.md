@@ -70,7 +70,7 @@ must serve. The restart drops the consumer's workload entry too, so the volume
 opens again only once that entry's `secrets` grant and `data` mount rule are
 back as well. Lose the escrow file and the ciphertext is gone for good. The
 whole recovery, and what else a restart drops, is in
-[operator.md](operator.md#cds-is-a-singleton).
+[operator.md](operator.md#cds-runs-as-one-vm).
 
 ### The device
 
@@ -178,12 +178,13 @@ entitled to. Run volume workloads on single-tenant nodes.
 
 `c8s uninstall` refuses while a pod holds a volume, because volumed is the only
 thing that unmaps one. Scale those workloads to zero first. `--force` proceeds
-and names the pods it passed: their mappings stay open, since the chart's
-pre-delete hook cannot close a device a live mount namespace references, and an
-open mapping holds its backing disk open against the next install.
+and names the pods it passed: their mappings stay open, holding the volumes
+decrypted on nodes the uninstall stops enforcing, and an open mapping holds its
+backing disk open against the next install. Reboot those nodes.
 
-No shell on the node is needed: volumed sweeps the C8s mappings it finds at
-startup, so reinstalling reaps what an uninstall left; a reboot clears them.
+volumed closes the C8s mappings it finds at startup, so reinstalling reaps a
+mapping nothing mounts. One a pod still mounts stays mapped until the node
+reboots.
 
 A disk built by `c8s volume attach` is separate state. The host sweep, on by
 default, removes the idle ones and names any still held; a release whose pinned

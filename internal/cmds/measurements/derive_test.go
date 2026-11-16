@@ -169,6 +169,81 @@ func TestDeriveMultiPlatformNeedsTEE(t *testing.T) {
 	}
 }
 
+func TestDeriveRefusesTEEItsManifestIsNotBuiltFor(t *testing.T) {
+	for _, tc := range []struct {
+		fixture string
+		tee     string
+		built   teetypes.Family
+		asked   teetypes.Family
+	}{
+		{
+			fixture: snpFixture,
+			tee:     "tdx",
+			built:   teetypes.FamilySNP,
+			asked:   teetypes.FamilyTDX,
+		},
+		{
+			fixture: snpFixture,
+			tee:     "gcp-tdx",
+			built:   teetypes.FamilySNP,
+			asked:   teetypes.FamilyTDX,
+		},
+		{
+			fixture: tdxFixture,
+			tee:     "sev-snp",
+			built:   teetypes.FamilyTDX,
+			asked:   teetypes.FamilySNP,
+		},
+	} {
+		t.Run(tc.tee, func(t *testing.T) {
+			_, err := derive([]string{stageImage(t, tc.fixture, "img")}, tc.tee)
+			if err == nil {
+				t.Fatalf("derived a %s config from an image built for %s", tc.asked, tc.built)
+			}
+			if !strings.Contains(err.Error(), "--tee asks for "+string(tc.asked)) {
+				t.Errorf("error %q does not name the platform --tee asks for", err)
+			}
+			if !strings.Contains(err.Error(), "is built for "+string(tc.built)) {
+				t.Errorf("error %q does not name the platform the image is built for", err)
+			}
+		})
+	}
+}
+
+func TestDeriveAcceptsTheTEEItsManifestIsBuiltFor(t *testing.T) {
+	for _, tc := range []struct {
+		fixture string
+		tee     string
+		want    teetypes.Family
+	}{
+		{
+			fixture: snpFixture,
+			tee:     "sev-snp",
+			want:    teetypes.FamilySNP,
+		},
+		{
+			fixture: snpFixture,
+			tee:     "az-snp",
+			want:    teetypes.FamilySNP,
+		},
+		{
+			fixture: tdxFixture,
+			tee:     "tdx",
+			want:    teetypes.FamilyTDX,
+		},
+	} {
+		t.Run(tc.tee, func(t *testing.T) {
+			set, err := derive([]string{stageImage(t, tc.fixture, "img")}, tc.tee)
+			if err != nil {
+				t.Fatalf("derive --tee %s: %v", tc.tee, err)
+			}
+			if set.Family != tc.want {
+				t.Errorf("tee = %q, want %q", set.Family, tc.want)
+			}
+		})
+	}
+}
+
 // confos rejects manifests of another schema version rather than migrating
 // them; reading one anyway would pin fields that may have moved.
 func TestDeriveRejectsOtherSchemaVersion(t *testing.T) {
@@ -306,6 +381,21 @@ func TestDeriveCmdWritesStdout(t *testing.T) {
 	}
 	if _, err := refvalues.Parse([]byte(out.String())); err != nil {
 		t.Fatalf("stdout is not a loadable config: %v\n%s", err, out.String())
+	}
+}
+
+func TestDeriveCmdRefusesAnotherTEE(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "measurements.json")
+
+	cmd := newDeriveCmd()
+	cmd.SetOut(new(strings.Builder))
+	cmd.SetErr(new(strings.Builder))
+	cmd.SetArgs([]string{"--tee", "tdx", "--out", out, snpFixture})
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("derive --tee tdx accepted an image built for sev-snp")
+	}
+	if _, err := os.Stat(out); !os.IsNotExist(err) {
+		t.Errorf("derive wrote %s after refusing --tee (stat: %v)", out, err)
 	}
 }
 

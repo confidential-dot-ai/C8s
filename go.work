@@ -7,5 +7,6 @@ use (
 	./test/conformance/tools/armtls-dial
 	./test/mock-attestation
 	./test/mock-cds
+	./test/mock-cloud
 	./test/mock-inventory
 )

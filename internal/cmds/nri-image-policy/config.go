@@ -238,13 +238,10 @@ type policyConfig struct {
 	// enforce; see sandbox.go and docs/allowlist-and-capabilities.md.
 	Sandbox sandboxMode `yaml:"sandbox"`
 
-	// ExemptNamespaces admits a namespace's containers by the digests captured
-	// running in it at first admission, not by a name the control plane picks.
-	// See exempt.go and docs/getcert-workload-binding.md — Corner 8.
+	// Admitted by ExemptRepositories, see docs/getcert-workload-binding.md — Corner 8.
 	ExemptNamespaces []string `yaml:"exempt_namespaces"`
-	// ExemptSnapshotPath persists the captured per-namespace digest set. Required
-	// when ExemptNamespaces is set; must sit on a filesystem that survives reboot.
-	ExemptSnapshotPath string `yaml:"exempt_snapshot_path"`
+	// The image repository prefixes each exempt namespace admits. Required with ExemptNamespaces.
+	ExemptRepositories ExemptRepositories `yaml:"exempt_repositories"`
 
 	// FatalExisting powers the node off when a container is already running at
 	// the plugin's first registration after boot, or when the startup check
@@ -305,9 +302,8 @@ const defaultPullTimeout = 30 * time.Second
 // only a host process may write it, never a pod.
 const NodeIPFile = "node-ip"
 
-// DefaultConfigPath is the plugin config containerd's plugin_config_path
-// resolves for this plugin, and the measured policy the node's runtime
-// wrapper reads (internal/cmds/c8srunc).
+// DefaultConfigPath is the config the plugin opens with no -config argument,
+// and the measured policy its runtime wrapper reads (internal/cmds/c8srunc).
 const DefaultConfigPath = "/etc/nri/conf.d/image-policy.yaml"
 
 // loadConfig loads configuration from a YAML file, and completes the one
@@ -508,6 +504,28 @@ func (c *config) AllowlistEnabled() bool {
 
 // Validate checks the configuration for errors.
 func (c *config) Validate() error {
+	for _, check := range []func() error{
+		c.validatePlatform,
+		c.validateFatalExisting,
+		c.validatePull,
+		c.validateEnforcementMechanism,
+		c.validatePolicyModes,
+		c.validateNodeTCB,
+		c.validateWorkloadClaims,
+		c.validateMeasuredJournal,
+		c.validateExemptRepositories,
+		c.validateMesh,
+		c.validatePod,
+		c.validateWorker,
+	} {
+		if err := check(); err != nil {
+			return err
+		}
+	}
+	return validateLabelRules(c.Policy.LabelRules)
+}
+
+func (c *config) validatePlatform() error {
 	// Reject at load rather than at the first CDS handshake: a wrong platform
 	// produces a peer-attestation failure on the CDS side that names the
 	// evidence platform, not this setting, so the cause is several hops from
@@ -515,20 +533,29 @@ func (c *config) Validate() error {
 	if _, err := teetypes.ParseFamily(c.NormalizedPlatform()); err != nil {
 		return fmt.Errorf("platform %q is not a supported CPU TEE (want snp or tdx)", c.Platform)
 	}
-	if c.Policy.FatalExisting {
-		// Both couplings are what makes the setting mean anything: audit mode
-		// reaches no deny branch, and without enforce_existing the startup
-		// check never evaluates a running container.
-		if c.Policy.Mode != ModeFailClosed {
-			return fmt.Errorf("policy.fatal_existing requires policy.mode %q, got %q", ModeFailClosed, c.Policy.Mode)
-		}
-		if !c.Policy.EnforceExisting {
-			return fmt.Errorf("policy.fatal_existing requires policy.enforce_existing")
-		}
-		if !strings.HasPrefix(c.Policy.BootMarkerPath, "/") {
-			return fmt.Errorf("policy.boot_marker_path must be an absolute path on tmpfs when policy.fatal_existing is set, got %q", c.Policy.BootMarkerPath)
-		}
+	return nil
+}
+
+func (c *config) validateFatalExisting() error {
+	if !c.Policy.FatalExisting {
+		return nil
 	}
+	// Both couplings are what makes the setting mean anything: audit mode
+	// reaches no deny branch, and without enforce_existing the startup
+	// check never evaluates a running container.
+	if c.Policy.Mode != ModeFailClosed {
+		return fmt.Errorf("policy.fatal_existing requires policy.mode %q, got %q", ModeFailClosed, c.Policy.Mode)
+	}
+	if !c.Policy.EnforceExisting {
+		return fmt.Errorf("policy.fatal_existing requires policy.enforce_existing")
+	}
+	if !strings.HasPrefix(c.Policy.BootMarkerPath, "/") {
+		return fmt.Errorf("policy.boot_marker_path must be an absolute path on tmpfs when policy.fatal_existing is set, got %q", c.Policy.BootMarkerPath)
+	}
+	return nil
+}
+
+func (c *config) validatePull() error {
 	if c.PullEnabled() && !c.baseEnabled() {
 		return fmt.Errorf("allowlist.base must carry at least one workload when pull is configured (cold-boot baseline)")
 	}
@@ -536,26 +563,36 @@ func (c *config) Validate() error {
 	if err != nil {
 		return err
 	}
-	if source.located() {
-		if c.Allowlist.Pull.Timeout <= 0 {
-			return fmt.Errorf("allowlist.pull.timeout must be > 0 when allowlist.pull names a CDS")
-		}
-		if c.Allowlist.Pull.Interval <= 0 {
-			return fmt.Errorf("allowlist.pull.interval must be > 0 when allowlist.pull names a CDS")
-		}
-		if err := checkPullURL(source.URL); err != nil {
-			return err
-		}
-		if c.Allowlist.Pull.AttestationApiURL == "" {
-			return fmt.Errorf("allowlist.pull.attestation_api_url must be set")
-		}
+	if !source.located() {
+		return nil
 	}
+	if c.Allowlist.Pull.Timeout <= 0 {
+		return fmt.Errorf("allowlist.pull.timeout must be > 0 when allowlist.pull names a CDS")
+	}
+	if c.Allowlist.Pull.Interval <= 0 {
+		return fmt.Errorf("allowlist.pull.interval must be > 0 when allowlist.pull names a CDS")
+	}
+	if err := checkPullURL(source.URL); err != nil {
+		return err
+	}
+	if c.Allowlist.Pull.AttestationApiURL == "" {
+		return fmt.Errorf("allowlist.pull.attestation_api_url must be set")
+	}
+	return nil
+}
+
+func (c *config) validateEnforcementMechanism() error {
 	if !c.AllowlistEnabled() && len(c.Policy.LabelRules) == 0 {
 		return fmt.Errorf("set allowlist.base (required when pull is enabled) or configure policy.label_rules")
 	}
+	return nil
+}
+
+func (c *config) validatePolicyModes() error {
 	if c.Policy.Mode != ModeFailClosed && c.Policy.Mode != ModeAudit {
 		return fmt.Errorf("policy.mode must be '%s' or '%s'", ModeFailClosed, ModeAudit)
 	}
+	// A validated config carries an explicit policy.sandbox; sandboxMode reads an unset one as off.
 	switch c.Policy.Sandbox {
 	case SandboxEnforce, SandboxAudit, SandboxOff:
 	case "":
@@ -563,6 +600,10 @@ func (c *config) Validate() error {
 	default:
 		return fmt.Errorf("policy.sandbox must be '%s', '%s' or '%s'", SandboxEnforce, SandboxAudit, SandboxOff)
 	}
+	return nil
+}
+
+func (c *config) validateNodeTCB() error {
 	// The marker grants the base an exemption, so an empty base makes it a
 	// statement about nothing — and a config that carries it without one is
 	// more likely a key in the wrong section than an intent.
@@ -575,12 +616,20 @@ func (c *config) Validate() error {
 	if c.Allowlist.NodeTCB && !c.Worker {
 		return errors.New("allowlist.node_tcb requires worker: true: a measured base is a worker image's floor")
 	}
+	return nil
+}
+
+func (c *config) validateWorkloadClaims() error {
 	if c.WorkloadClaims.SocketDir != "" && !c.AllowlistEnabled() {
 		return fmt.Errorf("workload_claims.socket_dir requires allowlist.base or allowlist.pull: the inventory reports digests for CDS to match against the allowlist")
 	}
 	if c.WorkloadClaims.PublishNodeIP && c.WorkloadClaims.SocketDir == "" {
 		return fmt.Errorf("workload_claims.publish_node_ip requires workload_claims.socket_dir: the node-ip file lives there")
 	}
+	return nil
+}
+
+func (c *config) validateMeasuredJournal() error {
 	// Certificate producers read the journal only from the default runtime directory.
 	journalDir := filepath.Dir(armtls.NodeJournal)
 	if c.Allowlist.Pull.MeasurePolicies && !c.PullEnabled() {
@@ -589,27 +638,31 @@ func (c *config) Validate() error {
 	if c.Allowlist.Pull.MeasurePolicies && filepath.Clean(c.WorkloadClaims.SocketDir) != journalDir {
 		return fmt.Errorf("allowlist.pull.measure_policies requires workload_claims.socket_dir %s (got %q): certificate producers read the measured-policy journal there", journalDir, c.WorkloadClaims.SocketDir)
 	}
-	if c.Measure.RTMR3 {
-		if c.Allowlist.Pull.MeasurePolicies {
-			return ErrPodRoleMeasurePolicies
+	if !c.Measure.RTMR3 {
+		return nil
+	}
+	if c.Allowlist.Pull.MeasurePolicies {
+		return ErrPodRoleMeasurePolicies
+	}
+	if filepath.Clean(c.WorkloadClaims.SocketDir) != journalDir {
+		return fmt.Errorf("measure.rtmr3 requires workload_claims.socket_dir %s (got %q): pod-status and certificate producers read the measured journal there", journalDir, c.WorkloadClaims.SocketDir)
+	}
+	return nil
+}
+
+func (c *config) validateExemptRepositories() error {
+	for _, namespace := range c.Policy.ExemptNamespaces {
+		prefixes := c.Policy.ExemptRepositories[namespace]
+		if len(prefixes) == 0 {
+			return fmt.Errorf("policy.exempt_namespaces %q requires policy.exempt_repositories[%q]: the namespace admits the provider's add-on repositories, which the chart's platform values name", namespace, namespace)
 		}
-		if filepath.Clean(c.WorkloadClaims.SocketDir) != journalDir {
-			return fmt.Errorf("measure.rtmr3 requires workload_claims.socket_dir %s (got %q): pod-status and certificate producers read the measured journal there", journalDir, c.WorkloadClaims.SocketDir)
+		for _, prefix := range prefixes {
+			if err := validRepositoryPrefix(prefix); err != nil {
+				return fmt.Errorf("policy.exempt_repositories[%q] holds %q: %w", namespace, prefix, err)
+			}
 		}
 	}
-	if len(c.Policy.ExemptNamespaces) > 0 && c.Policy.ExemptSnapshotPath == "" {
-		return fmt.Errorf("policy.exempt_namespaces requires policy.exempt_snapshot_path: the captured digest set must persist across restarts")
-	}
-	if err := c.validateMesh(); err != nil {
-		return err
-	}
-	if err := c.validatePod(); err != nil {
-		return err
-	}
-	if err := c.validateWorker(); err != nil {
-		return err
-	}
-	return validateLabelRules(c.Policy.LabelRules)
+	return nil
 }
 
 func (c *config) validatePod() error {

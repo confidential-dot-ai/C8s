@@ -53,30 +53,6 @@ func TestManifestExists(t *testing.T) {
 	}
 }
 
-// IsNotFound keys caller guidance to the registry's own missing-reference
-// error codes, so auth and network failures never masquerade as a missing
-// reference.
-func TestIsNotFound(t *testing.T) {
-	tests := []struct {
-		name string
-		err  error
-		want bool
-	}{
-		{name: "missing tag", err: errors.New("crane digest: MANIFEST_UNKNOWN: manifest unknown"), want: true},
-		{name: "missing repository", err: errors.New("crane digest: NAME_UNKNOWN: repository name not known to registry"), want: true},
-		{name: "auth failure", err: errors.New("crane digest: UNAUTHORIZED: authentication required"), want: false},
-		{name: "network failure", err: errors.New("dial tcp: lookup ghcr.io: no such host"), want: false},
-		{name: "nil", err: nil, want: false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := IsNotFound(tt.err); got != tt.want {
-				t.Fatalf("IsNotFound(%v) = %t, want %t", tt.err, got, tt.want)
-			}
-		})
-	}
-}
-
 // installHangingCrane puts a crane stub on PATH that accepts the invocation
 // and never answers — a registry that holds the connection open.
 func installHangingCrane(t *testing.T) {

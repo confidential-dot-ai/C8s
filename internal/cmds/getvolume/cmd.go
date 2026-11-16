@@ -30,7 +30,7 @@ after the workload starts, and a consumer must wait for it.
 The key must already be in the store, put there by ` + "`c8s volume create`" + `.
 Nothing here creates one.`,
 		SilenceUsage: true,
-		RunE: func(_ *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			if err := cfg.ResolveCDSEndpoint(); err != nil {
 				return err
 			}
@@ -41,7 +41,7 @@ Nothing here creates one.`,
 				}
 				cfg.Volumes = append(cfg.Volumes, v)
 			}
-			return run(cfg)
+			return run(cmd.Context(), cfg)
 		},
 	}
 	f := cmd.Flags()

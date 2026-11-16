@@ -5,6 +5,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -13,7 +14,7 @@ import (
 
 func TestInstallFromAnUnreleasedBuildNeedsChart(t *testing.T) {
 	s := newInstallStubs(t, "", false)
-	s.f.tool(t, "kubectl", clusterKubectl(s.applied, ""))
+	s.f.tool(t, "kubectl", clusterKubectl(t, s.applied, ""))
 	setCLIVersion(t, "v0.92.0-3-gabc1234")
 	err := runInstall(t, "--platform=aks-snp", "--wait=false", "--force")
 	if err == nil || !strings.Contains(err.Error(), "not a release build") || !strings.Contains(err.Error(), "--chart") {
@@ -26,7 +27,7 @@ func TestInstallFromAnUnreleasedBuildNeedsChart(t *testing.T) {
 // --chart renders the named chart with the image values its -f files set.
 func TestInstallRendersTheChartFlagsChart(t *testing.T) {
 	s := newInstallStubs(t, "", false)
-	s.f.tool(t, "kubectl", clusterKubectl(s.applied, ""))
+	s.f.tool(t, "kubectl", clusterKubectl(t, s.applied, ""))
 	setCLIVersion(t, "dev")
 	dir, err := helmchart.ExtractTemp()
 	if err != nil {
@@ -48,7 +49,7 @@ func TestInstallRendersTheChartFlagsChart(t *testing.T) {
 // A typo'd --chart is named before anything renders.
 func TestInstallChartFlagNamesNoChart(t *testing.T) {
 	s := newInstallStubs(t, "", false)
-	s.f.tool(t, "kubectl", clusterKubectl(s.applied, ""))
+	s.f.tool(t, "kubectl", clusterKubectl(t, s.applied, ""))
 	err := runInstall(t, "--chart", filepath.Join(t.TempDir(), "absent"), "--platform=aks-snp", "--wait=false", "--force")
 	if err == nil || !strings.Contains(err.Error(), "names no chart directory") {
 		t.Fatalf("want the --chart refusal, got %v", err)
@@ -86,12 +87,15 @@ func TestReleaseImagePinsReadOnlyRepositoryAndDigest(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			assertArgsEqual(t, got, []string{
-				"--set-string", "image.repository=ghcr.io/x/op",
-				"--set-string", "image.digest=" + testDigest,
-				"--set-string", "volumed.image.repository=ghcr.io/x/volumed",
-				"--set-string", "volumed.image.digest=" + testDigest,
-			})
+			want := map[string]any{
+				"image": map[string]any{"repository": "ghcr.io/x/op", "digest": testDigest},
+				"volumed": map[string]any{
+					"image": map[string]any{"repository": "ghcr.io/x/volumed", "digest": testDigest},
+				},
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("releaseImagePins = %#v, want %#v", got, want)
+			}
 		})
 	}
 }

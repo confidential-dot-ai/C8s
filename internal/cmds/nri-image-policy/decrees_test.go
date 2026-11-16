@@ -192,14 +192,14 @@ func TestContainersWaitForTheFirstDecree(t *testing.T) {
 	if !p.awaitingDecree.Load() {
 		t.Fatal("a node that follows decrees serves containers before its first look")
 	}
-	if _, err := p.credentialMounts(t.Context(), pod, ctr); err == nil {
+	if _, err := p.cvm().containerMounts(t.Context(), pod, ctr); err == nil {
 		t.Fatal("a container was handed the node's pins before the first decree settled")
 	}
 	p.serveAfterFirstDecreeLook(decrees)
 	if p.awaitingDecree.Load() {
 		t.Fatal("the plugin still holds containers back after the first look")
 	}
-	if _, err := p.credentialMounts(t.Context(), pod, ctr); err != nil {
+	if _, err := p.cvm().containerMounts(t.Context(), pod, ctr); err != nil {
 		t.Fatalf("a container was refused after the first decree: %v", err)
 	}
 }

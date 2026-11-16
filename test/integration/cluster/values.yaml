@@ -10,6 +10,12 @@ attestationApi:
 ## labels it.
 confidentialNodeSelector:
   c8s.test/confidential: "true"
+## The Pod CVM provider launches into the mock Cloud; lib.sh (pod_cvm_secret)
+## writes the Secret before the install.
+operator:
+  podCVMProvider:
+    enabled: true
+    existingSecret: pod-cvm-provider
 nriImagePolicy:
   mesh:
     ## kind's cluster DNS and its pod and Service ranges.

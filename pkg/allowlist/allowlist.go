@@ -276,7 +276,7 @@ type SecretsPolicy struct {
 //
 // Use ParseServedJSON for a document pulled from CDS.
 func ParseJSON(data []byte) (*Allowlist, error) {
-	return parseJSON(data, true)
+	return parseJSON(data, authoredDocument{})
 }
 
 // ParseServedJSON decodes a document served by CDS, ignoring fields it does not
@@ -284,17 +284,15 @@ func ParseJSON(data []byte) (*Allowlist, error) {
 // parse would make any newer field freeze their policy until a node-image
 // rebuild.
 func ParseServedJSON(data []byte) (*Allowlist, error) {
-	return parseJSON(data, false)
+	return parseJSON(data, servedDocument{})
 }
 
-func parseJSON(data []byte, strict bool) (*Allowlist, error) {
+func parseJSON(data []byte, p ingestPosture) (*Allowlist, error) {
 	if err := strictjson.Validate(data); err != nil {
 		return nil, err
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
-	if strict {
-		dec.DisallowUnknownFields()
-	}
+	p.restrictFields(dec)
 	var a Allowlist
 	if err := dec.Decode(&a); err != nil {
 		return nil, fmt.Errorf("decode allowlist: %w", err)
@@ -302,10 +300,86 @@ func parseJSON(data []byte, strict bool) (*Allowlist, error) {
 	if err := a.refuseVolumeBindings(); err != nil {
 		return nil, err
 	}
-	if err := a.normalize(strict); err != nil {
+	if err := a.normalize(p); err != nil {
 		return nil, err
 	}
 	return &a, nil
+}
+
+// ingestPosture is what a document's ingest does with a field check its entry
+// fails: an authored document is refused, a served one loses that field.
+// Structural checks consult no posture and refuse either.
+// See docs/allowlist-entries.md.
+type ingestPosture interface {
+	restrictFields(dec *json.Decoder)
+	// refuseOverLongName refuses the entry, or warns that its caller drops it.
+	refuseOverLongName(name string) error
+	refuseOrDrop(f failedField) error
+	refuseAuthored(workload string, err error) error
+}
+
+// failedField is a check an entry's field failed. An empty field names the
+// entry alone in the refusal.
+type failedField struct {
+	workload string
+	field    string
+	err      error
+	warn     string
+	drop     func()
+}
+
+// authoredDocument is the posture of ParseJSON and Normalize.
+type authoredDocument struct{}
+
+// servedDocument is the posture of ParseServedJSON.
+type servedDocument struct{}
+
+func (authoredDocument) restrictFields(dec *json.Decoder) { dec.DisallowUnknownFields() }
+
+func (servedDocument) restrictFields(*json.Decoder) {}
+
+func (authoredDocument) refuseOverLongName(name string) error {
+	return fmt.Errorf("workload name %q is %d bytes; the maximum is %d (it is mirrored as a Kubernetes label value)", name, len(name), workloadname.MaxLen)
+}
+
+func (servedDocument) refuseOverLongName(name string) error {
+	slog.Warn("allowlist: dropping a served workload entry whose name exceeds the label-value bound",
+		"name", name, "bytes", len(name), "max", workloadname.MaxLen)
+	return nil
+}
+
+func (authoredDocument) refuseOrDrop(f failedField) error {
+	if f.err == nil {
+		return nil
+	}
+	if f.field == "" {
+		return fmt.Errorf("workload %q: %w", f.workload, f.err)
+	}
+	return fmt.Errorf("workload %q %s: %w", f.workload, f.field, f.err)
+}
+
+// Dropping is fail-closed: the entry stops granting what it lost, and failing a
+// whole served document would break every allowlist pull in the cluster.
+func (servedDocument) refuseOrDrop(f failedField) error {
+	if f.err == nil {
+		return nil
+	}
+	slog.Warn(f.warn, "name", f.workload, "error", f.err)
+	f.drop()
+	return nil
+}
+
+func (authoredDocument) refuseAuthored(workload string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("workload %q: %w", workload, err)
+}
+
+// A served entry keeps a grant it cannot prove here; its consumer checks again
+// before releasing anything on its basis.
+func (servedDocument) refuseAuthored(string, error) error {
+	return nil
 }
 
 // refuseVolumeBindings refuses a document that names a pod volume on an
@@ -335,22 +409,17 @@ func (w Workload) refuseVolumeBindings() error {
 }
 
 // Normalize validates and canonicalizes a document decoded outside ParseJSON
-// (the NRI plugin's YAML boot config), under the same strict ingest posture.
+// (the NRI plugin's YAML boot config), under the same authored ingest posture.
 func (a *Allowlist) Normalize() error {
-	return a.normalize(true)
+	return a.normalize(authoredDocument{})
 }
 
 // ParseWorkloadJSON decodes and validates a single workload entry — one entry
 // of a document, as `c8s allowlist apply` and `edit` read it — applying the
 // same normalization as ParseJSON so a written entry is canonical.
 func ParseWorkloadJSON(data []byte) (*Workload, error) {
-	if err := strictjson.Validate(data); err != nil {
-		return nil, err
-	}
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
 	var w Workload
-	if err := dec.Decode(&w); err != nil {
+	if err := strictjson.Unmarshal(data, &w); err != nil {
 		return nil, fmt.Errorf("decode workload: %w", err)
 	}
 	if err := w.refuseVolumeBindings(); err != nil {
@@ -619,14 +688,11 @@ func (a *Allowlist) CanonicalDigest() ([]byte, error) {
 	return sum[:], nil
 }
 
-// normalize canonicalizes the document. strict is the write/ingest posture
-// (ParseJSON): it enforces workloadname.MaxLen, so no entry that the cw selector
-// or the leaf stamp cannot represent ever enters the store. A served document
-// (ParseServedJSON) is not ours to reject over that bound — it arrived after
-// entries could already have been written, and failing the whole document would
-// break every allowlist pull in the cluster over one legacy name — so an
-// over-long entry is dropped instead. See docs/allowlist-and-capabilities.md.
-func (a *Allowlist) normalize(strict bool) error {
+// normalize canonicalizes the document under p, its ingest posture:
+// workloadname.MaxLen keeps an entry the cw selector or the leaf stamp cannot
+// represent out of the store, and a served document loses such an entry instead
+// of failing. See docs/allowlist-entries.md.
+func (a *Allowlist) normalize(p ingestPosture) error {
 	if a.Schema != Schema {
 		return fmt.Errorf("allowlist: unknown schema %q (expected %q)", a.Schema, Schema)
 	}
@@ -637,15 +703,12 @@ func (a *Allowlist) normalize(strict bool) error {
 			return fmt.Errorf("workload name %q must match [A-Za-z0-9][A-Za-z0-9._-]* (it is a URL path segment)", name)
 		}
 		if len(name) > workloadname.MaxLen {
-			if strict {
-				return fmt.Errorf("workload name %q is %d bytes; the maximum is %d (it is mirrored as a Kubernetes label value)", name, len(name), workloadname.MaxLen)
+			// The whole entry goes, so this skips the store-back below. It
+			// could never have been named on a leaf either
+			// (armtls.MatchedWorkload.Validate applies the same bound).
+			if err := p.refuseOverLongName(name); err != nil {
+				return err
 			}
-			// Dropping is fail-closed: the entry's digests stop being admitted
-			// by this consumer. It could never have been named on a leaf either
-			// (armtls.MatchedWorkload.Validate applies the same bound), so
-			// nothing that depended on it is lost.
-			slog.Warn("allowlist: dropping a served workload entry whose name exceeds the label-value bound",
-				"name", name, "bytes", len(name), "max", workloadname.MaxLen)
 			delete(a.Workloads, name)
 			continue
 		}
@@ -658,57 +721,58 @@ func (a *Allowlist) normalize(strict bool) error {
 		if err := normalizeSecrets(&w.Secrets); err != nil {
 			return fmt.Errorf("workload %q secrets: %w", name, err)
 		}
-		if strict && w.Secrets != nil {
-			if err := w.PinnedForGrant(); err != nil {
-				return fmt.Errorf("workload %q: %w", name, err)
+		if w.Secrets != nil {
+			if err := p.refuseAuthored(name, w.PinnedForGrant()); err != nil {
+				return err
 			}
 		}
-		if err := w.CheckVariableEvidenceBudget(); strict && err != nil {
-			return fmt.Errorf("workload %q: %w", name, err)
+		if err := p.refuseAuthored(name, w.CheckVariableEvidenceBudget()); err != nil {
+			return err
 		}
-		if err := normalizeEgress(&w.Egress); err != nil {
-			if strict {
-				return fmt.Errorf("workload %q egress: %w", name, err)
-			}
-			// Dropping is fail-closed: the entry grants no exit.
-			slog.Warn("allowlist: dropping a served workload entry's egress this consumer cannot validate",
-				"name", name, "error", err)
-			w.Egress = nil
+		if err := p.refuseOrDrop(failedField{
+			workload: name,
+			field:    "egress",
+			err:      normalizeEgress(&w.Egress),
+			warn:     "allowlist: dropping a served workload entry's egress this consumer cannot validate",
+			drop:     w.dropEgress,
+		}); err != nil {
+			return err
 		}
-		if err := w.PinnedForEgress(); strict && err != nil {
-			return fmt.Errorf("workload %q: %w", name, err)
+		if err := p.refuseAuthored(name, w.PinnedForEgress()); err != nil {
+			return err
 		}
-		if err := normalizeHostPorts(&w.HostPorts); err != nil {
-			if strict {
-				return fmt.Errorf("workload %q hostPorts: %w", name, err)
-			}
-			slog.Warn("allowlist: dropping a served workload entry's host ports this consumer cannot validate",
-				"name", name, "error", err)
-			w.HostPorts = nil
+		if err := p.refuseOrDrop(failedField{
+			workload: name,
+			field:    "hostPorts",
+			err:      normalizeHostPorts(&w.HostPorts),
+			warn:     "allowlist: dropping a served workload entry's host ports this consumer cannot validate",
+			drop:     w.dropHostPorts,
+		}); err != nil {
+			return err
 		}
-		if err := w.pinnedForHostPorts(); err != nil {
-			if strict {
-				return fmt.Errorf("workload %q: %w", name, err)
-			}
-			slog.Warn("allowlist: dropping a served workload entry's host ports no pinned launch publishes",
-				"name", name, "error", err)
-			w.HostPorts = nil
+		if err := p.refuseOrDrop(failedField{
+			workload: name,
+			err:      w.pinnedForHostPorts(),
+			warn:     "allowlist: dropping a served workload entry's host ports no pinned launch publishes",
+			drop:     w.dropHostPorts,
+		}); err != nil {
+			return err
 		}
-		if err := w.normalizeDeclaredCapabilities(); err != nil {
-			if strict {
-				return fmt.Errorf("workload %q: %w", name, err)
-			}
-			slog.Warn("allowlist: dropping a served workload entry's capabilities this consumer cannot validate",
-				"name", name, "error", err)
-			w.dropDeclaredCapabilities()
+		if err := p.refuseOrDrop(failedField{
+			workload: name,
+			err:      w.normalizeDeclaredCapabilities(),
+			warn:     "allowlist: dropping a served workload entry's capabilities this consumer cannot validate",
+			drop:     w.dropDeclaredCapabilities,
+		}); err != nil {
+			return err
 		}
-		if err := w.pinnedForCapabilities(); err != nil {
-			if strict {
-				return fmt.Errorf("workload %q: %w", name, err)
-			}
-			slog.Warn("allowlist: dropping a served workload entry's capabilities no pinned launch holds",
-				"name", name, "error", err)
-			w.dropDeclaredCapabilities()
+		if err := p.refuseOrDrop(failedField{
+			workload: name,
+			err:      w.pinnedForCapabilities(),
+			warn:     "allowlist: dropping a served workload entry's capabilities no pinned launch holds",
+			drop:     w.dropDeclaredCapabilities,
+		}); err != nil {
+			return err
 		}
 		if w.StaticPod && w.declaresHostPortsOrCapabilities() {
 			return fmt.Errorf("workload %q: %w", name, errStaticPodDeclaresGrants)
@@ -961,6 +1025,14 @@ func (w *Workload) normalizeDeclaredCapabilities() error {
 		return err
 	}
 	return normalizeContainerCapabilities("containers", w.Containers)
+}
+
+func (w *Workload) dropEgress() {
+	w.Egress = nil
+}
+
+func (w *Workload) dropHostPorts() {
+	w.HostPorts = nil
 }
 
 func (w *Workload) dropDeclaredCapabilities() {

@@ -35,7 +35,7 @@ concurrency:
 jobs:
   # A release tag is created inside the successful parent Docker run. Resolve it
   # from that run's exact revision only for the trusted automatic main and beta
-  # paths; manual worker-image rebuilds must never mint or move release aliases.
+  # paths; manual guest-image rebuilds must never mint or move release aliases.
   # main resolves only stable tags and beta only -beta.N tags.
   release-context:
     name: Resolve release context
@@ -103,12 +103,12 @@ jobs:
     secrets:
       MODULE_SIG_KEY_PEM: ${{ secrets.MODULE_SIG_KEY_PEM }}
 
-  # Wait for both TDX/SNP matrix legs, then preflight every exact alias before
+  # Wait for every guest-image build, then preflight every exact alias before
   # creating any of them. Registry publication is not transactional, so a
   # network failure may leave a subset; a rerun repairs missing aliases and
   # rejects any existing alias whose digest differs.
   promote-release:
-    name: Publish exact worker-image release aliases
+    name: Publish exact guest-image release aliases
     needs: [release-context, build-and-push]
     if: |
       always() &&
@@ -137,51 +137,60 @@ jobs:
       - name: Publish or verify exact release aliases
         env:
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-          IMAGE: ghcr.io/confidential-dot-ai/guests/worker
+          GUESTS: ghcr.io/confidential-dot-ai/guests
           RELEASE_TAG: ${{ needs.release-context.outputs.tag }}
         run: |
           set -euo pipefail
 
           if [[ ! "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || \
              [[ ! "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)(-beta[.][1-9][0-9]*)?$ ]]; then
-            echo "::error::invalid worker-image release context"
+            echo "::error::invalid guest-image release context"
             exit 1
           fi
           short="${HEAD_SHA:0:7}"
-          repo_tags="$(oras repo tags "$IMAGE")"
-          aliases="$RUNNER_TEMP/worker-release-aliases"
+          aliases="$RUNNER_TEMP/guest-release-aliases"
           : > "$aliases"
 
-          # c8s-image.yml publishes one tag per suffix: <ref>-<suffix>.
-          for suffix in tdx tdx-kubevirt sev-snp sev-snp-kubevirt; do
-            source_tag="sha-$short-$suffix"
-            release_alias="$RELEASE_TAG-$suffix"
-            source_digest="$(oras resolve "$IMAGE:$source_tag")"
-            if [[ ! "$source_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-              echo "::error::$IMAGE:$source_tag did not resolve to an OCI digest"
-              exit 1
-            fi
-
-            exists=false
-            if grep -Fxq -- "$release_alias" <<< "$repo_tags"; then
-              exists=true
-              destination_digest="$(oras resolve "$IMAGE:$release_alias")"
-              if [ "$destination_digest" != "$source_digest" ]; then
-                echo "::error::$IMAGE:$release_alias already names $destination_digest, expected $source_digest"
-                exit 1
+          # c8s-image.yml publishes one tag per suffix: <ref><suffix>.
+          record_release_aliases() {
+            local image=$1
+            shift
+            local repo_tags source_tag release_alias source_digest exists destination_digest
+            repo_tags="$(oras repo tags "$image")"
+            for suffix in "$@"; do
+              source_tag="sha-$short$suffix"
+              release_alias="$RELEASE_TAG$suffix"
+              source_digest="$(oras resolve "$image:$source_tag")"
+              if [[ ! "$source_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+                echo "::error::$image:$source_tag did not resolve to an OCI digest"
+                return 1
               fi
-            fi
-            printf '%s\t%s\t%s\n' "$release_alias" "$source_digest" "$exists" >> "$aliases"
-          done
 
-          while IFS=$'\t' read -r release_alias source_digest exists; do
+              exists=false
+              if grep -Fxq -- "$release_alias" <<< "$repo_tags"; then
+                exists=true
+                destination_digest="$(oras resolve "$image:$release_alias")"
+                if [ "$destination_digest" != "$source_digest" ]; then
+                  echo "::error::$image:$release_alias already names $destination_digest, expected $source_digest"
+                  return 1
+                fi
+              fi
+              printf '%s\t%s\t%s\t%s\n' "$image" "$release_alias" "$source_digest" "$exists" >> "$aliases"
+            done
+          }
+
+          record_release_aliases "$GUESTS/worker" -tdx -tdx-kubevirt -sev-snp -sev-snp-kubevirt
+          # One CDS image serves both TEE families, so its artifact tag names no TEE.
+          record_release_aliases "$GUESTS/cds" "" -kubevirt
+
+          while IFS=$'\t' read -r image release_alias source_digest exists; do
             if [ "$exists" = false ]; then
-              oras tag "$IMAGE@$source_digest" "$release_alias"
+              oras tag "$image@$source_digest" "$release_alias"
             fi
-            test "$(oras resolve "$IMAGE:$release_alias")" = "$source_digest"
+            test "$(oras resolve "$image:$release_alias")" = "$source_digest"
           done < "$aliases"
 
           {
-            echo "### $RELEASE_TAG worker image aliases"
-            cut -f1 "$aliases" | sed "s|^|- \`$IMAGE:|; s|\$|\`|"
+            echo "### $RELEASE_TAG guest image aliases"
+            awk -F'\t' '{ printf "- `%s:%s`\n", $1, $2 }' "$aliases"
           } >> "$GITHUB_STEP_SUMMARY"

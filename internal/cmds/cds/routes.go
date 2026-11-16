@@ -177,8 +177,8 @@ func handleCA(mesh meshCA) http.HandlerFunc {
 
 // handleMeasurements renders the node images this CDS admits a caller
 // against, so a verifier can compare the operator's own file with them. An
-// empty set is served, not 404'd: "admitting any measurement" is the state a
-// verifier most needs to be told about.
+// empty set is served, not 404'd: a CDS that certifies no node image is the
+// state a verifier most needs to be told about.
 func handleMeasurements(nodeImages armtls.PinSource) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		document, err := refvalues.Render(nodeImages.Current())

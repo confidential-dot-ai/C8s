@@ -156,6 +156,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		}
 		return r.unverified(ctx, pod, rec, secret, cloudRejectedReason, err)
 	}
+	if errors.Is(err, errForeignInstance) && rec.InstanceID != "" {
+		log.FromContext(ctx).Error(err, "cloud returned an instance the record did not create", "pod", client.ObjectKeyFromObject(pod))
+		return r.stop(ctx, pod, rec, secret, "InstanceIdentityMismatch")
+	}
 	if err != nil {
 		return r.unverified(ctx, pod, rec, secret, "CloudUnavailable", err)
 	}

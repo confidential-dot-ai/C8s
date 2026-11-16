@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
 )
 
 // nodeFixture is a node the NRI installer and its removers run against: /host
@@ -14,19 +16,26 @@ import (
 // pluginRunning exists, and a containerd restart ends it. date and sleep share
 // a clock the sleeps advance, so a script's waits cost no wall-clock time.
 type nodeFixture struct {
-	root          string
-	bin           string
-	log           string
-	cdsDir        string
-	podRoot       string
-	pluginRunning string
-	clock         string
+	root              string
+	bin               string
+	log               string
+	cdsDir            string
+	podRoot           string
+	pluginRunning     string
+	clock             string
+	ownContainerdTOML string
 }
 
 const (
-	nodePluginPath     = "/opt/nri/plugins/10-nri-image-policy"
-	nodeBootConfigPath = "/etc/nri/conf.d/image-policy.yaml"
+	nodePluginDir      = "/opt/nri/plugins"
+	nodePluginFile     = "10-nri-image-policy"
+	nodePluginPath     = nodePluginDir + "/" + nodePluginFile
+	nodeConfigDir      = "/etc/nri/conf.d"
+	nodeBootConfigPath = nriimagepolicy.DefaultConfigPath
 	nodeContainerdTOML = "/etc/containerd/config.toml"
+	// The directory the plugin renders its documents into, which the sweep
+	// removes by the same path.
+	nodeEnforcerDir = nriimagepolicy.EnforcerRuntimeDir
 )
 
 // nodeStubs are the host commands the scripts call. nsenter answers the
@@ -65,13 +74,14 @@ func newNodeFixture(t *testing.T, containerdConfig string) *nodeFixture {
 	t.Helper()
 	dir := t.TempDir()
 	n := &nodeFixture{
-		root:          filepath.Join(dir, "host"),
-		bin:           filepath.Join(dir, "bin"),
-		log:           filepath.Join(dir, "calls.log"),
-		cdsDir:        filepath.Join(dir, "cds"),
-		podRoot:       filepath.Join(dir, "pod"),
-		pluginRunning: filepath.Join(dir, "plugin-running"),
-		clock:         filepath.Join(dir, "clock"),
+		root:              filepath.Join(dir, "host"),
+		bin:               filepath.Join(dir, "bin"),
+		log:               filepath.Join(dir, "calls.log"),
+		cdsDir:            filepath.Join(dir, "cds"),
+		podRoot:           filepath.Join(dir, "pod"),
+		pluginRunning:     filepath.Join(dir, "plugin-running"),
+		clock:             filepath.Join(dir, "clock"),
+		ownContainerdTOML: containerdConfig,
 	}
 	for _, d := range []string{
 		filepath.Dir(n.hostPath(nodeContainerdTOML)),
@@ -109,6 +119,18 @@ func writeTestFile(t *testing.T, path, content string) {
 func (n *nodeFixture) hostPath(path string) string { return filepath.Join(n.root, path) }
 
 func (n *nodeFixture) startPlugin(t *testing.T) { writeTestFile(t, n.pluginRunning, "") }
+
+// boot models a Container-Optimized OS boot: /etc and /run are tmpfs, and the
+// node writes its own containerd config again.
+func (n *nodeFixture) boot(t *testing.T) {
+	t.Helper()
+	for _, dir := range []string{"/etc", "/run"} {
+		if err := os.RemoveAll(n.hostPath(dir)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeTestFile(t, n.hostPath(nodeContainerdTOML), n.ownContainerdTOML)
+}
 
 // localize points a script's host, pod and binary paths into the fixture. The
 // installer stages the boot config's inputs at the absolute paths the plugin

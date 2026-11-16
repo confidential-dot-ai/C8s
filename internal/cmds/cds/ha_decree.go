@@ -21,7 +21,6 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/worker"
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
-	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 )
 
 // defaultDecreeValidity is how long a cluster may adopt a decree for. A
@@ -93,7 +92,7 @@ func decreeCmd(use, short, long string, o *decreeOptions, run func(*cobra.Comman
 	f.StringVar(&o.operatorKey, "operator-key", "", "operator EC private key PEM file, whose public key the configuration pins (REQUIRED)")
 	f.StringVar(&o.out, "out", "", "file to write the signed decree to, beside posting it")
 	f.DurationVar(&o.expiresIn, "expires-in", defaultDecreeValidity, "how long the cluster may adopt this decree for")
-	requireFlags(cmd, "config", "operator-key")
+	cmdsutil.RequireFlags(cmd, "config", "operator-key")
 	return cmd
 }
 
@@ -101,7 +100,7 @@ func decreeCmd(use, short, long string, o *decreeOptions, run func(*cobra.Comman
 // kinds that apply to a cluster that already has one.
 func bindBaseVersionFlag(cmd *cobra.Command, o *decreeOptions) {
 	cmd.Flags().Uint64Var(&o.baseVersion, "base-version", 0, "the version the cluster reports now (REQUIRED); the decree applies on top of it")
-	requireFlags(cmd, "base-version")
+	cmdsutil.RequireFlags(cmd, "base-version")
 }
 
 // decreeConfig is the cluster a decree is for, as its measured configuration
@@ -132,7 +131,7 @@ func (o decreeOptions) sign(cmd *cobra.Command, c decreeConfig, d cdsdecree.Decr
 	if o.expiresIn <= 0 {
 		return cdsdecree.Signed{}, errors.New("--expires-in must be positive: a decree no replica may adopt does nothing")
 	}
-	key, err := certutil.LoadECPrivateKeyFile(o.operatorKey)
+	key, err := cmdsutil.LoadOperatorKey(o.operatorKey)
 	if err != nil {
 		return cdsdecree.Signed{}, fmt.Errorf("--operator-key: %w", err)
 	}
@@ -226,7 +225,7 @@ func bindPinFlags(cmd *cobra.Command, p *pinFlags) {
 	f.StringVar(&p.platform, "platform", "", "TEE platform the CDS VMs run on: sev-snp or tdx (REQUIRED)")
 	f.IntSliceVar(&p.vcpus, "vcpus", nil, "SEV-SNP only: a vCPU count a CDS VM may boot with, one pin entry each; repeatable")
 	f.StringArrayVar(&p.manifests, "image-manifest", nil, "manifest.json of a CDS guest image the cluster accepts; repeatable (REQUIRED)")
-	requireFlags(cmd, "platform", "image-manifest")
+	cmdsutil.RequireFlags(cmd, "platform", "image-manifest")
 }
 
 // document is the image set the decree carries: every named image bound to the
@@ -351,7 +350,7 @@ func confirmedSet(cmd *cobra.Command, a worker.Admission) ([]byte, error) {
 	if err := a.Report(cmd.ErrOrStderr()); err != nil {
 		return nil, err
 	}
-	if !cmdsutil.Confirm(cmd.InOrStdin(), cmd.ErrOrStderr(), "Sign the decree certifying workers launched with this document?") {
+	if !cmdsutil.Confirm(cmd.Context(), cmd.InOrStdin(), cmd.ErrOrStderr(), "Sign the decree certifying workers launched with this document?") {
 		return nil, errors.New("not signed: the worker document's facts were not confirmed")
 	}
 	return a.Nodes, nil
@@ -387,7 +386,7 @@ func newGenesisCmd() *cobra.Command {
 	f.StringVar(&o.nodes, "nodes", "", "measurements document pinning the node images the cluster certifies (default: the configuration's nodes)")
 	f.Uint64Var(&o.resumeVersion, "resume-version", 0, "the highest version a cluster under this cluster id reached (REQUIRED, 0 for the first)")
 	f.BoolVar(&o.alone, "alone", false, "start the cluster even where discovery finds no other replica (a one-replica cluster only)")
-	requireFlags(cmd, "resume-version")
+	cmdsutil.RequireFlags(cmd, "resume-version")
 	cmd.MarkFlagsMutuallyExclusive("nodes", "worker-document")
 	return cmd
 }
@@ -395,6 +394,9 @@ func newGenesisCmd() *cobra.Command {
 func (o genesisOptions) run(cmd *cobra.Command) error {
 	c, err := readDecreeConfig(o.config)
 	if err != nil {
+		return err
+	}
+	if err := o.checkAloneNamesTheOneReplica(c); err != nil {
 		return err
 	}
 	cdsPins, err := o.pins.document(c.launchFile)
@@ -425,6 +427,20 @@ func (o genesisOptions) run(cmd *cobra.Command) error {
 		ResumeVersion: o.resumeVersion,
 		Alone:         o.alone,
 	})
+}
+
+// checkAloneNamesTheOneReplica requires --alone of a cluster that has no
+// second replica to answer: without it, the replica holds the Genesis until
+// another replica of its cluster answers it, which never happens.
+func (o genesisOptions) checkAloneNamesTheOneReplica(c decreeConfig) error {
+	if o.alone || !namesOneReplicaFillingOneSeat(c.parsed.HA) {
+		return nil
+	}
+	return errors.New("the configuration names one replica filling one voter seat, and a replica starts a cluster only once another replica of it answers: pass --alone for a one-replica cluster")
+}
+
+func namesOneReplicaFillingOneSeat(ha *cdsconfig.HA) bool {
+	return ha != nil && len(ha.Replicas) == 1 && ha.Voters == 1
 }
 
 // confirmedNodePins are the node images the cluster starts out certifying:
@@ -502,7 +518,7 @@ func newNodeImagesCmd() *cobra.Command {
 	bindDeliveryFlags(cmd, &o.to)
 	bindWorkerFlags(cmd, &o.worker)
 	cmd.Flags().StringVar(&o.nodes, "nodes", "", "measurements document pinning the node images the cluster certifies, or with --worker-document the set in force it extends (REQUIRED)")
-	requireFlags(cmd, "nodes")
+	cmdsutil.RequireFlags(cmd, "nodes")
 	return cmd
 }
 
@@ -612,7 +628,7 @@ func newVotersCmd() *cobra.Command {
 	bindBaseVersionFlag(cmd, &o.decreeOptions)
 	bindDeliveryFlags(cmd, &o.to)
 	cmd.Flags().IntVar(&o.voters, "voters", 0, "voter seats the cluster holds, odd and up to "+strconv.Itoa(cdsdecree.MaxVoterSeats)+" (REQUIRED)")
-	requireFlags(cmd, "voters")
+	cmdsutil.RequireFlags(cmd, "voters")
 	return cmd
 }
 
@@ -680,7 +696,7 @@ func newRecoverCmd() *cobra.Command {
 	f := cmd.Flags()
 	f.Uint64Var(&o.resumeVersion, "resume-version", 0, "the highest version you know the cluster reached, at least --base-version (REQUIRED)")
 	f.BoolVar(&o.acknowledge, "i-understand-recover-is-break-glass", false, "required: the writes the survivor never received are gone")
-	requireFlags(cmd, "resume-version")
+	cmdsutil.RequireFlags(cmd, "resume-version")
 	return cmd
 }
 
@@ -752,7 +768,7 @@ func newDismissRecoverCmd() *cobra.Command {
 	bindBaseVersionFlag(cmd, &o)
 	bindDeliveryFlags(cmd, &to)
 	cmd.Flags().StringVar(&recoverIntent, "recover-intent", "", "intent id of the Recover decree the cluster reports as its doubt (REQUIRED)")
-	requireFlags(cmd, "recover-intent")
+	cmdsutil.RequireFlags(cmd, "recover-intent")
 	return cmd
 }
 
@@ -772,7 +788,7 @@ func newAdmitCmd() *cobra.Command {
 		&o.decreeOptions, func(cmd *cobra.Command) error { return o.run(cmd) })
 	bindTargetFlags(cmd, &o.target)
 	cmd.Flags().StringVar(&o.joined, "cluster", "", "<host>[:"+strconv.Itoa(replicaPort)+"] of a replica serving the cluster, whose applied pin decree names the images (REQUIRED)")
-	requireFlags(cmd, "cluster")
+	cmdsutil.RequireFlags(cmd, "cluster")
 	return cmd
 }
 
@@ -835,12 +851,4 @@ func checkAdmitTarget(target cdsha.Status, clusterID string) error {
 		return errors.New("the target replica already holds a cluster, and admits by the image set the cluster applied")
 	}
 	return nil
-}
-
-func requireFlags(cmd *cobra.Command, names ...string) {
-	for _, name := range names {
-		if err := cmd.MarkFlagRequired(name); err != nil {
-			panic(err)
-		}
-	}
 }

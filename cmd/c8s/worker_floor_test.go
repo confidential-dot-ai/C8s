@@ -26,7 +26,7 @@ func TestWorkerFloorBuildsFromTheRenderedChart(t *testing.T) {
 	out := t.TempDir()
 	cmd := newNodeImageCmd()
 	cmd.SetArgs([]string{
-		"render", "--hardware-platform", "sev-snp", "--kube-version", "v1.36.4",
+		"render", "--hardware-platform", "sev-snp", "--kube-version", "v1.36.6",
 		"--chart-dir", workerChartDir,
 		"--image-digest", testDigest, "--image-repository", "registry.example.com/c8s-operator",
 		"--armtls-mesh-image-digest", nodeImageTestMeshDigest, "--armtls-mesh-image-repository", "registry.example.com/armtls-mesh",
@@ -78,7 +78,7 @@ func TestWorkerFloorBuildsFromTheRenderedChart(t *testing.T) {
 	if err := yamlv3.Unmarshal(floor, &doc); err != nil {
 		t.Fatal(err)
 	}
-	for _, pod := range []string{"cilium", "coredns", "kube-proxy"} {
+	for _, pod := range []string{"cilium", "coredns", "dcgm-exporter", "kube-proxy", "nvidia-device-plugin"} {
 		if !doc.Allowlist.Base.Workloads[pod].StaticPod {
 			t.Errorf("the floor holds no static-pod entry for the image's %s", pod)
 		}

@@ -242,13 +242,13 @@ func (o *Options) Signer() (*operatorauth.Signer, error) {
 	if keyPath == "" {
 		return nil, fmt.Errorf("operator key required: set --operator-key or %s", EnvOperatorKey)
 	}
-	keyPEM, err := os.ReadFile(keyPath)
+	key, err := cmdsutil.LoadOperatorKey(keyPath)
 	if err != nil {
-		return nil, fmt.Errorf("read operator key: %w", err)
+		return nil, fmt.Errorf("operator key: %w", err)
 	}
-	signer, err := operatorauth.NewSignerFromKeyPEM(keyPEM)
+	signer, err := operatorauth.NewSigner(key)
 	if err != nil {
-		return nil, fmt.Errorf("load operator key: %w", err)
+		return nil, err
 	}
 	if err := o.RequirePinnedEndpoint(); err != nil {
 		return nil, err

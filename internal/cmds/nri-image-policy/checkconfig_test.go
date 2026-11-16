@@ -59,7 +59,7 @@ func TestRunCheckConfig(t *testing.T) {
 			if err := os.WriteFile(path, []byte(tc.config), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			err := Run([]string{checkConfigVerb, "--config=" + path})
+			err := Run(t.Context(), []string{checkConfigVerb, "--config=" + path})
 			switch {
 			case tc.want == "" && err != nil:
 				t.Fatalf("check-config = %v, want the config accepted", err)
@@ -70,7 +70,7 @@ func TestRunCheckConfig(t *testing.T) {
 	}
 
 	t.Run("a missing file", func(t *testing.T) {
-		if err := Run([]string{checkConfigVerb, "--config=" + filepath.Join(t.TempDir(), "absent.yaml")}); err == nil {
+		if err := Run(t.Context(), []string{checkConfigVerb, "--config=" + filepath.Join(t.TempDir(), "absent.yaml")}); err == nil {
 			t.Fatal("check-config accepted a config file that does not exist")
 		}
 	})
@@ -134,7 +134,7 @@ func TestRunPluginRunning(t *testing.T) {
 		{"a cmdline whose argv[0] does not end", with(kubeadmTree, map[int]fakeProcess{200: {cmdline: strings.Repeat("x", maxArgv0+1), comm: "long", ppid: 100}}), pluginUnknownStatus},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := Run([]string{pluginRunningVerb, "--proc-root=" + fakeProc(t, tc.procs)})
+			err := Run(t.Context(), []string{pluginRunningVerb, "--proc-root=" + fakeProc(t, tc.procs)})
 			if tc.want == 0 && err != nil {
 				t.Fatalf("plugin-running = %v, want the plugin reported running", err)
 			}
@@ -145,7 +145,7 @@ func TestRunPluginRunning(t *testing.T) {
 	}
 
 	t.Run("an unreadable procfs", func(t *testing.T) {
-		err := Run([]string{pluginRunningVerb, "--proc-root=" + filepath.Join(t.TempDir(), "absent")})
+		err := Run(t.Context(), []string{pluginRunningVerb, "--proc-root=" + filepath.Join(t.TempDir(), "absent")})
 		if cmdsutil.ExitStatus(err) != pluginUnknownStatus {
 			t.Fatalf("plugin-running = %v, want an unknown answer without a procfs", err)
 		}

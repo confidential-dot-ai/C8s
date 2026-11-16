@@ -193,8 +193,9 @@ the plugin recorded for its launch at the check whose failure fails the create
 ([node-exec-mode.md](node-exec-mode.md#the-privilege-floor)).
 
 The chart renders this policy off on every lane it installs
-(`nriImagePolicy.policy.sandbox: off`), because the exemption below rests on a
-measured base and a chart-rendered base is the cluster admin's to choose. What
+(`policy.sandbox: "off"` in the plugin configuration it writes), because the
+exemption below rests on a measured base and a chart-rendered base is the
+cluster admin's to choose. What
 remains there is control-plane admission the operator owns: the chart's
 `<release>-deny-host-namespaces` policy, refusing host namespaces, host ports,
 and `hostPath` volumes to pods outside the release, router, `kube-system` and
@@ -326,8 +327,8 @@ fail-closed`, the chart's default, every node also rechecks its running
 containers — at startup and after each document it applies — and kills those
 the document no longer admits, outside the exempt namespaces. Enforcing the
 running set is not a switch: every C8s lane does it. Those are namespaces a boot config lists as holding platform pods
-the allowlist does not describe, admitted against a digest set the plugin froze
-on its first connect (Corner 8 of
+the allowlist does not describe, admitted against the image repositories the
+same boot config carries for them (Corner 8 of
 [getcert-workload-binding.md](getcert-workload-binding.md)). So removing or
 narrowing an entry stops its containers on every node within
 `--allowlist-node-delay` plus one refresh interval.
@@ -370,7 +371,7 @@ given the digests the worker image's own release published:
 
 ```sh
 c8s node-image render --output-dir seed \
-    --hardware-platform sev-snp --kube-version v1.36.4 \
+    --hardware-platform sev-snp --kube-version v1.36.6 \
     --image-digest sha256:<operator/get-cert digest> \
     --armtls-mesh-image-digest sha256:<armTLS mesh digest>
 c8s cds config new --allowlist-seed seed/allowlist-seed.json ...

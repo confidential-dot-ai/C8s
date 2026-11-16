@@ -178,7 +178,12 @@ func ramBackedDir(t *testing.T) string {
 		t.Skipf("no tmpfs to publish a credential volume on: %v", err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	if err := fileutil.RequireRAMBacked(dir); err != nil {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Skipf("cannot open %s: %v", dir, err)
+	}
+	defer root.Close()
+	if err := fileutil.RequireRAMBackedRoot(root); err != nil {
 		t.Skipf("%s is not RAM-backed: %v", dir, err)
 	}
 	return dir

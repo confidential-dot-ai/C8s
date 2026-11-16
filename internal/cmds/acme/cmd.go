@@ -15,11 +15,9 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 
 	"github.com/spf13/cobra"
 
@@ -87,10 +85,10 @@ from --standby-cert-dir instead, and the sidecar only reports ready once that
 leaf exists.`,
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
-		RunE: func(_ *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg.certDir = certDir
 			cfg.keyDir = keyDir
-			return run(cfg)
+			return run(cmd.Context(), cfg)
 		},
 	}
 	f := cmd.Flags()
@@ -217,11 +215,11 @@ func validateConfig(cfg *config) error {
 	return nil
 }
 
-func run(cfg config) error { return runWith(cfg, nil) }
+func run(ctx context.Context, cfg config) error { return runWith(ctx, cfg, nil) }
 
 // runWith is run with an explicit hostname probe transport; nil uses public
 // DNS and port 80, which is what production needs and tests cannot.
-func runWith(cfg config, probe *http.Client) error {
+func runWith(ctx context.Context, cfg config, probe *http.Client) error {
 	logger, err := newLogger(cfg.logLevel)
 	if err != nil {
 		return err
@@ -232,9 +230,6 @@ func runWith(cfg config, probe *http.Client) error {
 	if err != nil {
 		return err
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	if standby {
 		return runStandby(ctx, cfg, logger)

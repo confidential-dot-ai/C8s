@@ -34,6 +34,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+
+	"github.com/confidential-dot-ai/c8s/internal/readutil"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
@@ -167,6 +170,17 @@ const (
 // It is the allowlist workload name the pod's entries are looked up under, so
 // its grammar is the allowlist's (pkg/workloadname).
 const AnnotationWorkloadID = "confidential.ai/cw"
+
+// ValidateWorkloadLabel refuses a workload label that differs from the
+// annotation. The managed Services select on the label, so a pod that set it
+// out of band could otherwise join a workload's endpoints. Callers apply it on
+// every operation, so a later label change is judged as the create was.
+func ValidateWorkloadLabel(pod *corev1.Pod) error {
+	if label, ok := pod.Labels[AnnotationWorkloadID]; ok && label != pod.Annotations[AnnotationWorkloadID] {
+		return fmt.Errorf("pod label %s=%q must match the %s annotation", AnnotationWorkloadID, label, AnnotationWorkloadID)
+	}
+	return nil
+}
 
 // IsMeshPort reports whether port is one the mesh endpoint binds: a capture
 // port or the health port. None of them answers an application.
@@ -535,8 +549,13 @@ func serveTokenRoute(ctx context.Context, l net.Listener, resolver SandboxResolv
 			http.Error(w, "inventory serves no sandbox tokens", status)
 			return
 		}
+		body, err := readutil.ReadAll(r.Body, maxSandboxRequestBytes)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("read sandbox token request: %v", err), http.StatusBadRequest)
+			return
+		}
 		var req SandboxTokenRequest
-		if err := json.NewDecoder(io.LimitReader(r.Body, maxSandboxRequestBytes)).Decode(&req); err != nil {
+		if err := json.Unmarshal(body, &req); err != nil {
 			http.Error(w, fmt.Sprintf("decode sandbox token request: %v", err), http.StatusBadRequest)
 			return
 		}
@@ -732,8 +751,12 @@ func FetchSandboxToken(ctx context.Context, endpoint string, timeout time.Durati
 		}
 		return nil, fmt.Errorf("workloadclaims: inventory returned %d: %s", resp.StatusCode, strings.TrimSpace(string(errBody)))
 	}
+	data, err := readutil.ReadAll(resp.Body, maxResponseBytes)
+	if err != nil {
+		return nil, fmt.Errorf("workloadclaims: read inventory response: %w", err)
+	}
 	var out SignedSandboxToken
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).Decode(&out); err != nil {
+	if err := json.Unmarshal(data, &out); err != nil {
 		return nil, fmt.Errorf("workloadclaims: decode inventory response: %w", err)
 	}
 	if len(out.Token) == 0 || len(out.Signature) == 0 {

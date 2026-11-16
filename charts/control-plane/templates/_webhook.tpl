@@ -7,14 +7,8 @@
 - key: kubernetes.io/metadata.name
   operator: NotIn
   values:
-    - {{ .Release.Namespace }}
-    - {{ include "c8s.routerMeshNamespace" . }}
-    - kube-system
-    - kube-public
-    - kube-node-lease
-    {{- range .Values.webhook.extraExcluded }}
-    - {{ . }}
-    {{- end }}
+    {{- $system := list .Release.Namespace (include "c8s.routerMeshNamespace" .) "kube-system" "kube-public" "kube-node-lease" }}
+    {{- concat $system .Values.webhook.extraExcluded | uniq | toYaml | nindent 4 }}
 {{- end }}
 
 {{- define "c8s.webhookAnnotationsBlock" -}}

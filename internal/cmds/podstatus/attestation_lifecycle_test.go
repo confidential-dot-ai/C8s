@@ -31,7 +31,7 @@ func TestAttestRequiresAStableMeasurementSnapshot(t *testing.T) {
 				digests = append(digests, "sha256:"+strings.Repeat("c", 64), "sha256:"+strings.Repeat("d", 64))
 			}
 			var reads, quotes atomic.Int32
-			cfg := attestFixture(t, digests, digests[:1], nil, func(next http.Handler) http.Handler {
+			cfg := attestFixture(t, digests, digests[:1], nil, wrapGuest(func(next http.Handler) http.Handler {
 				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					if r.URL.Path == MeasurementsPath {
 						n := min(int(reads.Add(1)), len(digests))
@@ -43,7 +43,7 @@ func TestAttestRequiresAStableMeasurementSnapshot(t *testing.T) {
 					}
 					next.ServeHTTP(w, r)
 				})
-			})
+			}))
 			report, client, err := Attest(t.Context(), cfg)
 			if continuous {
 				if err == nil || !strings.Contains(err.Error(), "measured digests kept changing") || report != nil || client != nil {

@@ -35,6 +35,7 @@ type selectedImageFixture struct {
 	t                *testing.T
 	mu               sync.Mutex
 	blobs            map[string][]byte
+	reportedSizes    map[string]int64
 	container        *containersapi.Container
 	snapshot         *snapshotsapi.Info
 	config           ocispec.Image
@@ -54,7 +55,7 @@ type selectedImageFixture struct {
 func newSelectedImageFixture(t *testing.T) *selectedImageFixture {
 	t.Helper()
 	f := &selectedImageFixture{
-		t: t, blobs: map[string][]byte{}, metadataVersion: "v1",
+		t: t, blobs: map[string][]byte{}, reportedSizes: map[string]int64{}, metadataVersion: "v1",
 		metadataID: selectedContainerID, metadataSandbox: selectedSandboxID,
 		metadataType: criContainerMetadataType,
 		container:    &containersapi.Container{ID: selectedContainerID, Image: "registry/app:latest", Snapshotter: "overlayfs", SnapshotKey: selectedContainerID},
@@ -145,6 +146,10 @@ func (s selectedContentServer) Info(ctx context.Context, req *contentapi.InfoReq
 	f := s.f
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	// A host-controlled store reports sizes for content it never serves.
+	if size, reported := f.reportedSizes[req.Digest]; reported {
+		return &contentapi.InfoResponse{Info: &contentapi.Info{Digest: req.Digest, Size: size}}, nil
+	}
 	data, exists := f.blobs[req.Digest]
 	if !exists {
 		return nil, status.Error(codes.NotFound, "content is not pulled")
@@ -323,12 +328,10 @@ func TestVerifyContainerImageRefusals(t *testing.T) {
 			f.pin = f.addJSON(ocispec.Index{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: ocispec.MediaTypeImageIndex, Manifests: children}, ocispec.MediaTypeImageIndex)
 		}, limit},
 		{"total content bytes", func(f *selectedImageFixture) {
-			var children []ocispec.Descriptor
-			for i := range 10 {
-				manifest := f.manifest
-				manifest.Config.Digest = digest.FromString(fmt.Sprintf("other platform %d", i))
-				manifest.Annotations = map[string]string{"padding": strings.Repeat("x", 900_000)}
-				children = append(children, f.addJSON(manifest, ocispec.MediaTypeImageManifest))
+			children := make([]ocispec.Descriptor, podImageTotalLimit/podImageDocumentLimit)
+			for i := range children {
+				children[i] = ocispec.Descriptor{MediaType: ocispec.MediaTypeImageManifest, Digest: digest.FromString(fmt.Sprintf("other platform %d", i)), Size: podImageDocumentLimit}
+				f.reportedSizes[children[i].Digest.String()] = children[i].Size
 			}
 			children = append(children, f.pin)
 			f.pin = f.addJSON(ocispec.Index{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: ocispec.MediaTypeImageIndex, Manifests: children}, ocispec.MediaTypeImageIndex)

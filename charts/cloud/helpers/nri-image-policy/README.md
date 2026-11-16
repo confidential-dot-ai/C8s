@@ -9,9 +9,8 @@ paths it writes — the plugin binary, its configuration, the health socket and
 the CDS address and pin it stages — and the host volumes and mounts that reach
 them, plus the containerd layout it edits and the command that restarts it.
 `nri-image-policy.pluginReadyScript` is the readiness endpoint the allowlist
-pins as argv. `nri-image-policy.uninstallHookScript` and
-`nri-image-policy.hostSweepScript` put the shared containerd-config and
-plugin-removal helpers ahead of each remover's own steps.
+pins as argv. `nri-image-policy.hostSweepScript` puts the shared
+containerd-config and plugin-removal helpers ahead of the sweep's own steps.
 
 The second file holds the scripts the DaemonSet runs: the install script
 installs the binary, writes the policy configuration, registers the plugin as

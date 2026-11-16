@@ -44,18 +44,6 @@ func GenerateKey() ([]byte, error) {
 	return key, nil
 }
 
-// Encrypt writes the ciphertext of src to dst, one sector at a time, with each
-// sector's index as its XTS tweak. This is byte-for-byte what dm-crypt
-// aes-xts-plain64 with a 512-bit key produces for the same input, which is what
-// lets the image be built without root, a loop device, or cryptsetup.
-//
-// src must be sector-aligned. Padding it here would change the bytes dm-verity
-// was formatted over, so an unaligned payload is refused rather than fixed.
-// Builds use EncryptAt, the parallel form.
-func Encrypt(dst io.Writer, src io.Reader, key []byte) error {
-	return transform(dst, src, key, false)
-}
-
 // chunkSize is the unit EncryptAt hands to a worker and writes in one call: a
 // whole number of sectors and of 4 KiB pages, large enough to amortize syscalls.
 const chunkSize = 1 << 20
@@ -64,21 +52,24 @@ const chunkSize = 1 << 20
 // single reader and the writes to one file limit throughput, not the cipher.
 const maxDefaultJobs = 16
 
-// EncryptAt is Encrypt spread over jobs goroutines, with the same output byte
-// for byte. XTS sectors are independent, so each chunk is encrypted with its own
-// starting sector as the tweak base and written at its own offset; order does not
-// matter. jobs < 1 means min(GOMAXPROCS, maxDefaultJobs). Memory is jobs+1
-// chunks. Cancelling ctx stops the encryption.
+// EncryptAt writes the ciphertext of src to dst, one sector at a time with each
+// sector's index as its XTS tweak. This is byte-for-byte what dm-crypt
+// aes-xts-plain64 with a 512-bit key produces for the same input, which is what
+// lets the image be built without root, a loop device, or cryptsetup.
+//
+// src must be sector-aligned. Padding it here would change the bytes dm-verity
+// was formatted over, so an unaligned payload is refused rather than fixed.
+//
+// Sectors are independent, so the work spreads over jobs goroutines: each chunk
+// is encrypted with its own starting sector as the tweak base and written at its
+// own offset; order does not matter. jobs < 1 means min(GOMAXPROCS,
+// maxDefaultJobs). Memory is jobs+1 chunks. Cancelling ctx stops the encryption.
 func EncryptAt(ctx context.Context, dst io.WriterAt, src io.Reader, key []byte, jobs int) error {
 	if len(key) != KeyBytes {
 		return fmt.Errorf("volume: key is %d bytes, want %d", len(key), KeyBytes)
 	}
 	if jobs < 1 {
 		jobs = min(runtime.GOMAXPROCS(0), maxDefaultJobs)
-	}
-	type chunk struct {
-		buf []byte
-		off int64
 	}
 	free := make(chan []byte, jobs+1)
 	for range jobs + 1 {
@@ -88,55 +79,11 @@ func EncryptAt(ctx context.Context, dst io.WriterAt, src io.Reader, key []byte, 
 	g, gctx := errgroup.WithContext(ctx)
 	for range jobs {
 		g.Go(func() error {
-			cipher, err := xts.NewCipher(aes.NewCipher, key)
-			if err != nil {
-				return fmt.Errorf("volume: init xts: %w", err)
-			}
-			for c := range work {
-				sector := uint64(c.off / SectorSize)
-				for i := 0; i < len(c.buf); i += SectorSize {
-					s := c.buf[i : i+SectorSize]
-					cipher.Encrypt(s, s, sector)
-					sector++
-				}
-				if _, err := dst.WriteAt(c.buf, c.off); err != nil {
-					return fmt.Errorf("volume: write at %d: %w", c.off, err)
-				}
-				free <- c.buf[:chunkSize]
-			}
-			return nil
+			return encryptChunks(dst, key, work, free)
 		})
 	}
-	readErr := func() error {
-		defer close(work)
-		for off := int64(0); ; {
-			var buf []byte
-			select {
-			case buf = <-free:
-			case <-gctx.Done():
-				return nil
-			}
-			n, err := io.ReadFull(src, buf)
-			eof := errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
-			if err != nil && !eof {
-				return fmt.Errorf("volume: read at %d: %w", off, err)
-			}
-			if n%SectorSize != 0 {
-				return fmt.Errorf("%w: trailing %d bytes", ErrUnaligned, n%SectorSize)
-			}
-			if n > 0 {
-				select {
-				case work <- chunk{buf[:n], off}:
-				case <-gctx.Done():
-					return nil
-				}
-				off += int64(n)
-			}
-			if eof {
-				return nil
-			}
-		}
-	}()
+	readErr := readChunks(gctx, src, work, free)
+	close(work)
 	if err := g.Wait(); err != nil {
 		return err
 	}
@@ -146,40 +93,62 @@ func EncryptAt(ctx context.Context, dst io.WriterAt, src io.Reader, key []byte, 
 	return ctx.Err()
 }
 
-// Decrypt is Encrypt's inverse, and exists so a build can prove its own output
-// round-trips before the plaintext is discarded.
-func Decrypt(dst io.Writer, src io.Reader, key []byte) error {
-	return transform(dst, src, key, true)
+// chunk is a filled buffer and the offset in dst its first sector belongs at.
+type chunk struct {
+	buf []byte
+	off int64
 }
 
-func transform(dst io.Writer, src io.Reader, key []byte, decrypt bool) error {
-	if len(key) != KeyBytes {
-		return fmt.Errorf("volume: key is %d bytes, want %d", len(key), KeyBytes)
-	}
+// encryptChunks encrypts each chunk with its own starting sector as the tweak
+// base, writes it at its offset and hands the buffer back to free.
+func encryptChunks(dst io.WriterAt, key []byte, work <-chan chunk, free chan<- []byte) error {
 	cipher, err := xts.NewCipher(aes.NewCipher, key)
 	if err != nil {
 		return fmt.Errorf("volume: init xts: %w", err)
 	}
+	for c := range work {
+		sector := uint64(c.off / SectorSize)
+		for i := 0; i < len(c.buf); i += SectorSize {
+			s := c.buf[i : i+SectorSize]
+			cipher.Encrypt(s, s, sector)
+			sector++
+		}
+		if _, err := dst.WriteAt(c.buf, c.off); err != nil {
+			return fmt.Errorf("volume: write at %d: %w", c.off, err)
+		}
+		free <- c.buf[:chunkSize]
+	}
+	return nil
+}
 
-	in := make([]byte, SectorSize)
-	out := make([]byte, SectorSize)
-	for sector := uint64(0); ; sector++ {
-		n, err := io.ReadFull(src, in)
-		switch {
-		case errors.Is(err, io.EOF):
+// readChunks fills free buffers with consecutive sector-aligned chunks of src
+// and hands each to a worker, until src ends or ctx is cancelled.
+func readChunks(ctx context.Context, src io.Reader, work chan<- chunk, free <-chan []byte) error {
+	for off := int64(0); ; {
+		var buf []byte
+		select {
+		case buf = <-free:
+		case <-ctx.Done():
 			return nil
-		case errors.Is(err, io.ErrUnexpectedEOF):
-			return fmt.Errorf("%w: trailing %d bytes", ErrUnaligned, n)
-		case err != nil:
-			return fmt.Errorf("volume: read sector %d: %w", sector, err)
 		}
-		if decrypt {
-			cipher.Decrypt(out, in, sector)
-		} else {
-			cipher.Encrypt(out, in, sector)
+		n, err := io.ReadFull(src, buf)
+		eof := errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
+		if err != nil && !eof {
+			return fmt.Errorf("volume: read at %d: %w", off, err)
 		}
-		if _, err := dst.Write(out); err != nil {
-			return fmt.Errorf("volume: write sector %d: %w", sector, err)
+		if n%SectorSize != 0 {
+			return fmt.Errorf("%w: trailing %d bytes", ErrUnaligned, n%SectorSize)
+		}
+		if n > 0 {
+			select {
+			case work <- chunk{buf[:n], off}:
+			case <-ctx.Done():
+				return nil
+			}
+			off += int64(n)
+		}
+		if eof {
+			return nil
 		}
 	}
 }

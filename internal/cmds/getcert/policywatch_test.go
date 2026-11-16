@@ -546,3 +546,29 @@ func TestCDSWatchInterval(t *testing.T) {
 		})
 	}
 }
+
+// A watch tick before the first generation lands polls no CDS route.
+func TestRenewLoopSkipsWatchUntilFirstGeneration(t *testing.T) {
+	var requests atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	attempts := stubObtainCertFailing(t)
+
+	cfg := config{
+		RenewInterval:        time.Hour,
+		InitialRetryInterval: time.Hour,
+		CAWatchInterval:      10 * time.Millisecond,
+	}
+	startRenewLoop(t, cfg, srv.URL, &credentials{volume: testVolume(t), instanceID: testInstanceID})
+
+	time.Sleep(100 * time.Millisecond)
+	if got := requests.Load(); got != 0 {
+		t.Fatalf("%d cds requests while nothing was published, want 0", got)
+	}
+	if got := len(attempts()); got != 0 {
+		t.Fatalf("%d certificate attempts on an hour-long initial retry, want 0", got)
+	}
+}

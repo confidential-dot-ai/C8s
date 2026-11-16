@@ -6,7 +6,6 @@ const (
 	ErrorCodeInvalidRequest            = "invalid_request"
 	ErrorCodeInvalidChallenge          = "invalid_challenge"
 	ErrorCodeInvalidCSR                = "invalid_csr"
-	ErrorCodeInvalidToken              = "invalid_token"
 	ErrorCodeVerificationFailed        = "verification_failed"
 	ErrorCodeMeasurementDenied         = "measurement_denied"
 	ErrorCodeKeyBinding                = "key_binding"

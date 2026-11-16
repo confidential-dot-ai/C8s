@@ -1,0 +1,30 @@
+name: Relevant changes
+description: >-
+  Whether an event changed any of the paths a workflow gates its jobs on, for
+  workflows whose checks must report on every pull request and merge group.
+  Only a pull request, a merge group and a branch push carry a base to diff
+  against; every other event reports relevant, so it runs everything. A pull
+  request's files come from the GitHub API (pull-requests: read) and the other
+  two diff two commits the filter fetches itself, so a shallow checkout is
+  enough.
+
+inputs:
+  filters:
+    description: A dorny/paths-filter filter document declaring one filter, relevant.
+    required: true
+
+outputs:
+  relevant:
+    description: "'true' when a gated path changed, or when the event has no base to diff."
+    value: ${{ steps.filter.outputs.relevant || 'true' }}
+
+runs:
+  using: composite
+  steps:
+    - id: filter
+      if: github.event_name == 'pull_request' || github.event_name == 'merge_group' || (github.event_name == 'push' && github.ref_type == 'branch')
+      uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+      with:
+        # A push diffs the commits it pushed; the other two events carry their own base.
+        base: ${{ github.event.before }}
+        filters: ${{ inputs.filters }}

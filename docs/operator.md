@@ -19,7 +19,7 @@ a measured node releases none.
 
 `c8s install` renders the chart embedded in the CLI and runs
 `helm upgrade --install`. `--platform` names the cluster's confidential VMs,
-`aks-snp`, `aks-tdx` or `gke-snp` (unverified on a GKE node), and selects the
+`aks-snp`, `aks-tdx` or `gke-snp`, and selects the
 chart's `values-<platform>.yaml`. Each is node-as-CVM: the node is itself the
 confidential VM, its pods processes inside it ([overview.md](overview.md));
 dotted names here, such as `router.san`, are chart values. A release build
@@ -42,8 +42,29 @@ refuses to render without them. The address is `<host>:<port>`: a DNS name
 this cluster's components resolve, or an IPv4 address. `--operator-keys` pins the operator public keys
 the router verifies route manifests under; without it the router uses the keys
 the pinned CDS serves. CDS takes its own write keys from
-`c8s cds config new --operator-keys`. `--force` installs despite a fail-closed
-policy that would deny the platform's own pods.
+`c8s cds config new --operator-keys`. With a fail-closed policy, `--force`
+overrides the guard for resolved platform images outside the available image policy.
+
+Image preflight checks pod spec repositories, component and bootstrap digests,
+and the authenticated allowlist fetched from CDS. It reports containers without
+a current digest as unknown, including containers that have not started. An
+unreachable CDS leaves served coverage unknown. Image coverage is advisory:
+runtime admission checks the full workload, and tags can change on the next pull.
+
+Two more inputs describe this cluster's own network, which no
+`values-<platform>.yaml` can set, so they go in a `-f` file.
+`nriImagePolicy.mesh.resolver` is the DNS Service address a confidential
+workload's pods resolve names through and no other address; on AKS and GKE
+read it with
+`kubectl -n kube-system get svc kube-dns -o jsonpath='{.spec.clusterIP}'`.
+`nriImagePolicy.mesh.clusterRanges` is every pod and Service range this
+cluster uses: the router's packet rules send a dial into these ranges over the
+mesh and everything else out in the clear, so a pod in a range left out of them
+gets a plaintext connection. They are the ranges `c8s cds config new
+--pod-cidr` and `--service-cidr` name, the pod ones being what `--pod-cidr`
+below declares to this install as well. The chart refuses to render without
+both, `c8s install --allowlist-seed-out` included
+([allowlist-and-capabilities.md](allowlist-and-capabilities.md#bootstrap)).
 
 `--pod-cidr` is a range this cluster assigns pod addresses from, the one
 `c8s cds config new --pod-cidr` names; repeat it per range. CDS dials a node
@@ -69,15 +90,22 @@ them a mixed cluster schedules the agents onto plain nodes, where they find no
 TEE device and the install never becomes ready. Install refuses a cluster where
 no node carries the labels, and checks host ports, images and the container
 runtime on the labelled nodes alone. A node outside them runs no C8s node
-agent; a confidential pod scheduled there waits for a certificate it never
-gets, because the request reaches neither the admission inventory nor the
-attestation API. Nothing steers confidential workloads onto the labelled nodes
-yet.
+agent, so the injector adds the same labels to the `nodeSelector` of every pod
+it injects, beside the placement the pod declares itself. A pod that selects one
+of those labels under another value is refused. The labelled nodes must admit
+injected pods: a taint one does not tolerate, or a node affinity of its own
+excluding those nodes, leaves it `Pending`.
 
 A measured node image boots the chart its own build rendered, configured from
 the worker document it launches with ([launch-configuration.md](launch-configuration.md)). `c8s install`
 refuses nodes running RKE2's or k3s's own containerd, which the installer
-cannot register the plugin with.
+cannot register the plugin with. It also refuses nodes reporting a containerd
+below 2.3, the first release that passes a container's user to NRI plugins:
+without it the admission plugin reads every container as uid 0, which holds no
+mesh role, and refuses the router and every confidential pod. GKE ships
+containerd 2.3 from 1.37.1-gke.1552000 on. Both checks read what the nodes
+report while install runs, so a node joining a cluster later shows up as
+refused pods instead.
 
 Images in a registry that needs authentication need a
 `kubernetes.io/dockerconfigjson` Secret in the release namespace, named with
@@ -88,7 +116,8 @@ registry login instead.
 `c8s uninstall` deletes the release, then sweeps host state the chart cannot:
 the admission plugin's containerd registration, the `ARMTLS-MESH` chains and
 ipsets, and idle `c8s volume attach` backstores. Each is one set per node, shared by every release, so uninstalling one takes them from
-another.
+another. A bare `helm uninstall` leaves every node enforcing with no CDS to
+ask; `c8s uninstall --host-sweep-only` is what cleans those nodes.
 
 ## The `c8s operator` controller
 
@@ -114,9 +143,12 @@ node's and CDS's decision
 
 Every pod created in a namespace the injector's selector admits is injected, so
 the excluded set is the whole opt-out: the release namespace, `c8s-router`,
-`kube-system`, `kube-public`, `kube-node-lease`, and
+`kube-system`, `kube-public`, `kube-node-lease`,
+`nriImagePolicy.policy.exemptNamespaces`, and
 `controlPlane.webhook.extraExcluded`, which the chart defaults to
-`local-path-storage`.
+`local-path-storage`. The operator's startup reinjection sweep also skips the
+provider and explicit exclusions. Provider pods remain subject to their image
+repository policy and host-security admission checks.
 Injection adds the memory-backed `c8s-certs` volume, mounted at `/etc/c8s/certs`
 for the platform containers alone, and these containers ahead of the pod's own:
 
@@ -150,10 +182,37 @@ or namespaces, a pinned-mount annotation
 ([secrets.md](secrets.md#fixed-sidecar-mounts)) — and the validator rejects a
 final shape that is not the injected one.
 
+### Recover injected provider pods
+
+After upgrading the chart, recreate affected provider pods through their owning
+controllers to apply the namespace exclusions. With `kubectl` and `jq`, list
+injected pods and their owners in the affected namespace:
+
+```sh
+namespace=gmp-system
+kubectl -n "$namespace" get pods -o json | jq -r '
+  .items[] | select(.metadata.annotations["confidential.ai/c8s-injected"] == "true") |
+  [.metadata.name, (.metadata.ownerReferences[]? | select(.controller) |
+    .kind + "/" + .name)] | @tsv'
+```
+
+For each affected pod with an owning controller, replace `POD_NAME` below with
+its name and delete that pod. Its controller creates a replacement using its
+pod template and the updated admission rules. Recreate a bare pod from its
+source manifest through your normal deployment procedure.
+
+```sh
+kubectl -n "$namespace" delete pod POD_NAME
+kubectl -n "$namespace" get pods -w
+```
+
 ## CDS runs as one VM
 
 CDS runs as one VM outside the cluster, which `c8s cds config new` writes the
-configuration and the pin for. A cluster may also run its CDS as several VMs
+configuration and the pin for. On an AKS or GKE cluster that VM runs on
+hardware you hold rather than on the cloud, and
+[cloud-cds.md](cloud-cds.md) covers its placement, its flows and its node
+pins. A cluster may also run its CDS as several VMs
 that share one mesh CA and one store, where a replica that restarts takes the
 cluster's state back from the others ([cds-ha.md](cds-ha.md)). Everything
 below is the one-VM deployment. Its state is in that VM: the mesh CA key is
@@ -263,6 +322,9 @@ detectable only by pinning the route digest or the operator keys.
   router still serving advertises it before it takes effect. A write replaced
   before it takes effect never does. When its certificate expires the router
   retires every backend pool and dials nothing until it renews.
+  After withdrawing expired credentials, get-cert retries issuance with jittered
+  exponential backoff from `--initial-retry-interval` (2s by default). A successful
+  issuance resets that backoff; CDS refusals use their separate backoff.
   Its nginx supervisor checks credentials every five seconds, stops nginx on
   withdrawal, and starts it again when all served credentials are readable.
   Readiness fails while nginx is stopped. An unexpected nginx exit terminates
@@ -407,6 +469,9 @@ status. Allocate a new Pod CVM. While it runs, the plugin keeps the last
 authenticated CDS policy during an outage and refuses older policy versions.
 
 Assignment nonces have no time expiry and are forgotten on service restart.
+A guest that holds a Pod issues none: `GET /v1/assign/nonce` answers 409 naming the
+Pod's UID, as a refused assignment does.
+Once the Pod identity has ended, both assignment routes answer 503 instead.
 The service keeps at most 256 unused nonces, oldest first; issuing one more
 discards the oldest, and an assignment under a discarded nonce is refused as
 not issued. A launcher that loses its nonce this way obtains a fresh one. The
@@ -492,8 +557,10 @@ still need working PMTUD.
 
 Use HTTP probes of the application's own path and port; the guest rewrites them
 through the endpoint's health listener. TCP and gRPC probes, HTTP probes with a
-custom host or headers, HTTPS probes and HTTP lifecycle hooks are refused, and a
-locked image refuses exec probes in the runtime wrapper.
+custom host or headers, HTTPS probes and HTTP lifecycle hooks are refused, as
+on a node. Exec probes and exec lifecycle hooks are refused for every mesh pod,
+on a node or in a pod CVM: neither starts a process in a running container
+([node-exec-mode.md](node-exec-mode.md)).
 
 ## Existing workload adoption
 
@@ -529,6 +596,47 @@ narrows which port answers, not who may connect: the router is public and the
 API server's address is not nameable. They are ingress-only — outward reach is
 the node's packet ruleset — and additive, so another port is your own
 NetworkPolicy.
+
+## Install a build that is not a release
+
+A build that is not a release renders a chart directory and takes the component
+image digests from a `-f` file, beside the mesh file every install takes:
+
+```sh
+c8s install --platform aks-snp --chart charts/cloud \
+  -f images.yaml -f values.yaml \
+  --cds-address 10.0.0.9:8443 --cds-pin cds-pin.json \
+  --operator-keys operator.pub
+```
+
+`images.yaml` names one digest per component the install deploys. With
+`--volumes`, `volumed.image.digest` too:
+
+```yaml
+image:
+  digest: sha256:<c8s-operator digest>
+attestationApi:
+  image:
+    digest: sha256:<attestation-api digest>
+armtlsMesh:
+  image:
+    digest: sha256:<armtls-mesh digest>
+nriImagePolicy:
+  image:
+    digest: sha256:<nri-image-policy digest>
+```
+
+Each is the digest the registry serves for that build's tag, and a `main` build
+publishes its 7-character commit SHA:
+`crane digest ghcr.io/confidential-dot-ai/c8s-operator:<SHA7>`. The
+attestation-api image releases on its own cadence: copy its digest from the
+chart's component table (`charts/lib/files/components.yaml`, `pinnedDigest`).
+
+The chart writes an allowlist entry for each component named by a digest. A
+component named by a tag has no entry, so the admission plugin denies its
+containers once it enforces. `nriImagePolicy.image` must be a digest whatever
+the rest are: its entry pins the installer's argv, and the render fails on a
+tag.
 
 ## Rendering the chart
 

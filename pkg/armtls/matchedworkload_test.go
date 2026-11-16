@@ -5,7 +5,6 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
@@ -201,58 +200,4 @@ func TestMatchedWorkloadFromCert(t *testing.T) {
 			t.Fatal("malformed extension accepted")
 		}
 	})
-}
-
-func TestCheckWorkloadPin(t *testing.T) {
-	ext, err := MarshalMatchedWorkloadExtension(testMatchedWorkload())
-	if err != nil {
-		t.Fatal(err)
-	}
-	stamped := selfSignedWithExts(t, ext)
-	unstamped := selfSignedWithExts(t)
-
-	if err := CheckWorkloadPin(stamped, ""); err != nil {
-		t.Fatalf("empty pin must be a no-op: %v", err)
-	}
-	if err := CheckWorkloadPin(stamped, "api"); err != nil {
-		t.Fatalf("matching pin failed: %v", err)
-	}
-	if err := CheckWorkloadPin(stamped, "other"); err == nil {
-		t.Fatal("mismatched pin accepted")
-	}
-	if err := CheckWorkloadPin(unstamped, "api"); err == nil {
-		t.Fatal("pin against an unstamped leaf accepted")
-	}
-	bad := ext
-	bad.Value = ext.Value[:4]
-	if err := CheckWorkloadPin(selfSignedWithExts(t, bad), "api"); err == nil {
-		t.Fatal("pin against a malformed stamp accepted")
-	}
-}
-
-func TestPeerMatchedWorkload(t *testing.T) {
-	ext, err := MarshalMatchedWorkloadExtension(testMatchedWorkload())
-	if err != nil {
-		t.Fatal(err)
-	}
-	leaf := selfSignedWithExts(t, ext)
-
-	if _, err := PeerMatchedWorkload(tls.ConnectionState{}); err == nil {
-		t.Fatal("no peer certificate accepted")
-	}
-	if _, err := PeerMatchedWorkload(tls.ConnectionState{
-		PeerCertificates: []*x509.Certificate{leaf},
-	}); err == nil {
-		t.Fatal("unverified chain accepted — the stamp is CA-vouched")
-	}
-	m, err := PeerMatchedWorkload(tls.ConnectionState{
-		PeerCertificates: []*x509.Certificate{leaf},
-		VerifiedChains:   [][]*x509.Certificate{{leaf}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if m == nil || m.Name != "api" {
-		t.Fatalf("m = %+v", m)
-	}
 }

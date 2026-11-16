@@ -107,12 +107,12 @@ when a scenario says the plugin has applied the served allowlist, the entries
 it described are written through the backend's signed path, and they are
 undone after the scenario. A write takes effect on nodes the CDS's node delay
 after it is written, so the steps then wait for the CDS to serve nodes the
-version the write left, and poll the allowlist version the plugin reports on
-its health endpoint until it reaches it, within the node delay and three pull
-intervals of the write; where the backend cannot reach the plugin, or the
-plugin is meant to ignore what is served, they wait the node delay and two
-intervals out instead. A step that starts a plugin first waits for the write
-to take effect on nodes.
+document the write left, and poll the allowlist version the plugin reports on
+its health endpoint until it reaches the version nodes are served it at,
+within the node delay and three pull intervals of the write; where the
+backend cannot reach the plugin, or the plugin is meant to ignore what is
+served, they wait the node delay and two intervals out instead. A step that
+starts a plugin first waits for the write to take effect on nodes.
 
 A backend also acts on the node and the CDS where a scenario asks: it stops
 and starts a node's plugin, makes the CDS unreachable for the plugins' pulls
@@ -188,6 +188,13 @@ revision. A workload backend is a pod of `tenant-app` running
 which holds the pod's leaf and terminates the router's armTLS: it answers
 every request with the request target and headers it received.
 
+The Pod CVM sentences drive the operator's provider against a cloud API the
+backend scripts: `cloud_behaviour` sets how it answers, and `cloud_calls` and
+`cloud_instances` are what the steps judge the provider by. The steps create
+these pods themselves, without `pod_manifest`, which pins a pod to a node. On
+kind the cloud API is [`test/mock-cloud`](../mock-cloud), which starts no VM,
+so every scenario ends before a guest is verified.
+
 [`backends/common.sh`](backends/common.sh) states the interface: every
 function, its arguments, what it prints, and when it answers *unsupported*:
 exit status 77 (`UNSUPPORTED`), meaning "this environment cannot express
@@ -198,7 +205,7 @@ rejects unknown names.
 
 | Backend | Environment | Requires |
 |---|---|---|
-| [`kind.sh`](backends/kind.sh) | the kept kind cluster of [`test/integration/cluster/run.sh`](../integration/cluster/run.sh) (`C8S_IT_KEEP=1 C8S_IT_SETUP_ONLY=1`); its CDS is two containers on the kind network, so the backend starts and stops it with `docker`; mocked attestation, node shell via `docker exec`; the mock signs nothing and verifies only at the mock, so `evidence_signed` answers no and `relying_party` unsupported | `C8S_IT_WORKDIR` |
+| [`kind.sh`](backends/kind.sh) | the kept kind cluster of [`test/integration/cluster/run.sh`](../integration/cluster/run.sh) (`C8S_IT_KEEP=1 C8S_IT_SETUP_ONLY=1`); its CDS is two containers on the kind network, so the backend starts and stops it with `docker`; mocked attestation, node shell via `docker exec`; the mock signs nothing and verifies only at the mock, so `evidence_signed` answers no and `relying_party` unsupported; the Pod CVM provider runs against the harness's mock Cloud | `C8S_IT_WORKDIR` |
 
 The backends source the kind harness's `lib.sh`, render pods with
 `pod-fixture.py`, and name components (the NRI DaemonSet, its socket) that

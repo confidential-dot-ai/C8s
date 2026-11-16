@@ -7,24 +7,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
 )
-
-// holdSIGTERM keeps a test-side SIGTERM subscription for the test's lifetime,
-// so signalling the process can never hit the default terminate action.
-func holdSIGTERM(t *testing.T) {
-	t.Helper()
-	ch := make(chan os.Signal, 1)
-	signal.Notify(ch, syscall.SIGTERM)
-	t.Cleanup(func() { signal.Stop(ch) })
-}
 
 // unreachableRenewalConfig is a config whose certificate requests always fail
 // fast (nothing listens on port 1) but whose validation passes, carrying run
@@ -41,18 +30,16 @@ func unreachableRenewalConfig(t *testing.T) config {
 	})
 }
 
-func terminateRun(t *testing.T, done <-chan error) {
+func terminateRun(t *testing.T, stop context.CancelFunc, done <-chan error) {
 	t.Helper()
-	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
-		t.Fatal(err)
-	}
+	stop()
 	select {
 	case err := <-done:
 		if err != nil {
 			t.Fatalf("run returned %v, want nil on graceful shutdown", err)
 		}
 	case <-time.After(15 * time.Second):
-		t.Fatal("run did not shut down after SIGTERM")
+		t.Fatal("run did not shut down after its context was cancelled")
 	}
 }
 
@@ -127,7 +114,7 @@ func waitForAttempts(t *testing.T, attempts func() []time.Time, n int) []time.Ti
 }
 
 func TestRunRenewalLoopRetriesFailedRenewal(t *testing.T) {
-	holdSIGTERM(t)
+	ctx, stop := context.WithCancel(t.Context())
 
 	oldBase := renewalRetryBase
 	renewalRetryBase = 40 * time.Millisecond
@@ -147,10 +134,10 @@ func TestRunRenewalLoopRetriesFailedRenewal(t *testing.T) {
 	cfg.RenewInterval = 200 * time.Millisecond
 
 	done := make(chan error, 1)
-	go func() { done <- run(cfg) }()
+	go func() { done <- run(ctx, cfg) }()
 
 	at := waitForAttempts(t, attempts, 4)
-	terminateRun(t, done)
+	terminateRun(t, stop, done)
 
 	// at[0] is the initial request, at[1] the first renewal tick. After each
 	// failure the loop must wait ~renewalRetryBase, then ~2x — never a whole
@@ -168,7 +155,7 @@ func TestRunRenewalLoopRetriesFailedRenewal(t *testing.T) {
 // failure retries from renewalRetryBase again — not the pre-recovery climbed
 // delay.
 func TestRunRenewalLoopRecoversAfterFailedRenewals(t *testing.T) {
-	holdSIGTERM(t)
+	ctx, stop := context.WithCancel(t.Context())
 
 	oldBase := renewalRetryBase
 	renewalRetryBase = 40 * time.Millisecond
@@ -188,10 +175,10 @@ func TestRunRenewalLoopRecoversAfterFailedRenewals(t *testing.T) {
 	cfg.RenewInterval = 200 * time.Millisecond
 
 	done := make(chan error, 1)
-	go func() { done <- run(cfg) }()
+	go func() { done <- run(ctx, cfg) }()
 
 	at := waitForAttempts(t, attempts, 7)
-	terminateRun(t, done)
+	terminateRun(t, stop, done)
 
 	// at[4] is the recovered renewal, at[5] the next tick a full interval out,
 	// at[6] the retry after at[5] fails — back at renewalRetryBase, proving the
@@ -209,17 +196,17 @@ func TestRunRenewalLoopRecoversAfterFailedRenewals(t *testing.T) {
 // out --renew-interval. It is an hour here, so four attempts inside the
 // deadline can only have come from the backoff.
 func TestRunRetriesInitialCertOffTheRetryBackoff(t *testing.T) {
-	holdSIGTERM(t)
+	ctx, stop := context.WithCancel(t.Context())
 	attempts := stubObtainCertFailing(t)
 
 	cfg := unreachableRenewalConfig(t)
 	cfg.InitialRetryInterval = 10 * time.Millisecond
 
 	done := make(chan error, 1)
-	go func() { done <- run(cfg) }()
+	go func() { done <- run(ctx, cfg) }()
 
 	waitForAttempts(t, attempts, 4)
-	terminateRun(t, done)
+	terminateRun(t, stop, done)
 }
 
 // The retry cadence has to actually produce a certificate: a CDS that refuses
@@ -459,7 +446,7 @@ func TestRenewLoopRenewsWhenCDSMeshCAChanges(t *testing.T) {
 // the loop keeps retrying rather than leaving it readable or exiting into a
 // state no restart can recover.
 func TestRunRenewalLoopWithdrawsAnExpiredGeneration(t *testing.T) {
-	holdSIGTERM(t)
+	ctx, stop := context.WithCancel(t.Context())
 
 	oldBase := renewalRetryBase
 	renewalRetryBase = 10 * time.Millisecond
@@ -480,7 +467,7 @@ func TestRunRenewalLoopWithdrawsAnExpiredGeneration(t *testing.T) {
 	cfg.RenewInterval = 20 * time.Millisecond
 
 	done := make(chan error, 1)
-	go func() { done <- run(cfg) }()
+	go func() { done <- run(ctx, cfg) }()
 
 	waitForFile(t, cfg.CertPath, done)
 	waitForWithdrawal(t, cfg.CertPath, done)
@@ -492,7 +479,7 @@ func TestRunRenewalLoopWithdrawsAnExpiredGeneration(t *testing.T) {
 	if len(attempts()) < 2 {
 		t.Fatal("the generation was withdrawn without a failed renewal")
 	}
-	terminateRun(t, done)
+	terminateRun(t, stop, done)
 }
 
 // waitForWithdrawal blocks until the reader path stops resolving, which is what
@@ -516,7 +503,7 @@ func waitForWithdrawal(t *testing.T, path string, done <-chan error) {
 
 // A valid generation stays published however many renewals fail.
 func TestRunRenewalLoopRetainsAValidGeneration(t *testing.T) {
-	holdSIGTERM(t)
+	ctx, stop := context.WithCancel(t.Context())
 
 	oldBase := renewalRetryBase
 	renewalRetryBase = 10 * time.Millisecond
@@ -533,7 +520,7 @@ func TestRunRenewalLoopRetainsAValidGeneration(t *testing.T) {
 	cfg.RenewInterval = 20 * time.Millisecond
 
 	done := make(chan error, 1)
-	go func() { done <- run(cfg) }()
+	go func() { done <- run(ctx, cfg) }()
 
 	waitForAttempts(t, attempts, 5)
 	select {
@@ -544,7 +531,7 @@ func TestRunRenewalLoopRetainsAValidGeneration(t *testing.T) {
 	if _, err := os.Stat(cfg.CertPath); err != nil {
 		t.Fatalf("a valid generation was withdrawn after failed renewals: %v", err)
 	}
-	terminateRun(t, done)
+	terminateRun(t, stop, done)
 }
 
 // A new pod's first leaf is unnamed; the next renewal must come within

@@ -227,6 +227,8 @@ type addressBook struct {
 	mu        sync.Mutex
 	addresses []netip.AddrPort
 	failing   bool
+	// fixed is an entry a test holds against the cluster starting a replica.
+	fixed bool
 }
 
 // holds makes the cluster's entry answer with these addresses, and answer at
@@ -234,8 +236,21 @@ type addressBook struct {
 func (b *addressBook) holds(addresses ...netip.AddrPort) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.fixed {
+		return
+	}
 	b.addresses = addresses
 	b.failing = false
+}
+
+// onlyHolds makes the entry answer with these addresses, and with no address
+// of a replica the cluster starts next.
+func (b *addressBook) onlyHolds(addresses ...netip.AddrPort) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.addresses = addresses
+	b.failing = false
+	b.fixed = true
 }
 
 // fails makes the entry resolve to nothing, as a host's resolver may answer.

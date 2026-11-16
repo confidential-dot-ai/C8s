@@ -3,14 +3,12 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
-	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -19,10 +17,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
-	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/confidential-dot-ai/c8s/internal/helmchart"
 	"github.com/confidential-dot-ai/c8s/internal/version"
@@ -89,29 +84,26 @@ var uninstallCmd = &cobra.Command{
 	Long: `Removes the release 'c8s install' deployed and sweeps the host-side
 NRI, mesh and volume-attach artifacts off every node.
 
-'helm uninstall' already unwinds most of the install: the release resources
-(operator, CDS, attestation-api, armtls-mesh, router, webhook
-configuration), the NRI image-policy host plugin (pre-delete hook), and
-the mesh traffic interception (preStop hook).
+The uninstall first deletes the NRI image-policy installer DaemonSet, so no
+installer run re-adds the plugin the sweep removes. 'helm uninstall' then
+removes every other resource the release deployed, among them the operator
+and its admission webhooks, the router and its namespace, the attestation-api
+DaemonSet and, when enabled, volumed. It leaves every node enforcing: taking
+the NRI image-policy host plugin off a node is the host sweep's job alone.
 
-The host sweep then nukes what that path cannot guarantee. The preStop hook
-is bounded by the pod's termination grace period (and the runtime restart it
-triggers can kill the pod mid-cleanup), the pre-delete hooks only fire on a
-release healthy enough to run them, and none of them knows about the
-c8s-side artifacts. The sweep runs on every uninstall because the host state below is not confined to the release's own
-shape: a previous install on the same host may have had a different shape,
-and leftovers brick or degrade the next cluster. After the
-release is gone the sweep runs a short-lived privileged DaemonSet on every
-linux node — with the release's NRI plugin image, which the fail-closed
-plugin already admits (the sweep is what removes the plugin) — and removes,
-idempotently:
+The sweep removes all of the host state below, not only what this release's
+shape put there: a previous install on the same host may have had a different
+shape, and leftovers brick or degrade the next cluster. After the release is
+gone the sweep runs a short-lived privileged DaemonSet on every linux node —
+with the release's NRI plugin image, which the fail-closed plugin already
+admits (the sweep is what removes the plugin) — and removes, idempotently:
 
   - the NRI image-policy host plugin: its containerd registration, the plugin
-    binary, its config/cache/runtime dirs
-  - the armtls-mesh netfilter state: the ARMTLS-MESH chains and their
-    base-chain jumps in iptables and ip6tables, and the ARMTLS-MESH-* ipsets
-    (the mesh's own preStop deliberately keeps the fail-closed guard, so this
-    survives every healthy uninstall too)
+    binary, its config/cache/runtime dirs. The sweep restarts containerd on
+    a node where it removed that registration or the plugin still runs
+  - the netfilter state of a node-level armtls-mesh from an earlier install:
+    the ARMTLS-MESH chains and their base-chain jumps in iptables and
+    ip6tables, and the ARMTLS-MESH-* ipsets
   - the LIO loopback disks 'c8s volume attach' built: only a backstore whose
     unit serial is c8s-vol-<name> and the target attach derived for it, torn
     down as 'c8s volume detach' does. A disk that has a holder (an open
@@ -129,122 +121,168 @@ gone (e.g. a previous bare 'helm uninstall' left the hosts dirty), pass
 --host-sweep-only: the helm step is skipped and the sweep uses the embedded
 chart's defaults.
 
-The uninstall stops while a node it runs a removal pod on is not Ready, and
-names the recovery to run on it. It deletes the NRI image-policy installer
-first, so no installer run re-adds the plugin the pre-delete hook removes.
+The sweep pod runs on the node's network. Where a node's kubelet starts no
+sweep container, the uninstall names that node, the state its sweep is in, and
+the removal to run on the node itself.
 
 The uninstall refuses to proceed while a pod holds a c8s encrypted volume: volumed is
 the only component that unmaps the dm-crypt/dm-verity stack behind one, so
 removing it under a live volume strands the mappings on the node, where they
 keep the backing disk open against the next install. Scale those workloads to
-zero first — volumed tears the volumes down — or pass --force. Whatever is
-still mapped when the release goes is reaped by the chart's volumed pre-delete
-hook, which runs on every node before the daemon is removed. That hook can only
-close a mapping nothing is using: a live consumer keeps the device open through
-its own mount namespace, which the hook's host-side unmount does not reach, so
-under --force the hook fails on those and names them. Whatever it leaves is
-swept by volumed the next time it starts.
+zero first — volumed tears the volumes down — or pass --force, which leaves
+those mappings open and their volumes decrypted on nodes this uninstall stops
+enforcing; reboot those nodes.
 
 Left in place by default: the ConfidentialWorkload CRD (helm never deletes
 crds/; --delete-crds removes it ALONG WITH EVERY ConfidentialWorkload object)
 and the release namespace (--delete-namespace).
 
 Requires the 'helm' and 'kubectl' CLIs to be on PATH.`,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := validateUninstallFlags(uninstallHostSweep, uninstallHostSweepOnly); err != nil {
-			return err
-		}
-		if _, err := exec.LookPath("helm"); err != nil {
-			return fmt.Errorf("helm CLI not found on PATH: %w", err)
-		}
-		if _, err := exec.LookPath("kubectl"); err != nil {
-			return fmt.Errorf("kubectl CLI not found on PATH: %w", err)
-		}
-
-		ctx := cmd.Context()
-		values, found, err := releaseValues(ctx, uninstallRelease, uninstallNamespace)
-		if err != nil {
-			return err
-		}
-		if !found && !uninstallHostSweepOnly {
-			return fmt.Errorf("helm release %q not found in namespace %q — nothing to uninstall. If a previous uninstall already deleted the release but left host artifacts on the nodes, re-run with --host-sweep-only", uninstallRelease, uninstallNamespace)
-		}
-
-		var cfg hostUninstallConfig
-		if found {
-			cfg, err = hostConfigFromValues(values)
-			if err != nil {
-				return fmt.Errorf("read host config from release values: %w", err)
-			}
-			if uninstallHostSweep {
-				cfg.SweepArgv, cfg.PauseArgv = resolveSweepArgvs(ctx, uninstallNamespace, uninstallRelease, cfg)
-			}
-		} else {
-			fmt.Fprintf(os.Stdout, "+ release %q not found — sweeping with chart defaults\n", uninstallRelease)
-			cfg, err = chartDefaultHostConfig(ctx)
-			if err != nil {
-				return err
-			}
-		}
-		// Sweep host state even if it outlived the release that created it.
-		// Chart pre-delete hooks are the healthy-release first line;
-		// --host-sweep=false opts out of this additional cleanup.
-		sweep := uninstallHostSweep
-		removalNodes, err := removalNodeSelector(values, sweep)
-		if err != nil {
-			return err
-		}
-		if err := refuseNotReadyRemovalNodes(ctx, removalNodes, cfg); err != nil {
-			return err
-		}
-
-		// volumed goes with the release and is the only component that unmaps
-		// a pod's volume devices, so the teardown order is load-bearing.
-		if boolAtPath(values, "volumed.enabled") {
-			pods, err := listVolumePods(ctx)
-			if err != nil {
-				return err
-			}
-			if len(pods) > 0 {
-				if !uninstallForce {
-					return volumePodsRunningError(pods)
-				}
-				fmt.Fprintf(os.Stdout, "%s\n", forcedVolumePodsWarning(pods))
-			}
-		}
-
-		if !uninstallHostSweepOnly {
-			if err := removeNriInstaller(ctx, uninstallNamespace, uninstallRelease); err != nil {
-				return err
-			}
-			helmArgs := buildHelmUninstallArgs(uninstallRelease, uninstallNamespace, uninstallWait)
-			fmt.Fprintf(os.Stdout, "+ helm %s\n", strings.Join(helmArgs, " "))
-			hc := exec.CommandContext(ctx, "helm", helmArgs...)
-			hc.Stdout = os.Stdout
-			hc.Stderr = os.Stderr
-			if err := hc.Run(); err != nil {
-				return fmt.Errorf("helm uninstall failed: %w — a wedged pre-delete hook blocks the sweep too; recover with 'helm uninstall --no-hooks %s --namespace %s' followed by 'c8s uninstall --host-sweep-only'", err, uninstallRelease, uninstallNamespace)
-			}
-		}
-
-		if sweep {
-			if err := runHostSweep(ctx, uninstallNamespace, uninstallRelease, cfg); err != nil {
-				return err
-			}
-		}
-
-		if uninstallDeleteCRDs {
-			if err := kubectlRun(ctx, "delete", "crd", confidentialWorkloadCRD, "--ignore-not-found"); err != nil {
-				return err
-			}
-		}
-		if uninstallDeleteNamespace {
-			if err := kubectlRun(ctx, "delete", "namespace", uninstallNamespace, "--ignore-not-found"); err != nil {
-				return err
-			}
-		}
-		return nil
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		return uninstallC8s(cmd)
 	},
+}
+
+// The phases before removeC8s only read: the release's computed values and the
+// allowlist seed the sweep replays are gone once the release is deleted.
+func uninstallC8s(cmd *cobra.Command) error {
+	ctx := cmd.Context()
+	if err := checkUninstallFlags(); err != nil {
+		return err
+	}
+	plan, err := planUninstall(ctx)
+	if err != nil {
+		return err
+	}
+	if err := preflightUninstall(ctx, plan); err != nil {
+		return err
+	}
+	return removeC8s(ctx, plan)
+}
+
+func checkUninstallFlags() error {
+	if err := validateUninstallFlags(uninstallHostSweep, uninstallHostSweepOnly); err != nil {
+		return err
+	}
+	if _, err := exec.LookPath("helm"); err != nil {
+		return fmt.Errorf("helm CLI not found on PATH: %w", err)
+	}
+	if _, err := exec.LookPath("kubectl"); err != nil {
+		return fmt.Errorf("kubectl CLI not found on PATH: %w", err)
+	}
+	return nil
+}
+
+type uninstallPlan struct {
+	// values are the release's computed values, nil where the release is gone.
+	values map[string]any
+	host   hostUninstallConfig
+}
+
+// A release that is gone, and one that never deployed volumed, hold no volume
+// mapping the uninstall could strand.
+func (p uninstallPlan) deployedVolumed() bool {
+	return boolAtPath(p.values, "volumed.enabled")
+}
+
+func planUninstall(ctx context.Context) (uninstallPlan, error) {
+	values, found, err := releaseValues(ctx, uninstallRelease, uninstallNamespace)
+	if err != nil {
+		return uninstallPlan{}, err
+	}
+	if !found && !uninstallHostSweepOnly {
+		return uninstallPlan{}, fmt.Errorf("helm release %q not found in namespace %q — nothing to uninstall. If a previous uninstall already deleted the release but left host artifacts on the nodes, re-run with --host-sweep-only", uninstallRelease, uninstallNamespace)
+	}
+	host, err := sweepHostConfig(ctx, values, found)
+	if err != nil {
+		return uninstallPlan{}, err
+	}
+	return uninstallPlan{values: values, host: host}, nil
+}
+
+// The sweep's host paths and argv come from the release's own computed values,
+// or — for host state that outlived the release that created it — the embedded
+// chart's defaults.
+func sweepHostConfig(ctx context.Context, values map[string]any, found bool) (hostUninstallConfig, error) {
+	if !found {
+		fmt.Fprintf(os.Stdout, "+ release %q not found — sweeping with chart defaults\n", uninstallRelease)
+		return chartDefaultHostConfig(ctx)
+	}
+	cfg, err := hostConfigFromValues(values)
+	if err != nil {
+		return hostUninstallConfig{}, fmt.Errorf("read host config from release values: %w", err)
+	}
+	if uninstallHostSweep {
+		cfg.SweepArgv, cfg.PauseArgv = resolveSweepArgvs(ctx, uninstallNamespace, uninstallRelease, cfg)
+	}
+	return cfg, nil
+}
+
+func preflightUninstall(ctx context.Context, plan uninstallPlan) error {
+	if uninstallHostSweep {
+		if err := refuseNodelessSweep(ctx); err != nil {
+			return err
+		}
+	}
+	if plan.deployedVolumed() {
+		return refuseLiveVolumePods(ctx)
+	}
+	return nil
+}
+
+// volumed goes with the release and is the only component that unmaps a pod's
+// volume devices, so the teardown order is load-bearing.
+func refuseLiveVolumePods(ctx context.Context) error {
+	pods, err := listVolumePods(ctx)
+	if err != nil {
+		return err
+	}
+	if len(pods) == 0 {
+		return nil
+	}
+	if !uninstallForce {
+		return volumePodsRunningError(pods)
+	}
+	fmt.Fprintf(os.Stdout, "%s\n", forcedVolumePodsWarning(pods))
+	return nil
+}
+
+// removeC8s is the only phase that changes the cluster.
+func removeC8s(ctx context.Context, plan uninstallPlan) error {
+	if !uninstallHostSweepOnly {
+		if err := deleteRelease(ctx); err != nil {
+			return err
+		}
+	}
+	if uninstallHostSweep {
+		if err := runHostSweep(ctx, uninstallNamespace, uninstallRelease, plan.host); err != nil {
+			return err
+		}
+	}
+	if uninstallDeleteCRDs {
+		if err := kubectlRun(ctx, "delete", "crd", confidentialWorkloadCRD, "--ignore-not-found"); err != nil {
+			return err
+		}
+	}
+	if uninstallDeleteNamespace {
+		return kubectlRun(ctx, "delete", "namespace", uninstallNamespace, "--ignore-not-found")
+	}
+	return nil
+}
+
+func deleteRelease(ctx context.Context) error {
+	if err := removeNriInstaller(ctx, uninstallNamespace, uninstallRelease); err != nil {
+		return err
+	}
+	helmArgs := buildHelmUninstallArgs(uninstallRelease, uninstallNamespace, uninstallWait)
+	fmt.Fprintf(os.Stdout, "+ helm %s\n", strings.Join(helmArgs, " "))
+	hc := exec.CommandContext(ctx, "helm", helmArgs...)
+	interruptOnCancel(hc)
+	hc.Stdout, hc.Stderr = os.Stdout, os.Stderr
+	if err := hc.Run(); err != nil {
+		return fmt.Errorf("helm uninstall failed: %w — the nodes are still enforcing; once the release is gone, sweep them with 'c8s uninstall --host-sweep-only --release %s --namespace %s'", err, uninstallRelease, uninstallNamespace)
+	}
+	return nil
 }
 
 // validateUninstallFlags rejects --host-sweep-only with --host-sweep=false:
@@ -256,89 +294,28 @@ func validateUninstallFlags(hostSweep, hostSweepOnly bool) error {
 	return nil
 }
 
-// The label selecting every linux node: the nodes the host sweep runs on.
+// The label selecting every linux node: the nodes the sweep DaemonSet runs on
+// (hostSweepDaemonSet).
 const (
 	linuxNodeLabel = "kubernetes.io/os"
 	linuxNodeValue = "linux"
 )
 
-// notReadyNodesJSONPath dumps one "name\tReady status" line per node.
-const notReadyNodesJSONPath = `jsonpath={range .items[*]}{.metadata.name}{"\t"}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}`
-
-// refuseNotReadyRemovalNodes stops the uninstall before it waits on a removal
-// pod that cannot start: a NotReady node runs none.
-func refuseNotReadyRemovalNodes(ctx context.Context, selector string, cfg hostUninstallConfig) error {
-	nodes, err := notReadyNodes(ctx, selector)
-	if err != nil {
-		return err
-	}
-	if len(nodes) > 0 {
-		return notReadyNodesError(nodes, cfg)
-	}
-	return nil
-}
-
-// removalNodeSelector selects the nodes this uninstall runs a removal pod on:
-// every linux node when the host sweep runs, else the pre-delete hooks' nodes.
-func removalNodeSelector(values map[string]any, hostSweep bool) (string, error) {
-	if hostSweep {
-		return linuxNodeSelector(), nil
-	}
-	return hookNodeSelector(values)
-}
-
-// hookNodeSelector selects the nodes the chart's pre-delete hooks run on: the
-// release's confidential nodes, or every linux node for a release whose chart
-// named none.
-func hookNodeSelector(values map[string]any) (string, error) {
-	if _, named := values[confidentialNodeSelectorKey]; !named {
-		return linuxNodeSelector(), nil
-	}
-	return confidentialNodeSelector(values)
-}
-
 func linuxNodeSelector() string {
 	return fmt.Sprintf("%s=%s", linuxNodeLabel, linuxNodeValue)
 }
 
-// notReadyNodes lists the nodes matching selector whose Ready condition is not
-// True, and refuses a selector no node matches.
-func notReadyNodes(ctx context.Context, selector string) ([]string, error) {
-	out, err := exec.CommandContext(ctx, "kubectl", "get", "nodes", "-l", selector, "-o", notReadyNodesJSONPath).Output()
+// A DaemonSet that wants no pod rolls out successfully having swept nothing.
+func refuseNodelessSweep(ctx context.Context) error {
+	selector := linuxNodeSelector()
+	out, err := exec.CommandContext(ctx, "kubectl", "get", "nodes", "-l", selector, "-o", "name").Output()
 	if err != nil {
-		return nil, fmt.Errorf("kubectl get nodes -l %s: %w", selector, withStderr(err))
+		return fmt.Errorf("kubectl get nodes -l %s: %w", selector, withStderr(err))
 	}
-	listed := strings.TrimSpace(string(out))
-	if listed == "" {
-		return nil, fmt.Errorf("no node matches %s, the nodes this uninstall runs a removal pod on", selector)
+	if strings.TrimSpace(string(out)) == "" {
+		return fmt.Errorf("no node matches %s, the nodes this uninstall sweeps", selector)
 	}
-	var nodes []string
-	for line := range strings.SplitSeq(listed, "\n") {
-		name, ready, _ := strings.Cut(line, "\t")
-		if name != "" && ready != "True" {
-			nodes = append(nodes, unreadyNode(name, ready))
-		}
-	}
-	return nodes, nil
-}
-
-// unreadyNode names a node and the Ready status it reports, a node that
-// reports none included.
-func unreadyNode(name, ready string) string {
-	if ready == "" {
-		return name + " (no Ready condition)"
-	}
-	return name + " (Ready=" + ready + ")"
-}
-
-// notReadyNodesError names the nodes and the node-level recovery, which no pod
-// can run there.
-func notReadyNodesError(nodes []string, cfg hostUninstallConfig) error {
-	return fmt.Errorf("nodes %s do not report themselves Ready, and the uninstall runs a pod on each of them. A confidential node whose containerd cannot load the C8s config, or whose image-policy plugin is down, starts no container, so recover it on the node: in %s/config.toml delete the c8s-nri-image-policy managed block and the c8s-nri-image-policy prefix of the lines that carry one, delete %s, and run '%s'; or delete the node's VM and let its pool replace it. Then re-run c8s uninstall",
-		strings.Join(nodes, ", "),
-		cfg.ContainerdConfigDir,
-		path.Join(cfg.NriPluginDir, cfg.NriPluginFilename),
-		cfg.RestartCommand)
+	return nil
 }
 
 // nriInstallerSelector selects a release's NRI installer DaemonSet and its
@@ -348,8 +325,7 @@ func nriInstallerSelector(release string) string {
 }
 
 // removeNriInstaller deletes the release's NRI installer and waits out its
-// pods, so no installer run re-adds the plugin while the pre-delete hook takes
-// it off the nodes.
+// pods, so no installer run re-adds the plugin the sweep takes off the nodes.
 func removeNriInstaller(ctx context.Context, namespace, release string) error {
 	selector := nriInstallerSelector(release)
 	if err := kubectlRun(ctx, "delete", "daemonset", "-n", namespace, "-l", selector, "--ignore-not-found"); err != nil {
@@ -604,7 +580,7 @@ func seedPinnedSweepArgvs(ctx context.Context, namespace, release, image string)
 			continue
 		}
 		switch {
-		case strings.Contains(argv[len(argv)-1], "c8s host sweep"):
+		case helmchart.IsHostSweepScript(argv):
 			if sweep != nil {
 				return nil, fmt.Errorf("entry %q pins two host-sweep script shapes", entryName)
 			}
@@ -717,60 +693,11 @@ func volumePodsRunningError(pods []string) error {
 		strings.Join(pods, "\n  "))
 }
 
-// forcedVolumePodsWarning is what --force buys: the uninstall proceeds, and the
-// mappings these pods hold stay open on their nodes, because the pre-delete
-// hook cannot close a device a live mount namespace still references.
+// forcedVolumePodsWarning is what --force buys: the uninstall proceeds, and
+// the mappings these pods hold stay open on nodes it stops enforcing.
 func forcedVolumePodsWarning(pods []string) string {
-	return fmt.Sprintf("! --force: these pods still hold c8s encrypted volumes:\n  %s\nthe volumed pre-delete hook will fail to close their dm-crypt/dm-verity mappings, which then hold the backing disks open. Delete these pods and re-run the uninstall to leave the nodes clean; otherwise volumed sweeps the residue the next time it starts, so a reinstall clears it",
+	return fmt.Sprintf("! --force: these pods still hold c8s encrypted volumes:\n  %s\ntheir dm-crypt/dm-verity mappings stay open, holding the volumes decrypted and the backing disks open, on nodes this uninstall stops enforcing. Delete these pods and re-run the uninstall to leave the nodes clean; otherwise reboot those nodes",
 		strings.Join(pods, "\n  "))
-}
-
-// runHostSweep removes the host artifacts from every Linux node after the
-// release is gone: a short-lived privileged DaemonSet runs host-sweep.sh as an
-// init container on each node. The CLI waits for it to complete everywhere
-// (rollout status blocks until every pod has passed init), then deletes it.
-func runHostSweep(ctx context.Context, namespace, release string, cfg hostUninstallConfig) error {
-	// The mesh re-asserts its base-chain iptables jumps on a
-	// watchdog, so sweeping while a mesh pod still runs leaks the rules the
-	// sweep just deleted (helm --wait=false leaves pods terminating).
-	meshSelector := fmt.Sprintf("app.kubernetes.io/instance=%s,app.kubernetes.io/name=armtls-mesh", release)
-	if err := waitPodsGone(ctx, namespace, meshSelector); err != nil {
-		return fmt.Errorf("waiting for armtls-mesh pods to terminate: %w", err)
-	}
-
-	// The sweep pods are privileged; re-assert the namespace's privileged
-	// pod-security labels (idempotent — the install already set them, but on
-	// the --host-sweep-only path the namespace may have been deleted).
-	if err := applyNamespace(ctx, namespace); err != nil {
-		return err
-	}
-
-	manifest, err := json.Marshal(hostSweepDaemonSet(release, namespace, cfg))
-	if err != nil {
-		return fmt.Errorf("render sweep manifest: %w", err)
-	}
-	name := hostSweepName(release)
-	fmt.Fprintf(os.Stdout, "+ kubectl apply -f - # DaemonSet/%s (host sweep)\n", name)
-	kc := exec.CommandContext(ctx, "kubectl", "apply", "-f", "-")
-	kc.Stdin = bytes.NewReader(manifest)
-	kc.Stdout = os.Stdout
-	kc.Stderr = os.Stderr
-	if err := kc.Run(); err != nil {
-		return fmt.Errorf("kubectl apply sweep DaemonSet: %w", err)
-	}
-
-	if err := kubectlRun(ctx, "rollout", "status", "daemonset/"+name,
-		"-n", namespace, "--timeout=5m"); err != nil {
-		// Leave the DaemonSet in place: its sweep container logs are the
-		// only record of which node failed and why.
-		return fmt.Errorf("host sweep did not complete: %w — inspect with 'kubectl -n %s logs ds/%s -c sweep', then remove it with 'kubectl -n %s delete ds %s'", err, namespace, name, namespace, name)
-	}
-
-	return kubectlRun(ctx, "delete", "daemonset", name, "-n", namespace, "--ignore-not-found")
-}
-
-func hostSweepName(release string) string {
-	return release + "-host-sweep"
 }
 
 // waitPodsGone polls until no pod in the namespace matches the selector.
@@ -800,100 +727,6 @@ func waitPodsGone(ctx context.Context, namespace, selector string) error {
 	}
 }
 
-// hostSweepDaemonSet renders the sweep DaemonSet: every linux node (a node can
-// carry the leftovers of an earlier install's shapes, or have lost the label
-// that marks it confidential), tolerating all taints, with host-sweep.sh as
-// an init container and a pause container whose readiness lets `kubectl
-// rollout status` double as "every node finished sweeping".
-func hostSweepDaemonSet(release, namespace string, cfg hostUninstallConfig) *appsv1.DaemonSet {
-	labels := map[string]string{
-		"app.kubernetes.io/name":      "c8s-operator",
-		"app.kubernetes.io/instance":  release,
-		"app.kubernetes.io/component": "host-sweep",
-	}
-	nodeSelector := map[string]string{linuxNodeLabel: linuxNodeValue}
-	privileged := true
-	pullSecrets := make([]corev1.LocalObjectReference, 0, len(cfg.ImagePullSecretRef))
-	for _, n := range cfg.ImagePullSecretRef {
-		pullSecrets = append(pullSecrets, corev1.LocalObjectReference{Name: n})
-	}
-	return &appsv1.DaemonSet{
-		APIVersion: "apps/v1", Kind: "DaemonSet",
-		Name:      hostSweepName(release),
-		Namespace: namespace,
-		Labels:    labels,
-		Spec: appsv1.DaemonSetSpec{
-			Selector: &metav1.LabelSelector{MatchLabels: labels},
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{Labels: labels},
-				Spec: corev1.PodSpec{
-					// hostPID: the sweep nsenters into PID 1 for host binaries
-					// (systemctl, iptables, losetup) and the runtime restart.
-					HostPID:      true,
-					NodeSelector: nodeSelector,
-					// The install's pull secret, so the sweep image pulls on
-					// private-mirror clusters too (chart-wide values).
-					ImagePullSecrets: pullSecrets,
-					// Sweep control-plane and otherwise-tainted nodes too.
-					Tolerations: []corev1.Toleration{{Operator: corev1.TolerationOpExists}},
-					InitContainers: []corev1.Container{{
-						Name:            "sweep",
-						Image:           cfg.SweepImage,
-						ImagePullPolicy: corev1.PullIfNotPresent,
-						Command:         cfg.SweepArgv,
-						Env: []corev1.EnvVar{
-							{Name: "HOST_CONTAINERD_DIR", Value: cfg.ContainerdConfigDir},
-							{Name: "RESTART_COMMAND", Value: cfg.RestartCommand},
-							{Name: "NRI_PLUGIN_DIR", Value: cfg.NriPluginDir},
-							// Read by the sweeps earlier charts pinned.
-							{Name: "NRI_PLUGIN_FILENAME", Value: cfg.NriPluginFilename},
-							{Name: "NRI_CONFIG_DIR", Value: cfg.NriConfigDir},
-							{Name: "NRI_RUNTIME_DIR", Value: cfg.NriRuntimeDir},
-							{Name: "NRI_CACHE_DIR", Value: cfg.NriCacheDir},
-						},
-						// Removing a runtime from a host requires privileges
-						// and the host root mounted.
-						SecurityContext: &corev1.SecurityContext{Privileged: &privileged},
-						VolumeMounts:    []corev1.VolumeMount{{Name: "host", MountPath: "/host"}},
-						Resources: corev1.ResourceRequirements{
-							Requests: corev1.ResourceList{
-								corev1.ResourceCPU:    resource.MustParse("50m"),
-								corev1.ResourceMemory: resource.MustParse("32Mi"),
-							},
-							Limits: corev1.ResourceList{
-								corev1.ResourceCPU:    resource.MustParse("200m"),
-								corev1.ResourceMemory: resource.MustParse("64Mi"),
-							},
-						},
-					}},
-					Containers: []corev1.Container{{
-						Name:            "pause",
-						Image:           cfg.SweepImage,
-						ImagePullPolicy: corev1.PullIfNotPresent,
-						// The pod lives only until the CLI's rollout-status
-						// wait returns anyway.
-						Command: cfg.PauseArgv,
-						Resources: corev1.ResourceRequirements{
-							Requests: corev1.ResourceList{
-								corev1.ResourceCPU:    resource.MustParse("10m"),
-								corev1.ResourceMemory: resource.MustParse("16Mi"),
-							},
-							Limits: corev1.ResourceList{
-								corev1.ResourceCPU:    resource.MustParse("50m"),
-								corev1.ResourceMemory: resource.MustParse("32Mi"),
-							},
-						},
-					}},
-					Volumes: []corev1.Volume{{
-						Name:     "host",
-						HostPath: &corev1.HostPathVolumeSource{Path: "/"},
-					}},
-				},
-			},
-		},
-	}
-}
-
 // kubectlRun executes kubectl streaming output to the user, prefixed with the
 // echoed command line like the install's helm/kubectl calls.
 func kubectlRun(ctx context.Context, args ...string) error {
@@ -911,9 +744,9 @@ func init() {
 	uninstallCmd.Flags().StringVar(&uninstallNamespace, "namespace", "c8s-system", "namespace the release was installed into")
 	uninstallCmd.Flags().StringVar(&uninstallRelease, "release", "c8s", "Helm release name")
 	uninstallCmd.Flags().BoolVar(&uninstallWait, "wait", true, "wait for the release deletion to complete (helm --wait); the host sweep additionally waits for the host pods to be gone either way")
-	uninstallCmd.Flags().BoolVar(&uninstallHostSweep, "host-sweep", true, "after the release is deleted, sweep c8s host artifacts (NRI image-policy plugin, armtls-mesh netfilter state, idle 'c8s volume attach' LIO disks on releases whose chart carries that step) off every node via a short-lived privileged DaemonSet")
+	uninstallCmd.Flags().BoolVar(&uninstallHostSweep, "host-sweep", true, "after the release is deleted, sweep c8s host artifacts (NRI image-policy plugin, armtls-mesh netfilter state, idle 'c8s volume attach' LIO disks on releases whose chart carries that step) off every node via a short-lived privileged DaemonSet. =false leaves every node enforcing with no CDS to ask, refusing the pods its cached allowlist does not admit, until 'c8s uninstall --host-sweep-only' runs")
 	uninstallCmd.Flags().BoolVar(&uninstallHostSweepOnly, "host-sweep-only", false, "skip the helm uninstall and only run the host sweep — for a cluster whose release is already gone (e.g. a previous bare 'helm uninstall') but whose nodes still carry c8s artifacts. Uses the chart defaults when the release values are unavailable")
-	uninstallCmd.Flags().BoolVar(&uninstallForce, "force", false, "uninstall while pods hold c8s encrypted volumes (the pre-delete hook cannot close a mapping a live pod holds, and fails naming it)")
+	uninstallCmd.Flags().BoolVar(&uninstallForce, "force", false, "uninstall while pods hold c8s encrypted volumes (their mappings stay open, holding the volumes decrypted, on nodes this uninstall stops enforcing; reboot those nodes)")
 	uninstallCmd.Flags().BoolVar(&uninstallDeleteCRDs, "delete-crds", false, "also delete the ConfidentialWorkload CRD — this deletes EVERY ConfidentialWorkload object in the cluster with it")
 	uninstallCmd.Flags().BoolVar(&uninstallDeleteNamespace, "delete-namespace", false, "also delete the release namespace (and everything left in it, e.g. an operator-created image pull Secret)")
 	rootCmd.AddCommand(uninstallCmd)

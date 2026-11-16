@@ -3,6 +3,7 @@ package podstatus
 import (
 	"github.com/spf13/cobra"
 
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/podlaunch"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
@@ -31,6 +32,6 @@ func newServeCmd() *cobra.Command {
 	f.StringVar(&cfg.KubeletCert, "kubelet-cert", KubeletCertPath, "the kubelet's self-signed serving certificate, pinned on every dial")
 	f.StringVar(&cfg.StagedPath, "staged", podlaunch.DefaultStagedPath, "staged launch configuration")
 	f.StringVar(&cfg.JournalPath, "journal", armtls.NodeJournal, "RTMR[3] journal of measured workload digests, kept by nri-image-policy")
-	_ = cmd.MarkFlagRequired("platform")
+	cmdsutil.RequireFlags(cmd, "platform")
 	return cmd
 }

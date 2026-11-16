@@ -24,6 +24,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -35,6 +36,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/guestverify"
 	"github.com/confidential-dot-ai/c8s/internal/launchbinding"
 	"github.com/confidential-dot-ai/c8s/internal/podlaunch"
+	"github.com/confidential-dot-ai/c8s/internal/readutil"
 	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
@@ -148,9 +150,9 @@ var (
 
 // attestFixture serves a fake pod CVM: registered is what its quote's
 // RTMR[3] replays, journal what it lists, relayKey a serving key other than
-// the connection's (a relayed quote), and wrap optional middleware around
-// the guest handler.
-func attestFixture(t *testing.T, registered, journal []string, relayKey crypto.PublicKey, wrap ...func(http.Handler) http.Handler) AttestConfig {
+// the connection's (a relayed quote), and opts optional adjustments to the
+// guest server before it starts.
+func attestFixture(t *testing.T, registered, journal []string, relayKey crypto.PublicKey, opts ...func(*httptest.Server)) AttestConfig {
 	t.Helper()
 	dir := t.TempDir()
 	pub := []byte("pod launch key")
@@ -177,11 +179,11 @@ func attestFixture(t *testing.T, registered, journal []string, relayKey crypto.P
 	var guest http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h.ServeHTTP(w, r.WithContext(armtls.WithServingKey(r.Context(), servingKey)))
 	})
-	for _, w := range wrap {
-		guest = w(guest)
-	}
 	srv := httptest.NewUnstartedServer(guest)
 	srv.TLS = &tls.Config{Certificates: []tls.Certificate{ecdsaCert(t)}}
+	for _, opt := range opts {
+		opt(srv)
+	}
 	srv.StartTLS()
 	t.Cleanup(srv.Close)
 	servingKey = srv.Certificate().PublicKey
@@ -215,6 +217,11 @@ func attestFixture(t *testing.T, registered, journal []string, relayKey crypto.P
 		return res, nil
 	}
 	return AttestConfig{Node: strings.TrimPrefix(srv.URL, "https://"), LaunchKeyPubPath: pubPath, ImageManifestPath: manifestPath, Timeout: 5 * time.Second}
+}
+
+// wrapGuest puts middleware around the fake guest's handler.
+func wrapGuest(mw func(http.Handler) http.Handler) func(*httptest.Server) {
+	return func(srv *httptest.Server) { srv.Config.Handler = mw(srv.Config.Handler) }
 }
 
 // lastClaimed is the measured list the fixture's verifier was last asked to
@@ -256,8 +263,22 @@ func TestAttestBindsMeasuredDigests(t *testing.T) {
 	if _, _, err := Attest(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "expected") {
 		t.Fatalf("expected set mismatch: %v", err)
 	}
-	if body, err := Get(context.Background(), AttestConfig{Node: cfg.Node, LaunchKeyPubPath: cfg.LaunchKeyPubPath, ImageManifestPath: cfg.ImageManifestPath, Timeout: 5 * time.Second}); err != nil || !strings.Contains(string(body), `"app"`) {
+	_, client, err := Attest(context.Background(), AttestConfig{Node: cfg.Node, LaunchKeyPubPath: cfg.LaunchKeyPubPath, ImageManifestPath: cfg.ImageManifestPath, Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatalf("attest: %v", err)
+	}
+	defer client.CloseIdleConnections()
+	if body, _, _, err := doPeer(context.Background(), client, http.MethodGet, "https://"+hostPort(cfg.Node)+PodPath, nil); err != nil || !strings.Contains(string(body), `"app"`) {
 		t.Fatalf("get: %s %v", body, err)
+	}
+}
+
+// An empty expected set means no containers, unlike no expected set.
+func TestAttestRefusesDigestsWhenNoneAreExpected(t *testing.T) {
+	cfg := attestFixture(t, []string{dA}, []string{dA}, nil)
+	cfg.ExpectDigests = []string{}
+	if _, _, err := Attest(t.Context(), cfg); err == nil || !strings.Contains(err.Error(), "expected") {
+		t.Fatalf("a measured container passed an empty expected set: %v", err)
 	}
 }
 
@@ -308,6 +329,44 @@ func TestServeExitsWhenTheLaunchKeyIsNotConfirmed(t *testing.T) {
 	}
 }
 
+// `pod-status serve` runs Serve under the context it is executed with:
+// cancelling it stops a Serve still waiting for its launch key.
+func TestServeCommandStopsWithItsContext(t *testing.T) {
+	staged := filepath.Join(t.TempDir(), "config.json")
+	doc, err := json.Marshal(stagedPodDocument(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(staged, doc, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := loadMeasuredLaunchKey
+	t.Cleanup(func() { loadMeasuredLaunchKey = old })
+	loading := make(chan struct{})
+	loadMeasuredLaunchKey = func(ctx context.Context, _, _ string) ([]byte, error) {
+		close(loading)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cmd := NewCmd()
+	cmd.SetArgs([]string{"serve", "--platform=tdx", "--staged=" + staged})
+	cmd.SetErr(io.Discard)
+	done := make(chan error, 1)
+	go func() { done <- cmd.ExecuteContext(ctx) }()
+	<-loading
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("serve = %v, want context.Canceled", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("serve did not stop after its context was cancelled")
+	}
+}
+
 // stagedPodDocument is the generic pod document Serve reads before anything
 // else.
 func stagedPodDocument(t *testing.T) *podlaunch.Document {
@@ -341,6 +400,32 @@ func TestMeasurementsAndEvidenceRoutes(t *testing.T) {
 	}
 	if rec := serve(h, http.MethodGet, EvidencePath); rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("GET evidence: %d", rec.Code)
+	}
+}
+
+// The evidence route reads one nonce request: a request with another document
+// after it, or one padded past the read cap, is refused rather than answered
+// with fresh evidence.
+func TestEvidenceRouteRefusesABodyThatIsNotOneDocument(t *testing.T) {
+	h := Handler{Evidence: func(context.Context, []byte) ([]byte, error) { return []byte(`{"platform":"tdx"}`), nil }}
+	request, err := json.Marshal(types.NonceRequest{Nonce: bytes.Repeat([]byte{7}, 32)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		body []byte
+	}{
+		{"request then a second one", append(bytes.Clone(request), request...)},
+		{"request padded past the cap", append(bytes.Clone(request), bytes.Repeat([]byte(" "), 4096)...)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, EvidencePath, bytes.NewReader(tc.body)))
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+			}
+		})
 	}
 }
 
@@ -427,11 +512,38 @@ func TestAttestPinsTheServingKey(t *testing.T) {
 	other.TLS = &tls.Config{Certificates: []tls.Certificate{ecdsaCert(t)}}
 	other.StartTLS()
 	t.Cleanup(other.Close)
-	if _, err := do(context.Background(), client, http.MethodGet, other.URL+PodPath, nil); err == nil || !strings.Contains(err.Error(), "serving key differs") {
+	if _, _, _, err := doPeer(context.Background(), client, http.MethodGet, other.URL+PodPath, nil); err == nil || !strings.Contains(err.Error(), "serving key differs") {
 		t.Fatalf("read from another guest: %v", err)
 	}
-	if _, err := do(context.Background(), client, http.MethodGet, "https://"+hostPort(cfg.Node)+PodPath, nil); err != nil {
+	if _, _, _, err := doPeer(context.Background(), client, http.MethodGet, "https://"+hostPort(cfg.Node)+PodPath, nil); err != nil {
 		t.Fatalf("read from the attested guest: %v", err)
+	}
+}
+
+// rotateServingKeyAfter presents another certificate from handshake n+1 on.
+func rotateServingKeyAfter(t *testing.T, n int) func(*httptest.Server) {
+	return func(srv *httptest.Server) {
+		rotated := &tls.Config{Certificates: []tls.Certificate{ecdsaCert(t)}}
+		var handshakes atomic.Int64
+		srv.TLS.GetConfigForClient = func(*tls.ClientHelloInfo) (*tls.Config, error) {
+			if handshakes.Add(1) > int64(n) {
+				return rotated, nil
+			}
+			return nil, nil
+		}
+		srv.Config.SetKeepAlivesEnabled(false)
+	}
+}
+
+// The quote and the digest read after it travel over the pinned channel.
+func TestAttestReadsEvidenceAndDigestsOverThePinnedChannel(t *testing.T) {
+	for name, served := range map[string]int{"quote": 1, "second digest read": 2} {
+		t.Run(name, func(t *testing.T) {
+			cfg := attestFixture(t, []string{dA}, []string{dA}, nil, rotateServingKeyAfter(t, served))
+			if _, _, err := Attest(t.Context(), cfg); err == nil || !strings.Contains(err.Error(), "serving key differs") {
+				t.Fatalf("another guest answered the %s: %v", name, err)
+			}
+		})
 	}
 }
 
@@ -472,7 +584,7 @@ func TestKubeletPodsPinsTheServingCertificate(t *testing.T) {
 // convention; the client refuses rather than failing on a REPORT_DATA
 // mismatch it cannot explain.
 func TestAttestRefusesUnknownBindingVersion(t *testing.T) {
-	cfg := attestFixture(t, []string{dA}, []string{dA}, nil, func(next http.Handler) http.Handler {
+	cfg := attestFixture(t, []string{dA}, []string{dA}, nil, wrapGuest(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path != EvidencePath {
 				next.ServeHTTP(w, r)
@@ -481,7 +593,7 @@ func TestAttestRefusesUnknownBindingVersion(t *testing.T) {
 			w.Header().Set(BindingHeader, "armtls-key-nonce/v0")
 			_, _ = w.Write([]byte(`{}`))
 		})
-	})
+	}))
 	if _, _, err := Attest(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), `needs "armtls-key-nonce/v1"`) {
 		t.Fatalf("got %v", err)
 	}
@@ -492,7 +604,7 @@ func TestAttestRefusesUnknownBindingVersion(t *testing.T) {
 func TestDoRequiresTLS(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("{}")) }))
 	t.Cleanup(srv.Close)
-	if _, err := do(context.Background(), srv.Client(), http.MethodGet, srv.URL+PodPath, nil); err == nil || !strings.Contains(err.Error(), "did not arrive over TLS") {
+	if _, _, _, err := doPeer(context.Background(), srv.Client(), http.MethodGet, srv.URL+PodPath, nil); err == nil || !strings.Contains(err.Error(), "did not arrive over TLS") {
 		t.Fatalf("got %v", err)
 	}
 }
@@ -555,9 +667,6 @@ func TestAttestRefusesInvalidConfiguration(t *testing.T) {
 			if report, client, err := Attest(t.Context(), cfg); err == nil || report != nil || client != nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("attest: %v, want %q", err, tc.want)
 			}
-			if body, err := Get(t.Context(), cfg); err == nil || body != nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("get: %v, want %q", err, tc.want)
-			}
 		})
 	}
 }
@@ -599,6 +708,21 @@ func TestPinServingKeyKeepsTheClientChecks(t *testing.T) {
 	cs := tls.ConnectionState{PeerCertificates: []*x509.Certificate{{PublicKey: key}}}
 	if err := checked.Transport.(*http.Transport).TLSClientConfig.VerifyConnection(cs); !errors.Is(err, refused) {
 		t.Fatalf("client check dropped by the pin: %v", err)
+	}
+}
+
+// tlsOnlyTransport serves over TLS but is not an *http.Transport, so the
+// serving key cannot be pinned.
+type tlsOnlyTransport struct{ http.RoundTripper }
+
+func TestAttestReportsAnUnpinnableClient(t *testing.T) {
+	cfg := attestFixture(t, []string{dA}, []string{dA}, nil)
+	newClient = func(guestverify.Policy, time.Duration) *http.Client {
+		transport := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}} //nolint:gosec // test fixture
+		return &http.Client{Transport: tlsOnlyTransport{transport}}
+	}
+	if _, _, err := Attest(t.Context(), cfg); err == nil || !strings.Contains(err.Error(), "no TLS transport") {
+		t.Fatalf("unpinnable client: %v", err)
 	}
 }
 
@@ -667,7 +791,7 @@ func TestAttestedReadsRefuseFailedAnswers(t *testing.T) {
 	if _, _, err := postEvidence(t.Context(), client, srv.URL, []byte("{}")); err == nil || !strings.Contains(err.Error(), `binding is ""`) {
 		t.Fatalf("evidence without binding: %v", err)
 	}
-	if _, err := do(t.Context(), client, "BAD METHOD", srv.URL, nil); err == nil {
+	if _, _, _, err := doPeer(t.Context(), client, "BAD METHOD", srv.URL, nil); err == nil {
 		t.Fatal("request with an invalid method sent")
 	}
 }
@@ -704,5 +828,59 @@ func TestServeRefusesUnusableConfiguration(t *testing.T) {
 	}
 	if err := Serve(t.Context(), ServeConfig{Platform: "tdx", StagedPath: staged}); err == nil || !strings.Contains(err.Error(), "open assignment state") {
 		t.Fatalf("assignment state outside a guest: %v", err)
+	}
+}
+
+// Once the plugin ended the pod identity, the assignment routes answer 503
+// before any assignment check. A live identity, or a plugin that cannot
+// answer, leaves an assigned guest's 409; an unassigned guest is not asked.
+func TestAssignmentRoutesAnswer503OnceThePodIdentityEnded(t *testing.T) {
+	ended, pluginErr, asked := true, error(nil), 0
+	identity := func(context.Context) (bool, error) { asked++; return ended, pluginErr }
+	h := Handler{assignment: assigned("u1"), IdentityEnded: identity}
+	codes := func() [2]int {
+		return [2]int{serve(h, http.MethodGet, AssignNoncePath).Code, serve(h, http.MethodPost, AssignPath).Code}
+	}
+	if got := codes(); got != [2]int{http.StatusServiceUnavailable, http.StatusServiceUnavailable} {
+		t.Fatalf("ended identity: %v", got)
+	}
+	ended = false
+	if got := codes(); got != [2]int{http.StatusConflict, http.StatusConflict} {
+		t.Fatalf("live identity: %v", got)
+	}
+	ended, pluginErr = true, errors.New("plugin unreachable")
+	if got := codes(); got != [2]int{http.StatusConflict, http.StatusConflict} {
+		t.Fatalf("unreachable plugin: %v", got)
+	}
+	asked = 0
+	s, _, _, _ := assignmentFixture(t)
+	if rec := serve(Handler{assignment: s, IdentityEnded: identity}, http.MethodGet, AssignNoncePath); rec.Code != http.StatusOK || asked != 0 {
+		t.Fatalf("unassigned guest: %d, plugin asked %d times", rec.Code, asked)
+	}
+}
+
+// A guest or kubelet answer past maxBody is refused where it is read: a
+// truncated pod list or evidence response is never parsed.
+func TestAnAnswerOverTheLimitIsRefused(t *testing.T) {
+	guest := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(bytes.Repeat([]byte("x"), maxBody+1))
+	}))
+	t.Cleanup(guest.Close)
+	if _, _, err := postEvidence(t.Context(), guest.Client(), guest.URL, []byte("{}")); !errors.Is(err, readutil.ErrTooLarge) {
+		t.Fatalf("evidence: %v", err)
+	}
+
+	kubelet := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(bytes.Repeat([]byte("x"), maxBody+1))
+	}))
+	kubelet.TLS = &tls.Config{Certificates: []tls.Certificate{ecdsaCert(t)}}
+	kubelet.StartTLS()
+	t.Cleanup(kubelet.Close)
+	certFile := filepath.Join(t.TempDir(), "kubelet.crt")
+	if err := os.WriteFile(certFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: kubelet.Certificate().Raw}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := kubeletPods(kubelet.URL, certFile)(t.Context()); !errors.Is(err, readutil.ErrTooLarge) {
+		t.Fatalf("kubelet /pods: %v", err)
 	}
 }

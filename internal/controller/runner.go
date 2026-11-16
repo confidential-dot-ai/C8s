@@ -52,8 +52,7 @@ type Options struct {
 	DisableStatusMirror bool
 
 	// MeshImage is the armtls-mesh image the admission webhook injects as the
-	// pod's mesh endpoint. Empty leaves the node DaemonSet as the mesh. See
-	// webhook.Config.
+	// pod's mesh endpoint. It and GetCertImage are set together or not at all.
 	MeshImage string
 
 	// GetCertImage is the c8s multi-mode binary image the admission webhook
@@ -83,10 +82,12 @@ type Options struct {
 	CertFSGroup       int64
 	CertRenewInterval time.Duration
 
-	// ExcludeNamespaces are namespaces the startup reinject sweep and the
-	// workload-service reconciler skip, on top of the release namespace and
-	// the kube-system family. Mirrors controlPlane.webhook.extraExcluded so the
-	// sweep, the reconciler, and the webhook config agree.
+	// ConfidentialNodeSelector are the labels this platform puts on a
+	// confidential node; the webhook selects them on every injected pod (see
+	// webhook.Config).
+	ConfidentialNodeSelector map[string]string
+
+	// ExcludeNamespaces extends the namespaces skipped by the sweep and workload-service reconciler.
 	ExcludeNamespaces []string
 
 	// WorkloadClaimsHostDir, when set (node-CVM), is the nri-image-policy inventory
@@ -308,13 +309,14 @@ func setupManager(ctx context.Context, mgr manager.Manager, dc serverResourcesFo
 			return fmt.Errorf("bootstrap webhook PKI: %w", err)
 		}
 		if err := webhook.Register(mgr, webhook.Config{
-			GetCertImage:          opts.GetCertImage,
-			MeshImage:             opts.MeshImage,
-			AttestationApiURL:     opts.AttestationApiURL,
-			CertFSGroup:           new(opts.CertFSGroup),
-			CertRenewInterval:     opts.CertRenewInterval,
-			WorkloadClaimsHostDir: opts.WorkloadClaimsHostDir,
-			PodCVMProviderEnabled: opts.PodCVMProviderConfig != "",
+			GetCertImage:             opts.GetCertImage,
+			MeshImage:                opts.MeshImage,
+			AttestationApiURL:        opts.AttestationApiURL,
+			CertFSGroup:              new(opts.CertFSGroup),
+			CertRenewInterval:        opts.CertRenewInterval,
+			WorkloadClaimsHostDir:    opts.WorkloadClaimsHostDir,
+			PodCVMProviderEnabled:    opts.PodCVMProviderConfig != "",
+			ConfidentialNodeSelector: opts.ConfidentialNodeSelector,
 		}); err != nil {
 			return fmt.Errorf("register webhook: %w", err)
 		}

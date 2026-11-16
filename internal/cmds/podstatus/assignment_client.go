@@ -12,7 +12,7 @@ import (
 	"net/http"
 	"strings"
 
-	strictjson "sigs.k8s.io/json"
+	sigsjson "sigs.k8s.io/json"
 
 	"github.com/confidential-dot-ai/c8s/internal/podassign"
 	"github.com/confidential-dot-ai/c8s/internal/podlaunch"
@@ -87,7 +87,7 @@ func (t *AssignmentTarget) Prepare(ctx context.Context, key *ecdsa.PrivateKey, m
 	var response struct {
 		Nonce []byte `json:"nonce"`
 	}
-	strictErrors, err := strictjson.UnmarshalStrict(data, &response)
+	strictErrors, err := sigsjson.UnmarshalStrict(data, &response)
 	if err != nil || len(strictErrors) != 0 || len(response.Nonce) != podassign.NonceSize {
 		return nil, errors.New("guest returned an invalid assignment nonce")
 	}
@@ -130,7 +130,7 @@ func (t *AssignmentTarget) Send(ctx context.Context, data []byte) (string, error
 		var held struct {
 			UID string `json:"uid"`
 		}
-		if strictErrors, err := strictjson.UnmarshalStrict(body, &held); err != nil || len(strictErrors) != 0 {
+		if strictErrors, err := sigsjson.UnmarshalStrict(body, &held); err != nil || len(strictErrors) != 0 {
 			held.UID = ""
 		}
 		return "", &AlreadyAssignedError{HeldUID: held.UID}
@@ -141,7 +141,7 @@ func (t *AssignmentTarget) Send(ctx context.Context, data []byte) (string, error
 	var accepted struct {
 		UID string `json:"uid"`
 	}
-	strictErrors, err := strictjson.UnmarshalStrict(body, &accepted)
+	strictErrors, err := sigsjson.UnmarshalStrict(body, &accepted)
 	if err != nil || len(strictErrors) != 0 || accepted.UID != string(pod.UID) {
 		return "", errors.New("assignment response does not match the persisted Pod")
 	}

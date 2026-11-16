@@ -109,10 +109,15 @@ const networkNamespace = "network"
 // this and writable sysfs/cgroupfs are the evidence there is.
 const cgroupNamespace = "cgroup"
 
-// kernelFSTypes are the filesystem types oci.WithPrivileged rewrites from ro to
-// rw (containerd pkg/oci/spec_opts.go, WithWriteableSysfs and
-// WithWriteableCgroupfs).
-var kernelFSTypes = []string{"sysfs", "cgroup"}
+// IsKernelFS reports whether fsType names sysfs or cgroupfs, v1 or v2: the
+// kernel filesystems containerd's oci.WithPrivileged makes writable.
+func IsKernelFS(fsType string) bool {
+	switch fsType {
+	case "sysfs", "cgroup", "cgroup2":
+		return true
+	}
+	return false
+}
 
 // sandboxObservation is the host-privilege surface of one container as NRI
 // reports it on the persisted OCI spec. A denial logs the whole struct, so a reviewer
@@ -184,7 +189,7 @@ func (noBindGrant) grants(allowlist.ObservedMount) bool { return false }
 // evidence grant accepts is one an allowlist entry hands this launch, so it is
 // not a host bind either. The device nodes, hooks and binds cdi expanded are
 // not observed.
-func observeSandbox(pod *api.PodSandbox, ctr *api.Container, own nodeMounts, mounts []allowlist.ObservedMount, grant hostBindGrant, cdi cdiExpansion) sandboxObservation {
+func observeSandbox(pod *api.PodSandbox, ctr *api.Container, own enforcerMounts, mounts []allowlist.ObservedMount, grant hostBindGrant, cdi cdiExpansion) sandboxObservation {
 	obs := sandboxObservation{
 		PodNamespaces:    namespaceTypes(pod.GetLinux().GetNamespaces()),
 		CtrNamespaces:    namespaceTypes(ctr.GetLinux().GetNamespaces()),
@@ -213,9 +218,9 @@ func observeSandbox(pod *api.PodSandbox, ctr *api.Container, own nodeMounts, mou
 }
 
 // violations names every way the observation leaves the sandbox. An empty
-// result is the only admission. podRole adds the pod CVM floor: a container
-// whose seccomp profile does not deny by default.
-func (o sandboxObservation) violations(podRole bool) []string {
+// result is the only admission. requiresSeccompFilter adds the pod CVM floor:
+// a container whose seccomp profile does not deny by default.
+func (o sandboxObservation) violations(requiresSeccompFilter bool) []string {
 	var out []string
 	for _, ns := range sandboxNamespaces {
 		if !slices.Contains(o.PodNamespaces, ns) {
@@ -246,7 +251,7 @@ func (o sandboxObservation) violations(podRole bool) []string {
 	if len(o.Sysctls) > 0 {
 		out = append(out, "container sysctl")
 	}
-	if podRole && !slices.Contains(denyingSeccompActions, o.Seccomp) {
+	if requiresSeccompFilter && !slices.Contains(denyingSeccompActions, o.Seccomp) {
 		out = append(out, "unfiltered seccomp")
 	}
 	return out
@@ -299,7 +304,7 @@ func nodeNetwork(pod *api.PodSandbox) bool {
 // the pod UID, so a UID appearing anywhere in the source proves nothing, and an
 // uncleaned source would let `<uid>/..` name the parent. A pod with neither
 // identifier is unidentifiable, and every bind is then foreign.
-func hostBinds(pod *api.PodSandbox, ctr *api.Container, own nodeMounts, mounts []allowlist.ObservedMount, grant hostBindGrant, cdi cdiExpansion) []string {
+func hostBinds(pod *api.PodSandbox, ctr *api.Container, own enforcerMounts, mounts []allowlist.ObservedMount, grant hostBindGrant, cdi cdiExpansion) []string {
 	var owned []string
 	if uid := pod.GetUid(); uid != "" {
 		owned = append(owned, kubeletRoot+"/pods/"+uid+"/")
@@ -346,8 +351,8 @@ func grantsBind(source, destination string, mounts []allowlist.ObservedMount, gr
 	return found
 }
 
-// nodeMounts names the sources credentialMounts binds into node credential clients.
-type nodeMounts struct {
+// enforcerMounts names the sources this enforcer binds into a container itself.
+type enforcerMounts struct {
 	socketDir      string
 	cdsPins        string
 	cdsAddress     string
@@ -375,7 +380,7 @@ func takesNodeMount(pod *api.PodSandbox, ctr *api.Container, destination string)
 }
 
 // isInjectedNodeMount requires a credential client's read-only bind from the node's own source.
-func isInjectedNodeMount(pod *api.PodSandbox, ctr *api.Container, m *api.Mount, own nodeMounts) bool {
+func isInjectedNodeMount(pod *api.PodSandbox, ctr *api.Container, m *api.Mount, own enforcerMounts) bool {
 	source := map[string]string{
 		workloadclaims.SidecarSocketDir:   own.socketDir,
 		workloadclaims.CDSPinsPath:        own.cdsPins,
@@ -410,7 +415,7 @@ func endsReadOnly(m *api.Mount) bool {
 func writableKernelFS(ctr *api.Container) []string {
 	var out []string
 	for _, m := range ctr.GetMounts() {
-		if !slices.Contains(kernelFSTypes, m.GetType()) {
+		if !IsKernelFS(m.GetType()) {
 			continue
 		}
 		if !endsReadOnly(m) {

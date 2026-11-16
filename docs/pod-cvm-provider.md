@@ -60,6 +60,11 @@ and size placeholders with compatible Cloud values:
 }
 ```
 
+`providerID` is required and must be a valid Kubernetes label value: at most 63
+characters, letters, digits, `-`, `_` and `.`, starting and ending with a letter
+or digit. It names this provider's records, its Node and its Cloud instances,
+and the provider refuses to start without a valid one.
+
 `cdsAddress` names the external CDS host and port; `cdsImagePolicyFile` contains
 the generated policy binding every admitted CDS image to the same exact measured
 CDS configuration. Both are required. A DNS host and a different CDS image or
@@ -179,8 +184,10 @@ Once the instance runs and reports its endpoints, the provider verifies fresh
 guest evidence and an empty measured list, fetches an assignment nonce on that
 verified connection, signs the assignment over the connection's serving key and
 saves the exact assignment bytes and serving key in the record before POSTing
-them. Readiness still comes only from verified Pod status; until the guest
-reports the assigned Pod the status reason is `AssignmentPending`.
+them. The guest status service keeps one serving key while it runs: certificate
+renewal refreshes the certificate and its evidence, not the key. Readiness
+still comes only from verified Pod status; until the guest reports the assigned
+Pod the status reason is `AssignmentPending`.
 
 A lost assignment reply keeps the same VM and record. The provider replays the
 saved bytes to the same serving key and recovers through matching attested
@@ -210,7 +217,8 @@ The workload must satisfy the [guest Pod contract](operator.md#pod-cvm):
 digest-pinned images, memory `emptyDir` volumes, bounded privileges and supported
 HTTP probes. The provider also rejects cluster-dependent Secret/ConfigMap
 environment references, `envFrom`, image pull Secrets, nondefault service
-accounts, resource claims, RuntimeClasses and custom readiness gates. Use
+accounts, resource claims, RuntimeClasses and custom readiness gates. A
+`confidential.ai/cw` label must match the annotation. Use
 per-container resource requests and limits. Whole-map annotation FieldRefs and
 provider/kubelet annotation FieldRefs are unsupported.
 

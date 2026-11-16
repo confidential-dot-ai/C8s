@@ -164,12 +164,26 @@ replaced at that address.
 c8s cds ha status --config cds-config.yaml --cds-pin cds-pin.json
 ```
 
-One attested client per replica, one line each, then one line per alarm. The
-command exits non-zero when a replica answers nothing, does not serve, serves
-another cluster, or holds another version or mesh CA than the first. Only the
-leader knows the seats and the state digests, so another replica reports those
-as `-`. Every value a replica reports is quoted: the replica is what the
-command audits, not what it certifies.
+One attested client per replica, and a summary of what they answered:
+
+```
+ADDRESS                 MEMBER                        ROLE      VOTER  VERSION  HEALTH
+cds-1.example.org:8443  "ahn7yq4qnkwftxo6ihoyu2bxpi"  leader    yes    7        serving
+cds-2.example.org:8443  "mv3qa5kt2bdyl7ncu6hzjx4wpi"  follower  yes    7        serving
+cds-3.example.org:8443  "wq7tc4nxfi6sbz2hyolp5kdrue"  follower  yes    7        serving
+the replicas agree: leader "ahn7yq4qnkwftxo6ihoyu2bxpi", 3 voter seats, version 7
+```
+
+One row per replica, a line for each alarm a replica raises, then the line
+that answers the command: one leader, one set of voter seats and one applied
+version, or the first of those the replicas do not agree on. A column a
+replica cannot answer reads `-`. Every value a replica reports is quoted: the
+replica is what the command audits, not what it certifies.
+
+`--json` prints each replica's whole report, where the state digests, the roll
+gate and the log indices are. The command exits non-zero when a replica
+answers nothing, does not serve, serves another cluster, or holds another
+version or mesh CA than the first.
 
 `c8s cds ha decrees` reads the record of applied decrees, with every signature
 checked against the keys the launch file pins. `c8s cds ha pin-policy` reads
@@ -208,7 +222,7 @@ does not establish that the VM clock is repaired.
 **roll_safe** is the other gate, and the leader alone answers it: the seats
 are filled by voters that answer, none of them is retiring, and every staying
 voter holds the newest seat change. It is the gate to wait for between the
-replicas of a roll, and `ha status` prints it as `roll_safe=true`. A current
+replicas of a roll, and `ha status --json` reports it as `roll_safe`. A current
 voter known to be clock-quarantined keeps this gate false. A quarantined
 leader hands authority to a caught-up, clock-eligible voter while retaining
 its vote and replicated state.

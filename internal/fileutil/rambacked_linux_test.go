@@ -8,11 +8,20 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// Pins the sign of the check without using RequireRAMBacked as its own
+func ramBacked(dir string) error {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	return RequireRAMBackedRoot(root)
+}
+
+// Pins the sign of the check without using RequireRAMBackedRoot as its own
 // oracle: /proc is procfs on every Linux, so an inverted check fails here
 // deterministically.
 func TestRequireRAMBackedRejectsProcfs(t *testing.T) {
-	if err := RequireRAMBacked("/proc"); err == nil {
+	if err := ramBacked("/proc"); err == nil {
 		t.Fatal("procfs accepted as RAM-backed")
 	}
 }
@@ -25,7 +34,7 @@ func TestRequireRAMBackedAcceptsTmpfs(t *testing.T) {
 		t.Skipf("cannot mount tmpfs here (needs CAP_SYS_ADMIN in a mount namespace): %v", err)
 	}
 	t.Cleanup(func() { _ = unix.Unmount(dir, unix.MNT_DETACH) })
-	if err := RequireRAMBacked(dir); err != nil {
+	if err := ramBacked(dir); err != nil {
 		t.Fatalf("tmpfs refused: %v", err)
 	}
 }
@@ -55,7 +64,7 @@ func TestRequireRAMBackedRootSurvivesPathReplacementBeforeVerification(t *testin
 	if err := RequireRAMBackedRoot(root); err != nil {
 		t.Fatalf("opened tmpfs directory refused after its pathname changed: %v", err)
 	}
-	if err := RequireRAMBacked(out); err == nil {
+	if err := ramBacked(out); err == nil {
 		t.Fatal("replacement procfs path accepted as RAM-backed")
 	}
 }
@@ -67,7 +76,7 @@ func ramBackedTempDir(t *testing.T) string {
 		t.Skipf("cannot create a temporary directory in /dev/shm: %v", err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	if err := RequireRAMBacked(dir); err != nil {
+	if err := ramBacked(dir); err != nil {
 		t.Skipf("/dev/shm is not usable tmpfs: %v", err)
 	}
 	return dir

@@ -125,7 +125,7 @@ func TestGuestVolumeRefusesUnverifiedRoot(t *testing.T) {
 	if err := requireGuestRoot(root); err == nil {
 		t.Fatal("a user-owned disk directory was accepted as a guest volume")
 	}
-	if binding, err := GuestIssuerBinding(root); err == nil || binding != "" {
+	if binding, err := guestIssuerBinding(root); err == nil || binding != "" {
 		t.Fatalf("unverified volume yielded a binding: %q, %v", binding, err)
 	}
 	creds := &credentials{volume: guestRootVolume(root), instanceID: testInstanceID}
@@ -155,8 +155,8 @@ func TestGuestVolumeRefusesUserOwnedTmpfs(t *testing.T) {
 	if err := requireGuestRoot(root); err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("requireGuestRoot = %v, want %q", err, want)
 	}
-	if _, err := GuestIssuerBinding(root); err == nil || !strings.Contains(err.Error(), want) {
-		t.Fatalf("GuestIssuerBinding = %v, want %q", err, want)
+	if _, err := guestIssuerBinding(root); err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("guestIssuerBinding = %v, want %q", err, want)
 	}
 }
 
@@ -187,7 +187,7 @@ func systemGuestRoot(t *testing.T) *os.Root {
 // nothing, and stops cleanly on cancellation.
 func TestRunGuestRetriesWithoutEvidenceUntilCancelled(t *testing.T) {
 	root := systemGuestRoot(t)
-	if binding, err := GuestIssuerBinding(root); err != nil || binding != "" {
+	if binding, err := guestIssuerBinding(root); err != nil || binding != "" {
 		t.Fatalf("never-issued volume binding = %q, %v", binding, err)
 	}
 	claims := guestTestClaims(t)
@@ -380,5 +380,50 @@ func TestGuestRenewalLoopFollowsChanges(t *testing.T) {
 	}
 	if n := len(attempts()); n != 1 {
 		t.Fatalf("a change during the retry backoff re-requested: %d attempts", n)
+	}
+}
+
+// In a guest, a pod change after a successful renewal renews again.
+func TestRenewLoopRenewsOnEachGuestPodChange(t *testing.T) {
+	attempts := stubObtainCert(t, newTestCA(t), func(int) (time.Duration, error) {
+		return time.Hour, nil
+	})
+	changes := make(chan struct{})
+	cfg := config{
+		RenewInterval:        time.Hour,
+		InitialRetryInterval: time.Hour,
+		guest:                &GuestConfig{Changes: changes},
+	}
+	startRenewLoop(t, cfg, "", &credentials{volume: testVolume(t), instanceID: testInstanceID})
+
+	changes <- struct{}{}
+	waitForAttempts(t, attempts, 1)
+	changes <- struct{}{}
+	waitForAttempts(t, attempts, 2)
+}
+
+// A closed guest change channel is not a pod change.
+func TestRenewLoopIgnoresClosedGuestChanges(t *testing.T) {
+	ca := newTestCA(t)
+	creds := publishedCredentials(t, ca, time.Hour)
+	named, err := issueNamedFor(ca, creds, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := creds.publish(named, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	attempts := stubObtainCertFailing(t)
+	changes := make(chan struct{})
+	close(changes)
+	cfg := config{
+		RenewInterval: time.Hour,
+		guest:         &GuestConfig{Changes: changes},
+	}
+	startRenewLoop(t, cfg, "", creds)
+
+	time.Sleep(100 * time.Millisecond)
+	if n := len(attempts()); n != 0 {
+		t.Fatalf("%d renewals after the change channel closed, want 0", n)
 	}
 }

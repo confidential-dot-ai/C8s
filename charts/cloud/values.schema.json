@@ -77,6 +77,13 @@
           ],
           "additionalProperties": false,
           "properties": {
+            "exemptRepositories": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "array",
+                "items": { "type": "string" }
+              }
+            },
             "exemptNamespaces": {
               "type": [
                 "array",
@@ -173,6 +180,10 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
+            "render": {
+              "type": "boolean",
+              "enum": [false]
+            },
             "annotations": {
               "type": "object",
               "additionalProperties": {
@@ -218,7 +229,7 @@
         "devices": {
           "type": "array",
           "uniqueItems": true,
-          "items": { "type": "string", "pattern": "^/dev/[a-z0-9-]+$" }
+          "items": { "type": "string", "pattern": "^/dev/[a-z0-9]([a-z0-9_-]{0,61}[a-z0-9])?$" }
         },
         "image": {}
       }

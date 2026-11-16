@@ -4,8 +4,9 @@ What to watch on a CDS that runs as several VMs, and which runbook answers it.
 [cds-ha.md](cds-ha.md) explains the behaviour.
 
 Two sources say the same things. Every replica reports itself over the
-attested channel, which `c8s cds ha status` reads and prints as one line per
-replica plus one line per alarm; and every replica logs what is wrong with it
+attested channel, which `c8s cds ha status` reads and prints as one row per
+replica, a line per alarm, and a last line on whether the replicas describe
+one cluster; and every replica logs what is wrong with it
 to its own journal at ERROR, prefixed `cds-ha:`, once for as long as the cause
 holds. The lines an operator must act on carry `ALARM:`. Alert on either
 source, and read the other to tell which replica is at fault.
@@ -17,32 +18,35 @@ replicas do not agree, which is the one check that needs no threshold:
 c8s cds ha status --config cds-config.yaml --cds-pin cds-pin.json || alert
 ```
 
-## The line of one replica
+## What one replica reports
+
+The default table shows the address, member id, role, vote, version and health
+of each replica. The fields below are its whole report, which `--json` prints:
 
 | Field | Normal | Alert on |
 |---|---|---|
-| `cluster` | the cluster id its launch file names | any other value: the replica serves another cluster |
-| `member` | the id this process minted at its start | a value that changes often: the VM is restarting |
-| `state` | `"Leader"` on one replica, `"Follower"` on the rest | no leader, or two leaders in one term |
+| `cluster_id` | the cluster id its launch file names | any other value: the replica serves another cluster |
+| `id` | the id this process minted at its start | a value that changes often: the VM is restarting |
+| `leader` | the same member id on every replica | no leader, or two leaders in one term |
 | `joined` | `true` | `false` for longer than a replica needs to join |
-| `serving` | `true` | `false`: the alarm line says what it waits for |
+| `serving.ok` | `true` | `false`: the replica's health says what it waits for |
 | `version` | the same on every replica | two replicas on different versions for longer than a write takes |
 | `node_images_version` | the version of the last node-image decree | a value you did not decree |
-| `ca` | the same on every replica | any difference: runbook 7, and no client trusts both |
-| `voters` | the seat count the cluster holds | fewer than the seats for longer than a replacement takes |
+| `ca_fingerprint` | the same on every replica | any difference: runbook 7, and no client trusts both |
+| `voters` | the seats the cluster holds | fewer than the seats for longer than a replacement takes |
 | `non_voters` | the replicas without a seat | a count that grows while `voters` stays short |
-| `applied` | rising on every replica | one replica that stops rising while the others move |
-| `roll_safe` | `true` on the leader between rolls | `false` while a roll is to go on: runbook 2 |
-| `checkpoint` | `<index>:<digest>`, equal across replicas at one index | different digests at the same index: runbook 9 |
+| `applied_index` | rising on every replica | one replica that stops rising while the others move |
+| `roll_safe.ok` | `true` on the leader between rolls | `false` while a roll is to go on: runbook 2 |
+| `checkpoint` | the index and the state digest, equal across replicas at one index | different digests at the same index: runbook 9 |
 
-A replica that does not lead reports `voters`, `non_voters`, `roll_safe` and
-the divergence as `-`: only the leader knows them.
+Only the leader answers `roll_safe` and the divergence; every other replica
+omits them.
 
 ## Alarm lines
 
 | Alarm | What it means | What to do |
 |---|---|---|
-| `this replica does not serve its cluster: ...` | it holds no cluster, lost contact with its leader, is fenced, or stopped following the log | the reason names which; follow the matching row |
+| `does not serve: ...`, in the replica's health | it holds no cluster, lost contact with its leader, is fenced, or stopped following the log | the reason names which; follow the matching row |
 | `this replica stopped following the log: ...` | applying an entry failed here | one replica: it exits and rejoins. Every replica: runbook 8 |
 | `this replica is fenced: ...` | the cluster holds the doubt of a Recover | runbook 7 |
 | `a Recover decree names a member this cluster cannot account for` | an operator handed the cluster to a member that does not answer here | runbook 7: bring it back or dismiss the Recover |

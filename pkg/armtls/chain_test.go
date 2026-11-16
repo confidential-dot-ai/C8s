@@ -131,18 +131,18 @@ func TestVerifyChain(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := VerifyChain(tc.raw, tc.roots, tc.purpose, tc.now)
+			got, err := verifyPeerChain(tc.raw, tc.roots, tc.purpose, tc.now, "armtls: peer chain")
 			if tc.wantErr == "" {
 				if err != nil {
-					t.Fatalf("VerifyChain() error = %v, want the parsed leaf", err)
+					t.Fatalf("verifyPeerChain() error = %v, want the parsed leaf", err)
 				}
 				if got == nil {
-					t.Fatal("VerifyChain() = nil leaf, want the parsed leaf")
+					t.Fatal("verifyPeerChain() = nil leaf, want the parsed leaf")
 				}
 				return
 			}
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("VerifyChain() error = %v, want it to contain %q", err, tc.wantErr)
+				t.Fatalf("verifyPeerChain() error = %v, want it to contain %q", err, tc.wantErr)
 			}
 		})
 	}

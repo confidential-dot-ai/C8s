@@ -5,7 +5,9 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/containerd/nri/pkg/api"
 
@@ -436,13 +438,18 @@ func TestMeshGateRefusesSandboxesItCannotRecover(t *testing.T) {
 	}
 }
 
-// The one line an operator acts on: the pod has no identity until it is
-// deleted.
-const podWithoutIdentityMessage = "a pod running before this enforcer connected gets no identity; delete the pod to give it one"
+const (
+	podRemovedMessage         = "a pod running before this enforcer connected gets no identity; deleting it so a replacement can get one"
+	podWithoutIdentityMessage = "a pod running before this enforcer connected gets no identity; delete the pod to give it one"
+	podNotDeletedMessage      = "cannot delete a pod this enforcer refused; delete it to let a replacement get an identity"
+)
+
+const refusedPodUID = "6f1c2b9e-3a4d-4e5f-8a7b-9c0d1e2f3a4b"
 
 // loggedRecords captures what the plugin logs, so a test reads a line's
-// attributes by key.
+// attributes by key. A background delete logs through it too.
 type loggedRecords struct {
+	mu      sync.Mutex
 	records []slog.Record
 }
 
@@ -451,6 +458,8 @@ func (l *loggedRecords) WithAttrs([]slog.Attr) slog.Handler       { return l }
 func (l *loggedRecords) WithGroup(string) slog.Handler            { return l }
 
 func (l *loggedRecords) Handle(_ context.Context, record slog.Record) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	l.records = append(l.records, record)
 	return nil
 }
@@ -458,44 +467,71 @@ func (l *loggedRecords) Handle(_ context.Context, record slog.Record) error {
 // attrs reports the attributes of the last record carrying message, and
 // whether one was logged at all.
 func (l *loggedRecords) attrs(message string) (map[string]string, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	attrs, logged := map[string]string{}, false
 	for _, record := range l.records {
 		if record.Message != message {
 			continue
 		}
 		logged = true
-		record.Attrs(func(attr slog.Attr) bool {
-			attrs[attr.Key] = attr.Value.String()
-			return true
-		})
+		attrs = recordAttrs(record)
 	}
 	return attrs, logged
 }
 
+func recordAttrs(record slog.Record) map[string]string {
+	attrs := map[string]string{}
+	record.Attrs(func(attr slog.Attr) bool {
+		attrs[attr.Key] = attr.Value.String()
+		return true
+	})
+	return attrs
+}
+
 // prePluginPlugin is a ready enforcer whose containerd records every kill, for
 // the sandboxes that were running before it connected.
-func prePluginPlugin() (*plugin, *loggedRecords, *[]string) {
-	p, _ := newCachedPlugin(&config{Policy: enforcing},
+func prePluginPlugin() (p *plugin, logs *loggedRecords, killed *[]string, deleted chan *api.PodSandbox) {
+	p, _ = newCachedPlugin(&config{Policy: enforcing},
 		anyAllowlist(map[string]string{pushDigestA: "image-a"}))
-	logs := &loggedRecords{}
+	logs = &loggedRecords{}
 	p.logger = slog.New(logs)
-	killed := &[]string{}
+	killed = &[]string{}
 	p.containerd = &fakeContainerd{stop: func(_ context.Context, id string) error {
 		*killed = append(*killed, id)
 		return nil
 	}}
+	deleted = make(chan *api.PodSandbox, 2)
+	p.deletePod = func(_ context.Context, pod *api.PodSandbox) error {
+		deleted <- pod
+		return nil
+	}
 	p.SetReady()
-	return p, logs, killed
+	return p, logs, killed, deleted
 }
 
-// assertPodWithoutIdentity fails unless the plugin named this pod as one an
-// operator must delete.
-func assertPodWithoutIdentity(t *testing.T, logs *loggedRecords, pod *api.PodSandbox) {
+// assertPodRemoved fails unless the plugin named this pod and deleted it.
+func assertPodRemoved(t *testing.T, logs *loggedRecords, deleted chan *api.PodSandbox, pod *api.PodSandbox) {
 	t.Helper()
-	attrs, logged := logs.attrs(podWithoutIdentityMessage)
-	if !logged {
-		t.Fatalf("the plugin named no pod to delete: %+v", logs.records)
+	select {
+	case gone := <-deleted:
+		if gone.GetNamespace() != pod.GetNamespace() || gone.GetName() != pod.GetName() || gone.GetUid() != pod.GetUid() {
+			t.Errorf("deleted %s/%s uid %s, want %s/%s uid %s",
+				gone.GetNamespace(), gone.GetName(), gone.GetUid(),
+				pod.GetNamespace(), pod.GetName(), pod.GetUid())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the plugin deleted no pod")
 	}
+	attrs, logged := logs.attrs(podRemovedMessage)
+	if !logged {
+		t.Fatalf("the plugin named no pod it deletes: %+v", logs.records)
+	}
+	assertNamesPod(t, attrs, pod)
+}
+
+func assertNamesPod(t *testing.T, attrs map[string]string, pod *api.PodSandbox) {
+	t.Helper()
 	for key, want := range map[string]string{
 		"namespace": pod.GetNamespace(),
 		"pod":       pod.GetName(),
@@ -511,8 +547,8 @@ func assertPodWithoutIdentity(t *testing.T, logs *loggedRecords, pod *api.PodSan
 // no identity: its UID is refused for this enforcer's life.
 func TestProtectRefusesANewSandboxOfARefusedPod(t *testing.T) {
 	refused := meshPod("default", "pod", testNetNS)
-	refused.Uid = "6f1c2b9e-3a4d-4e5f-8a7b-9c0d1e2f3a4b"
-	p, logs, _ := prePluginPlugin()
+	refused.Uid = refusedPodUID
+	p, logs, _, deleted := prePluginPlugin()
 	if _, err := p.Synchronize(context.Background(), []*api.PodSandbox{refused}, nil); err != nil {
 		t.Fatalf("Synchronize: %v", err)
 	}
@@ -528,7 +564,31 @@ func TestProtectRefusesANewSandboxOfARefusedPod(t *testing.T) {
 	if state == nil || !errors.Is(state.refusal, errRecoveryRefusedPod) {
 		t.Fatalf("the replacement sandbox is protected: %+v", state)
 	}
-	assertPodWithoutIdentity(t, logs, replacement)
+	assertPodRemoved(t, logs, deleted, replacement)
+}
+
+// The pod that replaces a refused one is a UID of its own, so the enforcer
+// decides it on its merits.
+func TestAReplacementOfARefusedPodIsDecidedOnItsOwn(t *testing.T) {
+	refused := meshPod("default", "pod", testNetNS)
+	refused.Uid = refusedPodUID
+	p, logs, _, deleted := prePluginPlugin()
+	if _, err := p.Synchronize(context.Background(), []*api.PodSandbox{refused}, nil); err != nil {
+		t.Fatalf("Synchronize: %v", err)
+	}
+	assertPodRemoved(t, logs, deleted, refused)
+
+	replacement := meshPod("default", "pod", testNetNS)
+	replacement.Uid = "2b7d8c15-9e0a-4f36-b1c4-5d8e7a0f2c3b"
+	replacement.Id = refused.GetId() + "-replacement"
+	if err := p.RunPodSandbox(context.Background(), replacement); err != nil {
+		t.Fatalf("RunPodSandbox: %v", err)
+	}
+
+	state := p.mesh.pods[replacement.GetId()]
+	if state == nil || errors.Is(state.refusal, errRecoveryRefusedPod) {
+		t.Fatalf("the replacement pod is refused for the earlier pod's life: %+v", state)
+	}
 }
 
 // A recovered sandbox's containers pass the per-container create checks and

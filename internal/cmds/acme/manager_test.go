@@ -520,7 +520,7 @@ func TestIssueWaitsForFrontDoor(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := mgr.issue(ctx); err != nil {
+	if err := mgr.issueDomains(ctx, mgr.domains); err != nil {
 		t.Fatalf("issue: %v", err)
 	}
 }

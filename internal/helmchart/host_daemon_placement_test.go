@@ -23,12 +23,12 @@ func TestChartHostDaemonsExcludeVirtualNodes(t *testing.T) {
 	}{
 		{
 			name: "defaults with provider disabled",
-			want: []string{"c8s-attestation-api", "c8s-nri-image-policy-uninstall", "c8s-nri-image-policy-worker"},
+			want: []string{"c8s-attestation-api", "c8s-nri-image-policy-worker"},
 		},
 		{
 			name: "all host daemons and provider enabled",
 			args: []string{"--set", "volumed.enabled=true", "--set", "operator.podCVMProvider.enabled=true", "--set", "operator.podCVMProvider.existingSecret=provider-config"},
-			want: []string{"c8s-attestation-api", "c8s-nri-image-policy-uninstall", "c8s-nri-image-policy-worker", "c8s-volumed", "c8s-volumed-teardown"},
+			want: []string{"c8s-attestation-api", "c8s-nri-image-policy-worker", "c8s-volumed"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -51,7 +51,7 @@ func TestChartHostDaemonsExcludeVirtualNodes(t *testing.T) {
 			})
 			slices.Sort(names)
 			if !slices.Equal(names, tc.want) {
-				t.Fatalf("rendered DaemonSets = %v, want %v (including uninstall hooks)", names, tc.want)
+				t.Fatalf("rendered DaemonSets = %v, want %v", names, tc.want)
 			}
 		})
 	}

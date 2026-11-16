@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"path"
@@ -17,6 +16,7 @@ import (
 	"github.com/containerd/nri/pkg/api"
 
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
+	"github.com/confidential-dot-ai/c8s/internal/readutil"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/secretbroker"
 )
@@ -227,9 +227,9 @@ func requestPodSecret(ctx context.Context, client *http.Client, cdsURL, name str
 		return nil, err
 	}
 	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 2*secretbroker.MaxValue+4096))
+	raw, err := readutil.ReadAll(resp.Body, 2*secretbroker.MaxValue+4096)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read Pod secret response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("CDS answered %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))

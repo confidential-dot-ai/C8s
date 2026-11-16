@@ -9,10 +9,8 @@ import (
 	"log"
 	"log/slog"
 	"net/http"
-	"os/signal"
 	"regexp"
 	"strings"
-	"syscall"
 	"time"
 
 	"golang.org/x/time/rate"
@@ -37,15 +35,12 @@ import (
 // mesh CA certificate.
 const caRenewalCheckInterval = 15 * time.Minute
 
-func run(cfg config) error {
+func run(ctx context.Context, cfg config) error {
 	logger, err := certutil.NewJSONLogger(cfg.logLevel)
 	if err != nil {
 		return fmt.Errorf("--log-level: %w", err)
 	}
 	slog.SetDefault(logger)
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 
 	if err := validateConfig(cfg); err != nil {
 		return err

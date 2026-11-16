@@ -9,6 +9,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+
+	"github.com/confidential-dot-ai/c8s/internal/cmds/volume"
 )
 
 // A pod that declares its own mount of the secrets volume with readOnly
@@ -116,6 +118,48 @@ func TestReservedVolumeNamesCoversSidecarMounts(t *testing.T) {
 	// A non-c8s init container's mounts are the pod's own business.
 	if reserved["user-scratch"] {
 		t.Error("a user init container's volume was reserved")
+	}
+}
+
+// A hostPath here would write the pod's private key to host-visible storage,
+// outside the TEE boundary.
+func TestReservedCertVolumeMustBeMemoryBacked(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		source corev1.VolumeSource
+		wantOK bool
+	}{
+		{"memory emptyDir", corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{Medium: corev1.StorageMediumMemory}}, true},
+		{"hostPath", corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: "/var/lib/exfil"}}, false},
+		{"disk emptyDir", corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}, false},
+		{"pvc", corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: "c"}}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pod := podWithApp()
+			pod.Spec.Volumes = []corev1.Volume{{Name: CertVolumeName, VolumeSource: tc.source}}
+			err := rejectReservedVolumeShapes(pod)
+			if tc.wantOK && err != nil {
+				t.Fatalf("rejected a valid volume: %v", err)
+			}
+			if !tc.wantOK && err == nil {
+				t.Fatal("accepted a volume that would leave the TEE boundary")
+			}
+		})
+	}
+}
+
+// The credential volume is judged before the opened volumes, whatever order the
+// pod declares them in.
+func TestReservedVolumeRefusalNamesTheCredentialVolumeFirst(t *testing.T) {
+	pod := podWithApp()
+	pod.Spec.Volumes = []corev1.Volume{
+		{Name: volume.KubeVolumeName("weights"), HostPath: &corev1.HostPathVolumeSource{Path: "/tmp/exfil"}},
+		{Name: CertVolumeName, HostPath: &corev1.HostPathVolumeSource{Path: "/tmp/exfil"}},
+	}
+
+	err := rejectReservedVolumeShapes(pod)
+	if err == nil || !strings.Contains(err.Error(), CertVolumeName) {
+		t.Fatalf("error = %v, want the credential volume refused first", err)
 	}
 }
 

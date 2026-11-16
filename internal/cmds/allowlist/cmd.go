@@ -18,6 +18,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cdsconn"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
@@ -80,6 +81,11 @@ allowlist").`,
 	cdsconn.BindFlags(pf, &o.Options)
 	pf.StringVarP(&o.output, "output", "o", "text", "output format: text or json")
 
+	derive, lint, inspectImage := newDeriveCmd(o), newLintCmd(o), newInspectImageCmd(o)
+	cmdsutil.HideUnreadFlags(derive, pf)
+	cmdsutil.HideUnreadFlags(lint, pf)
+	cmdsutil.HideUnreadFlags(inspectImage, pf, "output")
+
 	cmd.AddCommand(
 		newListCmd(o),
 		newGetCmd(o),
@@ -87,12 +93,12 @@ allowlist").`,
 		newDiffCmd(o),
 		newAddCmd(o),
 		newApplyCmd(o),
-		newDeriveCmd(o),
+		derive,
 		newEditCmd(o),
 		newDeleteCmd(o),
 		newUploadCmd(o),
-		newLintCmd(o),
-		newInspectImageCmd(o),
+		lint,
+		inspectImage,
 	)
 	return cmd
 }

@@ -3,9 +3,12 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -15,6 +18,7 @@ import (
 	"gopkg.in/yaml.v3"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/confidential-dot-ai/c8s/internal/crane"
 	"github.com/confidential-dot-ai/c8s/internal/version"
@@ -55,7 +59,7 @@ func treeAt(t *testing.T, tree map[string]any, path ...string) any {
 // would emit and returns its path.
 func podListFile(t *testing.T, pods ...corev1.Pod) string {
 	t.Helper()
-	data, err := json.Marshal(corev1.PodList{Items: pods})
+	data, err := json.Marshal(corev1.PodList{Items: append(pods, providerPlatformPod())})
 	if err != nil {
 		t.Fatalf("marshal pod list: %v", err)
 	}
@@ -65,6 +69,29 @@ func podListFile(t *testing.T, pods ...corev1.Pod) string {
 	}
 	return path
 }
+
+// The kube-system DaemonSet pod a hosted lane's confidential node runs.
+func providerPlatformPod() corev1.Pod {
+	return corev1.Pod{
+		Namespace:       "kube-system",
+		Name:            "kube-proxy-node-a",
+		OwnerReferences: []metav1.OwnerReference{{Kind: "DaemonSet", Name: "kube-proxy"}},
+		Spec: corev1.PodSpec{
+			NodeName:   "node-a",
+			Containers: []corev1.Container{{Name: "kube-proxy", Image: kubeProxyImage}},
+		},
+		Status: corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{{
+			Name:    "kube-proxy",
+			Image:   kubeProxyImage,
+			ImageID: "mcr.microsoft.com/oss/kubernetes/kube-proxy@" + kubeProxyDigest,
+		}}},
+	}
+}
+
+const (
+	kubeProxyImage  = "mcr.microsoft.com/oss/kubernetes/kube-proxy:v1.31.0"
+	kubeProxyDigest = "sha256:9999999999999999999999999999999999999999999999999999999999999999"
+)
 
 func hostPortPod(ns, name, node string, port int32) corev1.Pod {
 	return corev1.Pod{
@@ -193,23 +220,27 @@ func TestCraneDigestShellsOut(t *testing.T) {
 func TestEffectiveValuesExec(t *testing.T) {
 	values := "attestationApi:\n  enabled: true\n"
 
-	t.Run("set override beats the chart default", func(t *testing.T) {
+	t.Run("the computed values beat the chart default", func(t *testing.T) {
 		f := newFakeBin(t)
 		f.tool(t, "helm", helmShowValuesBody)
-		tree, err := effectiveValues(context.Background(), writeChart(t, values), nil,
-			[]string{"--set", "attestationApi.enabled=false"})
+		computed := computedValuesFile(t, map[string]any{
+			"attestationApi": map[string]any{
+				"enabled": false,
+			},
+		})
+		tree, err := effectiveValues(context.Background(), writeChart(t, values), []string{computed})
 		if err != nil {
 			t.Fatalf("effectiveValues: %v", err)
 		}
 		if boolAtPath(tree, "attestationApi.enabled") {
-			t.Error("override to false must win over the chart default true")
+			t.Error("the computed false must win over the chart default true")
 		}
 	})
 
 	t.Run("chart default stands without overrides", func(t *testing.T) {
 		f := newFakeBin(t)
 		f.tool(t, "helm", helmShowValuesBody)
-		tree, err := effectiveValues(context.Background(), writeChart(t, values), nil, nil)
+		tree, err := effectiveValues(context.Background(), writeChart(t, values), nil)
 		if err != nil {
 			t.Fatalf("effectiveValues: %v", err)
 		}
@@ -221,18 +252,8 @@ func TestEffectiveValuesExec(t *testing.T) {
 	t.Run("helm failure surfaces", func(t *testing.T) {
 		f := newFakeBin(t)
 		f.tool(t, "helm", "exit 1")
-		if _, err := effectiveValues(context.Background(), writeChart(t, values), nil, nil); err == nil {
+		if _, err := effectiveValues(context.Background(), writeChart(t, values), nil); err == nil {
 			t.Fatal("want error when helm fails")
-		}
-	})
-
-	t.Run("overlay conflict surfaces", func(t *testing.T) {
-		f := newFakeBin(t)
-		f.tool(t, "helm", helmShowValuesBody)
-		_, err := effectiveValues(context.Background(), writeChart(t, values), nil,
-			[]string{"--set", "attestationApi=x", "--set", "attestationApi.enabled=false"})
-		if err == nil {
-			t.Fatal("want error for a scalar/map overlay conflict")
 		}
 	})
 }
@@ -246,7 +267,14 @@ func TestEffectiveValuesReplacesLists(t *testing.T) {
 		t.Fatal(err)
 	}
 	resetCLIState(t)
-	tree, err := effectiveValues(context.Background(), writeChart(t, "{}\n"), []string{values}, []string{"--set-string", "w.containers[0].digest=b"})
+	computed := computedValuesFile(t, map[string]any{
+		"w": map[string]any{
+			"containers": []any{
+				map[string]any{"digest": "b"},
+			},
+		},
+	})
+	tree, err := effectiveValues(context.Background(), writeChart(t, "{}\n"), []string{values, computed})
 	if err != nil {
 		t.Fatalf("effectiveValues: %v", err)
 	}
@@ -394,30 +422,45 @@ func TestAppendResolvedWorkloadImageArgsExec(t *testing.T) {
 	t.Run("resolves and pins the allowlist entry", func(t *testing.T) {
 		f := newFakeBin(t)
 		f.tool(t, "crane", fakeCrane(testDigest))
-		got, _, err := appendResolvedWorkloadImageArgs(context.Background(), nil, []adoptedWorkload{{
+		written, err := resolvedWorkloadImageValues(context.Background(), []adoptedWorkload{{
 			workloadAdoption: workloadAdoption{cwID: "infer", ref: workloadRef{kind: "deployment", name: "vllm", namespace: "ws"}},
 			template:         templateRunning("ghcr.io/acme/vllm:v1"),
 		}}, "")
+		got := written.values
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		p := "nriImagePolicy.bootstrapAllowlist.workloads.infer."
-		assertArgsEqual(t, got, []string{
-			"--set-string", p + "label=ws/deployment/vllm",
-			"--set-string", p + "containers[0].digest=" + testDigest,
-			"--set-string", p + "containers[0].image=ghcr.io/acme/vllm@" + testDigest,
-			"--set-string", p + "containers[0].command.policy=any",
-			"--set-string", p + "containers[0].args.policy=any",
-			"--set-string", p + "containers[0].env.policy=any",
-			"--set-string", p + "containers[0].mounts.policy=deny",
-		})
+		want := map[string]any{
+			"nriImagePolicy": map[string]any{
+				"bootstrapAllowlist": map[string]any{
+					"workloads": map[string]any{
+						"infer": map[string]any{
+							"label": "ws/deployment/vllm",
+							"containers": []any{
+								map[string]any{
+									"digest":  testDigest,
+									"image":   "ghcr.io/acme/vllm@" + testDigest,
+									"command": map[string]any{"policy": "any"},
+									"args":    map[string]any{"policy": "any"},
+									"env":     map[string]any{"policy": "any"},
+									"mounts":  map[string]any{"policy": "deny"},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("resolvedWorkloadImageValues() = %#v, want %#v", got, want)
+		}
 		mustContainLine(t, f.calls(t), "crane digest ghcr.io/acme/vllm:v1")
 	})
 
 	t.Run("resolver failure aborts", func(t *testing.T) {
 		f := newFakeBin(t)
 		f.tool(t, "crane", "exit 1")
-		if _, _, err := appendResolvedWorkloadImageArgs(context.Background(), nil, []adoptedWorkload{{template: templateRunning("ghcr.io/acme/vllm:v1")}}, ""); err == nil {
+		if _, err := resolvedWorkloadImageValues(context.Background(), []adoptedWorkload{{template: templateRunning("ghcr.io/acme/vllm:v1")}}, ""); err == nil {
 			t.Fatal("want error when crane fails")
 		}
 	})
@@ -521,12 +564,14 @@ func releaseImage(name, digest string) string {
 // carries the confidential-node labels, one pod answering inside the range
 // that node publishes, and namespace applies captured.
 // extra case arms are matched first, so scenarios override single answers.
-func clusterKubectl(applied, extra string) string {
+func clusterKubectl(t *testing.T, applied, extra string) string {
+	t.Helper()
 	return `case "$*" in
 ` + extra + `"get nodes -l "*kubeletVersion*) /usr/bin/printf 'node-a\tv1.31.0\n' ;;
+"get nodes -l "*containerRuntimeVersion*) /usr/bin/printf 'node-a\tcontainerd://2.3.4\n' ;;
 "get nodes -l "*'{.metadata.name}{"\n"}'*) /usr/bin/printf 'node-a\n' ;;
 "get nodes -o json") echo '{"items":[{"metadata":{"name":"node-a"},"spec":{"podCIDR":"10.42.0.0/24"},"status":{"addresses":[{"type":"InternalIP","address":"192.0.2.10"}]}}]}' ;;
-"get pods --all-namespaces -o json") echo '{"items":[{"metadata":{"name":"app","namespace":"ws"},"status":{"podIPs":[{"ip":"10.42.0.5"}]}}]}' ;;
+"get pods --all-namespaces -o json") /bin/cat '` + podListFile(t, podInNodeRange()) + `' ;;
 "version -o json") echo '{"serverVersion":{"gitVersion":"v1.31.0"}}' ;;
 "apply -f -") /bin/cat >> '` + applied + `' ;;
 esac`
@@ -537,7 +582,7 @@ esac`
 // held to the same shape as --cds-pin.
 func pipedCDS(t *testing.T) string {
 	t.Helper()
-	return "cds:\n  address: 10.9.9.9:8443\n  measurementsConfig: |\n    " +
+	return "cds:\n  address: " + installCDSAddressUnreachable + "\n  measurementsConfig: |\n    " +
 		string(cdsPinDocument(t, []string{installSeedEntryName}, "192.0.2.0/24")) + "\n"
 }
 
@@ -546,7 +591,7 @@ func pipedCDS(t *testing.T) string {
 func runInstall(t *testing.T, args ...string) error {
 	t.Helper()
 	pin := cdsPinFile(t, []string{installSeedEntryName}, "192.0.2.0/24")
-	return runC8s(t, append([]string{"install", flagArg(flagCDSAddress), "10.9.9.9:8443", flagArg(flagCDSPin), pin}, args...)...)
+	return runC8s(t, append([]string{"install", flagArg(flagCDSAddress), installCDSAddressUnreachable, flagArg(flagCDSPin), pin}, args...)...)
 }
 
 func TestInstallHappyPath(t *testing.T) {
@@ -554,7 +599,7 @@ func TestInstallHappyPath(t *testing.T) {
 	var err error
 	stderr := captureStderr(t, func() {
 		s = newInstallStubs(t, "", false)
-		s.f.tool(t, "kubectl", clusterKubectl(s.applied, ""))
+		s.f.tool(t, "kubectl", clusterKubectl(t, s.applied, ""))
 		err = runInstall(t, "--platform=aks-snp", "--wait=false", "--force")
 	})
 	if err != nil {
@@ -607,8 +652,10 @@ func TestInstallHappyPath(t *testing.T) {
 			t.Errorf("%v.repository = %#v, want the bundled chart's", image, got)
 		}
 	}
-	if _, ok := nestedMap(tree, "nriImagePolicy", "policy"); ok {
-		t.Errorf("computed values carry the release chart's nriImagePolicy.policy: %v", tree["nriImagePolicy"])
+	// Nothing an install reads from the cluster reaches the policy the nodes
+	// boot on, so the entry a release's seed names is the one it needs served.
+	if policy, ok := nestedMap(tree, "nriImagePolicy", "policy"); ok {
+		t.Errorf("computed nriImagePolicy.policy = %v, want no computed policy", policy)
 	}
 	if boolAtPath(tree, "volumed.enabled") {
 		t.Error("computed values carry the release chart's volumed.enabled")
@@ -633,7 +680,7 @@ func TestInstallHappyPath(t *testing.T) {
 // it.
 func TestInstallVolumesEnablesTheNodeAgent(t *testing.T) {
 	s := newInstallStubs(t, "", false)
-	s.f.tool(t, "kubectl", clusterKubectl(s.applied, ""))
+	s.f.tool(t, "kubectl", clusterKubectl(t, s.applied, ""))
 	if err := runInstall(t, "--platform=aks-snp", "--wait=false", "--force", "--volumes"); err != nil {
 		t.Fatalf("install: %v", err)
 	}
@@ -650,7 +697,7 @@ func TestInstallVolumesEnablesTheNodeAgent(t *testing.T) {
 func TestInstallAbortsOnRouterHostPortConflict(t *testing.T) {
 	pods := podListFile(t, hostPortPod("kube-system", "ingress-a", "node-a", 443))
 	s := newInstallStubs(t, "", false)
-	s.f.tool(t, "kubectl", clusterKubectl(s.applied, `*metadata.name*) echo node-a ;;
+	s.f.tool(t, "kubectl", clusterKubectl(t, s.applied, `*metadata.name*) echo node-a ;;
 "get pods --all-namespaces -o json") /bin/cat '`+pods+`' ;;
 `))
 	err := runInstall(t, "--platform=aks-snp", "--wait=false", "--force")
@@ -660,14 +707,29 @@ func TestInstallAbortsOnRouterHostPortConflict(t *testing.T) {
 	mustNotContainPrefix(t, s.f.calls(t), "helm upgrade")
 }
 
+// A node whose containerd predates the NRI container user is refused before
+// helm runs: the admission plugin would read every container as uid 0 and
+// refuse the router and every confidential pod.
+func TestInstallRefusesContainerdWithoutTheContainerUser(t *testing.T) {
+	s := newInstallStubs(t, "", false)
+	s.f.tool(t, "kubectl", clusterKubectl(t, s.applied, `*containerRuntimeVersion*) /usr/bin/printf 'node-a\tcontainerd://2.2.7\n' ;;
+`))
+	err := runInstall(t, "--platform=aks-snp", "--wait=false")
+	want := "containerd " + containerdNRIUserVersion.String() + " or later"
+	if err == nil || !strings.Contains(err.Error(), "node-a (containerd://2.2.7)") || !strings.Contains(err.Error(), want) {
+		t.Fatalf("want the container-user refusal naming the node and the version, got %v", err)
+	}
+	mustNotContainPrefix(t, s.f.calls(t), "helm upgrade")
+}
+
 // A node running a Kubernetes distribution's own containerd is refused: the
 // installer would write a config file that containerd never reads, leaving the
 // node's pods admitted by nothing.
 func TestInstallRefusesABundledContainerdNode(t *testing.T) {
 	s := newInstallStubs(t, "", false)
-	s.f.tool(t, "kubectl", clusterKubectl(s.applied, `*kubeletVersion*) /usr/bin/printf 'node-a\tv1.29.5+rke2r1\n' ;;
+	s.f.tool(t, "kubectl", clusterKubectl(t, s.applied, `*kubeletVersion*) /usr/bin/printf 'node-a\tv1.29.5+rke2r1\n' ;;
 `))
-	err := runInstall(t, "--platform=gke-snp", "--wait=false")
+	err := runInstall(t, "--platform=aks-snp", "--wait=false")
 	if err == nil || !strings.Contains(err.Error(), "node-a") || !strings.Contains(err.Error(), "upstream containerd") {
 		t.Fatalf("want the bundled-containerd refusal naming the node, got %v", err)
 	}
@@ -677,7 +739,7 @@ func TestInstallRefusesABundledContainerdNode(t *testing.T) {
 func TestInstallAdoptsWorkloadAfterHelm(t *testing.T) {
 	deploy := deploymentFile(t, "ghcr.io/acme/vllm@"+testDigest)
 	s := newInstallStubs(t, "", false)
-	s.f.tool(t, "kubectl", clusterKubectl(s.applied, `"get deployment vllm -n ws -o json") /bin/cat '`+deploy+`' ;;
+	s.f.tool(t, "kubectl", clusterKubectl(t, s.applied, `"get deployment vllm -n ws -o json") /bin/cat '`+deploy+`' ;;
 `))
 	routesOut := filepath.Join(t.TempDir(), "routes.json")
 	err := runInstall(t, "--platform=aks-snp", "--force",
@@ -736,7 +798,7 @@ func TestInstallRefusesRouteFlagsWithoutUpstream(t *testing.T) {
 		{[]string{"--routes-max-age", "1h"}, "--routes-max-age applies"},
 	} {
 		s := newInstallStubs(t, "", false)
-		s.f.tool(t, "kubectl", clusterKubectl(s.applied, ""))
+		s.f.tool(t, "kubectl", clusterKubectl(t, s.applied, ""))
 		err := runC8s(t, append([]string{"install", "--platform=aks-snp", "--force"}, tc.args...)...)
 		if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 			t.Errorf("install %v = %v, want an error containing %q", tc.args, err, tc.wantErr)
@@ -747,7 +809,7 @@ func TestInstallRefusesRouteFlagsWithoutUpstream(t *testing.T) {
 
 func TestInstallHelmUpgradeFailureSurfaces(t *testing.T) {
 	s := newInstallStubs(t, "", true)
-	s.f.tool(t, "kubectl", clusterKubectl(s.applied, ""))
+	s.f.tool(t, "kubectl", clusterKubectl(t, s.applied, ""))
 	err := runInstall(t, "--platform=aks-snp", "--wait=false", "--force")
 	if err == nil || !strings.Contains(err.Error(), "helm install failed") {
 		t.Fatalf("want the helm failure surfaced, got %v", err)
@@ -756,7 +818,7 @@ func TestInstallHelmUpgradeFailureSurfaces(t *testing.T) {
 
 func TestInstallNamespaceApplyFailureSurfaces(t *testing.T) {
 	s := newInstallStubs(t, "", false)
-	s.f.tool(t, "kubectl", clusterKubectl("", `"apply -f -") exit 1 ;;
+	s.f.tool(t, "kubectl", clusterKubectl(t, "", `"apply -f -") exit 1 ;;
 `))
 	err := runInstall(t, "--platform=aks-snp", "--wait=false", "--force")
 	if err == nil || !strings.Contains(err.Error(), "kubectl apply namespace") {
@@ -818,7 +880,7 @@ func TestInstallValuesFromStdin(t *testing.T) {
 	payload := "volumed:\n  enabled: true\n" + pipedCDS(t)
 
 	s := newInstallStubs(t, "", false)
-	s.f.tool(t, "kubectl", clusterKubectl(s.applied, ""))
+	s.f.tool(t, "kubectl", clusterKubectl(t, s.applied, ""))
 	capture := filepath.Join(s.f.dir, "values-stream.log")
 	helmValuesCapture(t, s, capture)
 
@@ -903,7 +965,7 @@ func TestEffectiveValuesErrorPaths(t *testing.T) {
 	t.Run("unparseable chart values", func(t *testing.T) {
 		f := newFakeBin(t)
 		f.tool(t, "helm", helmShowValuesBody)
-		if _, err := effectiveValues(context.Background(), writeChart(t, "	"), nil, nil); err == nil {
+		if _, err := effectiveValues(context.Background(), writeChart(t, "	"), nil); err == nil {
 			t.Fatal("want the chart-values parse error")
 		}
 	})
@@ -912,7 +974,7 @@ func TestEffectiveValuesErrorPaths(t *testing.T) {
 		f := newFakeBin(t)
 		f.tool(t, "helm", helmShowValuesBody)
 		missing := []string{filepath.Join(t.TempDir(), "missing.yaml")}
-		_, err := effectiveValues(context.Background(), writeChart(t, "a: 1\n"), missing, nil)
+		_, err := effectiveValues(context.Background(), writeChart(t, "a: 1\n"), missing)
 		if err == nil || !strings.Contains(err.Error(), "read values file") {
 			t.Fatalf("want the read error, got %v", err)
 		}
@@ -925,7 +987,7 @@ func TestEffectiveValuesErrorPaths(t *testing.T) {
 		if err := os.WriteFile(bad, []byte("\t"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		_, err := effectiveValues(context.Background(), writeChart(t, "a: 1\n"), []string{bad}, nil)
+		_, err := effectiveValues(context.Background(), writeChart(t, "a: 1\n"), []string{bad})
 		if err == nil || !strings.Contains(err.Error(), "parse values file") {
 			t.Fatalf("want the parse error, got %v", err)
 		}
@@ -937,7 +999,7 @@ func TestEffectiveValuesErrorPaths(t *testing.T) {
 func platformPodListKubectl(t *testing.T, applied string, pods ...corev1.Pod) string {
 	t.Helper()
 	podsFile := podListFile(t, append(pods, podInNodeRange())...)
-	return clusterKubectl(applied, `"get pods --all-namespaces -o json") /bin/cat '`+podsFile+`' ;;
+	return clusterKubectl(t, applied, `"get pods --all-namespaces -o json") /bin/cat '`+podsFile+`' ;;
 `)
 }
 
@@ -958,7 +1020,10 @@ func staticEtcdPod() corev1.Pod {
 		Namespace:   "kube-system",
 		Name:        "etcd-node-a",
 		Annotations: map[string]string{corev1.MirrorPodAnnotationKey: "mirror"},
-		Spec:        corev1.PodSpec{NodeName: "node-a"},
+		Spec: corev1.PodSpec{
+			NodeName:   "node-a",
+			Containers: []corev1.Container{{Name: "etcd", Image: "index.docker.io/rancher/hardened-etcd:v3.6.12-k3s1"}},
+		},
 		Status: corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{{
 			Name:    "etcd",
 			Image:   "index.docker.io/rancher/hardened-etcd:v3.6.12-k3s1",
@@ -1019,8 +1084,8 @@ func TestInstallForcePastPlatformPodDenial(t *testing.T) {
 	if err != nil {
 		t.Fatalf("--force must install anyway: %v", err)
 	}
-	if !strings.Contains(stderr, "1 platform image") {
-		t.Errorf("stderr missing the forced-past warning:\n%s", stderr)
+	if !strings.Contains(stderr, "2 platform images") {
+		t.Errorf("stderr missing the forced-past warning for the denied etcd and kube-proxy images:\n%s", stderr)
 	}
 	mustContainLine(t, s.f.calls(t), "kubectl apply -f -")
 }
@@ -1037,22 +1102,22 @@ func TestInstallAuditPolicySkipsPlatformPodCheck(t *testing.T) {
 	mustContainLine(t, s.f.calls(t), "kubectl apply -f -")
 }
 
-// The exempted digest set is what an operator has to review before the plugin
-// freezes it on every node, so a default install must print it.
+// The operator reviews the exemption before any node admits on it.
 func TestInstallReportsWhatTheExemptionAdmits(t *testing.T) {
 	var s *installStubs
 	var err error
 	stdout := captureStdout(t, func() {
 		s = newInstallStubs(t, "", false)
-		s.f.tool(t, "kubectl", platformPodListKubectl(t, s.applied, staticEtcdPod()))
+		s.f.tool(t, "kubectl", platformPodListKubectl(t, s.applied))
 		err = runInstall(t, "--platform=aks-snp", "--wait=false", "--force")
 	})
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}
 	for _, want := range []string{
-		"kube-system/etcd-node-a",
-		"docker.io/rancher/hardened-etcd@" + etcdDigest,
+		"mcr.microsoft.com/oss/kubernetes/",
+		"kube-system/kube-proxy-node-a",
+		"mcr.microsoft.com/oss/kubernetes/kube-proxy@" + kubeProxyDigest,
 		"nriImagePolicy.bootstrapAllowlist.workloads",
 	} {
 		if !strings.Contains(stdout, want) {
@@ -1060,10 +1125,130 @@ func TestInstallReportsWhatTheExemptionAdmits(t *testing.T) {
 		}
 	}
 	// It has to land before the plugin is installed, or reviewing it is moot.
-	if i, h := strings.Index(stdout, "kube-system/etcd-node-a"), lineIndex(s.f.calls(t), "helm upgrade "); i < 0 || h < 0 {
+	if i, h := strings.Index(stdout, "kube-system/kube-proxy-node-a"), lineIndex(s.f.calls(t), "helm upgrade "); i < 0 || h < 0 {
 		t.Fatalf("missing report (%d) or helm upgrade (%d)", i, h)
 	}
 	mustContainLine(t, s.f.calls(t), "kubectl apply -f -")
+}
+
+// A provider image pre-loaded in the node image reports a bare image ID, which
+// no digest set can hold, and installs without --force.
+func TestInstallAdmitsAPreloadedProviderImage(t *testing.T) {
+	const nodeLocal = "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+	preloaded := daemonSetPod("kube-system", "coredns-abc", "mcr.microsoft.com/oss/kubernetes/coredns:v1.11.3", nodeLocal)
+	preloaded.Spec.NodeName = "node-a"
+
+	s := newInstallStubs(t, "", false)
+	s.f.tool(t, "kubectl", platformPodListKubectl(t, s.applied, preloaded))
+	if err := runInstall(t, "--platform=aks-snp", "--wait=false"); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	mustContainLine(t, s.f.calls(t), "kubectl apply -f -")
+}
+
+func TestInstallGKEAdmitsRequestedRepositoryDespiteRuntimeAlias(t *testing.T) {
+	pod := daemonSetPod("kube-system", "gke-proxy", "us-artifactregistry.gcr.io/gke-release/gke-release/kube-proxy:v1", kubeProxyDigest)
+	pod.Spec.NodeName = "node-a"
+	pod.Status.ContainerStatuses[0].Image = "gke.gcr.io/kube-proxy:v1"
+	data, err := json.Marshal(corev1.PodList{Items: []corev1.Pod{pod, podInNodeRange()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	podsFile := filepath.Join(t.TempDir(), "pods.json")
+	if err := os.WriteFile(podsFile, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := newInstallStubs(t, "", false)
+	s.f.tool(t, "kubectl", clusterKubectl(t, s.applied, `"get pods --all-namespaces -o json") /bin/cat '`+podsFile+`' ;;
+`))
+	if err := runInstall(t, "--platform=gke-snp", "--wait=false"); err != nil {
+		t.Fatalf("install without --force: %v", err)
+	}
+	if lineIndex(s.f.calls(t), "helm upgrade ") < 0 {
+		t.Fatalf("install did not reach helm upgrade: %v", s.f.calls(t))
+	}
+}
+
+// An add-on no prefix covers is refused by name, with the value that admits it.
+func TestInstallRefusesAProviderImageUnderNoPrefix(t *testing.T) {
+	const digest = "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+	uncovered := daemonSetPod("kube-system", "fluentbit-a", "example.test/fluentbit:v1", "example.test/fluentbit@"+digest)
+	uncovered.Spec.NodeName = "node-a"
+
+	s := newInstallStubs(t, "", false)
+	s.f.tool(t, "kubectl", platformPodListKubectl(t, s.applied, uncovered))
+	err := runInstall(t, "--platform=aks-snp", "--wait=false")
+	if err == nil || !strings.Contains(err.Error(), "kube-system/fluentbit-a") || !strings.Contains(err.Error(), exemptRepositoriesPath) {
+		t.Fatalf("want the refusal naming the container and %s, got %v", exemptRepositoriesPath, err)
+	}
+	calls := s.f.calls(t)
+	mustNotContainPrefix(t, calls, "helm upgrade")
+	mustNotContainPrefix(t, calls, "kubectl apply")
+}
+
+// A pod of a node this install does not touch is not this policy's to admit.
+func TestInstallJudgesTheConfidentialNodesPodsAlone(t *testing.T) {
+	const elsewhereDigest = "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+	elsewhere := daemonSetPod("kube-system", "fluentbit-node-z",
+		"example.test/fluentbit:v1", "example.test/fluentbit@"+elsewhereDigest)
+	elsewhere.Spec.NodeName = "node-z"
+
+	s := newInstallStubs(t, "", false)
+	s.f.tool(t, "kubectl", platformPodListKubectl(t, s.applied, elsewhere))
+	if err := runInstall(t, "--platform=aks-snp", "--wait=false"); err != nil {
+		t.Fatalf("a denied pod on another node is not a refusal: %v", err)
+	}
+}
+
+// A denied container the cluster survives without — GKE's managed
+// kube-state-metrics, a StatefulSet no exemption names — is not a refusal, so
+// the install must say that registering the plugin stops it and goes on.
+func TestInstallReportsDeniedWorkloads(t *testing.T) {
+	const ksm = "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+	managed := statefulSetPod("gke-managed-cim", "kube-state-metrics-0", "gke.io/ksm:v2", "gke.io/ksm@"+ksm)
+	managed.Spec.NodeName = "node-a"
+
+	var s *installStubs
+	var err error
+	stdout := captureStdout(t, func() {
+		s = newInstallStubs(t, "", false)
+		s.f.tool(t, "kubectl", platformPodListKubectl(t, s.applied, managed))
+		err = runInstall(t, "--platform=aks-snp", "--wait=false")
+	})
+	if err != nil {
+		t.Fatalf("a denied provider add-on is not a refusal: %v", err)
+	}
+	for _, want := range []string{"gke-managed-cim/kube-state-metrics-0", "gke.io/ksm@" + ksm} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("install output does not report %q:\n%s", want, stdout)
+		}
+	}
+	mustContainLine(t, s.f.calls(t), "kubectl apply -f -")
+}
+
+// An install that stores no route manifest prints a front-door check whose
+// route digest the operator reads from CDS under the operator keys.
+func TestInstallHintReadsTheRouteDigestFromCDS(t *testing.T) {
+	var err error
+	stdout := captureStdout(t, func() {
+		s := newInstallStubs(t, "", false)
+		s.f.tool(t, "kubectl", clusterKubectl(t, s.applied, ""))
+		err = runInstall(t, "--platform=aks-snp", "--wait=false", "--force")
+	})
+	if err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	verifyArgs := hintCommandArgs(t, stdout, "c8s verify")
+	if i := slices.Index(verifyArgs, "--route-digest"); i < 0 || verifyArgs[i+1] != "<ROUTE_DIGEST>" {
+		t.Errorf("the front-door check names no route digest to fill in:\n%s", stdout)
+	}
+	digestArgs := hintCommandArgs(t, stdout, "c8s routes show")
+	if i := slices.Index(digestArgs, "--operator-keys"); i < 0 || digestArgs[i+1] != "<operator-pub.pem>" {
+		t.Errorf("the digest command names no operator keys to verify it under:\n%s", stdout)
+	}
+	if i := slices.Index(digestArgs, "--url"); i < 0 || digestArgs[i+1] != "https://"+installCDSAddressUnreachable {
+		t.Errorf("the digest command names another CDS than this install:\n%s", stdout)
+	}
 }
 
 // A release that exempts no namespace has nothing to report.
@@ -1078,7 +1263,7 @@ func TestInstallWithoutExemptionReportsNone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}
-	if strings.Contains(stdout, "admitted by captured digest") {
+	if strings.Contains(stdout, "admitted by digest") {
 		t.Errorf("an install exempting nothing reported an exemption:\n%s", stdout)
 	}
 }
@@ -1090,7 +1275,7 @@ const aksConfidentialNodeSelector = "kubernetes.azure.com/security-type=Confiden
 // A cluster whose nodes carry none of the confidential-node labels is refused.
 func TestInstallRefusesAClusterWithoutConfidentialNodes(t *testing.T) {
 	s := newInstallStubs(t, "", false)
-	s.f.tool(t, "kubectl", clusterKubectl(s.applied, `"get nodes -l "*'{.metadata.name}{"\n"}'*) ;;
+	s.f.tool(t, "kubectl", clusterKubectl(t, s.applied, `"get nodes -l "*'{.metadata.name}{"\n"}'*) ;;
 `))
 	err := runInstall(t, "--platform=aks-snp", "--wait=false", "--force")
 	if err == nil || !strings.Contains(err.Error(), aksConfidentialNodeSelector) {
@@ -1105,7 +1290,7 @@ func TestInstallRefusesAClusterWithoutConfidentialNodes(t *testing.T) {
 // every node: CDS dials the inventory address of any node a sandbox lands on.
 func TestInstallReadsNodesThroughTheConfidentialSelector(t *testing.T) {
 	s := newInstallStubs(t, "", false)
-	s.f.tool(t, "kubectl", clusterKubectl(s.applied, ""))
+	s.f.tool(t, "kubectl", clusterKubectl(t, s.applied, ""))
 	if err := runInstall(t, "--platform=aks-snp", "--wait=false", "--force"); err != nil {
 		t.Fatalf("install: %v", err)
 	}
@@ -1119,8 +1304,35 @@ func TestInstallReadsNodesThroughTheConfidentialSelector(t *testing.T) {
 		`kubectl get nodes -l ` + aksConfidentialNodeSelector + ` -o jsonpath={range .items[*]}{.metadata.name}{"\n"}{end}`,
 		`kubectl get nodes -o json`,
 		`kubectl get nodes -l ` + aksConfidentialNodeSelector + ` -o jsonpath={range .items[*]}{.metadata.name}{"\t"}{.status.nodeInfo.kubeletVersion}{"\n"}{end}`,
+		`kubectl get nodes -l ` + aksConfidentialNodeSelector + ` -o jsonpath={range .items[*]}{.metadata.name}{"\t"}{.status.nodeInfo.containerRuntimeVersion}{"\n"}{end}`,
 	}
 	if !slices.Equal(reads, want) {
 		t.Errorf("install read nodes as:\n%s\nwant:\n%s", strings.Join(reads, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// Cancelling a helm run interrupts helm rather than killing it, so helm's own
+// SIGINT handling runs.
+func TestInterruptOnCancelSendsSIGINT(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	helm := exec.CommandContext(ctx, "/bin/sh", "-c", `trap 'echo interrupted; exit 0' INT; echo ready; while :; do sleep 0.01; done`)
+	interruptOnCancel(helm)
+	stdout, err := helm.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := helm.Start(); err != nil {
+		t.Fatal(err)
+	}
+	output := bufio.NewReader(stdout)
+	if _, err := output.ReadString('\n'); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	rest, _ := io.ReadAll(output)
+	_ = helm.Wait() // reports the cancellation, whatever helm did with it
+	if !strings.Contains(string(rest), "interrupted") {
+		t.Fatalf("helm output after cancel = %q, want its SIGINT trap to run", rest)
 	}
 }

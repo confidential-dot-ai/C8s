@@ -12,7 +12,7 @@ Everyone: [overview.md](overview.md), then [guarantees.md](guarantees.md).
 
 - Platform operator: [operator.md](operator.md),
   [allowlist-and-capabilities.md](allowlist-and-capabilities.md),
-  [upgrade.md](upgrade.md).
+  [cloud-cds.md](cloud-cds.md), [upgrade.md](upgrade.md).
 - Workload owner: [DEMO.md](DEMO.md), [workloads.md](workloads.md),
   [allowlist-entries.md](allowlist-entries.md), [secrets.md](secrets.md),
   [volumes.md](volumes.md).
@@ -50,6 +50,7 @@ Everyone: [overview.md](overview.md), then [guarantees.md](guarantees.md).
 | [routes-evidence.md](routes-evidence.md) | explanation | Proving which routes the router serves |
 | **Operating a cluster** | | |
 | [operator.md](operator.md) | explanation | Running a cluster: install, the Certificate Distribution Service, the router |
+| [cloud-cds.md](cloud-cds.md) | how-to | Where a cloud cluster's CDS runs, the flows it needs, node pins on AKS and GKE |
 | [launch-configuration.md](launch-configuration.md) | reference | The launch document a measured worker boots with |
 | [pod-cvm-provider.md](pod-cvm-provider.md) | reference | Scheduling annotated Pods as Cloud Pod CVMs |
 | [cds-ha.md](cds-ha.md) | explanation | Running a cluster's CDS as several VMs |

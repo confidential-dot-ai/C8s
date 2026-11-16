@@ -15,6 +15,7 @@ import (
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/nodeservices"
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
+	"github.com/confidential-dot-ai/c8s/internal/readutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
@@ -198,8 +199,12 @@ func readPluginHealth(ctx context.Context, socket string) (pluginHealth, int, er
 		return pluginHealth{}, 0, err
 	}
 	defer resp.Body.Close()
+	data, err := readutil.ReadAll(resp.Body, 4096)
+	if err != nil {
+		return pluginHealth{}, resp.StatusCode, err
+	}
 	var health pluginHealth
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&health); err != nil {
+	if err := json.Unmarshal(data, &health); err != nil {
 		return pluginHealth{}, resp.StatusCode, err
 	}
 	return health, resp.StatusCode, nil

@@ -66,17 +66,19 @@ func BindFlags(f *pflag.FlagSet, cfg *Config) {
 	f.DurationVar(&cfg.InventoryTimeout, "inventory-timeout", 5*time.Second, "timeout for redeeming a sandbox token from the node's admission inventory")
 }
 
+// nodeAddressPath is where the enforcer mounts the CDS endpoint an injected
+// client dials; a var so tests can mount their own.
+var nodeAddressPath = workloadclaims.CDSAddressPath
+
 // ResolveCDSEndpoint fixes the CDS this sidecar dials: the endpoint its node
 // hands an injected client, otherwise --cds-url. Each command calls it while
 // it wires its flags, before validating what it ended up with.
 func (c *Config) ResolveCDSEndpoint() error {
-	address, fromNode, err := cmdsutil.ResolveCDSAddress(workloadclaims.CDSAddressPath, c.CDSURL)
+	cdsURL, fromNode, err := cmdsutil.ResolveCDSURL(nodeAddressPath, c.CDSURL)
 	if err != nil {
 		return err
 	}
-	if fromNode {
-		c.CDSURL = cmdsutil.CDSURL(address)
-	}
+	c.CDSURL = cdsURL
 	slog.Info("CDS endpoint resolved", "cds_url", c.CDSURL, "from_node", fromNode)
 	return nil
 }
@@ -112,16 +114,11 @@ func (c *Config) Validate() error {
 // ParsePins resolves the pins this sidecar holds its CDS to: the node's policy
 // where the enforcer mounts it, otherwise --image-policy-file.
 func (c *Config) ParsePins(ctx context.Context) (armtls.PinSource, error) {
-	pins, fromNode, err := cmdsutil.ResolveCDSPins(ctx, workloadclaims.CDSPinsPath,
+	return cmdsutil.ClientCDSPins(ctx, workloadclaims.CDSPinsPath,
 		cmdsutil.ImagePolicySource{
 			File: c.MeasurementsConfig,
 			JSON: c.MeasurementsConfigJSON,
 		})
-	if err != nil {
-		return nil, err
-	}
-	slog.Info("CDS pins resolved", "from_node", fromNode)
-	return pins, nil
 }
 
 // Terminal marks a non-nil error no later attempt can clear, so Retry stops on
