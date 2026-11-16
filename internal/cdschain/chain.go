@@ -154,8 +154,8 @@ type Head struct {
 type Genesis struct {
 	Endpoints    []string `json:"endpoints"`
 	Members      []string `json:"members"`
-	OperatorKeys string   `json:"operatorKeys"`
-	CAKey        string   `json:"caKey"`
+	OperatorKeys string   `json:"operator_keys"`
+	CAKey        string   `json:"ca_key"`
 	Accepted     []Build  `json:"accepted"`
 }
 
