@@ -84,7 +84,7 @@ func startHA(ctx context.Context, cfg config, mesh *issuer.MeshCA, store *allowl
 		OnState: func(s *cdschain.State) error {
 			meshPeers.UpdateClientCA(mesh.Current().CA.Cert)
 			if err := policy(s); err != nil {
-				return fmt.Errorf("serving the chain's allowlist (version %s): %w", s.PolicyVersion(), err)
+				return fmt.Errorf("serving the chain's allowlist (version %s): %w", s.CurrentPolicyVersion(), err)
 			}
 			if err := serveRoutes(store, s); err != nil {
 				return fmt.Errorf("serving the chain's route manifest: %w", err)
@@ -131,7 +131,7 @@ func chainPolicyServer(store *allowlist.Store, seed *pkgallowlist.Allowlist) fun
 	store.HoldNodes()
 	served := ""
 	return func(s *cdschain.State) error {
-		v := s.PolicyVersion()
+		v := s.CurrentPolicyVersion()
 		if v == served {
 			return nil
 		}
@@ -156,7 +156,7 @@ func servePolicy(store *allowlist.Store, s *cdschain.State, seed *pkgallowlist.A
 			return err
 		}
 	}
-	if err := store.ReplaceAll(doc, allowlist.OperatorWrite{SetVersion: s.PolicyVersion()}); err != nil {
+	if err := store.ReplaceAll(doc, allowlist.OperatorWrite{SetVersion: s.CurrentPolicyVersion()}); err != nil {
 		return err
 	}
 	if first {

@@ -39,18 +39,18 @@ type Chain struct {
 type Status struct {
 	Slot         int             `json:"slot"`
 	Member       string          `json:"member"`
-	Pending      bool            `json:"genesisPending"`
+	Pending      bool            `json:"genesis_pending"`
 	Held         *cdschain.Head  `json:"held,omitempty"`
-	Floor        uint64          `json:"servedFloor"`
+	Floor        uint64          `json:"served_floor"`
 	Halted       string          `json:"halted,omitempty"`
 	Fresh        bool            `json:"fresh"`
-	IsMember     bool            `json:"isMember"`
-	StoreError   string          `json:"storeError,omitempty"`
+	IsMember     bool            `json:"is_member"`
+	StoreError   string          `json:"store_error,omitempty"`
 	Fork         *Fork           `json:"fork,omitempty"`
 	Confirmed    []cdschain.Head `json:"confirmed,omitempty"`
 	Evicted      string          `json:"evicted,omitempty"`
-	ChainEntries int             `json:"chainEntries"`
-	ChainBytes   int64           `json:"chainBytes"`
+	ChainEntries int             `json:"chain_entries"`
+	ChainBytes   int64           `json:"chain_bytes"`
 	Build        string          `json:"build,omitempty"`
 	Serving      string          `json:"serving,omitempty"`
 }
@@ -73,16 +73,16 @@ func (r *Replica) Status() Status {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	s := Status{Slot: r.slot(), Member: r.memberPEM, Pending: r.state == nil && !r.joining, StoreError: r.storeErr, Fork: r.fork}
-	if err := r.servingLocked(); err != nil {
+	if err := r.refusalLocked(); err != nil {
 		s.Serving = err.Error()
 	}
 	if r.state == nil {
 		return s
 	}
 	held := r.state.Head
-	s.Held, s.Floor, s.Fresh, s.Confirmed = &held, held.Seq, r.freshLocked() && r.fork == nil, r.done
+	s.Held, s.Floor, s.Fresh, s.Confirmed = &held, held.Seq, r.majorityHeardLocked() && r.fork == nil, r.done
 	s.IsMember = r.state.Members[r.slot()] == r.memberPEM
-	s.ChainEntries, s.ChainBytes, s.Build = r.state.Entries, r.state.Bytes, r.buildLocked()
+	s.ChainEntries, s.ChainBytes, s.Build = r.state.Entries, r.state.Bytes, r.ownBuildVersionLocked()
 	if r.fork != nil {
 		s.Halted = s.Serving
 	}

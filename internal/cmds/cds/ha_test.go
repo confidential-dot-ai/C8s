@@ -150,7 +150,7 @@ func TestReplicaServesEachAllowlistAtANewVersion(t *testing.T) {
 		}
 		raw, _ := al.Canonical()
 		n, _ := strconv.ParseUint(version, 10, 64)
-		if prev, ok := served[version]; (ok && !bytes.Equal(prev, raw)) || n <= last || version != s.PolicyVersion() {
+		if prev, ok := served[version]; (ok && !bytes.Equal(prev, raw)) || n <= last || version != s.CurrentPolicyVersion() {
 			t.Fatalf("policy seq %d served at version %s after version %d", s.PolicySeq, version, last)
 		}
 		served[version], last = raw, n
