@@ -73,16 +73,16 @@ func (r *Replica) Status() Status {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	s := Status{Slot: r.slot(), Member: r.memberPEM, Pending: r.state == nil && !r.joining, StoreError: r.storeErr, Fork: r.fork}
-	if err := r.servingLocked(); err != nil {
+	if err := r.refusalLocked(); err != nil {
 		s.Serving = err.Error()
 	}
 	if r.state == nil {
 		return s
 	}
 	held := r.state.Head
-	s.Held, s.Floor, s.Fresh, s.Confirmed = &held, held.Seq, r.freshLocked() && r.fork == nil, r.done
+	s.Held, s.Floor, s.Fresh, s.Confirmed = &held, held.Seq, r.majorityHeardLocked() && r.fork == nil, r.done
 	s.IsMember = r.state.Members[r.slot()] == r.memberPEM
-	s.ChainEntries, s.ChainBytes, s.Build = r.state.Entries, r.state.Bytes, r.buildLocked()
+	s.ChainEntries, s.ChainBytes, s.Build = r.state.Entries, r.state.Bytes, r.ownBuildVersionLocked()
 	if r.fork != nil {
 		s.Halted = s.Serving
 	}
