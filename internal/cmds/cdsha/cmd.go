@@ -32,6 +32,8 @@ type options struct {
 	endpoints []string
 	stateDir  string
 	retryFor  time.Duration
+	// genesis pins the chain's genesis hash while the cluster has no record.
+	genesisPin string
 }
 
 // NewCmd returns the `ha` subcommand.
@@ -55,6 +57,7 @@ replica serving a chain without that head.`,
 	pf.StringSliceVar(&o.endpoints, "endpoints", nil, "the replica set's <host>:<port> endpoints in slot order, in place of --url")
 	pf.StringVar(&o.stateDir, "state-dir", "", "directory of the per-cluster record (default c8s/cds-ha in the user config directory: $XDG_CONFIG_HOME on Linux)")
 	pf.DurationVar(&o.retryFor, "retry-for", time.Minute, "how long accept-image and raise-floor re-read and retry a write another write beat")
+	pf.StringVar(&o.genesisPin, "genesis", "", "the set's genesis hash, which a write holds the chain to while this CLI has no record of the cluster (an operator who did not sign the genesis)")
 	cmd.AddCommand(newStatusCmd(o), newGenesisCmd(o), newAcceptImageCmd(o), newRaiseFloorCmd(o), newStoreCredentialCmd(o), newResolveCmd(o))
 	return cmd
 }

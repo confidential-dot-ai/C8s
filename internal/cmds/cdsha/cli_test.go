@@ -670,3 +670,31 @@ func TestWriteEntryIsNotHandledWithoutAnHAStatus(t *testing.T) {
 		t.Fatalf("a router without routes was taken for a replica set: %v", err)
 	}
 }
+
+// An operator who did not sign the genesis has no record: --genesis pins the
+// chain instead, and records it; a chain of another genesis is refused.
+func TestGenesisPinForAnOperatorWithoutARecord(t *testing.T) {
+	entries, _ := testChain(t, 1)
+	srv := httptest.NewServer(&racedReplica{entries: entries})
+	defer srv.Close()
+	added := testKey(t)
+	w := &writer{o: &options{stateDir: t.TempDir()}, url: srv.URL, client: srv.Client(), key: added}
+	if _, err := w.verified(context.Background()); err == nil || !strings.Contains(err.Error(), "--genesis") {
+		t.Fatalf("no record and no pin: %v", err)
+	}
+	w.o.genesisPin = cdschain.Hash{7}.String()
+	if _, err := w.verified(context.Background()); err == nil {
+		t.Fatal("a chain of another genesis was taken")
+	}
+	w.o.genesisPin = entries[0].Hash().String()
+	if _, err := w.verified(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	w.o.genesisPin = ""
+	if rec, err := w.o.record("lane"); err != nil || rec == nil || rec.Genesis != entries[0].Hash() {
+		t.Fatalf("record after the pin: %+v %v", rec, err)
+	}
+	if _, err := w.verified(context.Background()); err != nil {
+		t.Fatalf("the recorded genesis: %v", err)
+	}
+}

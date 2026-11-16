@@ -152,7 +152,7 @@ Notes:
 - A set that a majority of the members' running builds are not in is refused without `--force` (U2).
 - `accept-image` and `raise-floor` re-read the chain and retry a write another write beat (409) for up to `--retry-for` (default 1m).
 - `c8s allowlist` and `c8s routes` write to a replica set as chain entries. A replica answers the old `PUT /allowlist` and `PUT /routes` with 409; a single replica still takes `PUT /secrets`.
-- The CLI records, per cluster (`--state-dir`, default `c8s/cds-ha` in the user config directory), the genesis and the last head a write was answered done for. It refuses a replica serving a chain without that head, or of another genesis.
+- The CLI records, per cluster (`--state-dir`, default `c8s/cds-ha` in the user config directory), the genesis and the last head a write was answered done for. It refuses a replica serving a chain without that head, or of another genesis. Without a record, it takes only a genesis signed by `--operator-key`; an operator who did not sign it passes `--genesis <hash>` to a `c8s cds ha` write once, which records it.
 - A write that may have been applied exits 3.
 
 ## Failures

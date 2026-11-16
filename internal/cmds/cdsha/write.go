@@ -84,8 +84,15 @@ func (w *writer) verified(ctx context.Context) (*cdschain.State, error) {
 	switch {
 	case rec != nil && rec.Genesis != state.Genesis:
 		return nil, fmt.Errorf("the replica's chain starts at genesis %s, recorded %s", state.Genesis, rec.Genesis)
+	case rec == nil && w.o.genesisPin != "":
+		if pinned, err := cdschain.ParseHash(w.o.genesisPin); err != nil || pinned != state.Genesis {
+			return nil, fmt.Errorf("the replica's chain starts at genesis %s, not --genesis %s", state.Genesis, w.o.genesisPin)
+		}
+		if err := w.o.acknowledge(state.Genesis, cdschain.Head{V: cdschain.Version, Cluster: state.Cluster, Hash: state.Genesis}); err != nil {
+			return nil, err
+		}
 	case rec == nil && c.Genesis.VerifySignature([]*ecdsa.PublicKey{&w.key.PublicKey}) != nil:
-		return nil, errors.New("the replica's genesis is not signed by --operator-key and no genesis is recorded")
+		return nil, errors.New("the replica's genesis is not signed by --operator-key and no genesis is recorded: pass --genesis with the hash 'c8s cds ha genesis' printed, or copy the record of the operator who signed it")
 	case rec != nil && (rec.Acknowledged.Seq > state.Head.Seq || c.Hashes[rec.Acknowledged.Seq] != rec.Acknowledged.Hash):
 		return nil, fmt.Errorf("the replica serves a chain without head %d, which was acknowledged before this read: the chain was rolled back, or the replica is behind", rec.Acknowledged.Seq)
 	}
