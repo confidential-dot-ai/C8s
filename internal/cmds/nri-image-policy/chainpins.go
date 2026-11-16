@@ -2,6 +2,7 @@ package nriimagepolicy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -147,7 +148,11 @@ func (c *chainPins) pushDigestsLocked() {
 // RoundTrip lets the allowlist pull follow the pins as they change, held
 // to the pinned chain (C-ID).
 func (c *chainPins) RoundTrip(r *http.Request) (*http.Response, error) {
-	return cdsgenesis.Client(&http.Client{Transport: c.pull.Load()}, c.raw).Transport.RoundTrip(r)
+	pull := c.pull.Load()
+	if pull == nil {
+		return nil, errors.New("CDS pull transport not ready")
+	}
+	return cdsgenesis.Client(&http.Client{Transport: pull}, c.raw).Transport.RoundTrip(r)
 }
 
 // followChainAtStart follows the chain once before the plugin serves. It

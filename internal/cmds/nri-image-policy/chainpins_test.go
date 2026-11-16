@@ -293,3 +293,22 @@ func TestValidate_CDSChain(t *testing.T) {
 		t.Fatalf("a chain pin with no CDS: %v", err)
 	}
 }
+
+// Before the pull transport is stored, the allowlist pull fails instead of
+// going out on the default transport, without armTLS.
+func TestChainPullFailsClosedWithoutATransport(t *testing.T) {
+	served := false
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { served = true }))
+	defer srv.Close()
+	c := slowChainPins(t, srv.URL, time.Second)
+	req, err := http.NewRequest(http.MethodGet, srv.URL+"/allowlist", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp, err := c.RoundTrip(req); err == nil || served {
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+		t.Fatalf("a pull with no transport: err %v, reached the CDS %v", err, served)
+	}
+}
