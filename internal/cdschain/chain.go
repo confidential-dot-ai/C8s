@@ -220,43 +220,48 @@ func VerifyGenesis(e Entry) (*State, error) {
 	if err != nil {
 		return nil, err
 	}
-	var g Genesis
-	switch {
-	case b.Seq != 0 || b.Prev != Hash{} || b.Type != TypeGenesis:
+	if b.Seq != 0 || b.Prev != (Hash{}) || b.Type != TypeGenesis {
 		return nil, errors.New("entry 0 must be a genesis at seq 0")
-	case len(validation.IsDNS1123Label(b.Cluster)) != 0:
+	}
+	if len(validation.IsDNS1123Label(b.Cluster)) != 0 {
 		return nil, fmt.Errorf("cluster %q is not an RFC1123 label", b.Cluster)
 	}
+	var g Genesis
 	if err := DecodeStrict(b.Payload, &g); err != nil {
 		return nil, fmt.Errorf("genesis: %w", err)
 	}
 	if err := cmdsutil.ValidateCDSEndpoints(g.Endpoints); err != nil {
 		return nil, err
 	}
-	s := &State{Cluster: b.Cluster, Endpoints: g.Endpoints}
-	if s.OperatorKeys, err = parseKeys(g.OperatorKeys); err != nil {
+	operatorKeys, err := parseKeys(g.OperatorKeys)
+	if err != nil {
 		return nil, fmt.Errorf("genesis operator keys: %w", err)
 	}
-	if err := e.VerifySignature(s.OperatorKeys); err != nil {
+	if err := e.VerifySignature(operatorKeys); err != nil {
 		return nil, fmt.Errorf("genesis: %w", err)
 	}
-	if s.CAKey, err = ParseKey(g.CAKey); err != nil {
+	caKey, err := ParseKey(g.CAKey)
+	if err != nil {
 		return nil, fmt.Errorf("genesis CA key: %w", err)
 	}
 	if len(g.Members) != len(g.Endpoints) {
 		return nil, fmt.Errorf("genesis names %d members for %d endpoints", len(g.Members), len(g.Endpoints))
 	}
-	for slot, key := range g.Members {
-		if err := s.setMember(slot, key); err != nil {
-			return nil, err
+	empty := &State{
+		Cluster:      b.Cluster,
+		Genesis:      e.Hash(),
+		Endpoints:    g.Endpoints,
+		OperatorKeys: operatorKeys,
+		CAKey:        caKey,
+	}
+	return empty.extend(e, b, func(s *State) error {
+		for slot, key := range g.Members {
+			if err := s.setMember(slot, key); err != nil {
+				return err
+			}
 		}
-	}
-	if err := s.setAccepted(g.Accepted); err != nil {
-		return nil, err
-	}
-	s.Genesis = e.Hash()
-	s.count(e)
-	return s, nil
+		return s.setAccepted(g.Accepted)
+	})
 }
 
 // Apply verifies e as the entry after s's head and returns the state after it.
@@ -265,10 +270,10 @@ func (s *State) Apply(e Entry) (*State, error) {
 	if err != nil {
 		return nil, err
 	}
-	switch {
-	case b.Cluster != s.Cluster:
+	if b.Cluster != s.Cluster {
 		return nil, fmt.Errorf("entry of cluster %q, not %q", b.Cluster, s.Cluster)
-	case b.Seq != s.Head.Seq+1 || b.Prev != s.Head.Hash:
+	}
+	if b.Seq != s.Head.Seq+1 || b.Prev != s.Head.Hash {
 		return nil, fmt.Errorf("%w: entry %d after %s does not follow head %d (%s)", ErrNotNext, b.Seq, b.Prev, s.Head.Seq, s.Head.Hash)
 	}
 	signers := s.OperatorKeys
@@ -282,12 +287,25 @@ func (s *State) Apply(e Entry) (*State, error) {
 	if err := e.VerifySignature(signers); err != nil {
 		return nil, fmt.Errorf("entry %d: %w", b.Seq, err)
 	}
-	next := *s
-	next.Members, next.Accepted = slices.Clone(s.Members), slices.Clone(s.Accepted)
-	if err := next.applyPayload(b); err != nil {
+	next, err := s.extend(e, b, func(next *State) error { return next.applyPayload(b) })
+	if err != nil {
 		return nil, fmt.Errorf("entry %d (%s): %w", b.Seq, b.Type, err)
 	}
-	next.count(e)
+	return next, nil
+}
+
+// extend is the one way a state gains an entry: decide applies e's payload
+// to a copy of s, and the copy's head and size then count e.
+func (s *State) extend(e Entry, b Body, decide func(*State) error) (*State, error) {
+	next := *s
+	next.Members = slices.Clone(s.Members)
+	next.Accepted = slices.Clone(s.Accepted)
+	if err := decide(&next); err != nil {
+		return nil, err
+	}
+	next.Head = Head{V: Version, Cluster: s.Cluster, Seq: b.Seq, Hash: e.Hash()}
+	next.Entries++
+	next.Bytes += int64(len(e.Body) + len(e.Sig))
 	return &next, nil
 }
 
@@ -346,13 +364,6 @@ func (s *State) applyPayload(b Body) error {
 	return fmt.Errorf("unknown entry type %q", b.Type)
 }
 
-func (s *State) count(e Entry) {
-	b, _ := e.Decode()
-	s.Head = Head{V: Version, Cluster: s.Cluster, Seq: b.Seq, Hash: e.Hash()}
-	s.Entries++
-	s.Bytes += int64(len(e.Body) + len(e.Sig))
-}
-
 // setMember names key for slot. A key holds at most one slot, so one
 // instance votes once.
 func (s *State) setMember(slot int, key string) error {
@@ -392,8 +403,7 @@ func (s *State) setAccepted(builds []Build) error {
 	// INVARIANT: every accepted image binds the one launch file, so a replica
 	// is admitted only on the operator's configuration, and the set is
 	// a pin every node client loads. An empty set is refused here too.
-	_, err := cmdsutil.CDSLaunchFile(s.Pins())
-	return err
+	return cmdsutil.CheckCDSPins(s.Pins())
 }
 
 // Values parses the build's pin.
@@ -421,12 +431,12 @@ func (s *State) Pins() refvalues.ReferenceValues {
 	return all
 }
 
-// PolicyVersion is the allowlist version (the ETag) a replica serves the
-// chain's policy at: 1 for the launch file's seed, the policy entry's seq
-// plus one after one.
+// CurrentPolicyVersion is the allowlist version (the ETag) a replica serves
+// the policy in force at s's head at: 1 for the launch file's seed, the
+// newest policy entry's seq plus one after one.
 // INVARIANT: the version changes whenever the served document does, and only
 // goes up along a chain, so a node's If-None-Match never hides a new policy.
-func (s *State) PolicyVersion() string {
+func (s *State) CurrentPolicyVersion() string {
 	if s.Policy == nil {
 		return "1"
 	}
