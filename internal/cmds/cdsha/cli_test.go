@@ -401,25 +401,29 @@ func TestVerifiedHoldsTheRecordFromBeforeTheRead(t *testing.T) {
 func TestVerifiedFollowsTheCachedChain(t *testing.T) {
 	for _, n := range []int{3, 300} {
 		entries, key := testChain(t, n+1)
-		var reads, served atomic.Int32
+		// sent counts the entries served: the command verifies only
+		// entries it is sent, so they are the entries it verifies.
+		var reads, served, sent atomic.Int32
 		served.Store(int32(n))
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			reads.Add(1)
 			from, _ := strconv.Atoi(r.URL.Query().Get("from"))
 			end := min(int(served.Load()), from+32)
-			_ = json.NewEncoder(w).Encode(haapi.Chain{Entries: entries[min(from, end):end]})
+			page := entries[min(from, end):end]
+			sent.Add(int32(len(page)))
+			_ = json.NewEncoder(w).Encode(haapi.Chain{Entries: page})
 		}))
 		w := &writer{o: &options{stateDir: t.TempDir()}, url: srv.URL, client: srv.Client(), key: key}
-		start := time.Now()
 		if _, err := w.verified(context.Background()); err != nil {
 			t.Fatal(err)
 		}
-		whole := time.Since(start)
+		if got := sent.Load(); got != int32(n) {
+			t.Errorf("chain of %d: the first read was sent %d entries, want the whole chain", n, got)
+		}
 		served.Store(int32(n + 1))
 		reads.Store(0)
-		start = time.Now()
+		sent.Store(0)
 		state, err := w.verified(context.Background())
-		extended := time.Since(start)
 		srv.Close()
 		if err != nil || state.Head.Seq != uint64(n) {
 			t.Fatalf("chain of %d: %v %v", n, state, err)
@@ -427,8 +431,9 @@ func TestVerifiedFollowsTheCachedChain(t *testing.T) {
 		if got := reads.Load(); got != 1 {
 			t.Errorf("chain of %d: %d chain reads after one new entry, want 1", n, got)
 		}
-		if n == 300 && extended*4 > whole {
-			t.Errorf("chain of %d: verifying one new entry took %s, the whole chain %s", n, extended, whole)
+		// The cached head and the one new entry, whatever the chain's length.
+		if got := sent.Load(); got != 2 {
+			t.Errorf("chain of %d: sent %d entries after one new entry, want 2", n, got)
 		}
 	}
 }
