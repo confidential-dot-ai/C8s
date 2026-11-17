@@ -161,10 +161,16 @@ func (r *Replica) Handler(authorize Authorizer) http.Handler {
 			http.Error(w, "from must be a seq", http.StatusBadRequest)
 			return
 		}
+		// A replica that refuses (halted, not fresh) still serves the chain
+		// it holds, so the branches of a fork stay readable: the entries
+		// verify by signature, and only a serving replica's /ha/status
+		// confirms a head.
 		state, err := r.Current(req.Context())
 		if err != nil {
-			reply(w, nil, err)
-			return
+			if state = r.State(); state == nil {
+				reply(w, nil, err)
+				return
+			}
 		}
 		writeJSON(w, http.StatusOK, Chain{Head: state.Head, Entries: r.entries(from, state.Head)})
 	})
