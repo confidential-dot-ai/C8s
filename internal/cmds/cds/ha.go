@@ -94,7 +94,7 @@ func startHA(ctx context.Context, cfg config, mesh *issuer.MeshCA, store *allowl
 			}
 			return nil
 		},
-		Validate: chainValidator(cfg.measured.PodImages, mesh, store),
+		Validate: func(b cdschain.Body) error { return validateEntry(b, cfg.measured.PodImages, mesh, store) },
 	}, chainStore)
 	if err != nil {
 		return nil, err
@@ -215,15 +215,13 @@ func (c *chainNodes) values(measurements string) (refvalues.ReferenceValues, err
 	return values, nil
 }
 
-// chainValidator checks an entry's payload beyond the chain's own rules
+// validateEntry checks an entry's payload beyond the chain's own rules
 // before any replica takes it.
-func chainValidator(pods []remote.ImagePin, mesh *issuer.MeshCA, store *allowlist.Store) func(cdschain.Body) error {
-	return func(b cdschain.Body) error {
-		if err := validatePodAuthorities(b, pods); err != nil {
-			return err
-		}
-		return validateRoutes(b, mesh, store)
+func validateEntry(b cdschain.Body, pods []remote.ImagePin, mesh *issuer.MeshCA, store *allowlist.Store) error {
+	if err := validatePodAuthorities(b, pods); err != nil {
+		return err
 	}
+	return validateRoutes(b, mesh, store)
 }
 
 // validatePodAuthorities refuses a nodes or operator-keys entry naming a Pod

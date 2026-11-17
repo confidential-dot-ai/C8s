@@ -407,7 +407,7 @@ func TestAPodLaunchKeyIsNoNodeOrOperatorAuthorityOnTheChain(t *testing.T) {
 		{"operator keys naming the Pod launch key", body(cdschain.TypeOperatorKeys, cdschain.OperatorKeys{Keys: otherKey + podKey}), true},
 		{"operator keys naming other keys", body(cdschain.TypeOperatorKeys, cdschain.OperatorKeys{Keys: otherKey}), false},
 	} {
-		if err := chainValidator(pods, nil, nil)(tc.body); (err != nil) != tc.refused {
+		if err := validateEntry(tc.body, pods, nil, nil); (err != nil) != tc.refused {
 			t.Errorf("%s: %v, refused want %v", tc.name, err, tc.refused)
 		}
 	}
