@@ -352,7 +352,11 @@ func (o *options) genesis(ctx context.Context, out io.Writer, urls []string, clu
 	if err != nil {
 		return err
 	}
-	g := cdschain.Genesis{Endpoints: o.endpoints, OperatorKeys: writers, Accepted: []cdschain.Build{{Measurements: string(pin), Version: version}}}
+	g := cdschain.Genesis{
+		Endpoints:    o.endpoints,
+		OperatorKeys: writers,
+		Accepted:     []cdschain.Build{{Measurements: string(pin), Version: version}},
+	}
 	for slot, url := range urls {
 		s, err := o.status(ctx, url)
 		switch {
