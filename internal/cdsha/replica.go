@@ -92,9 +92,8 @@ type Replica struct {
 	// step that re-checks it against the memory as it is then: adopt
 	// verifies entries after the current head, and the store itself orders
 	// writes by its compare-and-swap on the head. A stale copy thus costs a
-	// refusal or a retry, never a wrong state. findChain is the one
-	// exception: a pending replica serves nothing, so it reads the store
-	// under mu. Methods named *Locked expect mu held.
+	// refusal or a retry, never a wrong state. Methods named *Locked expect
+	// mu held.
 	mu         sync.Mutex
 	store      Store
 	credential []byte

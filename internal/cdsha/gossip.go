@@ -277,17 +277,20 @@ type Pending struct {
 }
 
 // findChain records whether the store of a replica that holds no chain
-// already holds one: it then waits for a giver and is no genesis. It reads
-// the store under r.mu (Replica.mu names this exception).
+// already holds one: it then waits for a giver and is no genesis.
 func (r *Replica) findChain(ctx context.Context) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.state != nil || r.store == nil {
+	st, pending := r.store, r.state == nil
+	r.mu.Unlock()
+	if !pending || st == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(ctx, r.cfg.StoreTimeout)
 	defer cancel()
-	if head, err := r.store.GetHead(ctx); err == nil && head != nil {
+	head, err := st.GetHead(ctx)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err == nil && head != nil && r.state == nil {
 		r.joining = true
 	}
 }

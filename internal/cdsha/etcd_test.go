@@ -5,10 +5,13 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"strings"
 	"testing"
 	"time"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
+
+	"github.com/confidential-dot-ai/c8s/internal/cdschain"
 )
 
 // A store back after a long outage answers within seconds: the client's
@@ -73,4 +76,26 @@ func localURL(t *testing.T) string {
 	}
 	defer l.Close()
 	return "http://" + l.Addr().String()
+}
+
+// Every store call's error names the call: a failed put is not a bare RPC
+// error. The endpoint never answers, so each call fails on its deadline.
+func TestEtcdErrorsNameTheCall(t *testing.T) {
+	st, err := OpenEtcd(clientv3.Config{Endpoints: []string{strings.TrimPrefix(localURL(t), "http://")}}, "lane")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Client.Close()
+	for name, call := range map[string]func(context.Context) error{
+		"etcd get":       func(ctx context.Context) error { _, err := st.GetHead(ctx); return err },
+		"etcd cas head":  func(ctx context.Context) error { return st.CASHead(ctx, nil, []byte("h")) },
+		"etcd put entry": func(ctx context.Context) error { return st.PutEntry(ctx, cdschain.Hash{1}, []byte("e")) },
+	} {
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		err := call(ctx)
+		cancel()
+		if err == nil || !strings.HasPrefix(err.Error(), name+": ") {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
 }

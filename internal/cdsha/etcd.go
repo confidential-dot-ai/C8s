@@ -66,7 +66,10 @@ func (s *Etcd) PutEntry(ctx context.Context, hash cdschain.Hash, data []byte) er
 		If(clientv3.Compare(clientv3.CreateRevision(key), "=", 0)).
 		Then(clientv3.OpPut(key, string(data))).
 		Commit()
-	return err
+	if err != nil {
+		return fmt.Errorf("etcd put entry: %w", err)
+	}
+	return nil
 }
 
 func (s *Etcd) GetEntry(ctx context.Context, hash cdschain.Hash) ([]byte, error) {
