@@ -25,12 +25,11 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/routes"
 )
 
-// ErrNotConfirmed is a write that may have been applied: the replica
-// answered "committed, not confirmed" (202), or nothing after the entry
-// was sent. It is never recorded as acknowledged; `c8s` exits 3.
+// ErrNotConfirmed marks a possibly applied write without a durable local
+// acknowledgement: confirmation or record persistence failed. c8s exits 3.
 var ErrNotConfirmed error = &cmdsutil.ExitStatusError{
 	Status: cmdsutil.ExitNotConfirmed,
-	Err:    errors.New("the write may have been applied but is not confirmed: check the replicas' heads with c8s cds ha status before writing again"),
+	Err:    errors.New("the write may have been applied: check the replicas' heads with c8s cds ha status before writing again"),
 }
 
 // writer appends operator-signed entries through one replica.
@@ -263,8 +262,20 @@ func (w *writer) append(ctx context.Context, state *cdschain.State, typ cdschain
 	if head.Cluster != state.Cluster || head.Seq != state.Head.Seq+1 {
 		return head, fmt.Errorf("the replica answered done for head %d of %q, not %d of %q: %w", head.Seq, head.Cluster, state.Head.Seq+1, state.Cluster, ErrNotConfirmed)
 	}
+	if err := w.o.acknowledge(
+		state.Genesis,
+		head,
+	); err != nil {
+		return head, fmt.Errorf(
+			"CDS confirmed head %d (%s), but saving its local record failed (%w): %w",
+			head.Seq,
+			head.Hash,
+			err,
+			ErrNotConfirmed,
+		)
+	}
 	fmt.Fprintf(os.Stderr, "committed head %d (%s)\n", head.Seq, head.Hash)
-	return head, w.o.acknowledge(state.Genesis, head)
+	return head, nil
 }
 
 // errHeadMoved is a 409: the replica's head moved past the entry's prev.

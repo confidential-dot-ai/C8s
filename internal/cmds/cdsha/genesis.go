@@ -110,8 +110,19 @@ func (o *options) genesis(ctx context.Context, out io.Writer, urls []string, clu
 			"no answer confirmed the genesis %s (%w): if c8s cds ha status shows the replicas hold it, write with --genesis %s", e.Hash(), err, e.Hash())}
 	}
 	head := cdschain.Head{V: cdschain.Version, Cluster: cluster, Hash: e.Hash()}
+	if err := o.acknowledge(
+		head.Hash,
+		head,
+	); err != nil {
+		return fmt.Errorf(
+			"CDS accepted genesis %s, but saving its local record failed (%w): %w",
+			head.Hash,
+			err,
+			ErrNotConfirmed,
+		)
+	}
 	fmt.Fprintf(out, "genesis %s\n", head.Hash)
-	return o.acknowledge(head.Hash, head)
+	return nil
 }
 
 func publicPEM(key *ecdsa.PublicKey, extraFile string) (string, error) {

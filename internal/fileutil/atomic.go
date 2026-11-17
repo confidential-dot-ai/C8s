@@ -38,6 +38,86 @@ func WriteAtomic(path string, data []byte, mode os.FileMode) error {
 // through the rename prevents a later replacement of its pathname from
 // redirecting the write.
 func WriteAtomicRoot(root *os.Root, name string, data []byte, mode os.FileMode) error {
+	return writeAtomicRoot(
+		root,
+		name,
+		data,
+		mode,
+		nil,
+	)
+}
+
+// WriteAtomicDurable syncs the temporary file before replacement, then the
+// destination directory and its physical ancestors. The parent must exist
+// and support syncing; path components must remain stable. Any symlink used
+// to reach the parent must already be durably reachable.
+// An error after replacement can leave the new contents visible.
+func WriteAtomicDurable(path string, data []byte, mode os.FileMode) error {
+	return writeAtomicDurable(
+		path,
+		data,
+		mode,
+		(*os.File).Sync,
+	)
+}
+
+func writeAtomicDurable(path string, data []byte, mode os.FileMode, syncFile func(*os.File) error) error {
+	if path != "" && os.IsPathSeparator(path[len(path)-1]) {
+		return fmt.Errorf(
+			"write durably: path %q ends in a path separator",
+			path,
+		)
+	}
+	dir, err := filepath.Abs(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	dir, err = filepath.EvalSymlinks(dir)
+	if err != nil {
+		return err
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	if err := writeAtomicRoot(
+		root,
+		filepath.Base(path),
+		data,
+		mode,
+		syncFile,
+	); err != nil {
+		return err
+	}
+	directory, err := root.Open(".")
+	if err != nil {
+		return err
+	}
+	for {
+		if err := errors.Join(
+			syncFile(directory),
+			directory.Close(),
+		); err != nil {
+			return fmt.Errorf(
+				"sync directory %s: %w",
+				dir,
+				err,
+			)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return nil
+		}
+		dir = parent
+		directory, err = os.Open(dir)
+		if err != nil {
+			return err
+		}
+	}
+}
+
+func writeAtomicRoot(root *os.Root, name string, data []byte, mode os.FileMode, syncFile func(*os.File) error) error {
 	if root == nil {
 		return fmt.Errorf("write atomically: nil directory root")
 	}
@@ -68,6 +148,11 @@ func WriteAtomicRoot(root *os.Root, name string, data []byte, mode os.FileMode) 
 	if err := tmp.Chmod(mode); err != nil {
 		_ = tmp.Close()
 		return err
+	}
+	if syncFile != nil {
+		if err := syncFile(tmp); err != nil {
+			return err
+		}
 	}
 	if err := tmp.Close(); err != nil {
 		return err

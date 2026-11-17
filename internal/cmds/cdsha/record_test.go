@@ -1,0 +1,240 @@
+package cdsha
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/confidential-dot-ai/c8s/internal/cdschain"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/c8s/internal/fileutil"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
+)
+
+func TestAcknowledgeRetriesPersistence(t *testing.T) {
+	for _, seq := range []uint64{5, 4} {
+		o := &options{
+			stateDir: filepath.Join(
+				t.TempDir(),
+				"new",
+				"state",
+			),
+		}
+		genesis := cdschain.Hash{9}
+		head := cdschain.Head{
+			V:       cdschain.Version,
+			Cluster: "lane",
+			Seq:     5,
+			Hash:    cdschain.Hash{5},
+		}
+		injected := errors.New("record sync failed")
+		calls := 0
+		persist := func(path string, data []byte, mode os.FileMode) error {
+			calls++
+			var rec record
+			if err := json.Unmarshal(
+				data,
+				&rec,
+			); err != nil || rec.Acknowledged != head {
+				t.Fatal("retry changed the retained highest head")
+			}
+			if err := fileutil.WriteAtomic(
+				path,
+				data,
+				mode,
+			); err != nil {
+				t.Fatal(err)
+			}
+			return injected
+		}
+		if err := o.acknowledgeWith(
+			genesis,
+			head,
+			persist,
+		); !errors.Is(
+			err,
+			injected,
+		) {
+			t.Fatal("persistence failure was hidden")
+		}
+		retry := head
+		retry.Seq = seq
+		retry.Hash = cdschain.Hash{byte(seq)}
+		if err := o.acknowledgeWith(
+			genesis,
+			retry,
+			persist,
+		); !errors.Is(
+			err,
+			injected,
+		) || calls != 2 {
+			t.Fatal("visible record bypassed a retry of persistence")
+		}
+		if err := o.acknowledge(
+			genesis,
+			retry,
+		); err != nil {
+			t.Fatal(err)
+		}
+		rec, err := o.record(head.Cluster)
+		if err != nil || rec == nil || rec.Acknowledged != head {
+			t.Fatal("retry lost the highest head")
+		}
+		path, err := o.recordPath(head.Cluster)
+		if err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Stat(path)
+		if err != nil || info.Mode().Perm() != 0o600 {
+			t.Fatal("record permissions are not 0600")
+		}
+		info, err = os.Stat(filepath.Dir(path))
+		if err != nil || info.Mode().Perm() != 0o700 {
+			t.Fatal("new state directory permissions are not 0700")
+		}
+		conflict := head
+		conflict.Hash = cdschain.Hash{7}
+		if err := o.acknowledge(
+			genesis,
+			conflict,
+		); err == nil {
+			t.Fatal("acknowledged a conflicting hash at the same sequence")
+		}
+		rec, err = o.record(head.Cluster)
+		if err != nil || rec == nil || rec.Acknowledged != head {
+			t.Fatal("conflict replaced the retained head")
+		}
+	}
+}
+
+func TestAppendRecordFailureIsPossiblyApplied(t *testing.T) {
+	entries, key := testChain(
+		t,
+		1,
+	)
+	state, err := cdschain.Verify(entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replica := &racedReplica{entries: entries}
+	srv := httptest.NewServer(replica)
+	defer srv.Close()
+	w := &writer{
+		o:      &options{stateDir: blockedRecordDir(t)},
+		url:    srv.URL,
+		client: srv.Client(),
+		key:    key,
+	}
+	capture, err := os.CreateTemp(
+		t.TempDir(),
+		"stderr",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer capture.Close()
+	original := os.Stderr
+	os.Stderr = capture
+	defer func() { os.Stderr = original }()
+	pub, err := cdschain.PublicKeyPEM(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	head, err := w.append(
+		context.Background(),
+		state,
+		cdschain.TypeOperatorKeys,
+		cdschain.OperatorKeys{Keys: pub},
+	)
+	if !errors.Is(
+		err,
+		ErrNotConfirmed,
+	) || cmdsutil.ExitStatus(err) != cmdsutil.ExitNotConfirmed {
+		t.Fatalf(
+			"accepted write with failed record: %v",
+			err,
+		)
+	}
+	if !strings.Contains(
+		err.Error(),
+		head.Hash.String(),
+	) || !strings.Contains(
+		err.Error(),
+		"local record",
+	) {
+		t.Fatal("error omitted the confirmed head or local failure")
+	}
+	if _, err := capture.Seek(
+		0,
+		io.SeekStart,
+	); err != nil {
+		t.Fatal(err)
+	}
+	output, err := io.ReadAll(capture)
+	if err != nil || len(output) != 0 {
+		t.Fatal("printed success before persisting its record")
+	}
+	replica.mu.Lock()
+	defer replica.mu.Unlock()
+	if len(replica.entries) != 2 || replica.entries[1].Hash() != head.Hash {
+		t.Fatal("test did not commit the remote entry")
+	}
+}
+
+func TestGenesisRecordFailurePreservesHash(t *testing.T) {
+	l := newLiveReplica(t)
+	o := l.options()
+	o.stateDir = blockedRecordDir(t)
+	var out bytes.Buffer
+	err := o.genesis(
+		context.Background(),
+		&out,
+		[]string{l.url},
+		"lane",
+		"v1.0.0",
+		[]byte(testutil.CDSPinDocument(
+			testutil.TestMeasurement,
+			"launch",
+		)),
+		"",
+	)
+	if !errors.Is(
+		err,
+		ErrNotConfirmed,
+	) || cmdsutil.ExitStatus(err) != cmdsutil.ExitNotConfirmed {
+		t.Fatalf(
+			"accepted genesis with failed record: %v",
+			err,
+		)
+	}
+	state := l.waitServing(t)
+	if !strings.Contains(
+		err.Error(),
+		state.Genesis.String(),
+	) || out.Len() != 0 {
+		t.Fatal("failed persistence lost the genesis hash or printed success")
+	}
+}
+
+func blockedRecordDir(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(
+		t.TempDir(),
+		"file",
+	)
+	if err := os.WriteFile(
+		path,
+		[]byte("not a directory"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}

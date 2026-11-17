@@ -76,6 +76,14 @@ func (o *options) record(cluster string) (*record, error) {
 // acknowledge records head, answered done on the chain of genesis. The
 // record never goes down: concurrent commands take turns under a lock file.
 func (o *options) acknowledge(genesis cdschain.Hash, head cdschain.Head) error {
+	return o.acknowledgeWith(
+		genesis,
+		head,
+		fileutil.WriteAtomicDurable,
+	)
+}
+
+func (o *options) acknowledgeWith(genesis cdschain.Hash, head cdschain.Head, persist func(string, []byte, os.FileMode) error) error {
 	path, err := o.recordPath(head.Cluster)
 	if err != nil {
 		return err
@@ -97,12 +105,34 @@ func (o *options) acknowledge(genesis cdschain.Hash, head cdschain.Head) error {
 		return err
 	case rec != nil && rec.Genesis != genesis:
 		return fmt.Errorf("cluster %s is recorded with genesis %s, not %s; after a re-root, remove the record", head.Cluster, rec.Genesis, genesis)
+	case rec != nil && head.Seq == rec.Acknowledged.Seq && head.Hash != rec.Acknowledged.Hash:
+		return fmt.Errorf(
+			"cluster %s already acknowledged another hash at seq %d",
+			head.Cluster,
+			head.Seq,
+		)
 	case rec != nil && head.Seq <= rec.Acknowledged.Seq:
-		return nil
+		head = rec.Acknowledged
 	}
-	data, err := json.MarshalIndent(record{Cluster: head.Cluster, Genesis: genesis, Acknowledged: head}, "", "  ")
+	// A failed sync can leave a visible record; even an unchanged head needs persistence.
+	data, err := json.MarshalIndent(
+		record{
+			Cluster:      head.Cluster,
+			Genesis:      genesis,
+			Acknowledged: head,
+		},
+		"",
+		"  ",
+	)
 	if err != nil {
 		return err
 	}
-	return fileutil.WriteAtomic(path, append(data, '\n'), 0o600)
+	return persist(
+		path,
+		append(
+			data,
+			'\n',
+		),
+		0o600,
+	)
 }
