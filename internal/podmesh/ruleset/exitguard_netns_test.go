@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/netip"
 	"os/exec"
+	"slices"
 	"strings"
 	"testing"
 
@@ -16,30 +17,47 @@ import (
 	"github.com/vishvananda/netlink"
 )
 
-// The exit the guard cases grant: a Service the control plane publishes on
-// translatedExit is translated by the node to a service on the node's own
-// address, while directExit is reached as dialed.
+// The exits the guard cases grant. The control plane publishes Services on
+// the translated addresses, which the node translates to an in-cluster
+// endpoint (service), to an address of the node outside the cluster
+// (unapproved) and, over IPv6, to unapproved6. The direct addresses are
+// reached as dialed.
 const (
-	exitPort       = 443
-	translatedExit = "203.0.113.7"
-	directExit     = "203.0.113.8"
+	exitPort        = 443
+	translatedExit  = "203.0.113.7"
+	nodeExit        = "203.0.113.9"
+	directExit      = "203.0.113.8"
+	translatedExit6 = "2001:db8:7::7"
+	directExit6     = "2001:db8:7::8"
 )
 
-var guardedExits = []Exit{{netip.MustParsePrefix("203.0.113.0/24"), exitPort}}
+var guardedExits = []Exit{
+	{netip.MustParsePrefix("203.0.113.0/24"), exitPort},
+	{netip.MustParsePrefix("2001:db8:7::/48"), exitPort},
+}
 
-// kubeProxyStandIn is the translation kube-proxy installs for a Service with
-// an externalIP inside the pod's exit and its endpoint on the node.
+// kubeProxyStandIn is the translation kube-proxy installs for Services with an
+// externalIP inside the pod's exits.
 var kubeProxyStandIn = fmt.Sprintf(`table ip kube-proxy-stand-in {
 	chain prerouting {
 		type nat hook prerouting priority dstnat;
 		ip daddr %s tcp dport %d dnat to %s:%d
+		ip daddr %s tcp dport %d dnat to %s:%d
 	}
-}`, translatedExit, exitPort, service, servicePort)
+}
+table ip6 kube-proxy-stand-in {
+	chain prerouting {
+		type nat hook prerouting priority dstnat;
+		ip6 daddr %s tcp dport %d dnat to [%s]:%d
+	}
+}`, translatedExit, exitPort, service, servicePort,
+	nodeExit, exitPort, unapproved, servicePort,
+	translatedExit6, exitPort, unapproved6, servicePort)
 
 // A connection through an exit that the node translates elsewhere is dropped
 // once the pod's exit guard is installed; one the node carries as dialed is
-// not. Both reach their listener before the guard, so neither result is a
-// broken setup.
+// not. Each reaches its listener before the guard, so no result is a broken
+// setup.
 func TestTheExitGuardDropsATranslatedExitInTheNamespace(t *testing.T) {
 	podNetNS(t, func(podPath string) error {
 		node, err := exitNode(t)
@@ -47,7 +65,9 @@ func TestTheExitGuardDropsATranslatedExitInTheNamespace(t *testing.T) {
 			return err
 		}
 		defer node.stop()
-		for _, destination := range []string{translatedExit, directExit} {
+		translated := []string{translatedExit, nodeExit, translatedExit6}
+		direct := []string{directExit, directExit6}
+		for _, destination := range slices.Concat(translated, direct) {
 			if err := dialExit(destination); err != nil {
 				t.Fatalf("dialExit(%s) before the guard = %v, want nil", destination, err)
 			}
@@ -56,11 +76,15 @@ func TestTheExitGuardDropsATranslatedExitInTheNamespace(t *testing.T) {
 		if err := GuardExits(node.path, podPath, guardedExits); err != nil {
 			return err
 		}
-		if err := dialExit(translatedExit); err == nil {
-			t.Errorf("dialExit(%s) with the guard = nil, want a dropped connection", translatedExit)
+		for _, destination := range translated {
+			if err := dialExit(destination); err == nil {
+				t.Errorf("dialExit(%s) with the guard = nil, want a dropped connection", destination)
+			}
 		}
-		if err := dialExit(directExit); err != nil {
-			t.Errorf("dialExit(%s) with the guard = %v, want nil", directExit, err)
+		for _, destination := range direct {
+			if err := dialExit(destination); err != nil {
+				t.Errorf("dialExit(%s) with the guard = %v, want nil", destination, err)
+			}
 		}
 		return nil
 	})
@@ -93,7 +117,7 @@ func TestVerifyExitGuardInTheNamespace(t *testing.T) {
 		if err := node.run(func() error { return widenGuard(&expr.Verdict{Kind: expr.VerdictAccept}) }); err != nil {
 			return err
 		}
-		requireMismatch(t, VerifyExitGuard(node.path, podPath, guardedExits), "holds 2 rules")
+		requireMismatch(t, VerifyExitGuard(node.path, podPath, guardedExits), "holds 3 rules")
 
 		if err := GuardExits(node.path, podPath, guardedExits); err != nil {
 			return err
@@ -102,10 +126,29 @@ func TestVerifyExitGuardInTheNamespace(t *testing.T) {
 		if err != nil {
 			return err
 		}
+		chain := fmt.Sprintf("inet %s %s", guardTableName, guardChainName(inode))
+		moved := fmt.Sprintf("delete chain %s\nadd chain %s { type filter hook prerouting priority 10; policy accept; }", chain, chain)
+		if err := node.run(func() error { return nftInput(moved) }); err != nil {
+			return err
+		}
+		requireMismatch(t, VerifyExitGuard(node.path, podPath, guardedExits), "at hook")
+
+		if err := ReleaseExitGuard(node.path, inode); err != nil {
+			return err
+		}
+		if err := GuardExits(node.path, podPath, guardedExits); err != nil {
+			return err
+		}
+		if guards, err := ExitGuards(node.path); err != nil || !slices.Equal(guards, []uint64{inode}) {
+			t.Errorf("ExitGuards = %v, %v, want [%d]", guards, err, inode)
+		}
 		if err := ReleaseExitGuard(node.path, inode); err != nil {
 			return err
 		}
 		requireMismatch(t, VerifyExitGuard(node.path, podPath, guardedExits), "is absent")
+		if guards, err := ExitGuards(node.path); err != nil || len(guards) != 0 {
+			t.Errorf("ExitGuards after release = %v, %v, want none", guards, err)
+		}
 		if err := ReleaseExitGuard(node.path, inode); err != nil {
 			t.Errorf("ReleaseExitGuard of a released guard = %v, want nil", err)
 		}
@@ -158,21 +201,24 @@ func exitNode(t *testing.T) (*peerNamespace, error) {
 		node.stop()
 		return nil, err
 	}
-	gateway := netip.MustParseAddr(unapproved).AsSlice()
-	if err := netlink.RouteAdd(&netlink.Route{Gw: gateway}); err != nil {
-		node.stop()
-		return nil, fmt.Errorf("route the pod through the node: %w", err)
+	for _, gateway := range []string{unapproved, unapproved6} {
+		if err := netlink.RouteAdd(&netlink.Route{Gw: net.ParseIP(gateway)}); err != nil {
+			node.stop()
+			return nil, fmt.Errorf("route the pod through the node at %s: %w", gateway, err)
+		}
 	}
 	err = node.run(func() error {
-		if err := addAddresses("node0", []string{directExit + "/32"}); err != nil {
+		if err := addAddresses("node0", []string{directExit + "/32", directExit6 + "/128"}); err != nil {
 			return err
 		}
-		listener, err := net.Listen("tcp", address(directExit, exitPort))
-		if err != nil {
-			return err
+		for _, listen := range []string{address(directExit, exitPort), address(directExit6, exitPort), address(unapproved6, servicePort)} {
+			listener, err := net.Listen("tcp", listen)
+			if err != nil {
+				return err
+			}
+			node.listeners = append(node.listeners, listener)
+			go acceptAll(listener)
 		}
-		node.listeners = append(node.listeners, listener)
-		go acceptAll(listener)
 		return nftInput(kubeProxyStandIn)
 	})
 	if err != nil {
