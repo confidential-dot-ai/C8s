@@ -814,7 +814,7 @@ func NewClientTLSConfig(cfg *ClientConfig) (*tls.Config, *CertManager, error) {
 		tlsCfg.VerifyPeerCertificate = func(raw [][]byte, chains [][]*x509.Certificate) error {
 			policy, err := current()
 			if err == nil && policy == nil {
-				err = errors.New("Policy is required")
+				policy = &VerifyPolicy{}
 			}
 			if err == nil {
 				err = requirePins(policy.Policy)
