@@ -287,6 +287,15 @@ func ParseServedJSON(data []byte) (*Allowlist, error) {
 	return parseJSON(data, servedDocument{})
 }
 
+// ParseStoredJSON decodes the document CDS stores, for a write built from it.
+// It refuses what ParseJSON refuses, except that it keeps an entry failing a
+// pinning rule only authored documents face (one a newer release added), so
+// the write can repair or delete that entry. A write that still holds the
+// entry is refused by CDS's ParseJSON.
+func ParseStoredJSON(data []byte) (*Allowlist, error) {
+	return parseJSON(data, storedDocument{})
+}
+
 func parseJSON(data []byte, p ingestPosture) (*Allowlist, error) {
 	if err := strictjson.Validate(data); err != nil {
 		return nil, err
@@ -333,6 +342,12 @@ type authoredDocument struct{}
 
 // servedDocument is the posture of ParseServedJSON.
 type servedDocument struct{}
+
+// storedDocument is the posture of ParseStoredJSON: authored, but keeping an
+// entry whose grant it cannot prove, as a served one does.
+type storedDocument struct{ authoredDocument }
+
+func (storedDocument) refuseAuthored(string, error) error { return nil }
 
 func (authoredDocument) restrictFields(dec *json.Decoder) { dec.DisallowUnknownFields() }
 

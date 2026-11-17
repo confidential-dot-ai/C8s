@@ -240,3 +240,23 @@ func TestPinnedForEgressRefusesServiceLinks(t *testing.T) {
 		t.Fatalf("PinnedForEgress(no serviceLinks) = %v, want nil", err)
 	}
 }
+
+// A stored entry with exits that a newer rule refuses still reads for a
+// write, so the write can repair or delete it; an unknown field still fails.
+func TestParseStoredJSONKeepsEntryARuleNowRefuses(t *testing.T) {
+	doc := []byte(fmt.Sprintf(`{"schema":"c8s.allowlist/v1","workloads":{"w":{"containers":[{"digest":%q}],"egress":[{"cidr":"203.0.113.7/32","port":443}]}}}`, egressDigest))
+	if _, err := ParseJSON(doc); !errors.Is(err, errEgressUnpinnedEnv) {
+		t.Fatalf("ParseJSON = %v, want errEgressUnpinnedEnv", err)
+	}
+	stored, err := ParseStoredJSON(doc)
+	if err != nil {
+		t.Fatalf("ParseStoredJSON = %v, want nil", err)
+	}
+	if w := stored.Workloads["w"]; len(w.Egress) != 1 {
+		t.Fatalf("ParseStoredJSON entry = %+v, want its exit kept", w)
+	}
+	unknown := []byte(fmt.Sprintf(`{"schema":"c8s.allowlist/v1","workloads":{"w":{"containers":[{"digest":%q,"newField":1}]}}}`, egressDigest))
+	if _, err := ParseStoredJSON(unknown); err == nil {
+		t.Fatal("ParseStoredJSON(unknown field) = nil, want an error")
+	}
+}
