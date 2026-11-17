@@ -2,6 +2,7 @@ package podprovider
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -16,9 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
-// bare404 is the error a real client returns when its server answers 404 with
-// no Status body, as something in front of the API server does. The client
-// reports it as not found.
+// bare404 is a real client's error for a 404 with no Status body.
 func bare404(t *testing.T) error {
 	t.Helper()
 	srv := httptest.NewServer(http.NotFoundHandler())
@@ -66,10 +65,8 @@ func TestRecordSweepKeepsAnInstanceWhosePodReadAnswersABare404(t *testing.T) {
 	pod := fixturePod()
 	r, cloud := fixtureReconciler(t, pod)
 	runToRunning(t, r, pod)
-	stored := r.client
 	failReads[*corev1.Pod](r, bare404(t))
 	err := r.sweep(t.Context())
-	r.client = stored
 	if rec := getRecord(t, r, pod); err == nil || cloud.deleteCalls != 0 || rec.Deleted {
 		t.Fatalf("sweep error %v, cloud deletes %d, record deleted %t", err, cloud.deleteCalls, rec.Deleted)
 	}
@@ -95,5 +92,59 @@ func TestDeletionKeepsThePodWhenItsRecordReadAnswersABare404(t *testing.T) {
 	// With the record readable again the instance is destroyed first.
 	if err := reconcile(t, r, pod); err != nil || cloud.deleteCalls != 1 {
 		t.Fatalf("reconcile error %v, cloud deletes %d", err, cloud.deleteCalls)
+	}
+}
+
+// A write that fails has not happened: the deletion is retried, not taken as
+// finished because the object was already gone.
+func TestDeletionRetriesAWriteThatAnswersABare404(t *testing.T) {
+	for name, fail := range map[string]func(error) interceptor.Funcs{
+		"terminal status": func(err error) interceptor.Funcs {
+			return interceptor.Funcs{SubResourcePatch: func(context.Context, client.Client, string, client.Object, client.Patch, ...client.SubResourcePatchOption) error {
+				return err
+			}}
+		},
+		"finalizer release": func(err error) interceptor.Funcs {
+			return interceptor.Funcs{Patch: func(context.Context, client.WithWatch, client.Object, client.Patch, ...client.PatchOption) error {
+				return err
+			}}
+		},
+		"pod removal": func(err error) interceptor.Funcs {
+			return interceptor.Funcs{Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+				if _, ok := obj.(*corev1.Pod); ok {
+					return err
+				}
+				return c.Delete(ctx, obj, opts...)
+			}}
+		},
+		"record removal": func(err error) interceptor.Funcs {
+			return interceptor.Funcs{Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+				if _, ok := obj.(*corev1.Secret); ok {
+					return err
+				}
+				return c.Delete(ctx, obj, opts...)
+			}}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			pod := fixturePod()
+			r, cloud := fixtureReconciler(t, pod)
+			runToRunning(t, r, pod)
+			if err := r.client.Delete(t.Context(), getPod(t, r, pod)); err != nil {
+				t.Fatal(err)
+			}
+			cloud.in.Status = "terminated"
+			refused := bare404(t)
+			r.client = interceptor.NewClient(r.client.(client.WithWatch), fail(refused))
+			var err error
+			for range 4 {
+				if err = reconcile(t, r, pod); err != nil {
+					break
+				}
+			}
+			if !errors.Is(err, refused) {
+				t.Fatalf("deletion ended with %v", err)
+			}
+		})
 	}
 }

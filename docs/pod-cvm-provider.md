@@ -347,7 +347,7 @@ request and idempotency key, including after restart or an ambiguous create
 response. The record is retained until deletion is confirmed. An orphan sweep also handles
 force-deleted Pods and same-name Pods with a new UID. A Pod or record counts
 as gone only on the API server's own not-found answer; a 404 from something in
-front of it is a failed read and is retried. Do not manually remove provider
+front of it is a failed request and is retried. Do not manually remove provider
 records or finalizers to bypass cleanup.
 
 A create whose response was lost is resolved, however old, by replaying the

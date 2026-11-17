@@ -341,19 +341,19 @@ func (r *Reconciler) finishDeletion(ctx context.Context, pod *corev1.Pod, rec *r
 		return err
 	}
 	uid := pod.UID
-	return client.IgnoreNotFound(r.client.Delete(ctx, pod, client.GracePeriodSeconds(0), client.Preconditions{UID: &uid}))
+	return ignoreNotFound(r.client.Delete(ctx, pod, client.GracePeriodSeconds(0), client.Preconditions{UID: &uid}))
 }
 
 func (r *Reconciler) releaseFinalizer(ctx context.Context, pod *corev1.Pod, rec *record) error {
 	if !controllerutil.ContainsFinalizer(pod, finalizer) {
 		return nil
 	}
-	if err := client.IgnoreNotFound(r.publishStatus(ctx, pod, terminalStatus(pod, rec, r.now()))); err != nil {
+	if err := ignoreNotFound(r.publishStatus(ctx, pod, terminalStatus(pod, rec, r.now()))); err != nil {
 		return err
 	}
 	before := pod.DeepCopy()
 	controllerutil.RemoveFinalizer(pod, finalizer)
-	return client.IgnoreNotFound(r.client.Patch(ctx, pod, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})))
+	return ignoreNotFound(r.client.Patch(ctx, pod, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})))
 }
 
 // removeInstance destroys the instance a record owns and reports whether
