@@ -115,6 +115,19 @@ The store holds:
 4. Only after that swap succeeds does it hold the entry.
 5. It then runs one gossip round. The write is **done (200)** only if a majority, counting the writer, then holds the entry.
 
+Retry an uncertain write by posting the same signed entry to `POST /ha/entries`.
+If that exact entry is already in the replica's chain, it runs a fresh gossip
+round to confirm replication. It appends nothing and does not reapply the payload.
+A confirmed retry returns the original entry's head, even when later entries
+exist; it does not make the old policy active again.
+
+Keep both the original body and signature. A newly signed copy of the same body
+has the same entry hash but is not an exact retry and is refused. An exact retry
+remains valid after its signing key is retired, because the held entry was
+verified under the authority at its original position. The replica must still
+be serving, and a fresh majority must confirm it before the response is 200.
+Seeing the entry in a chain read alone does not establish that confirmation.
+
 Other answers:
 - 202: committed, not confirmed. The write may have been applied.
 - 409: another write won, or the entry does not follow the head. Nothing was applied.

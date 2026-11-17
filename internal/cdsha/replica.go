@@ -600,7 +600,7 @@ func forward(ctx context.Context, st Store, old []byte, entries []cdschain.Entry
 	return old, nil
 }
 
-// Submit writes an operator's entry; the replica must be serving.
+// Submit writes or freshly confirms an operator's entry; the replica must be serving.
 func (r *Replica) Submit(ctx context.Context, e cdschain.Entry) (cdschain.Head, bool, error) {
 	return r.commit(ctx, func(*cdschain.State) (cdschain.Entry, error) { return e, nil }, true)
 }
@@ -610,7 +610,8 @@ func (r *Replica) Submit(ctx context.Context, e cdschain.Entry) (cdschain.Head, 
 // replica serves, checked after the store read. A lost compare-and-swap
 // is retried after a fresh read, so 409 means the verified head moved past
 // the entry's prev, not that the store's bytes did. An entry built from the
-// state it follows (a giver's member entry) never meets a 409.
+// state it follows (a giver's member entry) never meets a 409. An exact
+// accepted entry returns its original head without another store write.
 func (r *Replica) swap(ctx context.Context, entry func(*cdschain.State) (cdschain.Entry, error), serving bool) (cdschain.Head, cdschain.Entry, error) {
 	var e cdschain.Entry
 	for attempt := 1; ; attempt++ {
@@ -640,6 +641,20 @@ func (r *Replica) swap(ctx context.Context, entry func(*cdschain.State) (cdschai
 			return cdschain.Head{}, e, err
 		}
 		b, derr := e.Decode()
+		if derr == nil && b.Seq > 0 {
+			r.mu.Lock()
+			accepted := b.Seq < uint64(len(r.chain)) &&
+				bytes.Equal(r.chain[b.Seq].Body, e.Body) && r.chain[b.Seq].Sig == e.Sig
+			r.mu.Unlock()
+			if accepted {
+				return cdschain.Head{
+					V:       b.V,
+					Cluster: b.Cluster,
+					Seq:     b.Seq,
+					Hash:    e.Hash(),
+				}, e, nil
+			}
+		}
 		next, err := state.Apply(e)
 		if errors.Is(err, cdschain.ErrNotNext) && derr == nil && b.Seq > state.Head.Seq+1 {
 			// The entry follows a head this replica has not reached: it is
@@ -683,7 +698,7 @@ func (r *Replica) swap(ctx context.Context, entry func(*cdschain.State) (cdschai
 	}
 }
 
-// commit swaps an entry in (swap) and only after that CAS succeeds holds it.
+// commit swaps an entry in (swap), or confirms an exact accepted entry.
 // It is done (true) only when a majority, counting self, holds it after one
 // round.
 func (r *Replica) commit(ctx context.Context, entry func(*cdschain.State) (cdschain.Entry, error), serving bool) (cdschain.Head, bool, error) {
@@ -702,8 +717,9 @@ func (r *Replica) commit(ctx context.Context, entry func(*cdschain.State) (cdsch
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	confirmed := holders >= majority(len(r.cfg.Endpoints)) && r.fork == nil
-	if confirmed {
+	confirmed := holders >= majority(len(r.cfg.Endpoints)) && r.fork == nil && r.holdsLocked(next)
+	// A newer confirmed head already protects its entire prefix from Resolve.
+	if confirmed && (len(r.done) == 0 || r.done[len(r.done)-1].Seq < next.Seq) {
 		r.done = append(r.done, next)
 	}
 	return next, confirmed, nil
