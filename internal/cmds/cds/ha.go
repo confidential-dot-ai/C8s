@@ -50,7 +50,7 @@ type haConfig struct {
 
 // startHA builds this replica of the configured set over the CDS's mesh CA,
 // allowlist store and serving certificate, and starts its gossip.
-func startHA(ctx context.Context, cfg config, mesh *issuer.MeshCA, store *allowlist.Store, serving *tls.Config, meshPeers *armtls.CertManager, nodes *nodeSet, retireInventoryConns func()) (*cdsha.Replica, error) {
+func startHA(ctx context.Context, cfg config, mesh *issuer.MeshCA, store *allowlist.Store, serving *tls.Config, meshPeers *armtls.CertManager, nodes *chainNodes) (*cdsha.Replica, error) {
 	endpoints := cfg.measured.HA.Endpoints
 	self := cfg.ha.self
 	slot := slices.Index(endpoints, self)
@@ -67,7 +67,6 @@ func startHA(ctx context.Context, cfg config, mesh *issuer.MeshCA, store *allowl
 		return nil, err
 	}
 	policy := chainPolicyServer(store, cfg.measured.Workloads)
-	servedNodes := ""
 	replica, err := cdsha.New(cdsha.Config{
 		Cluster: cfg.measured.ClusterID, Endpoints: endpoints, Self: slot,
 		OperatorKeys: cfg.measured.OperatorKeys.Keys(),
@@ -87,12 +86,8 @@ func startHA(ctx context.Context, cfg config, mesh *issuer.MeshCA, store *allowl
 			if err := policy(s); err != nil {
 				return fmt.Errorf("serving the chain's allowlist (version %s): %w", s.CurrentPolicyVersion(), err)
 			}
-			if s.Nodes != servedNodes {
-				if err := serveNodes(nodes, s.Nodes, cfg.measured.Nodes, cfg.measured.PodImages); err != nil {
-					return fmt.Errorf("certifying the chain's node images: %w", err)
-				}
-				servedNodes = s.Nodes
-				retireInventoryConns()
+			if err := nodes.serve(s.Nodes); err != nil {
+				return fmt.Errorf("certifying the chain's node images: %w", err)
 			}
 			if err := serveRoutes(store, s); err != nil {
 				return fmt.Errorf("serving the chain's route manifest: %w", err)
@@ -173,24 +168,51 @@ func servePolicy(store *allowlist.Store, s *cdschain.State, seed *pkgallowlist.A
 	return nil
 }
 
-// serveNodes makes the chain's node images the set this CDS certifies; ""
-// is a chain without a nodes entry, which certifies the launch file's set. A
-// set that names a Pod launch key as a node authority certifies no node, on
-// every replica alike.
-func serveNodes(nodes *nodeSet, measurements string, launch refvalues.ReferenceValues, pods []remote.ImagePin) error {
-	if measurements == "" {
-		return nodes.set(launch)
+// chainNodes certifies the node images of the chain's nodes entry, the
+// launch file's while the chain holds none, and on a change retires the
+// inventory connections made under the images it certified before.
+type chainNodes struct {
+	set    *nodeSet
+	launch refvalues.ReferenceValues
+	pods   []remote.ImagePin
+	retire func()
+	served string
+}
+
+// serve makes measurements, a state's nodes entry ("" for none), the set
+// this CDS certifies, when it changed.
+func (c *chainNodes) serve(measurements string) error {
+	if measurements == c.served {
+		return nil
 	}
-	values, err := refvalues.Parse([]byte(measurements))
+	values, err := c.values(measurements)
 	if err != nil {
 		return err
 	}
-	if err := cdsconfig.ValidatePodNodeAuthorities(pods, values.Images); err != nil {
+	if err := c.set.set(values); err != nil {
+		return err
+	}
+	c.served = measurements
+	c.retire()
+	return nil
+}
+
+// values is the set measurements names. A set that names a Pod launch key
+// as a node authority certifies no node, on every replica alike.
+func (c *chainNodes) values(measurements string) (refvalues.ReferenceValues, error) {
+	if measurements == "" {
+		return c.launch, nil
+	}
+	values, err := refvalues.Parse([]byte(measurements))
+	if err != nil {
+		return values, err
+	}
+	if err := cdsconfig.ValidatePodNodeAuthorities(c.pods, values.Images); err != nil {
 		slog.Error("CDS replica certifies no node: the chain's node images name a Pod launch key", "error", err)
-		return nodes.set(refvalues.ReferenceValues{Family: values.Family})
+		return refvalues.ReferenceValues{Family: values.Family}, nil
 	}
 	slog.Info("CDS certifies the chain's node images", "images", len(values.Images))
-	return nodes.set(values)
+	return values, nil
 }
 
 // chainValidator checks an entry's payload beyond the chain's own rules

@@ -36,8 +36,9 @@ type chainPins struct {
 	// swapped when the pins change.
 	pullTransport func() (*http.Transport, error)
 	pull          atomic.Pointer[http.Transport]
-	// mu guards known's writes and digests: the sandbox-digests listener,
-	// whose CDS client pins follow the chain too, verified at attestationAPI.
+	// mu guards known, the pins documents and digests: the sandbox-digests
+	// listener, whose CDS client pins follow the chain too, verified at
+	// attestationAPI.
 	mu             sync.Mutex
 	digests        *armtls.CertManager
 	attestationAPI string
@@ -85,41 +86,49 @@ func newChainPins(cfg pullConfig, url string, clusterDNS netip.Addr) (*chainPins
 // them; it reports whether they changed. The chain counts as followed only
 // once all of that is done, so any failed step is retried.
 func (c *chainPins) refresh(ctx context.Context) (bool, error) {
-	state, err := c.follow(ctx, c.known)
-	if err != nil {
-		return false, err
-	}
-	if c.known != nil && slices.Equal(c.known.Accepted, state.Accepted) {
-		c.mu.Lock()
-		c.known = state
-		c.mu.Unlock()
-		return false, nil
-	}
-	document, err := refvalues.Format(state.Pins())
-	if err == nil {
-		err = os.MkdirAll(filepath.Dir(c.path), 0o700)
-	}
-	// In place, not by rename: pods bind-mount the rendered file by inode.
-	if err == nil {
-		err = os.WriteFile(c.path, document, 0o644)
-	}
-	if err == nil && c.podPins != "" {
-		err = os.WriteFile(c.podPins, document, 0o644)
-	}
-	var pull *http.Transport
-	if err == nil && c.pullTransport != nil {
-		pull, err = c.pullTransport()
-	}
+	c.mu.Lock()
+	known := c.known
+	c.mu.Unlock()
+	// The follow reads the chain over the network, so it runs unlocked.
+	state, err := c.follow(ctx, known)
 	if err != nil {
 		return false, err
 	}
 	c.mu.Lock()
-	c.known = state
-	if pull != nil {
+	defer c.mu.Unlock()
+	if c.known != known {
+		// Another refresh applied a chain meanwhile, which state may predate.
+		return false, nil
+	}
+	if known != nil && slices.Equal(known.Accepted, state.Accepted) {
+		c.known = state
+		return false, nil
+	}
+	document, err := refvalues.Format(state.Pins())
+	if err != nil {
+		return false, err
+	}
+	if err := os.MkdirAll(filepath.Dir(c.path), 0o700); err != nil {
+		return false, err
+	}
+	// In place, not by rename: pods bind-mount the rendered file by inode.
+	if err := writeInPlace(c.path, document, 0o644); err != nil {
+		return false, err
+	}
+	if c.podPins != "" {
+		if err := writeInPlace(c.podPins, document, 0o644); err != nil {
+			return false, err
+		}
+	}
+	if c.pullTransport != nil {
+		pull, err := c.pullTransport()
+		if err != nil {
+			return false, err
+		}
 		c.pull.Store(pull)
 	}
+	c.known = state
 	c.pushDigestsLocked()
-	c.mu.Unlock()
 	slog.Info("CDS pins follow the replica set's chain", "head", state.Head.Seq, "builds", len(state.Accepted))
 	return true, nil
 }
@@ -182,9 +191,9 @@ func followChainAtStart(cfg *config, logger *slog.Logger) (*chainPins, error) {
 	defer cancel()
 	if _, err := chain.refresh(ctx); err != nil {
 		logger.Warn("CDS chain not followed yet; serving the base allowlist and retrying in the background", "error", err)
-		return chain, nil
+	} else {
+		cfg.Allowlist.Pull.CDSMeasurementsConfig = chain.path
 	}
-	cfg.Allowlist.Pull.CDSMeasurementsConfig = chain.path
 	return chain, nil
 }
 

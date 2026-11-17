@@ -346,13 +346,18 @@ func TestReplicaCertifiesTheChainsNodeImages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := serveNodes(nodes, string(worker), launch, nil); err != nil {
+	retired := 0
+	served := &chainNodes{set: nodes, launch: launch, retire: func() { retired++ }}
+	if err := served.serve(string(worker)); err != nil {
 		t.Fatal(err)
 	}
 	if code := attest(); code != http.StatusOK {
 		t.Fatalf("a node the chain's nodes entry names: status %d", code)
 	}
-	if err := serveNodes(nodes, "", launch, nil); err != nil {
+	if err := served.serve(string(worker)); err != nil || retired != 1 {
+		t.Fatalf("the same nodes entry again: %v, inventory connections retired %d times, want once", err, retired)
+	}
+	if err := served.serve(""); err != nil {
 		t.Fatal(err)
 	}
 	if code := attest(); code == http.StatusOK {
@@ -411,7 +416,8 @@ func TestAPodLaunchKeyIsNoNodeOrOperatorAuthorityOnTheChain(t *testing.T) {
 		t.Fatal(err)
 	}
 	for anchor, certified := range map[string]int{podKey: 0, otherKey: 1} {
-		if err := serveNodes(nodes, nodesDoc(anchor), refvalues.ReferenceValues{}, pods); err != nil {
+		served := &chainNodes{set: nodes, pods: pods, retire: func() {}}
+		if err := served.serve(nodesDoc(anchor)); err != nil {
 			t.Fatal(err)
 		}
 		if got := len(nodes.images()); got != certified {

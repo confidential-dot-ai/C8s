@@ -193,6 +193,22 @@ func requireAttestationApi(url string) error {
 	return nil
 }
 
+// DigestsEndpointConfig configures [StartDigestsEndpoint].
+type DigestsEndpointConfig struct {
+	Resolver SandboxResolver
+	// Identity is the node's sandbox-token public key, DER-encoded, which the
+	// identity route serves.
+	Identity          []byte
+	Platform          string
+	AttestFunc        func(ctx context.Context, customData string) (string, error)
+	AttestationAPIURL string
+	// CDSPins are what a calling CDS must satisfy ([DigestsServerTLSConfig]).
+	CDSPins armtls.Pins
+	// MeasuredPoliciesFile is the journal a TDX certificate lists the
+	// policies of. Empty lists none.
+	MeasuredPoliciesFile string
+}
+
 // StartDigestsEndpoint binds DigestsPort and serves the identity and digests
 // routes for the node's NRI inventory. The returned manager follows a
 // change of the CDS pins (CertManager.UpdateClientPolicy).
@@ -202,8 +218,8 @@ func requireAttestationApi(url string) error {
 // rather than after the warm-up window. Warm-up failure is logged, not fatal:
 // the endpoint provisions on the first handshake instead, and taking the
 // inventory down would cost far more than a slow first callback.
-func StartDigestsEndpoint(ctx context.Context, logger *slog.Logger, resolver SandboxResolver, identity []byte, platform string, attestFunc func(ctx context.Context, customData string) (string, error), attestationApiURL string, cdsPins armtls.Pins, measuredPolicies string) (*armtls.CertManager, error) {
-	tlsCfg, certMgr, err := DigestsServerTLSConfig(platform, attestFunc, attestationApiURL, cdsPins, 0, measuredPolicies)
+func StartDigestsEndpoint(ctx context.Context, logger *slog.Logger, cfg DigestsEndpointConfig) (*armtls.CertManager, error) {
+	tlsCfg, certMgr, err := DigestsServerTLSConfig(cfg.Platform, cfg.AttestFunc, cfg.AttestationAPIURL, cfg.CDSPins, 0, cfg.MeasuredPoliciesFile)
 	if err != nil {
 		return nil, err
 	}
@@ -221,7 +237,7 @@ func StartDigestsEndpoint(ctx context.Context, logger *slog.Logger, resolver San
 		}
 		go certMgr.RunRotation(ctx)
 		logger.Info("starting sandbox-digests endpoint", "addr", addr)
-		if err := ServeDigests(ctx, l, resolver, identity); err != nil {
+		if err := ServeDigests(ctx, l, cfg.Resolver, cfg.Identity); err != nil {
 			logger.Error("sandbox-digests endpoint error", "error", err)
 		}
 	}()
@@ -262,19 +278,19 @@ type DigestsClientConfig struct {
 }
 
 func (c DigestsClientConfig) tlsConfig() *armtls.ClientConfig {
-	cfg := &armtls.ClientConfig{
-		Policy:               c.Pins.VerifyPolicy(c.AttestationAPIURL),
+	current := c.CurrentPins
+	if current == nil {
+		current = func() armtls.Pins { return c.Pins }
+	}
+	return &armtls.ClientConfig{
+		Policy: current().VerifyPolicy(c.AttestationAPIURL),
+		Current: func() (*armtls.VerifyPolicy, error) {
+			return current().VerifyPolicy(c.AttestationAPIURL), nil
+		},
 		Platform:             c.Platform,
 		AttestFunc:           c.AttestFunc,
 		MeasuredPoliciesFile: c.MeasuredPoliciesFile,
 	}
-	if current := c.CurrentPins; current != nil {
-		cfg.Policy = current().VerifyPolicy(c.AttestationAPIURL)
-		cfg.Current = func() (*armtls.VerifyPolicy, error) {
-			return current().VerifyPolicy(c.AttestationAPIURL), nil
-		}
-	}
-	return cfg
 }
 
 // CloseIdleConnections drops the connections pooled now. A callback in flight

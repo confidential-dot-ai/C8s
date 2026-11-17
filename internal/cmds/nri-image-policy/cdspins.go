@@ -68,11 +68,11 @@ func (p *plugin) prepareCDSPins() error {
 // before a plugin restart, which bind-mount its inode, read the new contents
 // and the chain's later in-place updates too.
 func rewriteNodeDocument(name string, document []byte) (string, error) {
-	path := filepath.Join(enforcerRuntimeDir, name)
-	if _, err := os.Stat(path); err != nil {
-		return renderNodeDocument(name, document)
+	if err := os.MkdirAll(enforcerRuntimeDir, 0o700); err != nil {
+		return "", fmt.Errorf("the plugin's runtime directory: %w", err)
 	}
-	if err := os.WriteFile(path, document, 0o644); err != nil {
+	path := filepath.Join(enforcerRuntimeDir, name)
+	if err := writeInPlace(path, document, 0o644); err != nil {
 		return "", fmt.Errorf("write %s: %w", name, err)
 	}
 	return path, nil
