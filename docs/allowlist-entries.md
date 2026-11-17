@@ -162,7 +162,11 @@ is IPv4, and is no broader than `/16` (IPv4) or `/48` (IPv6). Ranges that are
 not unicast hosts are refused: `/0`, loopback, link-local, multicast, reserved
 and broadcast, and the IPv6 forms that embed IPv4 addresses. An entry with
 egress pins its launch as a grant does, and a node refuses one that overlaps a
-cluster range, its own address, the resolver, or CDS.
+cluster range, its own address, the resolver, or CDS. The node drops a
+connection from the pod to one of its egress entries that the node itself
+translates to another destination, such as a Service published with an
+`externalIPs` or load-balancer address inside the range: egress reaches the
+range as dialed or not at all.
 
 ## `hostPorts`
 
