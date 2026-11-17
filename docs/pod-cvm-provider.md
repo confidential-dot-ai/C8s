@@ -296,12 +296,13 @@ status projection matching the assigned Pod clears the window. A later failure
 of the guest itself (refused attestation, a status naming another Pod, a reboot,
 an ended or replaced instance) begins another window of the same frozen
 duration. A Cloud API or node outage does not: the Pod keeps its last status
-with readiness unknown until the outage ends. While Cloud throttles the
+with readiness unknown until the outage ends. An answer without a Cloud
+problem code did not come from Cloud and counts as an outage. While Cloud throttles the
 provider (HTTP 429), the Pod reports `RateLimited` and the provider waits as
 Cloud's `Retry-After` asks (at most five minutes, or the 10-second poll when it
 names none) plus a few seconds of jitter, never past this window. A request
-Cloud refuses as such (another 4xx, such as `invalid_request`) reports
-`CloudRejectedRequest`, and the provider log names Cloud's problem code; a
+Cloud refuses as such (another 4xx carrying a Cloud problem code, such as
+`invalid_request`) reports `CloudRejectedRequest`, and the provider log names Cloud's problem code; a
 create refusal that proves no VM exists ends the Pod `Failed` at once, any
 other refusal runs this window. A valid attested `Pending` Pod or
 a running Pod whose application is unready does not time out on this basis.
@@ -347,8 +348,8 @@ request and idempotency key, including after restart or an ambiguous create
 response. The record is retained until deletion is confirmed. An orphan sweep also handles
 force-deleted Pods and same-name Pods with a new UID. A Pod or record counts
 as gone only on the API server's own not-found answer; a 404 from something in
-front of it is a failed request and is retried. An instance likewise counts as
-gone only on Cloud's own `not_found` answer. Do not manually remove provider
+front of it is a failed request and is retried. Likewise a Cloud 404 means the
+instance is gone only when it carries Cloud's `not_found` code. Do not manually remove provider
 records or finalizers to bypass cleanup.
 
 A create whose response was lost is resolved, however old, by replaying the

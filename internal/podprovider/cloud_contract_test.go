@@ -16,7 +16,7 @@ import (
 )
 
 func TestCloudResponseIdentityAndCardinalityContract(t *testing.T) {
-	for _, kind := range []string{"create-empty", "create-many", "find-many", "find-page", "find-error", "get-valid", "get-not-found", "get-invalid-json", "delete-error", "delete-accepted", "problem-code-redaction"} {
+	for _, kind := range []string{"create-empty", "create-many", "find-many", "find-page", "find-error", "get-valid", "get-not-found", "get-invalid-json", "delete-error", "delete-accepted", "delete-bare-404", "delete-html-404", "problem-code-redaction"} {
 		t.Run(kind, func(t *testing.T) {
 			body := `{"items":[{"id":"i-one"}]}`
 			status := http.StatusOK
@@ -35,6 +35,10 @@ func TestCloudResponseIdentityAndCardinalityContract(t *testing.T) {
 			case "get-not-found":
 				status = http.StatusNotFound
 				body = `{"code":"not_found"}`
+			case "delete-bare-404":
+				status, body = http.StatusNotFound, ""
+			case "delete-html-404":
+				status, body = http.StatusNotFound, "<html>404</html>"
 			case "get-invalid-json":
 				body = `{`
 			case "delete-accepted":
