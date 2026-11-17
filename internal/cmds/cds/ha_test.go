@@ -343,13 +343,18 @@ func TestReplicaCertifiesTheChainsNodeImages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := serveNodes(nodes, string(worker), launch); err != nil {
+	retired := 0
+	served := &chainNodes{set: nodes, launch: launch, retire: func() { retired++ }}
+	if err := served.serve(string(worker)); err != nil {
 		t.Fatal(err)
 	}
 	if code := attest(); code != http.StatusOK {
 		t.Fatalf("a node the chain's nodes entry names: status %d", code)
 	}
-	if err := serveNodes(nodes, "", launch); err != nil {
+	if err := served.serve(string(worker)); err != nil || retired != 1 {
+		t.Fatalf("the same nodes entry again: %v, inventory connections retired %d times, want once", err, retired)
+	}
+	if err := served.serve(""); err != nil {
 		t.Fatal(err)
 	}
 	if code := attest(); code == http.StatusOK {
