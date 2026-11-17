@@ -9,9 +9,12 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -23,6 +26,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cdschain"
 	haapi "github.com/confidential-dot-ai/c8s/internal/cdsha"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cdsconn"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
@@ -155,6 +159,31 @@ func TestGenesisStartsThePendingReplicas(t *testing.T) {
 	}
 	if err := o.genesis(context.Background(), &out, []string{l.url}, "other", "v1.0.0", pin, ""); err == nil {
 		t.Fatal("a genesis for another cluster was posted")
+	}
+}
+
+// A genesis the replica took whose answer was lost exits 3 and names the
+// hash, for --genesis to pin.
+func TestGenesisWithALostAnswer(t *testing.T) {
+	l := newLiveReplica(t)
+	target, err := url.Parse(l.url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	proxy.ModifyResponse = func(resp *http.Response) error {
+		if resp.Request.Method == http.MethodPost && resp.Request.URL.Path == haapi.GenesisPath {
+			return errors.New("the answer was lost")
+		}
+		return nil
+	}
+	front := httptest.NewServer(proxy)
+	defer front.Close()
+	pin := []byte(testutil.CDSPinDocument(testutil.TestMeasurement, "launch"))
+	err = l.options().genesis(context.Background(), &bytes.Buffer{}, []string{front.URL}, "lane", "v1.0.0", pin, "")
+	state := l.waitServing(t)
+	if cmdsutil.ExitStatus(err) != cmdsutil.ExitNotConfirmed || !strings.Contains(err.Error(), "--genesis "+state.Genesis.String()) {
+		t.Fatalf("a genesis the replica took, answered with a lost answer: %v", err)
 	}
 }
 
@@ -433,6 +462,61 @@ func TestResolveResumesFromItsPlan(t *testing.T) {
 	}
 	if p, err := o.plan("lane"); err != nil || p != nil {
 		t.Fatalf("plan after the resolve finished: %+v %v", p, err)
+	}
+}
+
+// A resolve that showed a fork at another seq leaves its plan saved; the
+// resolve of that fork takes the plan over, with its refresh bound, rather
+// than refuse it as unfinished.
+func TestResolveTakesOverThePlanThatShowedItsFork(t *testing.T) {
+	l, o, seq, mine := forkedReplica(t)
+	ctx := context.Background()
+	held := l.replica.Status().Held.Seq + 2
+	if err := o.savePlan("lane", &resolvePlan{Seq: seq + 3, Keep: cdschain.Hash{9}, Drop: cdschain.Hash{8}, Held: held}); err != nil {
+		t.Fatal(err)
+	}
+	if err := o.resolve(ctx, io.Discard, []string{l.url}, seq, mine.Hash(), nil, 0, false, 10*time.Second); err != nil {
+		t.Fatalf("the resolve of the fork the saved plan showed: %v", err)
+	}
+	if state := l.waitServing(t); state.PolicySeq <= held {
+		t.Fatalf("policy at %d, want it above the saved plan's held head %d", state.PolicySeq, held)
+	}
+	if p, err := o.plan("lane"); err != nil || p != nil {
+		t.Fatalf("plan after the resolve finished: %+v %v", p, err)
+	}
+}
+
+// A resolution never drops a write a replica answered done at or after the
+// fork: a replica halted there shows its branch; for any other, halted
+// elsewhere or not at all, the done write's chain is read, and a done write
+// no replica shows refuses it.
+func TestDoneOnDropped(t *testing.T) {
+	entries, _ := testChain(t, 8)
+	srv := httptest.NewServer(&racedReplica{entries: entries})
+	defer srv.Close()
+	o := &options{Options: cdsconn.Options{Insecure: true, Timeout: 5 * time.Second}}
+	onChain, other := entries[5].Hash(), cdschain.Hash{2}
+	done := func(seq uint64) cdschain.Head { return cdschain.Head{Seq: seq, Hash: entries[seq].Hash()} }
+	forkOn := func(mine, theirs cdschain.Hash, d ...cdschain.Head) *haapi.Status {
+		return &haapi.Status{Held: &cdschain.Head{Seq: 7}, Fork: &haapi.Fork{Seq: 5, Mine: mine, Theirs: theirs}, Confirmed: d}
+	}
+	for _, tc := range []struct {
+		name     string
+		statuses []*haapi.Status
+		drop     cdschain.Hash
+		want     string
+	}{
+		{"halted on the dropped branch", []*haapi.Status{forkOn(onChain, other, done(5))}, onChain, "on the branch --keep drops"},
+		{"halted on the kept branch", []*haapi.Status{forkOn(onChain, other, done(7))}, other, ""},
+		{"done at the fork on the dropped entry", []*haapi.Status{{Held: &cdschain.Head{Seq: 7}, Confirmed: []cdschain.Head{done(5)}}}, onChain, "on the branch --keep drops"},
+		{"done above the fork on the dropped branch", []*haapi.Status{{Held: &cdschain.Head{Seq: 7}, Confirmed: []cdschain.Head{done(7)}}}, onChain, "on the branch --keep drops"},
+		{"done above the fork on the kept branch", []*haapi.Status{{Held: &cdschain.Head{Seq: 7}, Confirmed: []cdschain.Head{done(7)}}}, other, ""},
+		{"done below the fork", []*haapi.Status{{Held: &cdschain.Head{Seq: 7}, Confirmed: []cdschain.Head{done(4)}}}, onChain, ""},
+		{"a done write no replica shows", []*haapi.Status{{Held: &cdschain.Head{Seq: 7}, Confirmed: []cdschain.Head{{Seq: 6, Hash: cdschain.Hash{9}}}}}, onChain, "cannot tell"},
+	} {
+		if err := o.doneOnDropped(context.Background(), []string{srv.URL}, tc.statuses, 5, tc.drop); (tc.want == "") != (err == nil) || (err != nil && !strings.Contains(err.Error(), tc.want)) {
+			t.Errorf("%s: %v", tc.name, err)
+		}
 	}
 }
 

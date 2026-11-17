@@ -290,6 +290,32 @@ func TestWholeDocumentWriteUnconfirmed(t *testing.T) {
 	}
 }
 
+// A write answered 500 whose read-back fails too may have landed: it exits
+// as unconfirmed, not as refused.
+func TestWholeDocumentWriteUnconfirmedWhenTheReadBackFails(t *testing.T) {
+	for _, command := range []string{"upload", "apply"} {
+		t.Run(command, func(t *testing.T) {
+			dir := t.TempDir()
+			keyPath, pub := newOperatorKeypair(t, dir, "op.key")
+			srv, cds := cdsTestServer(t, []*ecdsa.PublicKey{pub})
+			cds.lost500 = 1
+			cds.afterReplace = func() {
+				cds.mu.Lock()
+				cds.failReads = true
+				cds.mu.Unlock()
+			}
+
+			_, _, err := runCmd(append(wholeDocArgs(t, command), "--url", srv.URL, "--insecure", "--operator-key", keyPath)...)
+			if err == nil || !strings.Contains(err.Error(), "not confirmed") {
+				t.Fatalf("err = %v, want it to say the write is unconfirmed", err)
+			}
+			if got := cmdsutil.ExitStatus(err); got != cmdsutil.ExitNotConfirmed {
+				t.Fatalf("a write whose answer and read-back both failed exits %d, want %d", got, cmdsutil.ExitNotConfirmed)
+			}
+		})
+	}
+}
+
 // apply's write lands but is answered 500, and another write lands on top
 // before apply reads back. apply re-merges onto the newer document, which
 // already holds its entries, so it reports success without writing again.

@@ -215,7 +215,7 @@ func cdsHTTPClient(cfg config) (*http.Client, error) {
 // cdsPins resolves the pins get-cert holds its CDS to.
 func cdsPins(cfg config) (armtls.Pins, error) {
 	return cmdsutil.CDSPins(workloadclaims.CDSPinsPath,
-		cmdsutil.ImagePolicySource{File: cfg.MeasurementsConfig, JSON: cfg.MeasurementsConfigJSON})()
+		cmdsutil.ImagePolicySource{File: cfg.MeasurementsConfig, JSON: cfg.MeasurementsConfigJSON})
 }
 
 // obtainCertFn is a var so renewal-loop tests can observe attempts.

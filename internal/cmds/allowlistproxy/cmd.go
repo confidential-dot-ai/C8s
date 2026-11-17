@@ -149,7 +149,10 @@ func newHandler(cfg config, logger *slog.Logger) (http.Handler, error) {
 	}
 	// resolveCDS checked the pins once; the client re-reads them per
 	// handshake to follow a CDS upgrade.
-	httpClient, err := armtls.NewFollowingHTTPClient(cmdsutil.CDSPins(nodePinsPath, cmdsutil.ImagePolicySource{File: cfg.measurementsConfig}), cfg.attestationAPIURL)
+	pins := func() (armtls.Pins, error) {
+		return cmdsutil.CDSPins(nodePinsPath, cmdsutil.ImagePolicySource{File: cfg.measurementsConfig})
+	}
+	httpClient, err := armtls.NewFollowingHTTPClient(pins, cfg.attestationAPIURL)
 	if err == nil {
 		httpClient, err = cmdsutil.NodeCDSChain(httpClient, workloadclaims.CDSAddressPath)
 	}
