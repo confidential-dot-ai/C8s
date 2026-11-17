@@ -465,6 +465,27 @@ func TestResolveResumesFromItsPlan(t *testing.T) {
 	}
 }
 
+// A resolve that showed a fork at another seq leaves its plan saved; the
+// resolve of that fork takes the plan over, with its refresh bound, rather
+// than refuse it as unfinished.
+func TestResolveTakesOverThePlanThatShowedItsFork(t *testing.T) {
+	l, o, seq, mine := forkedReplica(t)
+	ctx := context.Background()
+	held := l.replica.Status().Held.Seq + 2
+	if err := o.savePlan("lane", &resolvePlan{Seq: seq + 3, Keep: cdschain.Hash{9}, Drop: cdschain.Hash{8}, Held: held}); err != nil {
+		t.Fatal(err)
+	}
+	if err := o.resolve(ctx, io.Discard, []string{l.url}, seq, mine.Hash(), nil, 0, false, 10*time.Second); err != nil {
+		t.Fatalf("the resolve of the fork the saved plan showed: %v", err)
+	}
+	if state := l.waitServing(t); state.PolicySeq <= held {
+		t.Fatalf("policy at %d, want it above the saved plan's held head %d", state.PolicySeq, held)
+	}
+	if p, err := o.plan("lane"); err != nil || p != nil {
+		t.Fatalf("plan after the resolve finished: %+v %v", p, err)
+	}
+}
+
 // Above the fork, the acknowledged head's entry at the fork's seq is read
 // from a replica that holds the head, its chain linked up to it; with no
 // such replica the resolve cannot tell what it drops.

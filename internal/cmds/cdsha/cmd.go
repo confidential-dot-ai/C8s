@@ -260,14 +260,19 @@ func (o *options) resolve(ctx context.Context, out io.Writer, urls []string, seq
 	switch {
 	case err != nil:
 		return err
-	case plan != nil && (plan.Seq != seq || plan.Keep != kept):
-		path, _ := o.planPath(cluster)
-		return fmt.Errorf("the resolve of seq %d keeping %s is not finished: run it again first, or remove %s to abandon it", plan.Seq, plan.Keep, path)
-	case plan != nil:
+	case plan != nil && plan.Seq == seq && plan.Keep == kept:
 		// A rerun: the first run may have cleared forks and cut chains, so
 		// the plan, not the statuses now, says what was dropped and held.
 		plan.Held = max(plan.Held, held)
+	case plan != nil && !haltedAt(statuses, seq):
+		path, _ := o.planPath(cluster)
+		return fmt.Errorf("the resolve of seq %d keeping %s is not finished: run it again first, or remove %s to abandon it", plan.Seq, plan.Keep, path)
 	default:
+		if plan != nil {
+			// The resolve of plan.Seq showed the fork at seq (afterResolve):
+			// this one takes over its allowlist refresh.
+			held = max(held, plan.Held)
+		}
 		rec, err := o.record(cluster)
 		if err != nil {
 			return err
@@ -512,6 +517,11 @@ func planResolution(statuses []*haapi.Status, seq uint64, keep cdschain.Hash, as
 		return drop, fmt.Errorf("the dropped entry %s is on the chain of this CLI's acknowledged head", drop)
 	}
 	return drop, nil
+}
+
+// haltedAt reports whether a replica is halted on a fork at seq.
+func haltedAt(statuses []*haapi.Status, seq uint64) bool {
+	return slices.ContainsFunc(statuses, func(s *haapi.Status) bool { return s != nil && s.Fork != nil && s.Fork.Seq == seq })
 }
 
 // resolutions are the requests by slot: a replica that holds no chain (or
