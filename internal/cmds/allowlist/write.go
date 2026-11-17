@@ -248,8 +248,8 @@ func replaceIfUnchanged(ctx context.Context, c allowlistclient.Client, doc *pkga
 	landed, served, rerr := servesDocument(ctx, c, doc)
 	switch {
 	case rerr != nil:
-		return fmt.Errorf("the write was not confirmed (%w), and reading the allowlist back to see whether it landed failed: %v; "+
-			"check with 'c8s allowlist list' before running the command again", err, rerr)
+		return &cmdsutil.ExitStatusError{Status: cmdsutil.ExitNotConfirmed, Err: fmt.Errorf("the write was not confirmed (%w), and reading the allowlist back to see whether it landed failed: %v; "+
+			"check with 'c8s allowlist list' before running the command again", err, rerr)}
 	case landed:
 		return nil
 	case served == version:
