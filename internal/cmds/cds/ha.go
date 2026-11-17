@@ -28,7 +28,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/sandboxledger"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
-	"github.com/confidential-dot-ai/c8s/pkg/cdsgenesis"
+	"github.com/confidential-dot-ai/c8s/pkg/cdspin"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 	"github.com/confidential-dot-ai/c8s/pkg/routes"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
@@ -68,19 +68,13 @@ func startHA(ctx context.Context, cfg config, mesh *issuer.MeshCA, store *allowl
 	}
 	policy := chainPolicyServer(store, cfg.measured.Workloads)
 	replica, err := cdsha.New(cdsha.Config{
-		Cluster: cfg.measured.ClusterID, Endpoints: endpoints, Self: slot,
-		OperatorKeys: cfg.measured.OperatorKeys.Keys(),
-		Gossip:       cfg.ha.gossip, PeerTimeout: cfg.ha.peerTimeout, StoreTimeout: cfg.ha.storeTimeout,
-		WarnEntries: cfg.ha.warnEntries, WarnBytes: cfg.ha.warnBytes,
-		Mesh: mesh,
-		// Gossip is authenticated by member signatures, not by the channel.
-		Peer: &http.Client{Transport: &http.Transport{TLSClientConfig: pendingattestation.TLSConfig("")}},
 		Attested: func(pins armtls.Pins) (*http.Client, error) {
 			return armtls.NewVerifyingHTTPClient(pins, cfg.attestationApiURL)
 		},
-		SelfCheck: func(_ context.Context, measurements string) (bool, error) {
-			return ownBuildPasses(serving, measurements, cfg.attestationApiURL)
-		},
+		Cluster:   cfg.measured.ClusterID,
+		Endpoints: endpoints,
+		Gossip:    cfg.ha.gossip,
+		Mesh:      mesh,
 		OnState: func(s *cdschain.State) error {
 			meshPeers.UpdateClientCA(mesh.Current().CA.Cert)
 			if err := policy(s); err != nil {
@@ -94,13 +88,45 @@ func startHA(ctx context.Context, cfg config, mesh *issuer.MeshCA, store *allowl
 			}
 			return nil
 		},
-		Validate: func(b cdschain.Body) error { return validateEntry(b, cfg.measured.PodImages, mesh, store) },
+		OperatorKeys: cfg.measured.OperatorKeys.Keys(),
+		// Gossip is authenticated by member signatures, not by the channel.
+		Peer:        &http.Client{Transport: &http.Transport{TLSClientConfig: pendingattestation.TLSConfig("")}},
+		PeerTimeout: cfg.ha.peerTimeout,
+		Self:        slot,
+		SelfCheck: func(_ context.Context, measurements string) (bool, error) {
+			return ownBuildPasses(serving, measurements, cfg.attestationApiURL)
+		},
+		StoreTimeout: cfg.ha.storeTimeout,
+		Validate:     func(b cdschain.Body) error { return validateEntry(b, cfg.measured.PodImages, mesh, store) },
+		WarnBytes:    cfg.ha.warnBytes,
+		WarnEntries:  cfg.ha.warnEntries,
 	}, chainStore)
 	if err != nil {
 		return nil, err
 	}
 	go replica.Run(ctx)
 	return replica, nil
+}
+
+// validateHAConfig holds the replica flags to values a replica can run with,
+// and refuses them on a CDS whose configuration has no ha block.
+func validateHAConfig(cfg config) error {
+	ha := cfg.ha
+	if cfg.measured.HA == nil {
+		if ha.self != "" || ha.storeEtcd != "" || ha.storeMemory {
+			return errors.New("--ha-self, --ha-store-etcd and --ha-store-memory serve a replica set, and the configuration has no ha block")
+		}
+		return nil
+	}
+	switch {
+	case ha.gossip/2 <= 0:
+		return fmt.Errorf("--ha-gossip-interval (%v) must be positive", ha.gossip)
+	case ha.peerTimeout <= 0 || ha.peerTimeout > ha.gossip:
+		return fmt.Errorf("--ha-peer-timeout (%v) must be positive and at most --ha-gossip-interval (%v)", ha.peerTimeout, ha.gossip)
+	case ha.storeTimeout <= 0:
+		return fmt.Errorf("--ha-store-timeout (%v) must be positive", ha.storeTimeout)
+	}
+	return nil
 }
 
 func openChainStore(ctx context.Context, cfg config, replicas int) (cdsha.Store, error) {
@@ -253,12 +279,25 @@ func validatePodAuthorities(b cdschain.Body, pods []remote.ImagePin) error {
 }
 
 // serveRoutes serves the chain's route manifest, none before a routes entry:
-// a resolve that drops a routes entry moves the manifest back.
+// a resolve that drops a routes entry moves the manifest back. Routers keep
+// the highest revision they took until an operator publishes one above it.
 func serveRoutes(store *allowlist.Store, s *cdschain.State) error {
 	if s.Routes == nil {
+		warnRoutesBelowFloor(store, 0)
 		return store.SetRoutes(nil)
 	}
+	m, err := routes.Parse(s.Routes.Manifest)
+	if err != nil {
+		return err
+	}
+	warnRoutesBelowFloor(store, m.Revision)
 	return store.SetRoutes(&routes.Envelope{Manifest: s.Routes.Manifest, Token: s.Routes.Token})
+}
+
+func warnRoutesBelowFloor(store *allowlist.Store, revision uint64) {
+	if floor := store.RoutesFloor(); revision < floor {
+		slog.Error("CDS route manifest moved back below a revision routers took; publish a routes entry above it", "revision", revision, "routers", floor)
+	}
 }
 
 // validateRoutes holds a routes entry to what PUT /routes checks.
@@ -277,10 +316,10 @@ func validateRoutes(b cdschain.Body, mesh *issuer.MeshCA, store *allowlist.Store
 	if err := m.CheckAnchorsExclude([]*x509.Certificate{mesh.Current().CA.Cert}); err != nil {
 		return err
 	}
-	if stored, err := store.LoadRoutes(); err == nil {
-		if old, err := routes.Parse(stored.Manifest); err == nil && m.Revision <= old.Revision {
-			return allowlist.ErrRevisionNotGreater
-		}
+	// Not just above the stored manifest: a router keeps the highest one
+	// served, also after a resolve moved the stored one back.
+	if m.Revision <= store.RoutesFloor() {
+		return allowlist.ErrRevisionNotGreater
 	}
 	return nil
 }
@@ -332,8 +371,8 @@ func haGate(replica *cdsha.Replica) func(http.Handler) http.Handler {
 	open := []string{"/healthz", "/readyz", "/metrics", "/ca", "/operator-keys", "/measurements"}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if id := replica.Identity(r.Header.Get(cdsgenesis.Header)); id != "" {
-				w.Header().Set(cdsgenesis.Header, id)
+			if id := replica.Identity(r.Header.Get(cdspin.Header)); id != "" {
+				w.Header().Set(cdspin.Header, id)
 			}
 			switch {
 			case strings.HasPrefix(r.URL.Path, "/ha/") || slices.Contains(open, r.URL.Path):

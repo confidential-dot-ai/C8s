@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
-	"github.com/confidential-dot-ai/c8s/pkg/cdsgenesis"
+	"github.com/confidential-dot-ai/c8s/pkg/cdspin"
 )
 
 // C-ID: the router's route-manifest read refuses a CDS that does not name
@@ -18,7 +18,7 @@ import (
 func TestRouterCDSClientHoldsToTheNodePin(t *testing.T) {
 	for answer, refused := range map[string]bool{"0:other": true, "3:abc": false} {
 		srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set(cdsgenesis.Header, answer)
+			w.Header().Set(cdspin.Header, answer)
 			http.NotFound(w, nil)
 		}))
 		address := filepath.Join(t.TempDir(), "cds-address")
@@ -31,7 +31,7 @@ func TestRouterCDSClientHoldsToTheNodePin(t *testing.T) {
 		}
 		_, err = cds.Routes(context.Background())
 		srv.Close()
-		if errors.Is(err, cdsgenesis.ErrOtherGenesis) != refused {
+		if errors.Is(err, cdspin.ErrOtherGenesis) != refused {
 			t.Errorf("answer %q: %v", answer, err)
 		}
 	}

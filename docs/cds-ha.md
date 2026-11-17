@@ -143,7 +143,7 @@ A worker document names `cds.chain: "<seq>:<hash>"` ([launch-configuration.md](l
 
 nri-image-policy holds the chain in memory, so after a restart it reads the chain again from genesis. On a long chain the first follow can take a while. Each chain request has the pull timeout; the whole read has none. Until the read finishes, the node uses its launch pins. Checkpoints that let a node start from a later entry are follow-up work.
 
-Every CDS client of the node sends the pin in the `C8s-Cds-Genesis` header. A replica names the pin back only when its chain holds that entry. A client refuses any other answer, so a set re-rooted under the same measurement is refused.
+Every CDS client of the node sends the pin in the `c8s-cds-pin` header. A replica names the pin back only when its chain holds that entry. A client refuses any other answer, so a set re-rooted under the same measurement is refused.
 The clients that do this: get-cert, the sidecars, allowlist-proxy, cds-attest and nri-image-policy.
 
 ## Operator CLI (`c8s cds ha`)
@@ -164,7 +164,7 @@ Notes:
 - `accept-image` and `raise-floor` re-read the chain and retry a write another write beat (409) for up to `--retry-for` (default 1m).
 - `c8s allowlist` and `c8s routes` write to a replica set as chain entries. A replica answers the old `PUT /allowlist` and `PUT /routes` with 409; a single replica still takes `PUT /secrets`.
 - The CLI records, per cluster (`--state-dir`, default `c8s/cds-ha` in the user config directory), the genesis and the last head a write was answered done for. It refuses a replica serving a chain without that head, or of another genesis. Without a record, it takes only a genesis signed by `--operator-key`; an operator who did not sign it passes `--genesis <hash>` to a `c8s cds ha` write once, which records it.
-- A write that may have been applied exits 3, as does a `c8s allowlist` write to a single CDS that no answer confirmed.
+- A write that may have been applied exits 3, as does a `c8s allowlist` write to a single CDS that no answer confirmed. A genesis no answer confirmed exits 3 too and names its hash: once `c8s cds ha status` shows the replicas hold it, pass that hash as `--genesis`.
 
 ## Deployment and upgrades
 

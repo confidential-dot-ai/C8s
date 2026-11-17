@@ -18,7 +18,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cdsha"
 	"github.com/confidential-dot-ai/c8s/internal/pendingattestation"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
-	"github.com/confidential-dot-ai/c8s/pkg/cdsgenesis"
+	"github.com/confidential-dot-ai/c8s/pkg/cdspin"
 )
 
 // chainPins holds this node's CDS pins to the builds a replica set's chain
@@ -59,7 +59,7 @@ func newChainPins(cfg pullConfig, url string, clusterDNS netip.Addr) (*chainPins
 		}
 		client.Transport.(*http.Transport).DialContext = dial
 		client.Timeout = cfg.Timeout
-		return cdsgenesis.Client(client, cfg.CDSChain), nil
+		return cdspin.Client(client, cfg.CDSChain), nil
 	}
 	path := filepath.Join(enforcerRuntimeDir, "cds.json")
 	pullCfg := cfg
@@ -69,7 +69,7 @@ func newChainPins(cfg pullConfig, url string, clusterDNS netip.Addr) (*chainPins
 		attestationAPI: cfg.AttestationApiURL,
 		path:           path,
 		follow: func(ctx context.Context, known *cdschain.State) (*cdschain.State, error) {
-			return cdsha.Follow(ctx, url, &pin, known, cdsgenesis.Client(&http.Client{Transport: plain, Timeout: cfg.Timeout}, cfg.CDSChain), attested)
+			return cdsha.Follow(ctx, url, &pin, known, cdspin.Client(&http.Client{Transport: plain, Timeout: cfg.Timeout}, cfg.CDSChain), attested)
 		},
 		pullTransport: func() (*http.Transport, error) {
 			client, err := allowlistPullHTTPClient(pullCfg, clusterDNS)
@@ -175,7 +175,7 @@ func (c *chainPins) RoundTrip(r *http.Request) (*http.Response, error) {
 	if pull == nil {
 		return nil, errors.New("CDS pull transport not ready")
 	}
-	return cdsgenesis.Client(&http.Client{Transport: pull}, c.raw).Transport.RoundTrip(r)
+	return cdspin.Client(&http.Client{Transport: pull}, c.raw).Transport.RoundTrip(r)
 }
 
 // followChainAtStart follows the chain once before the plugin serves. It

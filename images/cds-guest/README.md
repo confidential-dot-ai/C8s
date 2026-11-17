@@ -56,7 +56,7 @@ A replica of a set (a config with an `ha` block, docs/cds-ha.md) finds its
 own endpoint among `ha.endpoints` by asking each for its status. Its
 Kubernetes store credential arrives over the attested HA API
 (`c8s cds ha store-credential`). An etcd store instead needs a disk labelled
-`cdsstore`, mounted read-only at `/run/cds-store` and not measured, holding
+`cds-store`, mounted read-only at `/run/cds-store` and not measured, holding
 the etcd client file `etcd.yaml`.
 
 No scratch disk is needed. The config is read-only, the allowlist store lives
