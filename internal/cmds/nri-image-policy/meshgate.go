@@ -352,7 +352,8 @@ func (s *protectedPod) requireSandboxNetwork(ctr *api.Container, running bool) e
 
 // forget drops a removed sandbox's record. A guard left behind only tightens
 // what a later pod at the same address reaches, so a failed release is
-// logged, not returned.
+// logged, not returned. Guards are named by namespace inode, which the kernel
+// reuses: one a sandbox on record now holds is that sandbox's, not this one's.
 func (g *meshGate) forget(sandboxID string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -360,6 +361,11 @@ func (g *meshGate) forget(sandboxID string) {
 	delete(g.pods, sandboxID)
 	if state == nil || len(state.exits) == 0 {
 		return
+	}
+	for _, other := range g.pods {
+		if other.netns.id == state.netns.id {
+			return
+		}
 	}
 	if err := g.release(state.netns); err != nil {
 		g.logger.Warn("could not release the exit guard of a removed pod", "sandbox", sandboxID, "error", err)

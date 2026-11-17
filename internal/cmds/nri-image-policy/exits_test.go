@@ -167,6 +167,24 @@ func TestForgetReleasesTheExitGuard(t *testing.T) {
 	}
 }
 
+// A namespace inode the kernel reused names the guard of the sandbox holding
+// it now, which forgetting the earlier sandbox leaves in place.
+func TestForgetKeepsTheGuardOfAReusedNamespace(t *testing.T) {
+	gate, state, _ := exitsGate(t)
+	released := 0
+	gate.release = func(podNamespace) error {
+		released++
+		return nil
+	}
+	state.exits = relayExit
+	gate.pods["reusing-sandbox"] = &protectedPod{netns: state.netns, exits: relayExit}
+	collector := meshPod("default", "collector", testNetNS)
+	gate.forget(collector.GetId())
+	if released != 0 {
+		t.Fatalf("forget(collector) released %d guards, want 0 while another sandbox holds the namespace", released)
+	}
+}
+
 // Without exits held, an unreadable pod grants nothing and refuses nothing.
 func TestBindEntryWithoutExitsHeld(t *testing.T) {
 	gate, state, extended := exitsGate(t)

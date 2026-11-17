@@ -49,7 +49,7 @@ func TestTheExitGuardDropsATranslatedExitInTheNamespace(t *testing.T) {
 		defer node.stop()
 		for _, destination := range []string{translatedExit, directExit} {
 			if err := dialExit(destination); err != nil {
-				t.Fatalf("before the guard, dial %s = %v, want a connection", destination, err)
+				t.Fatalf("dialExit(%s) before the guard = %v, want nil", destination, err)
 			}
 		}
 
@@ -57,10 +57,10 @@ func TestTheExitGuardDropsATranslatedExitInTheNamespace(t *testing.T) {
 			return err
 		}
 		if err := dialExit(translatedExit); err == nil {
-			t.Errorf("dial %s with the guard = connected, want dropped", translatedExit)
+			t.Errorf("dialExit(%s) with the guard = nil, want a dropped connection", translatedExit)
 		}
 		if err := dialExit(directExit); err != nil {
-			t.Errorf("dial %s with the guard = %v, want a connection", directExit, err)
+			t.Errorf("dialExit(%s) with the guard = %v, want nil", directExit, err)
 		}
 		return nil
 	})
@@ -83,7 +83,7 @@ func TestVerifyExitGuardInTheNamespace(t *testing.T) {
 			return err
 		}
 		if err := GuardExits(node.path, podPath, guardedExits); err != nil {
-			t.Errorf("GuardExits again = %v, want the same chain verified", err)
+			t.Errorf("GuardExits(%v) again = %v, want nil", guardedExits, err)
 		}
 		other := []Exit{{netip.MustParsePrefix("198.51.100.0/24"), exitPort}}
 		if err := VerifyExitGuard(node.path, podPath, other); !errors.Is(err, ErrMismatch) {
@@ -129,7 +129,7 @@ func TestGuardExitsRefusesWhatItCannotGuardInTheNamespace(t *testing.T) {
 		}
 		defer node.stop()
 		if err := GuardExits(node.path, podPath, guardedExits); !errors.Is(err, ErrPolicy) || !strings.Contains(err.Error(), "no address") {
-			t.Errorf("GuardExits for a pod with no address = %v, want ErrPolicy naming the address", err)
+			t.Errorf("GuardExits(%v) for a pod with no address = %v, want ErrPolicy naming the address", guardedExits, err)
 		}
 		if err := GuardExits(node.path, podPath, nil); !errors.Is(err, ErrPolicy) {
 			t.Errorf("GuardExits(nil) = %v, want ErrPolicy", err)

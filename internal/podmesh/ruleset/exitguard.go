@@ -35,7 +35,8 @@ const ctOriginal = 0
 //
 // The chain runs after destination NAT on the prerouting hook, so it sees a
 // flow bound for the node itself as well as one routed on. The pod's addresses
-// are read from its namespace: Cilium refuses any other source from a pod.
+// are read from its namespace; the worker's Cilium verifies a pod's source
+// address.
 // GuardExits replaces the pod's chain in one transaction and verifies it.
 func GuardExits(nodeNetns, podNetns string, exits []Exit) error {
 	expected, err := guardFor(podNetns, exits)
