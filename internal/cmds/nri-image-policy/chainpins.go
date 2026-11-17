@@ -101,10 +101,10 @@ func (c *chainPins) refresh(ctx context.Context) (bool, error) {
 	}
 	// In place, not by rename: pods bind-mount the rendered file by inode.
 	if err == nil {
-		err = os.WriteFile(c.path, document, 0o644)
+		err = writeInPlace(c.path, document, 0o644)
 	}
 	if err == nil && c.podPins != "" {
-		err = os.WriteFile(c.podPins, document, 0o644)
+		err = writeInPlace(c.podPins, document, 0o644)
 	}
 	var pull *http.Transport
 	if err == nil && c.pullTransport != nil {
