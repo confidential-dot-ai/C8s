@@ -39,6 +39,9 @@ jobs:
       - name: Test the chart's third-party image pins
         run: bash .github/scripts/tests/test-chart-image-pins.sh
 
+      - name: Test the confidential-inference compatibility judge
+        run: bash .github/scripts/tests/test-confidential-inference-compat.sh
+
       - uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5.1.0
         with:
           version: v3.14.4
@@ -108,4 +111,6 @@ jobs:
             .github/scripts/pin-watch-pr.sh \
             .github/scripts/tests/test-pin-watch-pr.sh \
             .github/scripts/publish-ref-images.sh \
-            .github/scripts/tests/test-publish-ref-images.sh
+            .github/scripts/tests/test-publish-ref-images.sh \
+            .github/scripts/confidential-inference-compat.sh \
+            .github/scripts/tests/test-confidential-inference-compat.sh
