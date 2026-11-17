@@ -206,6 +206,29 @@ func TestForgetWithAReusedNamespace(t *testing.T) {
 	}
 }
 
+// A sandbox recovery refused releases the guard its namespace may hold.
+func TestForgetReleasesTheGuardOfARefusedRecovery(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "netns")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	described, err := namespaceFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate := newMeshGate(*meshRoles(), discardLogger())
+	released := recordReleases(gate)
+	pod := meshPod("default", "refused", path)
+	pod.Pid = 0
+	if err := gate.recoverPod(pod, nil, recoveredExits{}); err == nil {
+		t.Fatal("recoverPod without a sandbox process = nil, want a refusal")
+	}
+	gate.forget(pod.GetId())
+	if !slices.Equal(*released, []uint64{described.id.inode}) {
+		t.Fatalf("forget(refused) released %v, want [%d]", *released, described.id.inode)
+	}
+}
+
 // After recovery, only the guards of gone namespaces and of sandboxes that
 // verified without exits are swept.
 func TestSweepExitGuards(t *testing.T) {

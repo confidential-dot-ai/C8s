@@ -251,10 +251,15 @@ func (g *meshGate) recoverPod(pod *api.PodSandbox, ctrs []recoveredContainer, ex
 	}
 	state, err := g.recovered(pod, ctrs, exits)
 	if err != nil {
-		g.pods[pod.GetId()] = &protectedPod{
+		refused := &protectedPod{
 			refusal:       fmt.Errorf("the sandbox was running before this enforcer connected, and %w", err),
 			kubeNamespace: pod.GetNamespace(),
 		}
+		// Its namespace may hold an exit guard, released when the sandbox is.
+		if netns, err := namespaceFile(podNetworkNamespace(pod)); err == nil {
+			refused.netns, refused.guarded = netns, true
+		}
+		g.pods[pod.GetId()] = refused
 		g.refusedPods[pod.GetUid()] = struct{}{}
 		return fmt.Errorf("recover pod %s/%s: %w", pod.GetNamespace(), pod.GetName(), err)
 	}
