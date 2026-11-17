@@ -335,7 +335,7 @@ func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health
 				timeout:  cfg.Allowlist.Pull.Timeout,
 				etag:     initialETag,
 				logger:   logger,
-				refresh:  chain.refresher(),
+				refresh:  chain.createRefreshFn(),
 			})
 		}()
 	}
