@@ -105,6 +105,27 @@ func startHA(ctx context.Context, cfg config, mesh *issuer.MeshCA, store *allowl
 	return replica, nil
 }
 
+// validateHAConfig holds the replica flags to values a replica can run with,
+// and refuses them on a CDS whose configuration has no ha block.
+func validateHAConfig(cfg config) error {
+	ha := cfg.ha
+	if cfg.measured.HA == nil {
+		if ha.self != "" || ha.storeEtcd != "" || ha.storeMemory {
+			return errors.New("--ha-self, --ha-store-etcd and --ha-store-memory serve a replica set, and the configuration has no ha block")
+		}
+		return nil
+	}
+	switch {
+	case ha.gossip/2 <= 0:
+		return fmt.Errorf("--ha-gossip-interval (%v) must be positive", ha.gossip)
+	case ha.peerTimeout <= 0 || ha.peerTimeout > ha.gossip:
+		return fmt.Errorf("--ha-peer-timeout (%v) must be positive and at most --ha-gossip-interval (%v)", ha.peerTimeout, ha.gossip)
+	case ha.storeTimeout <= 0:
+		return fmt.Errorf("--ha-store-timeout (%v) must be positive", ha.storeTimeout)
+	}
+	return nil
+}
+
 func openChainStore(ctx context.Context, cfg config, replicas int) (cdsha.Store, error) {
 	if onDisk := filepath.Join(cfg.ha.runtimeDir, "etcd.yaml"); cfg.ha.storeEtcd == "" && cfg.ha.runtimeDir != "" {
 		if _, err := os.Stat(onDisk); err == nil {
