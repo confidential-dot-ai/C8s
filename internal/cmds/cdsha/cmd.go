@@ -285,6 +285,9 @@ func (o *options) resolve(ctx context.Context, out io.Writer, urls []string, seq
 		if err != nil {
 			return err
 		}
+		if err := o.doneOnDropped(ctx, urls, statuses, seq, drop); err != nil {
+			return err
+		}
 		plan = &resolvePlan{Seq: seq, Keep: kept, Drop: drop, Held: held}
 	}
 	if err := o.savePlan(cluster, plan); err != nil {
@@ -360,18 +363,27 @@ func (o *options) savePlan(cluster string, p *resolvePlan) error {
 }
 
 // ackedAt is the entry at seq on the chain of this CLI's acknowledged head,
-// zero when that head is below seq. Above seq, a replica holding the head
-// shows it: its chain from seq links up to the head by prev hashes.
+// zero when that head is below seq.
 func (o *options) ackedAt(ctx context.Context, urls []string, statuses []*haapi.Status, seq uint64, rec *record) (cdschain.Hash, error) {
-	switch {
-	case rec == nil || rec.Acknowledged.Seq < seq:
+	if rec == nil || rec.Acknowledged.Seq < seq {
 		return cdschain.Hash{}, nil
-	case rec.Acknowledged.Seq == seq:
-		return rec.Acknowledged.Hash, nil
 	}
-	ack := rec.Acknowledged
+	at, err := o.entryAt(ctx, urls, statuses, seq, rec.Acknowledged)
+	if err != nil {
+		return at, fmt.Errorf("this CLI's acknowledged head: %w; it cannot tell whether --keep drops it", err)
+	}
+	return at, nil
+}
+
+// entryAt is the entry at seq, at or below head, on head's chain. Above seq,
+// a replica holding head shows it: its chain from seq links up to head by
+// prev hashes.
+func (o *options) entryAt(ctx context.Context, urls []string, statuses []*haapi.Status, seq uint64, head cdschain.Head) (cdschain.Hash, error) {
+	if head.Seq == seq {
+		return head.Hash, nil
+	}
 	for slot, s := range statuses {
-		if s == nil || s.Held == nil || s.Held.Seq < ack.Seq {
+		if s == nil || s.Held == nil || s.Held.Seq < head.Seq {
 			continue
 		}
 		client, err := o.client(ctx, urls[slot])
@@ -379,11 +391,40 @@ func (o *options) ackedAt(ctx context.Context, urls []string, statuses []*haapi.
 			continue
 		}
 		entries, err := haapi.ReadChain(ctx, client, urls[slot], seq)
-		if err == nil && linksUpTo(entries, seq, ack) {
+		if err == nil && linksUpTo(entries, seq, head) {
 			return entries[0].Hash(), nil
 		}
 	}
-	return cdschain.Hash{}, fmt.Errorf("no replica answers with this CLI's acknowledged head %d (%s): it cannot tell whether --keep drops it", ack.Seq, ack.Hash)
+	return cdschain.Hash{}, fmt.Errorf("no replica answers with head %d (%s)", head.Seq, head.Hash)
+}
+
+// doneOnDropped refuses a resolution dropping drop at seq when a replica
+// answered a write done at or after seq on drop's branch, which
+// Replica.Resolve refuses only once the lower slots were resolved. A replica
+// halted on the fork at seq shows its branch; for any other, the done
+// write's entry at seq is read (entryAt).
+func (o *options) doneOnDropped(ctx context.Context, urls []string, statuses []*haapi.Status, seq uint64, drop cdschain.Hash) error {
+	for slot, s := range statuses {
+		if s == nil {
+			continue
+		}
+		for _, d := range s.Confirmed {
+			if d.Seq < seq {
+				continue
+			}
+			var at cdschain.Hash
+			var err error
+			if s.Fork != nil && s.Fork.Seq == seq {
+				at = s.Fork.Mine
+			} else if at, err = o.entryAt(ctx, urls, statuses, seq, d); err != nil {
+				return fmt.Errorf("slot %d answered a write done at seq %d: %w; it cannot tell whether --keep drops it", slot, d.Seq, err)
+			}
+			if at == drop {
+				return fmt.Errorf("slot %d answered a write done at seq %d on the branch --keep drops", slot, d.Seq)
+			}
+		}
+	}
+	return nil
 }
 
 // linksUpTo: entries, from seq on, are linked by their prev hashes up to head.
@@ -481,9 +522,8 @@ func (w *writer) refreshPolicy(ctx context.Context, held uint64) error {
 }
 
 // planResolution is the entry a resolution drops: every replica must
-// answer unless assumed lost, and nothing dropped may have been answered done,
-// nor be on the chain of this CLI's acknowledged head (ackedAt, its entry at
-// seq).
+// answer unless assumed lost, and the dropped entry must not be on the chain
+// of this CLI's acknowledged head (ackedAt, its entry at seq).
 func planResolution(statuses []*haapi.Status, seq uint64, keep cdschain.Hash, assumeLost []int, ackedAt cdschain.Hash) (cdschain.Hash, error) {
 	var drop cdschain.Hash
 	for slot, s := range statuses {
@@ -502,16 +542,6 @@ func planResolution(statuses []*haapi.Status, seq uint64, keep cdschain.Hash, as
 	}
 	if drop == (cdschain.Hash{}) {
 		return drop, fmt.Errorf("no replica is halted on a fork at seq %d holding %s", seq, keep)
-	}
-	for slot, s := range statuses {
-		if s == nil || s.Fork == nil || s.Fork.Mine != drop {
-			continue
-		}
-		for _, d := range s.Confirmed {
-			if d.Seq >= seq {
-				return drop, fmt.Errorf("slot %d answered a write done at seq %d on the branch --keep drops", slot, d.Seq)
-			}
-		}
 	}
 	if ackedAt == drop {
 		return drop, fmt.Errorf("the dropped entry %s is on the chain of this CLI's acknowledged head", drop)

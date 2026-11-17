@@ -86,8 +86,8 @@ func TestRunningIn(t *testing.T) {
 	}
 }
 
-// A resolution needs every replica, and never drops an entry a replica
-// answered done or this CLI acknowledged.
+// A resolution needs every replica, and never drops an entry this CLI
+// acknowledged (a done one: TestDoneOnDropped).
 func TestPlanResolution(t *testing.T) {
 	keep, drop := cdschain.Hash{1}, cdschain.Hash{2}
 	forkOn := func(mine, theirs cdschain.Hash, done ...cdschain.Head) *haapi.Status {
@@ -103,7 +103,6 @@ func TestPlanResolution(t *testing.T) {
 		{"ok", []*haapi.Status{forkOn(keep, drop), forkOn(drop, keep), {}}, nil, cdschain.Hash{}, ""},
 		{"a replica does not answer", []*haapi.Status{forkOn(keep, drop), nil, {}}, nil, cdschain.Hash{}, "does not answer"},
 		{"assumed lost", []*haapi.Status{forkOn(keep, drop), nil, {}}, []int{1}, cdschain.Hash{}, ""},
-		{"drops a done entry", []*haapi.Status{forkOn(keep, drop), forkOn(drop, keep, cdschain.Head{Seq: 5}), {}}, nil, cdschain.Hash{}, "done"},
 		{"drops the acknowledged head", []*haapi.Status{forkOn(keep, drop), forkOn(drop, keep), {}}, nil, drop, "acknowledged"},
 		{"keeps the acknowledged chain", []*haapi.Status{forkOn(keep, drop), forkOn(drop, keep), {}}, nil, keep, ""},
 		{"keeps an unseen entry", []*haapi.Status{forkOn(cdschain.Hash{3}, drop), {}, {}}, nil, cdschain.Hash{}, "neither"},

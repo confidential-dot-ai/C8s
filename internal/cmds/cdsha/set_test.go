@@ -486,6 +486,40 @@ func TestResolveTakesOverThePlanThatShowedItsFork(t *testing.T) {
 	}
 }
 
+// A resolution never drops a write a replica answered done at or after the
+// fork: a replica halted there shows its branch; for any other, halted
+// elsewhere or not at all, the done write's chain is read, and a done write
+// no replica shows refuses it.
+func TestDoneOnDropped(t *testing.T) {
+	entries, _ := testChain(t, 8)
+	srv := httptest.NewServer(&racedReplica{entries: entries})
+	defer srv.Close()
+	o := &options{Options: cdsconn.Options{Insecure: true, Timeout: 5 * time.Second}}
+	onChain, other := entries[5].Hash(), cdschain.Hash{2}
+	done := func(seq uint64) cdschain.Head { return cdschain.Head{Seq: seq, Hash: entries[seq].Hash()} }
+	forkOn := func(mine, theirs cdschain.Hash, d ...cdschain.Head) *haapi.Status {
+		return &haapi.Status{Held: &cdschain.Head{Seq: 7}, Fork: &haapi.Fork{Seq: 5, Mine: mine, Theirs: theirs}, Confirmed: d}
+	}
+	for _, tc := range []struct {
+		name     string
+		statuses []*haapi.Status
+		drop     cdschain.Hash
+		want     string
+	}{
+		{"halted on the dropped branch", []*haapi.Status{forkOn(onChain, other, done(5))}, onChain, "on the branch --keep drops"},
+		{"halted on the kept branch", []*haapi.Status{forkOn(onChain, other, done(7))}, other, ""},
+		{"done at the fork on the dropped entry", []*haapi.Status{{Held: &cdschain.Head{Seq: 7}, Confirmed: []cdschain.Head{done(5)}}}, onChain, "on the branch --keep drops"},
+		{"done above the fork on the dropped branch", []*haapi.Status{{Held: &cdschain.Head{Seq: 7}, Confirmed: []cdschain.Head{done(7)}}}, onChain, "on the branch --keep drops"},
+		{"done above the fork on the kept branch", []*haapi.Status{{Held: &cdschain.Head{Seq: 7}, Confirmed: []cdschain.Head{done(7)}}}, other, ""},
+		{"done below the fork", []*haapi.Status{{Held: &cdschain.Head{Seq: 7}, Confirmed: []cdschain.Head{done(4)}}}, onChain, ""},
+		{"a done write no replica shows", []*haapi.Status{{Held: &cdschain.Head{Seq: 7}, Confirmed: []cdschain.Head{{Seq: 6, Hash: cdschain.Hash{9}}}}}, onChain, "cannot tell"},
+	} {
+		if err := o.doneOnDropped(context.Background(), []string{srv.URL}, tc.statuses, 5, tc.drop); (tc.want == "") != (err == nil) || (err != nil && !strings.Contains(err.Error(), tc.want)) {
+			t.Errorf("%s: %v", tc.name, err)
+		}
+	}
+}
+
 // Above the fork, the acknowledged head's entry at the fork's seq is read
 // from a replica that holds the head, its chain linked up to it; with no
 // such replica the resolve cannot tell what it drops.
