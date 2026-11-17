@@ -272,13 +272,16 @@ func (w *writer) append(ctx context.Context, state *cdschain.State, typ cdschain
 // errHeadMoved is a 409: the replica's head moved past the entry's prev.
 var errHeadMoved = errors.New("the chain's head moved")
 
-// Submit posts e. Only a 200 is done; a 202, or no answer after the entry
-// left, is ErrNotConfirmed; a 409 (errHeadMoved), 422 or 503
-// applied nothing.
+// Submit posts e. Only a 200 is done; a 202, a 5xx other than 503, or no
+// answer after the entry left, is ErrNotConfirmed; a 4xx (a 409 is
+// errHeadMoved) or a 503 applied nothing.
 func Submit(ctx context.Context, client *http.Client, url string, e cdschain.Entry) (cdschain.Head, error) {
 	body, err := json.Marshal(e)
 	if err != nil {
 		return cdschain.Head{}, err
+	}
+	if len(body) > cdschain.MaxEntryBytes {
+		return cdschain.Head{}, fmt.Errorf("the entry is %d bytes, above the %d a replica takes", len(body), cdschain.MaxEntryBytes)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url+haapi.EntriesPath, bytes.NewReader(body))
 	if err != nil {
@@ -298,8 +301,9 @@ func Submit(ctx context.Context, client *http.Client, url string, e cdschain.Ent
 		return head, nil
 	case resp.StatusCode == http.StatusConflict:
 		return head, fmt.Errorf("the replica refused the entry, nothing was applied: %d %s: %w", resp.StatusCode, bytes.TrimSpace(answer), errHeadMoved)
-	// A replica answers 503 only before the swap (see cdsha.Replica.swap).
-	case resp.StatusCode == http.StatusUnprocessableEntity, resp.StatusCode == http.StatusServiceUnavailable:
+	// A replica answers 503 only before the swap (see cdsha.Replica.swap),
+	// and a 4xx before it takes the entry.
+	case resp.StatusCode >= 400 && resp.StatusCode < 500, resp.StatusCode == http.StatusServiceUnavailable:
 		return head, fmt.Errorf("the replica refused the entry, nothing was applied: %d %s", resp.StatusCode, bytes.TrimSpace(answer))
 	}
 	return head, fmt.Errorf("%d %s: %w", resp.StatusCode, bytes.TrimSpace(answer), ErrNotConfirmed)

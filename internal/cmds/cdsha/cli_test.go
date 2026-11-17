@@ -48,6 +48,8 @@ func TestSubmitAnswers(t *testing.T) {
 		{http.StatusServiceUnavailable, "store unreachable", false, true},
 		{http.StatusInternalServerError, "", true, true},
 		{http.StatusConflict, "another write", false, true},
+		{http.StatusBadRequest, "malformed entry", false, true},
+		{http.StatusRequestEntityTooLarge, "too large", false, true},
 		{http.StatusOK, `{"seq":1}`, true, true},
 	} {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -62,6 +64,10 @@ func TestSubmitAnswers(t *testing.T) {
 	}
 	if _, err := Submit(context.Background(), http.DefaultClient, "http://127.0.0.1:1", e); !errors.Is(err, ErrNotConfirmed) {
 		t.Errorf("no answer: %v", err)
+	}
+	large := cdschain.Entry{Body: bytes.Repeat([]byte("a"), cdschain.MaxEntryBytes), Sig: "x"}
+	if _, err := Submit(context.Background(), http.DefaultClient, "http://127.0.0.1:1", large); err == nil || errors.Is(err, ErrNotConfirmed) {
+		t.Errorf("an entry above the limit was sent: %v", err)
 	}
 }
 
