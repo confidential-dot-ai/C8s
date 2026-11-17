@@ -48,6 +48,8 @@ func TestSubmitAnswers(t *testing.T) {
 		{http.StatusServiceUnavailable, "store unreachable", false, true},
 		{http.StatusInternalServerError, "", true, true},
 		{http.StatusConflict, "another write", false, true},
+		{http.StatusBadRequest, "malformed entry", false, true},
+		{http.StatusRequestEntityTooLarge, "too large", false, true},
 		{http.StatusOK, `{"seq":1}`, true, true},
 	} {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -62,6 +64,10 @@ func TestSubmitAnswers(t *testing.T) {
 	}
 	if _, err := Submit(context.Background(), http.DefaultClient, "http://127.0.0.1:1", e); !errors.Is(err, ErrNotConfirmed) {
 		t.Errorf("no answer: %v", err)
+	}
+	large := cdschain.Entry{Body: bytes.Repeat([]byte("a"), cdschain.MaxEntryBytes), Sig: "x"}
+	if _, err := Submit(context.Background(), http.DefaultClient, "http://127.0.0.1:1", large); err == nil || errors.Is(err, ErrNotConfirmed) {
+		t.Errorf("an entry above the limit was sent: %v", err)
 	}
 }
 
@@ -80,8 +86,8 @@ func TestRunningIn(t *testing.T) {
 	}
 }
 
-// A resolution needs every replica, and never drops an entry a replica
-// answered done or this CLI acknowledged.
+// A resolution needs every replica, and never drops an entry this CLI
+// acknowledged (a done one: TestDoneOnDropped).
 func TestPlanResolution(t *testing.T) {
 	keep, drop := cdschain.Hash{1}, cdschain.Hash{2}
 	forkOn := func(mine, theirs cdschain.Hash, done ...cdschain.Head) *haapi.Status {
@@ -97,7 +103,6 @@ func TestPlanResolution(t *testing.T) {
 		{"ok", []*haapi.Status{forkOn(keep, drop), forkOn(drop, keep), {}}, nil, cdschain.Hash{}, ""},
 		{"a replica does not answer", []*haapi.Status{forkOn(keep, drop), nil, {}}, nil, cdschain.Hash{}, "does not answer"},
 		{"assumed lost", []*haapi.Status{forkOn(keep, drop), nil, {}}, []int{1}, cdschain.Hash{}, ""},
-		{"drops a done entry", []*haapi.Status{forkOn(keep, drop), forkOn(drop, keep, cdschain.Head{Seq: 5}), {}}, nil, cdschain.Hash{}, "done"},
 		{"drops the acknowledged head", []*haapi.Status{forkOn(keep, drop), forkOn(drop, keep), {}}, nil, drop, "acknowledged"},
 		{"keeps the acknowledged chain", []*haapi.Status{forkOn(keep, drop), forkOn(drop, keep), {}}, nil, keep, ""},
 		{"keeps an unseen entry", []*haapi.Status{forkOn(cdschain.Hash{3}, drop), {}, {}}, nil, cdschain.Hash{}, "neither"},
@@ -699,6 +704,29 @@ func TestGenesisPinForAnOperatorWithoutARecord(t *testing.T) {
 	}
 	if _, err := w.verified(context.Background()); err != nil {
 		t.Fatalf("the recorded genesis: %v", err)
+	}
+}
+
+// --genesis is held to the chain also when a record exists, and a malformed
+// one is reported as such.
+func TestGenesisPinWithARecord(t *testing.T) {
+	entries, key := testChain(t, 1)
+	srv := httptest.NewServer(&racedReplica{entries: entries})
+	defer srv.Close()
+	w := &writer{o: &options{stateDir: t.TempDir()}, url: srv.URL, client: srv.Client(), key: key}
+	if _, err := w.verified(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.o.acknowledge(entries[0].Hash(), cdschain.Head{Cluster: "lane", Hash: entries[0].Hash()}); err != nil {
+		t.Fatal(err)
+	}
+	w.o.genesisPin = cdschain.Hash{7}.String()
+	if _, err := w.verified(context.Background()); err == nil || !strings.Contains(err.Error(), "not --genesis") {
+		t.Fatalf("a recorded cluster written against another --genesis: %v", err)
+	}
+	w.o.genesisPin = "not-a-hash"
+	if _, err := w.verified(context.Background()); err == nil || !strings.HasPrefix(err.Error(), "--genesis: ") {
+		t.Fatalf("a malformed --genesis: %v", err)
 	}
 }
 

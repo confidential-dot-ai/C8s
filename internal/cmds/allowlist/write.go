@@ -230,6 +230,11 @@ func replaceIfUnchanged(ctx context.Context, c allowlistclient.Client, doc *pkga
 		return errors.New(`CDS served the allowlist without a version, so the write cannot be made conditional on it`)
 	}
 	if cs, ok := signer.(chainSigner); ok {
+		// A replica set takes the allowlist as a chain entry. handled is
+		// false, with no error, only when the CDS answers no HA status: a
+		// single CDS, which takes the PUT below. A policy that changed since
+		// the read becomes errAllowlistChanged, which the caller re-reads
+		// and retries on, as for a single CDS's 412.
 		handled, err := hacli.WritePolicy(ctx, cs.opts, doc, version)
 		if errors.Is(err, hacli.ErrPolicyChanged) {
 			err = errAllowlistChanged
@@ -248,8 +253,8 @@ func replaceIfUnchanged(ctx context.Context, c allowlistclient.Client, doc *pkga
 	landed, served, rerr := servesDocument(ctx, c, doc)
 	switch {
 	case rerr != nil:
-		return fmt.Errorf("the write was not confirmed (%w), and reading the allowlist back to see whether it landed failed: %v; "+
-			"check with 'c8s allowlist list' before running the command again", err, rerr)
+		return &cmdsutil.ExitStatusError{Status: cmdsutil.ExitNotConfirmed, Err: fmt.Errorf("the write was not confirmed (%w), and reading the allowlist back to see whether it landed failed: %v; "+
+			"check with 'c8s allowlist list' before running the command again", err, rerr)}
 	case landed:
 		return nil
 	case served == version:

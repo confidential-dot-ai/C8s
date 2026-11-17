@@ -72,8 +72,13 @@ func (o *options) writer(ctx context.Context) (*writer, error) {
 
 // verified reads the replica's chain, verifies it from its genesis, and
 // holds it to the record as it was before the read: the recorded genesis
-// and acknowledged head.
+// and acknowledged head. Without a record, --genesis or a genesis signed by
+// --operator-key starts one.
 func (w *writer) verified(ctx context.Context) (*cdschain.State, error) {
+	pinned, err := w.o.pinnedGenesis()
+	if err != nil {
+		return nil, err
+	}
 	records, err := w.o.records()
 	if err != nil {
 		return nil, err
@@ -83,24 +88,51 @@ func (w *writer) verified(ctx context.Context) (*cdschain.State, error) {
 		return nil, fmt.Errorf("reading the replica's chain: %w", err)
 	}
 	state := c.state
+	if pinned != nil && *pinned != state.Genesis {
+		return nil, fmt.Errorf("the replica's chain starts at genesis %s, not --genesis %s", state.Genesis, pinned)
+	}
 	rec := records[state.Cluster]
-	switch {
-	case rec != nil && rec.Genesis != state.Genesis:
-		return nil, fmt.Errorf("the replica's chain starts at genesis %s, recorded %s", state.Genesis, rec.Genesis)
-	case rec == nil && w.o.genesisPin != "":
-		if pinned, err := cdschain.ParseHash(w.o.genesisPin); err != nil || pinned != state.Genesis {
-			return nil, fmt.Errorf("the replica's chain starts at genesis %s, not --genesis %s", state.Genesis, w.o.genesisPin)
-		}
-		if err := w.o.acknowledge(state.Genesis, cdschain.Head{V: cdschain.Version, Cluster: state.Cluster, Hash: state.Genesis}); err != nil {
+	if rec == nil {
+		if rec, err = w.startRecord(c, pinned != nil); err != nil {
 			return nil, err
 		}
-	case rec == nil && c.Genesis.VerifySignature([]*ecdsa.PublicKey{&w.key.PublicKey}) != nil:
-		return nil, errors.New("the replica's genesis is not signed by --operator-key and no genesis is recorded: pass --genesis with the hash 'c8s cds ha genesis' printed, or copy the record of the operator who signed it")
-	case rec != nil && (rec.Acknowledged.Seq > state.Head.Seq || c.Hashes[rec.Acknowledged.Seq] != rec.Acknowledged.Hash):
+	}
+	if rec.Genesis != state.Genesis {
+		return nil, fmt.Errorf("the replica's chain starts at genesis %s, recorded %s; after a re-root, remove the record", state.Genesis, rec.Genesis)
+	}
+	if rec.Acknowledged.Seq > state.Head.Seq || c.Hashes[rec.Acknowledged.Seq] != rec.Acknowledged.Hash {
 		return nil, fmt.Errorf("the replica serves a chain without head %d, which was acknowledged before this read: the chain was rolled back, or the replica is behind", rec.Acknowledged.Seq)
 	}
 	w.o.cache(c)
 	return state, nil
+}
+
+// pinnedGenesis is --genesis, nil when it is not set.
+func (o *options) pinnedGenesis() (*cdschain.Hash, error) {
+	if o.genesisPin == "" {
+		return nil, nil
+	}
+	h, err := cdschain.ParseHash(o.genesisPin)
+	if err != nil {
+		return nil, fmt.Errorf("--genesis: %w", err)
+	}
+	return &h, nil
+}
+
+// startRecord is the record of a cluster this CLI has none of yet, at the
+// genesis of c: one --genesis pinned, which it records since the pin is
+// passed once, or one --operator-key signed, recorded by the first write.
+func (w *writer) startRecord(c *verifiedChain, pinned bool) (*record, error) {
+	head := cdschain.Head{V: cdschain.Version, Cluster: c.state.Cluster, Hash: c.state.Genesis}
+	switch {
+	case pinned:
+		if err := w.o.acknowledge(head.Hash, head); err != nil {
+			return nil, err
+		}
+	case c.Genesis.VerifySignature([]*ecdsa.PublicKey{&w.key.PublicKey}) != nil:
+		return nil, errors.New("the replica's genesis is not signed by --operator-key and no genesis is recorded: pass --genesis with the hash 'c8s cds ha genesis' printed, or copy the record of the operator who signed it")
+	}
+	return &record{Cluster: head.Cluster, Genesis: head.Hash, Acknowledged: head}, nil
 }
 
 // verifiedChain is a chain this CLI verified, kept as <cluster>.chain: its
@@ -240,13 +272,16 @@ func (w *writer) append(ctx context.Context, state *cdschain.State, typ cdschain
 // errHeadMoved is a 409: the replica's head moved past the entry's prev.
 var errHeadMoved = errors.New("the chain's head moved")
 
-// Submit posts e. Only a 200 is done; a 202, or no answer after the entry
-// left, is ErrNotConfirmed; a 409 (errHeadMoved), 422 or 503
-// applied nothing.
+// Submit posts e. Only a 200 is done; a 202, a 5xx other than 503, or no
+// answer after the entry left, is ErrNotConfirmed; a 4xx (a 409 is
+// errHeadMoved) or a 503 applied nothing.
 func Submit(ctx context.Context, client *http.Client, url string, e cdschain.Entry) (cdschain.Head, error) {
 	body, err := json.Marshal(e)
 	if err != nil {
 		return cdschain.Head{}, err
+	}
+	if len(body) > cdschain.MaxEntryBytes {
+		return cdschain.Head{}, fmt.Errorf("the entry is %d bytes, above the %d a replica takes", len(body), cdschain.MaxEntryBytes)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url+haapi.EntriesPath, bytes.NewReader(body))
 	if err != nil {
@@ -266,8 +301,9 @@ func Submit(ctx context.Context, client *http.Client, url string, e cdschain.Ent
 		return head, nil
 	case resp.StatusCode == http.StatusConflict:
 		return head, fmt.Errorf("the replica refused the entry, nothing was applied: %d %s: %w", resp.StatusCode, bytes.TrimSpace(answer), errHeadMoved)
-	// A replica answers 503 only before the swap (see cdsha.Replica.swap).
-	case resp.StatusCode == http.StatusUnprocessableEntity, resp.StatusCode == http.StatusServiceUnavailable:
+	// A replica answers 503 only before the swap (see cdsha.Replica.swap),
+	// and a 4xx before it takes the entry.
+	case resp.StatusCode >= 400 && resp.StatusCode < 500, resp.StatusCode == http.StatusServiceUnavailable:
 		return head, fmt.Errorf("the replica refused the entry, nothing was applied: %d %s", resp.StatusCode, bytes.TrimSpace(answer))
 	}
 	return head, fmt.Errorf("%d %s: %w", resp.StatusCode, bytes.TrimSpace(answer), ErrNotConfirmed)
@@ -320,7 +356,11 @@ func (o *options) genesis(ctx context.Context, out io.Writer, urls []string, clu
 	if err != nil {
 		return err
 	}
-	g := cdschain.Genesis{Endpoints: o.endpoints, OperatorKeys: writers, Accepted: []cdschain.Build{{Measurements: string(pin), Version: version}}}
+	g := cdschain.Genesis{
+		Endpoints:    o.endpoints,
+		OperatorKeys: writers,
+		Accepted:     []cdschain.Build{{Measurements: string(pin), Version: version}},
+	}
 	for slot, url := range urls {
 		s, err := o.status(ctx, url)
 		switch {
@@ -352,7 +392,12 @@ func (o *options) genesis(ctx context.Context, out io.Writer, urls []string, clu
 		return err
 	}
 	if err := haapi.Call(ctx, client, http.MethodPost, urls[0]+haapi.GenesisPath, e, nil); err != nil {
-		return fmt.Errorf("the replica refused the genesis: %w", err)
+		var refusal *operatorauth.StatusError
+		if errors.As(err, &refusal) && (refusal.Status < 500 || refusal.Status == http.StatusServiceUnavailable) {
+			return fmt.Errorf("the replica refused the genesis: %w", err)
+		}
+		return &cmdsutil.ExitStatusError{Status: cmdsutil.ExitNotConfirmed, Err: fmt.Errorf(
+			"no answer confirmed the genesis %s (%w): if c8s cds ha status shows the replicas hold it, write with --genesis %s", e.Hash(), err, e.Hash())}
 	}
 	head := cdschain.Head{V: cdschain.Version, Cluster: cluster, Hash: e.Hash()}
 	fmt.Fprintf(out, "genesis %s\n", head.Hash)
