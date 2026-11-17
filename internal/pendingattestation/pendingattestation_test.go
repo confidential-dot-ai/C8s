@@ -1,13 +1,13 @@
-package verify
+package pendingattestation
 
 import (
 	"crypto/tls"
 	"testing"
 )
 
-// Every armTLS, attest-lb and attested-fetch dial rides this config.
+// Every armTLS, discovery, attest-lb and attested-fetch dial rides this config.
 func TestTLSPendingAttestationFloor(t *testing.T) {
-	cfg := tlsPendingAttestation("router.example.com")
+	cfg := TLSConfig("router.example.com")
 	if cfg.MinVersion != tls.VersionTLS13 {
 		t.Fatalf("MinVersion = %#x, want TLS 1.3", cfg.MinVersion)
 	}
@@ -22,5 +22,14 @@ func TestTLSPendingAttestationFloor(t *testing.T) {
 	}
 	if cfg.ClientSessionCache != nil {
 		t.Fatal("a resumed handshake carries no CertificateVerify: no session cache")
+	}
+}
+
+// An attested fetch sets VerifyConnection on the config it is handed.
+func TestTLSConfigIsPerCaller(t *testing.T) {
+	first := TLSConfig("router.example.com")
+	first.VerifyConnection = func(tls.ConnectionState) error { return nil }
+	if TLSConfig("router.example.com").VerifyConnection != nil {
+		t.Fatal("one caller's VerifyConnection must not arm another caller's dial")
 	}
 }

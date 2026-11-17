@@ -70,7 +70,7 @@ must serve. The restart drops the consumer's workload entry too, so the volume
 opens again only once that entry's `secrets` grant and `data` mount rule are
 back as well. Lose the escrow file and the ciphertext is gone for good. The
 whole recovery, and what else a restart drops, is in
-[operator.md](operator.md#cds-is-a-singleton).
+[operator.md](operator.md#cds-runs-as-one-vm).
 
 ### The device
 

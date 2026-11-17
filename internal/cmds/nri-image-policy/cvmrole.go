@@ -40,7 +40,15 @@ type cvmRole interface {
 	endIdentityForRefusal(pod *api.PodSandbox, refusal error)
 	// denyCreation records a refused creation, which an admission of the same name lifts.
 	denyCreation(pod *api.PodSandbox, ctr *api.Container, refusal error)
+
+	// admitRegistration decides a registration on the runtime it was handed.
+	admitRegistration(pods []*api.PodSandbox, ctrs []*api.Container, freshRegistration bool) error
+	// noteRegistration records the registration a pulled Pod policy waits for.
+	noteRegistration(freshRegistration bool)
 	stopAfterRestart(ctx context.Context, pods []*api.PodSandbox, ctrs []*api.Container)
+	// recordExisting accounts for a container that predates this registration, its sandbox reported or not.
+	recordExisting(ctx context.Context, pod *api.PodSandbox, ctr *api.Container, imageRef string)
+	admitExisting(ctx context.Context, pod *api.PodSandbox, ctr *api.Container, imageRef string) (imageVerdict, string)
 }
 
 // INVARIANT: the signed pod section alone decides the role.
@@ -102,7 +110,24 @@ func (nodeCVM) endIdentityForRefusal(*api.PodSandbox, error) {}
 
 func (nodeCVM) denyCreation(*api.PodSandbox, *api.Container, error) {}
 
+func (nodeCVM) admitRegistration([]*api.PodSandbox, []*api.Container, bool) error {
+	return nil
+}
+
+func (nodeCVM) noteRegistration(bool) {}
+
 func (nodeCVM) stopAfterRestart(context.Context, []*api.PodSandbox, []*api.Container) {}
+
+func (c nodeCVM) recordExisting(ctx context.Context, pod *api.PodSandbox, ctr *api.Container, imageRef string) {
+	if c.p.inventory != nil && ctr.GetState() == api.ContainerState_CONTAINER_STOPPED {
+		c.p.inventory.stop(ctr.GetId())
+	}
+	c.p.recordForInventory(ctx, pod, ctr, imageRef)
+}
+
+func (c nodeCVM) admitExisting(ctx context.Context, pod *api.PodSandbox, ctr *api.Container, imageRef string) (imageVerdict, string) {
+	return c.p.checkContainer(ctx, c.p.cfg, pod, ctr, imageRef)
+}
 
 // podCVM admits only the containers of its signed assignment.
 type podCVM struct {
@@ -205,4 +230,26 @@ func (c podCVM) endIdentityForRefusal(pod *api.PodSandbox, refusal error) {
 
 func (c podCVM) denyCreation(pod *api.PodSandbox, ctr *api.Container, refusal error) {
 	_ = c.p.denyContainerCreation(pod.GetId(), ctr.GetName(), refusal)
+}
+
+func (podCVM) admitRegistration(pods []*api.PodSandbox, ctrs []*api.Container, freshRegistration bool) error {
+	if freshRegistration && (len(pods) != 0 || len(ctrs) != 0) {
+		return errors.New("fresh Pod registration found an existing runtime")
+	}
+	return nil
+}
+
+func (c podCVM) noteRegistration(freshRegistration bool) {
+	c.p.podRegistered.Store(freshRegistration)
+}
+
+// Current runtime metadata cannot reconstruct the history a Pod identity requires.
+const unreconstructedPodHistory = "cannot reconstruct Pod admission history from existing containers"
+
+func (c podCVM) recordExisting(_ context.Context, _ *api.PodSandbox, ctr *api.Container, _ string) {
+	_ = c.p.denyContainer(ctr.GetPodSandboxId(), errors.New(unreconstructedPodHistory))
+}
+
+func (podCVM) admitExisting(context.Context, *api.PodSandbox, *api.Container, string) (imageVerdict, string) {
+	return verdictDeny, unreconstructedPodHistory
 }

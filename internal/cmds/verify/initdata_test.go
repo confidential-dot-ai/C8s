@@ -25,7 +25,7 @@ var (
 // the verdict policies, then applyFinalNotes on the final verdict.
 func finalOutcome(cfg config, ev *evidence, result *teetypes.VerificationResult, plan *verifyPlan) Outcome {
 	oc := newOutcome(cfg, ev, result, nil, plan)
-	applyVerdictPolicies(&oc, cfg, ev, nil, operatorKeysReport{}, &verifyPlan{}, measurementsReport{})
+	applyVerdictPolicies(&oc, cfg, ev, nil, operatorKeysReport{}, plan, measurementsReport{})
 	applyFinalNotes(&oc, ev, result, plan)
 	return oc
 }

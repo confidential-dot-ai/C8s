@@ -47,11 +47,12 @@ func (p *plugin) Synchronize(ctx context.Context, pods []*api.PodSandbox, ctrs [
 		p.cvm().stopAfterRestart(ctx, pods, ctrs)
 	}
 
-	if cfg.podRole() && !p.bootRestart.Load() && (len(pods) != 0 || len(ctrs) != 0) {
-		return nil, errors.New("fresh Pod registration found an existing runtime")
+	freshRegistration := !p.bootRestart.Load()
+	if err := p.cvm().admitRegistration(pods, ctrs, freshRegistration); err != nil {
+		return nil, err
 	}
 	p.trackRunning(pods, ctrs)
-	p.podRegistered.Store(p.cfg.podRole() && !p.bootRestart.Load())
+	p.cvm().noteRegistration(freshRegistration)
 
 	// If not ready yet, defer recovery and the startup check until CDS init
 	// completes: recovery needs the served allowlist to decide exits. Ready is
@@ -239,27 +240,13 @@ func (p *plugin) checkExisting(ctx context.Context, cfg *config, pods []*api.Pod
 	for _, ctr := range ctrs {
 		imageRef := ctr.GetAnnotations()[annotationImageName]
 		pod := podByID[ctr.GetPodSandboxId()]
-		unreconstructable := cfg.podRole()
-		if unreconstructable {
-			// Current runtime metadata cannot reconstruct the complete history
-			// required by a Pod identity after a plugin restart.
-			_ = p.denyContainer(ctr.GetPodSandboxId(), errors.New("cannot reconstruct Pod admission history from existing containers"))
-		} else {
-			// Node inventory records even containers without a known sandbox.
-			if p.inventory != nil && ctr.GetState() == api.ContainerState_CONTAINER_STOPPED {
-				p.inventory.stop(ctr.GetId())
-			}
-			p.recordForInventory(ctx, pod, ctr, imageRef)
-		}
+		p.cvm().recordExisting(ctx, pod, ctr, imageRef)
 		if pod == nil {
 			continue
 		}
-		denial := "cannot reconstruct Pod admission history from existing containers"
-		if !unreconstructable {
-			var verdict imageVerdict
-			if verdict, denial = p.checkContainer(ctx, cfg, pod, ctr, imageRef); verdict != verdictDeny {
-				continue
-			}
+		verdict, denial := p.cvm().admitExisting(ctx, pod, ctr, imageRef)
+		if verdict != verdictDeny {
+			continue
 		}
 		// Never killed: stopping a platform container (kube-proxy, CoreDNS) can
 		// cut the node. An unnamed repository is denied at the next create.

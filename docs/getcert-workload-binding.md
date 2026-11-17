@@ -16,8 +16,8 @@ safe. Certificate formats and verification rules live in
 - **get-cert** — the injected `c8s-cert` sidecar: generates the leaf key, builds
   the CSR, redeems a sandbox token, publishes the credential generation.
 - **The admission inventory** — part of the admission plugin
-  (`nri-image-policy`), the node process containerd launches to admit or deny
-  every container. It serves the token route on a node-local Unix socket, which
+  (`nri-image-policy`), the node process that admits or denies every
+  container. It serves the token route on a node-local Unix socket, which
   cannot enumerate sandboxes, and the identity and digests routes on port 1019
   over mutually attested armTLS, which cannot mint identity.
 - **CDS** — verifies the evidence and the token, asks the inventory what the

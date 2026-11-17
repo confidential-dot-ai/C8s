@@ -35,7 +35,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -44,6 +43,8 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/c8s/internal/localverify"
+	"github.com/confidential-dot-ai/c8s/internal/pendingattestation"
+	"github.com/confidential-dot-ai/c8s/internal/readutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
@@ -155,19 +156,12 @@ func (f *frontDoor) verifyConnection(ctx context.Context, conn *tls.Conn, transp
 	return cert, nil
 }
 
-// DialFrontDoor returns a TLS 1.3 connection whose peer is not yet
-// authenticated: the caller must bind an attested leaf to its
-// PeerCertificates[0]. An empty serverName leaves SNI to crypto/tls.
+// DialFrontDoor returns a connection whose peer is not yet authenticated: the
+// caller must bind an attested leaf to its PeerCertificates[0].
 func DialFrontDoor(ctx context.Context, addr, serverName string, timeout time.Duration) (*tls.Conn, error) {
 	d := tls.Dialer{
 		NetDialer: &net.Dialer{Timeout: timeout},
-		Config: &tls.Config{
-			// No ClientSessionCache: a resumed TLS 1.3 handshake carries no
-			// CertificateVerify, so every redial must be a full handshake.
-			MinVersion:         tls.VersionTLS13,
-			InsecureSkipVerify: true, //nolint:gosec // attestation, not PKI, authenticates the peer; see DialFrontDoor doc
-			ServerName:         serverName,
-		},
+		Config:    pendingattestation.TLSConfig(serverName),
 	}
 	conn, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
@@ -204,7 +198,7 @@ func fetchDocument(ctx context.Context, client *http.Client, base *url.URL) ([]b
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("%w: GET %s returned %d", ErrNoDiscovery, u.String(), resp.StatusCode)
 	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxDocumentBytes))
+	data, err := readutil.ReadAll(resp.Body, maxDocumentBytes)
 	if err != nil {
 		return nil, fmt.Errorf("read discovery document: %w", err)
 	}

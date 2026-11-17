@@ -193,8 +193,9 @@ the plugin recorded for its launch at the check whose failure fails the create
 ([node-exec-mode.md](node-exec-mode.md#the-privilege-floor)).
 
 The chart renders this policy off on every lane it installs
-(`nriImagePolicy.policy.sandbox: off`), because the exemption below rests on a
-measured base and a chart-rendered base is the cluster admin's to choose. What
+(`policy.sandbox: "off"` in the plugin configuration it writes), because the
+exemption below rests on a measured base and a chart-rendered base is the
+cluster admin's to choose. What
 remains there is control-plane admission the operator owns: the chart's
 `<release>-deny-host-namespaces` policy, refusing host namespaces, host ports,
 and `hostPath` volumes to pods outside the release, router, `kube-system` and

@@ -41,8 +41,8 @@ an allowlist entry whose 'secrets' grant covers the path. Write the grant with
 'c8s allowlist apply'; this command supplies the value.
 
 Writes are signed with an operator EC private key you supply via --operator-key
-(or C8S_OPERATOR_KEY), whose public half CDS pins separately via
-'c8s install --operator-keys'.
+(or C8S_OPERATOR_KEY), whose public half CDS pins from its configuration
+('c8s cds config new --operator-keys').
 
 Values live in the CDS process and nowhere else, so a CDS restart clears the
 store and every workload holding a secret has to be rolled (see

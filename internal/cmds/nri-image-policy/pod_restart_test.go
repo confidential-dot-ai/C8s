@@ -70,6 +70,9 @@ func TestPodPluginRestartStopsTheRunningContainers(t *testing.T) {
 	if restarted.podBroker.terminal == nil || restarted.podBroker.ctx.Err() == nil {
 		t.Fatal("the restart left the Pod identity live")
 	}
+	if restarted.podRegistered.Load() {
+		t.Fatal("a restart registration registered the Pod")
+	}
 	err := restarted.StartContainer(t.Context(), pod, created)
 	if err == nil || !strings.Contains(err.Error(), "plugin restart") {
 		t.Fatalf("a container created before the restart started under the ended identity: %v", err)
@@ -83,13 +86,25 @@ func TestFreshPodRegistrationRefusesAnExistingRuntime(t *testing.T) {
 	ctr := makeCtrWithImage(pod.Id, "app", "image@"+pushDigestA)
 	ctr.State = api.ContainerState_CONTAINER_RUNNING
 
-	guest := podCVMPlugin(t, pod)
-	if _, err := guest.Synchronize(t.Context(), []*api.PodSandbox{pod}, []*api.Container{ctr}); err == nil ||
-		!strings.Contains(err.Error(), "fresh Pod registration found an existing runtime") {
-		t.Fatalf("a fresh Pod registration accepted an existing runtime: %v", err)
-	}
-	if guest.podRegistered.Load() {
-		t.Fatal("a refused registration registered the Pod")
+	for _, tc := range []struct {
+		name string
+		pods []*api.PodSandbox
+		ctrs []*api.Container
+	}{
+		{name: "a sandbox and its container", pods: []*api.PodSandbox{pod}, ctrs: []*api.Container{ctr}},
+		{name: "a sandbox alone", pods: []*api.PodSandbox{pod}},
+		{name: "a container alone", ctrs: []*api.Container{ctr}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			guest := podCVMPlugin(t, pod)
+			if _, err := guest.Synchronize(t.Context(), tc.pods, tc.ctrs); err == nil ||
+				!strings.Contains(err.Error(), "fresh Pod registration found an existing runtime") {
+				t.Fatalf("a fresh Pod registration accepted an existing runtime: %v", err)
+			}
+			if guest.podRegistered.Load() {
+				t.Fatal("a refused registration registered the Pod")
+			}
+		})
 	}
 
 	clean := podCVMPlugin(t, pod)
@@ -107,5 +122,29 @@ func TestFreshPodRegistrationRefusesAnExistingRuntime(t *testing.T) {
 	}
 	if node.podRegistered.Load() {
 		t.Fatal("a node registered a Pod")
+	}
+}
+
+// A container the runtime reported without its sandbox still costs the Pod its
+// identity, and the refusal names the sandbox the container claims.
+func TestPodExistingOrphanContainerEndsTheIdentity(t *testing.T) {
+	pod := makePod("tenant", "assigned")
+	guest := podCVMPlugin(t, pod)
+	guest.containerd = &fakeContainerd{stop: func(_ context.Context, id string) error {
+		t.Fatalf("stopped container %s, whose sandbox the runtime did not report", id)
+		return nil
+	}}
+	orphan := makeCtrWithImage("sandbox-gone", "app", "image@"+pushDigestA)
+
+	guest.checkExisting(t.Context(), guest.cfg, nil, []*api.Container{orphan})
+
+	if !guest.podEnded.Load() || guest.podBroker.terminal == nil {
+		t.Fatal("an existing container the runtime could not place left the Pod identity live")
+	}
+	if guest.inventory.denial("sandbox-gone") == nil {
+		t.Fatal("the orphan's sandbox holds no refusal")
+	}
+	if len(guest.inventory.containers) != 0 {
+		t.Fatalf("an existing container was recorded as admitted: %v", guest.inventory.containers)
 	}
 }

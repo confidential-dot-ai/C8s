@@ -2,9 +2,11 @@ package volume
 
 import (
 	"bytes"
+	"context"
 	"crypto/aes"
 	"crypto/rand"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -154,6 +156,61 @@ func TestDecryptWithWrongKeyDoesNotRecoverPlaintext(t *testing.T) {
 	if bytes.Equal(back.Bytes(), plain) {
 		t.Fatal("wrong key recovered the plaintext")
 	}
+}
+
+// Cancelling ctx must reach the caller as an error rather than a volume that is
+// silently short. Which of the reader's two ready cases wins is a random
+// select, so only the verdict is pinned, not how much was written.
+func TestEncryptAtStopsOnCancelledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	plain := make([]byte, 4*chunkSize)
+	src := &cancellingReader{
+		src:    bytes.NewReader(plain),
+		after:  chunkSize,
+		cancel: cancel,
+	}
+
+	err := EncryptAt(ctx, tempImage(t), src, testKey(), 2)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("got %v, want context.Canceled", err)
+	}
+}
+
+// A worker that dies on its first write must not leave the reader blocked
+// handing out the rest of a payload larger than the buffer pool.
+func TestEncryptAtReportsWriteFailure(t *testing.T) {
+	plain := make([]byte, 5*chunkSize)
+
+	err := EncryptAt(t.Context(), failingWriterAt{}, bytes.NewReader(plain), testKey(), 1)
+	if !errors.Is(err, errWriteFailed) {
+		t.Fatalf("got %v, want errWriteFailed", err)
+	}
+}
+
+// cancellingReader cancels the encryption once it has served after bytes.
+type cancellingReader struct {
+	src    io.Reader
+	after  int
+	read   int
+	cancel context.CancelFunc
+}
+
+func (r *cancellingReader) Read(p []byte) (int, error) {
+	n, err := r.src.Read(p)
+	r.read += n
+	if r.read >= r.after {
+		r.cancel()
+	}
+	return n, err
+}
+
+var errWriteFailed = errors.New("image is full")
+
+type failingWriterAt struct{}
+
+func (failingWriterAt) WriteAt(p []byte, off int64) (int, error) {
+	return 0, errWriteFailed
 }
 
 // The parallel path must be byte-identical to the serial one for every job

@@ -1,6 +1,7 @@
 package nriimagepolicy
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -356,6 +357,10 @@ func TestRequestPodSecretFailures(t *testing.T) {
 	defer garbled.Close()
 	closed := httptest.NewTLSServer(http.NotFoundHandler())
 	closed.Close()
+	oversized := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(bytes.Repeat([]byte("x"), 2*secretbroker.MaxValue+4097))
+	}))
+	defer oversized.Close()
 	for _, tc := range []struct {
 		name, url string
 		client    *http.Client
@@ -364,6 +369,7 @@ func TestRequestPodSecretFailures(t *testing.T) {
 		{"malformed URL", "https://cds\x7f", garbled.Client(), "invalid control character"},
 		{"unreachable", closed.URL, closed.Client(), "connect"},
 		{"undecodable answer", garbled.URL, garbled.Client(), "decode Pod secret response"},
+		{"answer past the cap", oversized.URL, oversized.Client(), "read Pod secret response"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := requestPodSecret(t.Context(), tc.client, tc.url, "a", nil); err == nil || !strings.Contains(err.Error(), tc.want) {

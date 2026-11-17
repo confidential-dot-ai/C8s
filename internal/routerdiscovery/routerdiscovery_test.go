@@ -32,6 +32,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/internal/localverify"
+	"github.com/confidential-dot-ai/c8s/internal/readutil"
 	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
@@ -852,4 +853,34 @@ func send(hc *http.Client, method, url, body string) error {
 		return fmt.Errorf("%s %s = %d", method, url, resp.StatusCode)
 	}
 	return nil
+}
+
+// A document read past maxDocumentBytes is refused as unread, and NOT as
+// ErrNoDiscovery, which would let the caller fall back to direct armTLS
+// verification on a target that does serve a document.
+func TestNewVerifiedHTTPClient_RefusesADocumentOverTheCap(t *testing.T) {
+	servingCert, leaf := plainServingCert(t)
+	complete := discoveryDoc(t, leaf, []byte("challenge"), "", string(teetypes.PlatformAzSNP), `{"hcl_report":"fake"}`)
+	paddedToTheCap := append(complete, bytes.Repeat([]byte(" "), maxDocumentBytes-len(complete))...)
+
+	for _, tc := range []struct {
+		name string
+		doc  []byte
+	}{
+		{name: "body past the cap", doc: bytes.Repeat([]byte("x"), maxDocumentBytes+1)},
+		{name: "complete document then trailing data", doc: append(paddedToTheCap, []byte("trailing")...)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lb := fakeLB(t, servingCert, tc.doc)
+			_, err := NewVerifiedHTTPClient(context.Background(), lb.URL,
+				[][]byte{bytes.Repeat([]byte{0x42}, armtls.SNPMeasurementSize)},
+				approvingVerify(bytes.Repeat([]byte{0x42}, armtls.SNPMeasurementSize)))
+			if !errors.Is(err, readutil.ErrTooLarge) {
+				t.Fatalf("err = %v, want a refused read", err)
+			}
+			if errors.Is(err, ErrNoDiscovery) {
+				t.Fatal("a document that does not fit must not signal ErrNoDiscovery (would allow fallback)")
+			}
+		})
+	}
 }

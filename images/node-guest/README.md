@@ -114,10 +114,10 @@ waits for. Kubernetes owns the core application services:
 |---|---|---|
 | Launch verification, floor and kubelet staging | systemd oneshot | Every worker, before containerd |
 | Local attestation API and Unix-socket proxy | systemd services | Every worker |
-| NRI image admission | Required containerd plugin | Every worker, before pods |
+| NRI image admission | systemd service; the plugin containerd requires | Every worker, before pods |
 | containerd and the kubelet | systemd services | Every worker, after staging |
 | Cilium agent, kube-proxy and CoreDNS | kubelet static pods | Every worker |
-| armTLS mesh and iptables reconciliation | DaemonSet with native sidecars | Every worker |
+| armTLS mesh endpoint and packet rules | Sidecar the webhook injects; rules installed by NRI image admission | Every member pod, on any worker |
 | Router, certificate renewal and attestation helpers | Deployment | Any worker |
 | Operator, webhook and admission integration | Kubernetes resources | The control plane, outside the TEEs |
 
@@ -361,12 +361,15 @@ gate that proves no handler escapes it, and what to do in a new component.
 ## Refreshing measurements
 
 A builder-pin change requires rebuilding both platforms and deriving fresh
-measurement configurations from their `manifest.json` files. Given built or
-downloaded image directories, use the existing CLI:
+measurement configurations from their `manifest.json` files. A build is one
+platform, and `--tee` refuses a platform the image was not built for, so each
+platform's configuration comes from its own image directory. From the confos
+checkout, after builds named `C8S_NAME=worker-tdx` and `C8S_NAME=worker-snp`
+(for a downloaded image, pass its own directory):
 
 ```sh
-c8s measurements derive --tee tdx --out measurements-tdx.json output/c8s-worker
-c8s measurements derive --tee sev-snp --out measurements-snp.json output/c8s-worker
+c8s measurements derive --tee tdx --out measurements-tdx.json output/worker-tdx
+c8s measurements derive --tee sev-snp --out measurements-snp.json output/worker-snp
 ```
 
 The input can also be a manifest path. Keep one configuration per platform:

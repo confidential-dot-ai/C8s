@@ -9,6 +9,9 @@ protect tenant data within the TEE and authenticate data crossing its boundary.
 - [Engineering standards](docs/engineering-standards.md) own PR shape, code style,
   comments, testing and documentation rules.
 - [Review guide](docs/review-guide.md) covers correctness and security review.
+- The [confidential-kubernetes skill](.claude/skills/confidential-kubernetes/SKILL.md)
+  maps the system: where each topic is documented, how the code is laid out and
+  what is easy to get wrong.
 - Read the guidance and READMEs beside the code you change. Check related callers,
   shared types and wire contracts before treating a change as local.
 

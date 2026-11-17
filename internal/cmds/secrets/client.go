@@ -5,10 +5,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 
+	"github.com/confidential-dot-ai/c8s/internal/readutil"
 	intsecrets "github.com/confidential-dot-ai/c8s/internal/secrets"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
@@ -58,7 +58,7 @@ func (c client) put(ctx context.Context, path string, value []byte, overwrite bo
 	}
 	defer resp.Body.Close()
 
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	raw, err := readutil.ReadAll(resp.Body, maxResponseBytes)
 	if err != nil {
 		return result{}, fmt.Errorf("read response: %w", err)
 	}
@@ -103,7 +103,7 @@ func (c client) explain(ctx context.Context, sandboxID string, auth authorizer) 
 	}
 	defer resp.Body.Close()
 
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	raw, err := readutil.ReadAll(resp.Body, maxResponseBytes)
 	if err != nil {
 		return out, fmt.Errorf("read response: %w", err)
 	}

@@ -21,7 +21,6 @@ expect_failure() {
   fi
 }
 
-directive="$(awk '$1 == "go" { print $2; exit }' "$test_dir/../../../go.mod")"
 
 mkdir -p "$work/bin"
 cat >"$work/bin/go" <<'EOF'
@@ -47,12 +46,12 @@ export PATH="$work/bin:$PATH" FAKE_GO_LOG="$work/go.log"
 
 # A caller's environment must not reach the build.
 GOOS=windows GOARCH=386 GOFLAGS=-tags=c8s_node CGO_ENABLED=1 GOAMD64=v3 GOFIPS140=v1.0.0 \
-  bash "$script" v1.2.3 "$work/out" linux-amd64 darwin-arm64
+  bash "$script" v1.2.3 go1.99.7 "$work/out" linux-amd64 darwin-arm64
 [ -f "$work/out/c8s-linux-amd64" ] && [ -f "$work/out/c8s-darwin-arm64" ] ||
   fail "a platform binary is missing"
 pass
 
-fixed="cgo=0 flags=-mod=readonly work=off exp= amd64=v1 arm64=v8.0 toolchain=go$directive goenv=off fips=off"
+fixed="cgo=0 flags=-mod=readonly work=off exp= amd64=v1 arm64=v8.0 toolchain=go1.99.7 goenv=off fips=off"
 grep -Fxq "env linux amd64 $fixed" "$work/go.log" ||
   fail "linux-amd64 did not build with the fixed environment: $(cat "$work/go.log")"
 grep -Fxq "env darwin arm64 $fixed" "$work/go.log" ||
@@ -63,28 +62,34 @@ args="args build -trimpath -buildvcs=false -ldflags=-s -w -buildid= -X github.co
 grep -Fxq -- "$args" "$work/go.log" || fail "unexpected build arguments: $(cat "$work/go.log")"
 pass
 
-bash "$script" v1.2.3-beta.4 "$work/beta" linux-arm64
+bash "$script" v1.2.3-beta.4 go1.99.7 "$work/beta" linux-arm64
 [ -f "$work/beta/c8s-linux-arm64" ] || fail "a beta tag did not build"
 pass
 
-FAKE_GOVERSION=go1.0.0 expect_failure bash "$script" v1.2.3 "$work/out" linux-amd64
-grep -q "go.mod names go$directive" "$work/unexpected.stderr" ||
-  fail "a toolchain other than the go.mod directive was not refused"
+FAKE_GOVERSION=go1.0.0 expect_failure bash "$script" v1.2.3 go1.99.7 "$work/out" linux-amd64
+grep -q "toolchain is go1.0.0, not go1.99.7" "$work/unexpected.stderr" ||
+  fail "a toolchain other than the one named was not refused"
 pass
 
 for version in 1.2.3 v1.2 dev v1.2.3-rc.1 'v1.2.3 -X a=b'; do
-  expect_failure bash "$script" "$version" "$work/out" linux-amd64
+  expect_failure bash "$script" "$version" go1.99.7 "$work/out" linux-amd64
   grep -q 'is not a release tag' "$work/unexpected.stderr" || fail "version '$version' was not refused"
 done
 pass
 
 for platform in windows-amd64 linux-riscv64 linux/amd64 ../x; do
-  expect_failure bash "$script" v1.2.3 "$work/out" "$platform"
+  expect_failure bash "$script" v1.2.3 go1.99.7 "$work/out" "$platform"
   grep -q 'unsupported platform' "$work/unexpected.stderr" || fail "platform '$platform' was not refused"
 done
 pass
 
-expect_failure bash "$script" v1.2.3 "$work/out"
+for toolchain in 1.99.7 go1.99 go2.0.0 local go1.99.7-rc1; do
+  expect_failure bash "$script" v1.2.3 "$toolchain" "$work/out" linux-amd64
+  grep -q "is not a Go release" "$work/unexpected.stderr" || fail "toolchain '$toolchain' was not refused"
+done
+pass
+
+expect_failure bash "$script" v1.2.3 go1.99.7 "$work/out"
 pass
 
 echo "release-cli: $tests tests passed"

@@ -15,6 +15,7 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote"
+	"github.com/confidential-dot-ai/c8s/internal/readutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
@@ -249,7 +250,11 @@ func (c Client) do(ctx context.Context, method, path string, body []byte) ([]byt
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
 		return nil, &StatusError{Status: resp.StatusCode, Body: string(respBody)}
 	}
-	return io.ReadAll(io.LimitReader(resp.Body, maxResponseBodyBytes))
+	answer, err := readutil.ReadAll(resp.Body, maxResponseBodyBytes)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	return answer, nil
 }
 
 func contextOrBackground(ctx context.Context) context.Context {

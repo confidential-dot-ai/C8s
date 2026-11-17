@@ -41,8 +41,8 @@ cds_measurement_args() {
 
 # cds_write <command...> runs one signed CDS write, such as `c8s allowlist
 # add`. A CDS without persistence refuses operator tokens for
-# --jwt-clock-skew (30s) after it starts (docs/operator.md, "CDS is a
-# singleton"), and the first write of a lane can land inside that window, so
+# --jwt-clock-skew (30s) after it starts (docs/operator.md, "CDS runs as one
+# VM"), and the first write of a lane can land inside that window, so
 # that refusal is retried, re-running the command for a fresh token, for
 # longer than the window. Any other outcome returns at once with the
 # command's status, its stdout and its stderr.

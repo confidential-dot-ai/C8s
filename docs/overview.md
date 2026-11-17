@@ -44,9 +44,11 @@ nodes.
 ## Node-as-CVM
 
 The node is the confidential VM, and its pods are ordinary Linux processes
-inside it. There is no per-pod VM. So a pod is protected from the host, and the
-enforcement that decides what may run sits in the node CVM rather than in the
-API server — below the layer the adversary controls.
+inside it. A node runs no per-pod VM. So a pod is protected from the host, and
+the enforcement that decides what may run sits in the node CVM rather than in
+the API server — below the layer the adversary controls. A pod CVM, a measured
+VM that runs one pod and joins no cluster, is not a node —
+[operator.md](operator.md#pod-cvm).
 
 ## What runs where
 
@@ -57,9 +59,10 @@ API server — below the layer the adversary controls.
   and the route manifest. CDS reads and writes no Kubernetes object:
   operator-added entries, secrets, the route manifest, and the mesh CA live only
   in its memory, so a restart re-bootstraps from its configuration and the
-  operator re-applies the rest — [operator.md](operator.md#cds-is-a-singleton).
-- The **admission plugin** `nri-image-policy` is a host process containerd
-  launches, not a pod. It admits or denies every container and installs each
+  operator re-applies the rest — [operator.md](operator.md#cds-runs-as-one-vm).
+- The **admission plugin** `nri-image-policy` is a host process, not a pod:
+  containerd launches it on a `gke` or `aks` node, and systemd runs it on the
+  measured node image. It admits or denies every container and installs each
   member pod's packet rules —
   [allowlist-and-capabilities.md](allowlist-and-capabilities.md).
 - The **admission inventory** is the same process, answering pods on a

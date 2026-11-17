@@ -138,18 +138,20 @@ c8s-linux-amd64: OK
 
 A platform the statement does not list fails this check.
 
-The build is reproducible, so you can also rebuild a binary and compare it. In
-a checkout of the release commit, with Go and network access to download the
-toolchain that `go.mod` names:
+The build is reproducible for a given toolchain, so you can also rebuild a
+binary and compare it. A release builds the CLI with the newest Go patch its
+runner has, and the binary records that toolchain. In a checkout of the
+release commit, with Go and network access to download that toolchain:
 
 ```sh
-.github/scripts/release-cli.sh "$TAG" rebuilt "$PLATFORM"
+GO_VERSION=$(go version "c8s-$PLATFORM" | awk '{ print $NF }')
+.github/scripts/release-cli.sh "$TAG" "$GO_VERSION" rebuilt "$PLATFORM"
 cmp "rebuilt/c8s-$PLATFORM" "c8s-$PLATFORM"
 ```
 
 `cmp` prints nothing when the files are equal.
 [`release-cli.sh`](../.github/scripts/release-cli.sh) fixes every build input,
-so the same commit, tag and platform give the same bytes on any host.
+so the same commit, tag, toolchain and platform give the same bytes on any host.
 
 ## Beta releases
 
@@ -193,9 +195,13 @@ Registry publication is not a transaction, so a failure after that can leave a
 release incomplete. Re-run the failed **Docker** workflow to repair component
 and chart publication, the CLI assets and the signed statement; re-run the
 **c8s-image** workflow to repair guest-image aliases. Missing aliases are
-created and matching ones verified by digest. A re-run rebuilds the CLI and
+created and matching ones verified by digest. A re-run rebuilds the CLI with the
+toolchain of the published binary and
 requires each published binary and the published statement to equal what it
-built; it uploads only what is missing. Neither workflow moves a Git tag,
+built; it uploads only what is missing. If an interrupted first run left a draft
+release, a re-run cannot read its binaries and builds with the current Go
+patch: when that differs, the re-run fails on the binary comparison, so delete
+the draft release and re-run. Neither workflow moves a Git tag,
 overwrites an exact image tag whose digest differs, or rolls `X.Y` or `latest`
 backward.
 

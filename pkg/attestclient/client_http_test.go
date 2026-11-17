@@ -1,6 +1,7 @@
 package attestclient
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -14,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/confidential-dot-ai/attestation-go/remote"
+	"github.com/confidential-dot-ai/c8s/internal/readutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
@@ -474,4 +476,17 @@ func TestRedirectStatusIsNotSuccess(t *testing.T) {
 		_, err := c.AttestContext(context.Background(), attestRequest{})
 		assertStatus300(t, err)
 	})
+}
+
+// A 2xx body past maxResponseBodyBytes is refused: a PEM prefix is still valid
+// PEM, so a truncated bundle would look like a shorter one.
+func TestDoRefusesABodyOverTheCap(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(bytes.Repeat([]byte("x"), maxResponseBodyBytes+1))
+	}))
+	defer srv.Close()
+
+	if _, err := NewClientWithHTTP(srv.URL, srv.Client()).MeshCA(context.Background()); !errors.Is(err, readutil.ErrTooLarge) {
+		t.Fatalf("MeshCA = %v, want a refused read", err)
+	}
 }

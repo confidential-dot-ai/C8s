@@ -30,11 +30,11 @@ func getPublication(t *testing.T, srv *Server) (*http.Response, []byte) {
 
 func TestE4RoutePublication(t *testing.T) {
 	state := routing.NewState(routing.StateConfig{MeshCAs: noMeshCAs})
-	newServer := func(publish, attestOff bool) *Server {
-		return NewServer(Config{Routes: testRouter{State: state, backendFunc: echoBackend}, PublishRoutes: publish, DisableAttestEndpoints: attestOff, Bindings: NewBindings()})
+	newServer := func(publish bool) *Server {
+		return NewServer(Config{Routes: testRouter{State: state, backendFunc: echoBackend}, PublishRoutes: publish, Bindings: NewBindings()})
 	}
 
-	resp, _ := getPublication(t, newServer(true, false))
+	resp, _ := getPublication(t, newServer(true))
 	if resp.StatusCode != http.StatusNotFound || resp.Header.Get("Cache-Control") != "no-store" {
 		t.Fatalf("before the first apply = %d, Cache-Control %q, want 404 no-store", resp.StatusCode, resp.Header.Get("Cache-Control"))
 	}
@@ -43,7 +43,7 @@ func TestE4RoutePublication(t *testing.T) {
 	if _, err := state.Accept(env, keys); err != nil {
 		t.Fatal(err)
 	}
-	resp, body := getPublication(t, newServer(true, false))
+	resp, body := getPublication(t, newServer(true))
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("after apply = %d, want 200", resp.StatusCode)
 	}
@@ -69,19 +69,11 @@ func TestE4RoutePublication(t *testing.T) {
 		t.Fatalf("published envelope does not verify: %v", err)
 	}
 
-	for _, tc := range []struct {
-		name               string
-		publish, attestOff bool
-	}{
-		{name: "publication disabled", publish: false},
-		{name: "attest endpoints disabled", publish: true, attestOff: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if resp, _ := getPublication(t, newServer(tc.publish, tc.attestOff)); resp.StatusCode != http.StatusNotFound {
-				t.Fatalf("GET %s = %d, want 404", routes.PublicationPath, resp.StatusCode)
-			}
-		})
-	}
+	t.Run("publication disabled", func(t *testing.T) {
+		if resp, _ := getPublication(t, newServer(false)); resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("GET %s = %d, want 404", routes.PublicationPath, resp.StatusCode)
+		}
+	})
 }
 
 func TestPublishRoutesFlagDefaultsOff(t *testing.T) {
