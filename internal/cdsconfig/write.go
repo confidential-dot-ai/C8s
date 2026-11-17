@@ -29,8 +29,8 @@ type Document struct {
 	OperatorKeys operatorauth.KeyBundle
 	// Workloads is the cluster's allowlist, as MergeWorkloads builds it.
 	Workloads *allowlist.Allowlist
-	// Nodes is the measurements document pinning the nodes CDS admits; nil
-	// for a replica set whose Genesis names the first set.
+	// Nodes is the measurements document pinning the nodes CDS admits.
+	// A replica set may start with an explicitly typed empty set.
 	Nodes []byte
 	// PodImagePolicy optionally pins Pod identities separately from Nodes.
 	// Empty disables Pod issuance; nonempty bytes must be a complete policy.
@@ -42,7 +42,7 @@ type Document struct {
 	LeafDNSPatterns []string
 	// KMS is where pod secret release is brokered to; nil serves no pod secrets.
 	KMS *KMS
-	// HA is the replica set, nil for a single CDS.
+	// HA is the replica set, nil for a standalone CDS.
 	HA *HA
 }
 

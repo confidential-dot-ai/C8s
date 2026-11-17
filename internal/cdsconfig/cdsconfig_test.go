@@ -192,3 +192,32 @@ func TestParseRefusesUnboundNodesForAReplicaSet(t *testing.T) {
 		t.Fatalf("a replica set with a bound node pin: %v", err)
 	}
 }
+
+func TestParseEmptyNodesRequiresAReplicaSetAndExplicitFamily(t *testing.T) {
+	_, operatorPEM := testKey(t)
+	_, anchorPEM := testKey(t)
+	document := testDocument(t, operatorPEM, anchorPEM)
+	document.HA = &HA{Endpoints: []string{"cds.example:8443"}}
+	for _, family := range []teetypes.Family{teetypes.FamilySNP, teetypes.FamilyTDX} {
+		empty, err := refvalues.Render(refvalues.ReferenceValues{Family: family})
+		if err != nil {
+			t.Fatal(err)
+		}
+		document.Nodes = string(empty)
+		cfg, err := Parse(render(t, document))
+		if err != nil || !cfg.Nodes.Empty() || cfg.Nodes.Family != family {
+			t.Fatalf("empty %s replica set: %+v, %v", family, cfg, err)
+		}
+		standalone := document
+		standalone.HA = nil
+		if _, err := Parse(render(t, standalone)); err == nil {
+			t.Fatal("standalone CDS accepted empty nodes")
+		}
+	}
+	for _, invalid := range []string{"", `{}`, `{"schema_version":"1","measurements":[]}`, `{"schema_version":"1","tee":"unknown","measurements":[]}`} {
+		document.Nodes = invalid
+		if _, err := Parse(render(t, document)); err == nil {
+			t.Fatalf("replica set accepted nodes %q", invalid)
+		}
+	}
+}

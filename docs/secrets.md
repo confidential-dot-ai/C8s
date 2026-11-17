@@ -18,13 +18,16 @@ not a Kubernetes Secret: nothing is written to the API server.
 
 ## When it is served
 
-CDS serves the secrets endpoint only when it can establish what a pod runs. It
-needs the TEE family its own launch proved, its node pins, and node addresses
-bounding its callback to a node's admission inventory — the node service that
-records which containers each pod has run (the configuration's `nodeCIDRs`).
-Miss one and CDS logs a warning naming it and serves nothing, so a pod asking
-for a secret retries until that is fixed. Where the operator has no node
-inventory at all, such a pod is refused at admission.
+CDS needs the TEE family its own launch proved and node addresses bounding its
+callback to a node's admission inventory — the node service that records which
+containers each pod has run (the configuration's `nodeCIDRs`). A standalone CDS
+also requires initial node pins before mounting the secrets endpoint.
+
+A [single chain replica](cds-ha.md#starting-without-workers) mounts the endpoint
+with an empty initial node set, allowing operator writes before workers join.
+Workload release requires a signed node admission and the checks below. A set
+of more than one replica serves no secrets. Where the operator has no node
+inventory at all, a pod requesting secrets is refused at admission.
 
 Release is gated on a `secrets` grant in the workload entry. An entry without
 one releases nothing, so writing the grant is what turns release on; it is

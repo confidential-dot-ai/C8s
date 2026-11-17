@@ -124,7 +124,7 @@ func (w wire) parse() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	if nodes.Empty() {
+	if nodes.Empty() && w.HA == nil {
 		return nil, errors.New("nodes: CDS certifies only the nodes its launch file names, and this one names none")
 	}
 	kms, err := w.KMS.parse()
@@ -137,10 +137,8 @@ func (w wire) parse() (*Config, error) {
 	if err := w.HA.validate(); err != nil {
 		return nil, err
 	}
-	// A replica set serves its node set from the chain, whose nodes entries
-	// carry only images that bind their launch: the launch file's set is the
-	// first of them.
-	if w.HA != nil {
+	// Every initial node must satisfy the chain's launch-binding rule.
+	if w.HA != nil && !nodes.Empty() {
 		if err := cdschain.CheckNodes([]byte(w.Nodes)); err != nil {
 			return nil, err
 		}
@@ -162,12 +160,9 @@ func (w wire) parse() (*Config, error) {
 	return cfg, nil
 }
 
-// parseNodes reads the node pins a launch file names, which may be none.
+// parseNodes requires a typed document, even when the initial set is empty.
 func parseNodes(document string) (refvalues.ReferenceValues, error) {
-	if document == "" {
-		return refvalues.ReferenceValues{}, nil
-	}
-	nodes, err := refvalues.Parse([]byte(document))
+	nodes, err := refvalues.ParseRendered([]byte(document))
 	if err != nil {
 		return refvalues.ReferenceValues{}, fmt.Errorf("nodes: %w", err)
 	}

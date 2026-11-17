@@ -100,9 +100,9 @@ type ClientConfig struct {
 	// the client verifies the server against it on every handshake.
 	Policy *VerifyPolicy
 
-	// Current, when set, replaces Policy on every handshake: for pins that
-	// change while the client runs (a CDS replica set's accepted builds). An
-	// error fails that handshake.
+	// Current, when set, replaces Policy on every handshake and permits an
+	// initially empty Policy. A nil, empty or failed current policy refuses
+	// the handshake.
 	Current func() (*VerifyPolicy, error)
 
 	// Platform and AttestFunc, when both set, enable mTLS: the client
@@ -797,8 +797,10 @@ func NewClientTLSConfig(cfg *ClientConfig) (*tls.Config, *CertManager, error) {
 	if cfg.Policy == nil {
 		return nil, nil, fmt.Errorf("armtls: Policy is required: the client verifies the server's evidence against it on every handshake")
 	}
-	if err := requirePins(cfg.Policy.Policy); err != nil {
-		return nil, nil, err
+	if cfg.Current == nil {
+		if err := requirePins(cfg.Policy.Policy); err != nil {
+			return nil, nil, err
+		}
 	}
 
 	tlsCfg := &tls.Config{
@@ -811,6 +813,9 @@ func NewClientTLSConfig(cfg *ClientConfig) (*tls.Config, *CertManager, error) {
 	if current := cfg.Current; current != nil {
 		tlsCfg.VerifyPeerCertificate = func(raw [][]byte, chains [][]*x509.Certificate) error {
 			policy, err := current()
+			if err == nil && policy == nil {
+				err = errors.New("Policy is required")
+			}
 			if err == nil {
 				err = requirePins(policy.Policy)
 			}
