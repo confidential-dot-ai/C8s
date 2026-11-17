@@ -552,10 +552,13 @@ func startSandboxDigests(ctx context.Context, logger *slog.Logger, cfg *config, 
 		cfg.NormalizedPlatform(),
 		attestclient.MakeSNPARMTLSAttestFunc(attestclient.NewClient(""), attestationApiURL),
 		attestationApiURL, armtls.Pins(set.Policy()), journal)
-	if err == nil && chain != nil {
+	if err != nil {
+		return err
+	}
+	if chain != nil {
 		chain.attachDigests(digests)
 	}
-	return err
+	return nil
 }
 
 // startAdmissionInventory serves the node-CVM token socket (docs/armtls.md).
