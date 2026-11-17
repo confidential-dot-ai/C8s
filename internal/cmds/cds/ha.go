@@ -68,19 +68,13 @@ func startHA(ctx context.Context, cfg config, mesh *issuer.MeshCA, store *allowl
 	}
 	policy := chainPolicyServer(store, cfg.measured.Workloads)
 	replica, err := cdsha.New(cdsha.Config{
-		Cluster: cfg.measured.ClusterID, Endpoints: endpoints, Self: slot,
-		OperatorKeys: cfg.measured.OperatorKeys.Keys(),
-		Gossip:       cfg.ha.gossip, PeerTimeout: cfg.ha.peerTimeout, StoreTimeout: cfg.ha.storeTimeout,
-		WarnEntries: cfg.ha.warnEntries, WarnBytes: cfg.ha.warnBytes,
-		Mesh: mesh,
-		// Gossip is authenticated by member signatures, not by the channel.
-		Peer: &http.Client{Transport: &http.Transport{TLSClientConfig: pendingattestation.TLSConfig("")}},
 		Attested: func(pins armtls.Pins) (*http.Client, error) {
 			return armtls.NewVerifyingHTTPClient(pins, cfg.attestationApiURL)
 		},
-		SelfCheck: func(_ context.Context, measurements string) (bool, error) {
-			return ownBuildPasses(serving, measurements, cfg.attestationApiURL)
-		},
+		Cluster:   cfg.measured.ClusterID,
+		Endpoints: endpoints,
+		Gossip:    cfg.ha.gossip,
+		Mesh:      mesh,
 		OnState: func(s *cdschain.State) error {
 			meshPeers.UpdateClientCA(mesh.Current().CA.Cert)
 			if err := policy(s); err != nil {
@@ -91,7 +85,18 @@ func startHA(ctx context.Context, cfg config, mesh *issuer.MeshCA, store *allowl
 			}
 			return nil
 		},
-		Validate: func(b cdschain.Body) error { return validateRoutes(b, mesh, store) },
+		OperatorKeys: cfg.measured.OperatorKeys.Keys(),
+		// Gossip is authenticated by member signatures, not by the channel.
+		Peer:        &http.Client{Transport: &http.Transport{TLSClientConfig: pendingattestation.TLSConfig("")}},
+		PeerTimeout: cfg.ha.peerTimeout,
+		Self:        slot,
+		SelfCheck: func(_ context.Context, measurements string) (bool, error) {
+			return ownBuildPasses(serving, measurements, cfg.attestationApiURL)
+		},
+		StoreTimeout: cfg.ha.storeTimeout,
+		Validate:     func(b cdschain.Body) error { return validateRoutes(b, mesh, store) },
+		WarnBytes:    cfg.ha.warnBytes,
+		WarnEntries:  cfg.ha.warnEntries,
 	}, chainStore)
 	if err != nil {
 		return nil, err
