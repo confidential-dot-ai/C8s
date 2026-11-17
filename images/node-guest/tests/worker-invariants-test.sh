@@ -85,6 +85,9 @@ refuses "a latch leaving modules loadable" modules-latch \
 refuses "a preset leaving the latch disabled" modules-latch \
     sed -i '/^enable c8s-modules-latch.service$/d' "$(baked usr/lib/systemd/system-preset/50-worker.preset)"
 
+refuses "a profile that does not install jq" gate-tools \
+    sed -i '/^    jq$/d' "$WORKER/mkosi.conf"
+
 KEY=kernel.apparmor_restrict_unprivileged_unconfined
 refuses "a drop-in leaving the unconfined restriction on" apparmor-sysctl \
     sed -i 's/= 0$/= 1/' "$(baked etc/sysctl.d/20-apparmor.conf)"
