@@ -10,7 +10,6 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -52,8 +51,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	pod := &corev1.Pod{}
-	if err := r.client.Get(ctx, req.NamespacedName, pod); err != nil {
-		return ctrl.Result{}, client.IgnoreNotFound(err)
+	if err := r.client.Get(ctx, req.NamespacedName, pod); notFound(err) {
+		return ctrl.Result{}, nil
+	} else if err != nil {
+		return ctrl.Result{}, err
 	}
 	if pod.Spec.NodeName != r.cfg.NodeName {
 		return ctrl.Result{}, nil
@@ -68,7 +69,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, errors.New("scheduled Pod has no UID")
 	}
 	rec, secret, err := r.loadRecord(ctx, identityKey(r.cfg.ProviderID, string(pod.UID)))
-	if err != nil && !apierrors.IsNotFound(err) {
+	if err != nil && !notFound(err) {
 		return r.unavailable(ctx, pod, "ProviderStateUnavailable", err)
 	}
 	optedIn := pod.Annotations[Annotation] == "true"
@@ -300,7 +301,7 @@ func (r *Reconciler) finish(ctx context.Context, pod *corev1.Pod, rec *record, s
 func (r *Reconciler) deletePod(ctx context.Context, pod *corev1.Pod) (ctrl.Result, error) {
 	key := identityKey(r.cfg.ProviderID, string(pod.UID))
 	rec, secret, err := r.loadRecord(ctx, key)
-	if apierrors.IsNotFound(err) {
+	if notFound(err) {
 		return ctrl.Result{}, r.finishDeletion(ctx, pod, nil)
 	}
 	if err != nil {
@@ -473,7 +474,7 @@ func (r *Reconciler) sweepRecord(ctx context.Context, key string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	rec, secret, err := r.loadRecord(ctx, key)
-	if apierrors.IsNotFound(err) {
+	if notFound(err) {
 		return nil
 	}
 	if err != nil {
@@ -484,7 +485,7 @@ func (r *Reconciler) sweepRecord(ctx context.Context, key string) error {
 	if err == nil && pod.UID == rec.UID {
 		return nil
 	}
-	if err != nil && !apierrors.IsNotFound(err) {
+	if err != nil && !notFound(err) {
 		return err
 	}
 	done, err := r.removeInstance(ctx, rec, secret)

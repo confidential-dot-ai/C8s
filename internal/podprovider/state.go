@@ -78,7 +78,7 @@ func (r *Reconciler) ensureRecord(ctx context.Context, pod *corev1.Pod) (*record
 	if err == nil {
 		return rec, secret, nil
 	}
-	if !apierrors.IsNotFound(err) {
+	if !notFound(err) {
 		return nil, nil, err
 	}
 	req, frozen, clientDocument, err := r.cfg.launch(pod)
@@ -124,7 +124,7 @@ func (r *Reconciler) heldRecords(ctx context.Context) (int64, error) {
 	var held int64
 	for _, secret := range list.Items {
 		rec, _, err := r.loadRecord(ctx, secret.Name)
-		if apierrors.IsNotFound(err) {
+		if notFound(err) {
 			continue
 		}
 		if err != nil || !rec.Deleted {
@@ -152,4 +152,11 @@ func (r *Reconciler) save(ctx context.Context, rec *record, secret *corev1.Secre
 
 func (r *Reconciler) discard(ctx context.Context, secret *corev1.Secret) error {
 	return client.IgnoreNotFound(r.client.Delete(ctx, secret, &client.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &secret.UID, ResourceVersion: &secret.ResourceVersion}}))
+}
+
+// notFound reports the API server's own answer that an object does not exist.
+// The client also reports as not found a 404 without a Status body, as
+// something in front of the API server answers; that is a failed read.
+func notFound(err error) bool {
+	return apierrors.ReasonForError(err) == metav1.StatusReasonNotFound && !apierrors.IsUnexpectedServerError(err)
 }
