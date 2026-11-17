@@ -28,7 +28,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/sandboxledger"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
-	"github.com/confidential-dot-ai/c8s/pkg/cdsgenesis"
+	"github.com/confidential-dot-ai/c8s/pkg/cdspin"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 	"github.com/confidential-dot-ai/c8s/pkg/routes"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
@@ -258,8 +258,8 @@ func haGate(replica *cdsha.Replica) func(http.Handler) http.Handler {
 	open := []string{"/healthz", "/readyz", "/metrics", "/ca", "/operator-keys", "/measurements"}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if id := replica.Identity(r.Header.Get(cdsgenesis.Header)); id != "" {
-				w.Header().Set(cdsgenesis.Header, id)
+			if id := replica.Identity(r.Header.Get(cdspin.Header)); id != "" {
+				w.Header().Set(cdspin.Header, id)
 			}
 			switch {
 			case strings.HasPrefix(r.URL.Path, "/ha/") || slices.Contains(open, r.URL.Path):
