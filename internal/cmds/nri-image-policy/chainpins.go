@@ -177,9 +177,9 @@ func followChainAtStart(cfg *config, logger *slog.Logger) (*chainPins, error) {
 	defer cancel()
 	if _, err := chain.refresh(ctx); err != nil {
 		logger.Warn("CDS chain not followed yet; serving the base allowlist and retrying in the background", "error", err)
-		return chain, nil
+	} else {
+		cfg.Allowlist.Pull.CDSMeasurementsConfig = chain.path
 	}
-	cfg.Allowlist.Pull.CDSMeasurementsConfig = chain.path
 	return chain, nil
 }
 
