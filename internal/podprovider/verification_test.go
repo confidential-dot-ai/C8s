@@ -3,6 +3,7 @@ package podprovider
 import (
 	"context"
 	"errors"
+	"net/http"
 	"testing"
 	"time"
 
@@ -212,7 +213,7 @@ func TestVerificationStateWriteFailureCannotGrantReadinessOrDelete(t *testing.T)
 // A Cloud or node outage on a verified pod keeps its last status with
 // readiness unknown and starts no deadline; only the guest's own failures do.
 func TestDependencyOutageOnAVerifiedPodStartsNoDeadline(t *testing.T) {
-	for _, outage := range []string{"cloud", "node"} {
+	for _, outage := range []string{"cloud", "cloud-bare-404", "cloud-bare-403", "node"} {
 		t.Run(outage, func(t *testing.T) {
 			pod := fixturePod()
 			r, cloud := fixtureReconciler(t, pod)
@@ -222,6 +223,10 @@ func TestDependencyOutageOnAVerifiedPodStartsNoDeadline(t *testing.T) {
 			switch outage {
 			case "cloud":
 				cloud.get = func(string) (*instance, error) { return nil, errors.New("cloud unavailable") }
+			case "cloud-bare-404":
+				cloud.get = func(string) (*instance, error) { return nil, &cloudProblem{status: http.StatusNotFound} }
+			case "cloud-bare-403":
+				cloud.get = func(string) (*instance, error) { return nil, &cloudProblem{status: http.StatusForbidden} }
 			case "node":
 				r.ownsNode = func(context.Context) error { return errors.New("node unavailable") }
 			}

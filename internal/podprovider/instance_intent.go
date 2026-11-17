@@ -97,10 +97,7 @@ func removeCloudInstance(ctx context.Context, api cloudAPI, intent *instanceInte
 	var err error
 	if intent.InstanceID == "" {
 		in, err = api.Find(ctx, intent.Key)
-	} else {
-		in, err = api.Get(ctx, intent.InstanceID)
-	}
-	if errors.Is(err, errCloudNotFound) {
+	} else if in, err = api.Get(ctx, intent.InstanceID); errors.Is(err, errCloudNotFound) {
 		in, err = nil, nil
 	}
 	if err != nil {
