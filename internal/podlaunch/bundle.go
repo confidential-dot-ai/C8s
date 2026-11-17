@@ -58,7 +58,11 @@ func NewPodBundle(opts PodBundleOptions) (err error) {
 	if err != nil {
 		return fmt.Errorf("--cds-image-policy-file: %w", err)
 	}
-	cds := cmdsutil.CDS{Address: opts.CDSAddress, Measurements: string(cdsPolicy), Chain: opts.CDSChain}
+	cds := cmdsutil.CDS{
+		Address:      opts.CDSAddress,
+		Measurements: string(cdsPolicy),
+		Chain:        opts.CDSChain,
+	}
 	if _, err := cds.Parse(); err != nil {
 		return err
 	}
