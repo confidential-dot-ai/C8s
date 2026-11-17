@@ -72,24 +72,39 @@ type Authorizer func(r *http.Request, body []byte, keys []*ecdsa.PublicKey) erro
 func (r *Replica) Status() Status {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	s := Status{Slot: r.slot(), Member: r.memberPEM, Pending: r.state == nil && !r.joining, StoreError: r.storeErr, Fork: r.fork}
+	s := Status{
+		Slot:       r.slot(),
+		Member:     r.memberPEM,
+		Pending:    r.state == nil && !r.joining,
+		StoreError: r.storeErr,
+		Fork:       r.fork,
+	}
 	if err := r.refusalLocked(); err != nil {
 		s.Serving = err.Error()
 	}
-	if r.state == nil {
-		return s
+	if r.state != nil {
+		r.chainStatusLocked(&s)
 	}
+	return s
+}
+
+// chainStatusLocked fills in what s reports about the held chain.
+func (r *Replica) chainStatusLocked(s *Status) {
 	held := r.state.Head
-	s.Held, s.Floor, s.Fresh, s.Confirmed = &held, held.Seq, r.majorityHeardLocked() && r.fork == nil, r.done
+	s.Held = &held
+	s.Floor = held.Seq
+	s.Fresh = r.majorityHeardLocked() && r.fork == nil
+	s.Confirmed = r.done
 	s.IsMember = r.state.Members[r.slot()] == r.memberPEM
-	s.ChainEntries, s.ChainBytes, s.Build = r.state.Entries, r.state.Bytes, r.ownBuildVersionLocked()
+	s.ChainEntries = r.state.Entries
+	s.ChainBytes = r.state.Bytes
+	s.Build = r.ownBuildVersionLocked()
 	if r.fork != nil {
 		s.Halted = s.Serving
 	}
 	if s.Build == "" {
 		s.Evicted = "its build is not among the accepted builds"
 	}
-	return s
 }
 
 // Handler serves the HA API; authorize checks operator requests under the
@@ -146,19 +161,18 @@ func (r *Replica) Handler(authorize Authorizer) http.Handler {
 			http.Error(w, "from must be a seq", http.StatusBadRequest)
 			return
 		}
+		// A replica that refuses (halted, not fresh) still serves the chain
+		// it holds, so the branches of a fork stay readable: the entries
+		// verify by signature, and only a serving replica's /ha/status
+		// confirms a head.
 		state, err := r.Current(req.Context())
 		if err != nil {
-			reply(w, nil, err)
-			return
+			if state = r.State(); state == nil {
+				reply(w, nil, err)
+				return
+			}
 		}
-		r.mu.Lock()
-		page := Chain{Head: state.Head}
-		// A resolve may have cut the chain since Current read it.
-		if end := min(state.Head.Seq+1, from+chainPage, uint64(len(r.chain))); from < end {
-			page.Entries = r.chain[from:end]
-		}
-		r.mu.Unlock()
-		writeJSON(w, http.StatusOK, page)
+		writeJSON(w, http.StatusOK, Chain{Head: state.Head, Entries: r.entries(from, state.Head)})
 	})
 	mux.HandleFunc("POST "+ResolvePath, func(w http.ResponseWriter, req *http.Request) {
 		var res Resolution
@@ -176,6 +190,18 @@ func (r *Replica) Handler(authorize Authorizer) http.Handler {
 		}
 	})
 	return mux
+}
+
+// entries is a page of the held chain from seq from on, up to head: a
+// resolve may have cut the chain since head was read.
+func (r *Replica) entries(from uint64, head cdschain.Head) []cdschain.Entry {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	end := min(head.Seq+1, from+chainPage, uint64(len(r.chain)))
+	if from >= end {
+		return nil
+	}
+	return r.chain[from:end]
 }
 
 func (r *Replica) operator(w http.ResponseWriter, req *http.Request, authorize Authorizer, limit int64) ([]byte, bool) {
@@ -207,6 +233,8 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
+// readJSON decodes a body of at most limit bytes into v. On false it has
+// answered already: 413 over the limit, 400 for anything that is not v.
 func readJSON(w http.ResponseWriter, req *http.Request, limit int64, v any) bool {
 	body, ok := httputil.ReadCappedBody(w, req, limit)
 	if ok {

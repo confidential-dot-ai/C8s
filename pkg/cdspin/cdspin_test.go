@@ -1,4 +1,4 @@
-package cdsgenesis
+package cdspin
 
 import (
 	"errors"

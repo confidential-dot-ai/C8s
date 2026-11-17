@@ -7,7 +7,7 @@ Documentation=https://github.com/confidential-dot-ai/c8s
 ConditionPathExists=/run/confai/operator-pubkey
 Requires=attestation-api.service
 # A replica of a set (the config's ha block) on an etcd store reads the etcd
-# client file from the unmeasured cdsstore disk, when there is one.
+# client file from the unmeasured cds-store disk, when there is one.
 Wants=run-cds\x2dstore.mount
 After=attestation-api.service network-online.target run-cds\x2dstore.mount
 Wants=network-online.target

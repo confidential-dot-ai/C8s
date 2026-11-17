@@ -120,5 +120,16 @@ ON CONFLICT (id) DO UPDATE SET
 	if err != nil {
 		return fmt.Errorf("store route manifest: %w", err)
 	}
+	s.routesFloor = max(s.routesFloor, m.Revision)
 	return nil
+}
+
+// RoutesFloor is the highest route manifest revision SetRoutes stored in
+// this process. A resolve can move the stored manifest back, but a router
+// keeps the highest revision it accepted, so a new manifest must go above
+// this one to reach it.
+func (s *Store) RoutesFloor() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.routesFloor
 }
