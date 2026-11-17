@@ -471,6 +471,7 @@ var (
 	errHostPortsUnpinnedLaunch    = fmt.Errorf("declared host ports need every container to pin its launch: command, args and mounts not any, and env constrained")
 	errCapabilitiesUnpinnedLaunch = fmt.Errorf("declared capabilities need every container to pin its launch: command, args and mounts not any, and env constrained")
 	errStaticPodDeclaresGrants    = fmt.Errorf("a static pod's entry grants no host ports or capabilities, so it may declare none")
+	errEgressUnpinnedEnv          = fmt.Errorf("declared egress needs the env policy to be deny, exact, or match with only exact matchers")
 )
 
 // Digests returns every container digest in the workload (init and main), for
@@ -546,7 +547,9 @@ func (w Workload) PinnedForGrant() error {
 
 // PinnedForEgress reports why declared exits on w would carry out of the TEE
 // whatever a launch the host shaped sends, or nil when the entry declares
-// none or pins its argv and mounts as a secrets grant must.
+// none, or pins its argv and mounts as a secrets grant must and pins its env.
+// Application TLS is an exit's only protection, and the host could turn it off
+// or redirect it through a variable such as HTTPS_PROXY or SSL_CERT_FILE.
 func (w Workload) PinnedForEgress() error {
 	if len(w.Egress) == 0 {
 		return nil
@@ -554,7 +557,19 @@ func (w Workload) PinnedForEgress() error {
 	if err := w.PinnedForGrant(); err != nil {
 		return fmt.Errorf("declared egress needs the launch pinned as a secrets grant does: %w", err)
 	}
+	for _, c := range w.containers() {
+		if !c.envPinned() {
+			return fmt.Errorf("container %s: %w", c.Digest, errEgressUnpinnedEnv)
+		}
+	}
 	return nil
+}
+
+// envPinned reports whether the host chooses no variable or value of c's
+// environment: env is deny, exact, or match with only exact matchers and no
+// service links.
+func (c Container) envPinned() bool {
+	return newEnvConstraint(&c.Env).hostIndependent() && !c.Env.ServiceLinks
 }
 
 // pinnedForHostPorts refuses declared host ports unless every container pins its launch.

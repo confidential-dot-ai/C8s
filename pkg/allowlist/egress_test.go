@@ -1,7 +1,9 @@
 package allowlist
 
 import (
+	"errors"
 	"fmt"
+	"net/netip"
 	"strings"
 	"testing"
 )
@@ -9,7 +11,7 @@ import (
 const egressDigest = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
 
 func egressDocument(egress string) []byte {
-	return []byte(fmt.Sprintf(`{"schema":"c8s.allowlist/v1","workloads":{"w":{"containers":[{"digest":%q}]%s}}}`, egressDigest, egress))
+	return []byte(fmt.Sprintf(`{"schema":"c8s.allowlist/v1","workloads":{"w":{"containers":[{"digest":%q,"env":{"policy":"deny"}}]%s}}}`, egressDigest, egress))
 }
 
 // Exits are part of the signed canonical form, sorted, and absent from an
@@ -91,7 +93,7 @@ func TestEgressRefusesWhatARuleCannotExpress(t *testing.T) {
 			if _, err := ParseJSON(egressDocument(`,"egress":` + egress)); err == nil {
 				t.Fatalf("ParseJSON accepted egress %s", egress)
 			}
-			body := fmt.Sprintf(`{"containers":[{"digest":%q}],"egress":%s}`, egressDigest, egress)
+			body := fmt.Sprintf(`{"containers":[{"digest":%q,"env":{"policy":"deny"}}],"egress":%s}`, egressDigest, egress)
 			if _, err := ParseWorkloadJSON([]byte(body)); err == nil {
 				t.Fatalf("ParseWorkloadJSON accepted egress %s", egress)
 			}
@@ -146,10 +148,10 @@ func TestEgressAcceptsSingleAddressesAndNarrowRanges(t *testing.T) {
 // grants anything.
 func TestEgressRequiresAPinnedLaunch(t *testing.T) {
 	for name, container := range map[string]string{
-		"args any":    `{"digest":%q,"args":{"policy":"any"}}`,
-		"command any": `{"digest":%q,"command":{"policy":"any"}}`,
-		"mounts any":  `{"digest":%q,"mounts":{"policy":"any"}}`,
-		"host mount":  `{"digest":%q,"mounts":{"policy":"exact","rules":[{"destination":"/etc/otel","kind":"host","source":"/etc/otel"}]}}`,
+		"args any":    `{"digest":%q,"args":{"policy":"any"},"env":{"policy":"deny"}}`,
+		"command any": `{"digest":%q,"command":{"policy":"any"},"env":{"policy":"deny"}}`,
+		"mounts any":  `{"digest":%q,"mounts":{"policy":"any"},"env":{"policy":"deny"}}`,
+		"host mount":  `{"digest":%q,"mounts":{"policy":"exact","rules":[{"destination":"/etc/otel","kind":"host","source":"/etc/otel"}]},"env":{"policy":"deny"}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			entry := fmt.Sprintf(`{"containers":[`+container+`],"egress":[{"cidr":"203.0.113.7/32","port":443}]}`, egressDigest)
@@ -168,5 +170,73 @@ func TestEgressRequiresAPinnedLaunch(t *testing.T) {
 				t.Fatalf("served entry = %+v, want its exit kept and reported unpinned", w)
 			}
 		})
+	}
+}
+
+// Exits need every container's env pinned too: application TLS is an exit's
+// only protection, and a variable the host sets, such as HTTPS_PROXY or
+// SSL_CERT_FILE, can redirect or disable it.
+func TestPinnedForEgressEnv(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		env  string
+		ok   bool
+	}{
+		{name: "absent", env: ``},
+		{name: "any", env: `,"env":{"policy":"any"}`},
+		{name: "present matcher", env: `,"env":{"policy":"match","variables":{"HOSTNAME":{"present":true}}}`},
+		{name: "present beside exact", env: `,"env":{"policy":"match","variables":{"HOSTNAME":{"exact":"relay"},"HTTPS_PROXY":{"present":true}}}`},
+		{name: "deny", env: `,"env":{"policy":"deny"}`, ok: true},
+		{name: "exact", env: `,"env":{"policy":"exact","values":{"HOSTNAME":"relay"}}`, ok: true},
+		{name: "exact matchers", env: `,"env":{"policy":"match","variables":{"HOSTNAME":{"exact":"relay"}}}`, ok: true},
+		{name: "empty match", env: `,"env":{"policy":"match","variables":{}}`, ok: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pinned := fmt.Sprintf(`{"digest":%q,"command":{"policy":"exact","argv":["/run"]},"env":{"policy":"deny"}}`, egressDigest)
+			container := fmt.Sprintf(`{"digest":%q%s}`, egressDigest, tc.env)
+			entry := `{"initContainers":[` + pinned + `],"containers":[` + container + `],"egress":[{"cidr":"203.0.113.7/32","port":443}]}`
+			doc := []byte(`{"schema":"c8s.allowlist/v1","workloads":{"w":` + entry + `}}`)
+
+			_, err := ParseJSON(doc)
+			if tc.ok != (err == nil) {
+				t.Fatalf("ParseJSON(%s) = %v, want ok %v", tc.env, err, tc.ok)
+			}
+			if !tc.ok && (!errors.Is(err, errEgressUnpinnedEnv) || !strings.Contains(err.Error(), `workload "w": container `+egressDigest)) {
+				t.Fatalf("ParseJSON(%s) = %v, want errEgressUnpinnedEnv naming the entry and container", tc.env, err)
+			}
+			if _, err := ParseWorkloadJSON([]byte(entry)); tc.ok != (err == nil) {
+				t.Fatalf("ParseWorkloadJSON(%s) = %v, want ok %v", tc.env, err, tc.ok)
+			}
+			served, err := ParseServedJSON(doc)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = served.Workloads["w"].PinnedForEgress()
+			if tc.ok && err != nil || !tc.ok && !errors.Is(err, errEgressUnpinnedEnv) {
+				t.Fatalf("served PinnedForEgress(%s) = %v, want ok %v", tc.env, err, tc.ok)
+			}
+		})
+	}
+}
+
+// Service links let the host add variables a match policy does not list, so
+// an entry with exits may not use them.
+func TestPinnedForEgressRefusesServiceLinks(t *testing.T) {
+	w := Workload{
+		Containers: []Container{{
+			Digest:  mustDigest(t, egressDigest),
+			Command: ArgvPolicy{Policy: PolicyExact, Argv: []string{"/run"}},
+			Args:    ArgvPolicy{Policy: PolicyDeny},
+			Mounts:  MountPolicy{Policy: PolicyDeny},
+			Env:     EnvPolicy{Policy: PolicyMatch, Variables: map[string]EnvMatcher{}, ServiceLinks: true},
+		}},
+		Egress: EgressList{{CIDR: netip.MustParsePrefix("203.0.113.7/32"), Port: 443}},
+	}
+	if err := w.PinnedForEgress(); !errors.Is(err, errEgressUnpinnedEnv) {
+		t.Fatalf("PinnedForEgress(serviceLinks) = %v, want errEgressUnpinnedEnv", err)
+	}
+	w.Containers[0].Env.ServiceLinks = false
+	if err := w.PinnedForEgress(); err != nil {
+		t.Fatalf("PinnedForEgress(no serviceLinks) = %v, want nil", err)
 	}
 }
