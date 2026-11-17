@@ -9,9 +9,12 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -23,6 +26,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cdschain"
 	haapi "github.com/confidential-dot-ai/c8s/internal/cdsha"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cdsconn"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
@@ -155,6 +159,31 @@ func TestGenesisStartsThePendingReplicas(t *testing.T) {
 	}
 	if err := o.genesis(context.Background(), &out, []string{l.url}, "other", "v1.0.0", pin, ""); err == nil {
 		t.Fatal("a genesis for another cluster was posted")
+	}
+}
+
+// A genesis the replica took whose answer was lost exits 3 and names the
+// hash, for --genesis to pin.
+func TestGenesisWithALostAnswer(t *testing.T) {
+	l := newLiveReplica(t)
+	target, err := url.Parse(l.url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	proxy.ModifyResponse = func(resp *http.Response) error {
+		if resp.Request.Method == http.MethodPost && resp.Request.URL.Path == haapi.GenesisPath {
+			return errors.New("the answer was lost")
+		}
+		return nil
+	}
+	front := httptest.NewServer(proxy)
+	defer front.Close()
+	pin := []byte(testutil.CDSPinDocument(testutil.TestMeasurement, "launch"))
+	err = l.options().genesis(context.Background(), &bytes.Buffer{}, []string{front.URL}, "lane", "v1.0.0", pin, "")
+	state := l.waitServing(t)
+	if cmdsutil.ExitStatus(err) != cmdsutil.ExitNotConfirmed || !strings.Contains(err.Error(), "--genesis "+state.Genesis.String()) {
+		t.Fatalf("a genesis the replica took, answered with a lost answer: %v", err)
 	}
 }
 

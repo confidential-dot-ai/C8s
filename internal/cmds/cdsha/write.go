@@ -392,7 +392,12 @@ func (o *options) genesis(ctx context.Context, out io.Writer, urls []string, clu
 		return err
 	}
 	if err := haapi.Call(ctx, client, http.MethodPost, urls[0]+haapi.GenesisPath, e, nil); err != nil {
-		return fmt.Errorf("the replica refused the genesis: %w", err)
+		var refusal *operatorauth.StatusError
+		if errors.As(err, &refusal) && (refusal.Status < 500 || refusal.Status == http.StatusServiceUnavailable) {
+			return fmt.Errorf("the replica refused the genesis: %w", err)
+		}
+		return &cmdsutil.ExitStatusError{Status: cmdsutil.ExitNotConfirmed, Err: fmt.Errorf(
+			"no answer confirmed the genesis %s (%w): if c8s cds ha status shows the replicas hold it, write with --genesis %s", e.Hash(), err, e.Hash())}
 	}
 	head := cdschain.Head{V: cdschain.Version, Cluster: cluster, Hash: e.Hash()}
 	fmt.Fprintf(out, "genesis %s\n", head.Hash)
