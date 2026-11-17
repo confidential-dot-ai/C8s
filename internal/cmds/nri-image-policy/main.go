@@ -548,10 +548,15 @@ func startSandboxDigests(ctx context.Context, logger *slog.Logger, cfg *config, 
 	}
 	// The attest func is platform-agnostic despite its name (see its doc
 	// comment); the platform string is the only thing that follows the hardware.
-	digests, err := workloadclaims.StartDigestsEndpoint(ctx, logger, resolver, signer.PublicKeyDER(),
-		cfg.NormalizedPlatform(),
-		attestclient.MakeSNPARMTLSAttestFunc(attestclient.NewClient(""), attestationApiURL),
-		attestationApiURL, armtls.Pins(set.Policy()), journal)
+	digests, err := workloadclaims.StartDigestsEndpoint(ctx, logger, workloadclaims.DigestsEndpointConfig{
+		Resolver:             resolver,
+		Identity:             signer.PublicKeyDER(),
+		Platform:             cfg.NormalizedPlatform(),
+		AttestFunc:           attestclient.MakeSNPARMTLSAttestFunc(attestclient.NewClient(""), attestationApiURL),
+		AttestationAPIURL:    attestationApiURL,
+		CDSPins:              armtls.Pins(set.Policy()),
+		MeasuredPoliciesFile: journal,
+	})
 	if err != nil {
 		return err
 	}
