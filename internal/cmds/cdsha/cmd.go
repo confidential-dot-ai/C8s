@@ -186,7 +186,7 @@ func (o *options) operatorPost(ctx context.Context, url, path string, body []byt
 		return err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode/100 != 2 {
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return operatorauth.ResponseError(resp)
 	}
 	return nil
