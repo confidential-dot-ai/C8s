@@ -24,7 +24,7 @@ absent `command`, `args`, or `mounts` policy denies. For why, see
           {"destination": "/mnt/c8s-data/config", "kind": "data"}
         ]},
         "env": {"policy": "match", "variables": {
-          "HOSTNAME": {"present": true},
+          "HOSTNAME": {"exact": "vllm-llama"},
           "MODEL_DIR": {"exact": "/mnt/c8s-data/config"}}},
         "capabilities": ["SYS_PTRACE"]
       }],
@@ -161,7 +161,11 @@ reaches directly, outside the mesh. An entry has exactly the members `cidr` and
 is IPv4, and is no broader than `/16` (IPv4) or `/48` (IPv6). Ranges that are
 not unicast hosts are refused: `/0`, loopback, link-local, multicast, reserved
 and broadcast, and the IPv6 forms that embed IPv4 addresses. An entry with
-egress pins its launch as a grant does, and a node refuses one that overlaps a
+egress pins its launch as a grant does and pins every container's `env`:
+`deny`, `exact`, or `match` with only `exact` matchers, since a variable such
+as `HTTPS_PROXY` or `SSL_CERT_FILE` can redirect or disable the application TLS
+that protects an exit. A pod's `HOSTNAME` is its name unless the pod sets
+`hostname`, so set it to pin `HOSTNAME`. A node refuses an exit that overlaps a
 cluster range, its own address, the resolver, or CDS.
 
 ## `hostPorts`
