@@ -308,6 +308,8 @@ func marshalExpressions(r rule) ([]byte, error) {
 			encoded, err = marshalBitwise(e)
 		case *expr.NAT:
 			encoded, err = marshalNAT(e)
+		case *expr.Ct:
+			encoded, err = marshalCt(e)
 		default:
 			encoded, err = expr.Marshal(byte(nftables.TableFamilyINet), e)
 		}
@@ -363,6 +365,32 @@ func marshalNAT(nat *expr.NAT) ([]byte, error) {
 	}
 	return nfnl.MarshalAttributes([]nfnl.Attribute{
 		{Type: unix.NFTA_EXPR_NAME, Data: []byte("nat\x00")},
+		{Type: unix.NFTA_EXPR_DATA | unix.NLA_F_NESTED, Data: data},
+	})
+}
+
+// marshalCt encodes a conntrack direction as the one byte the kernel reads
+// and reports, where the library sends four.
+func marshalCt(ct *expr.Ct) ([]byte, error) {
+	raw, err := expr.MarshalExprData(byte(nftables.TableFamilyINet), ct)
+	if err != nil {
+		return nil, err
+	}
+	fields, err := nfnl.UnmarshalAttributes(raw)
+	if err != nil {
+		return nil, err
+	}
+	for i := range fields {
+		if fields[i].Type == unix.NFTA_CT_DIRECTION {
+			fields[i] = nfnl.Attribute{Type: unix.NFTA_CT_DIRECTION, Data: []byte{byte(ct.Direction)}}
+		}
+	}
+	data, err := nfnl.MarshalAttributes(fields)
+	if err != nil {
+		return nil, err
+	}
+	return nfnl.MarshalAttributes([]nfnl.Attribute{
+		{Type: unix.NFTA_EXPR_NAME, Data: []byte("ct\x00")},
 		{Type: unix.NFTA_EXPR_DATA | unix.NLA_F_NESTED, Data: data},
 	})
 }
