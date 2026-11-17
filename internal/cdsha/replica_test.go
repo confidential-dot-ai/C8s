@@ -615,6 +615,30 @@ func TestOperatorRequestsUseTheChainsKeys(t *testing.T) {
 	}
 }
 
+// A body that is not the JSON a route takes is refused with 400, one over
+// its cap with 413, and neither reaches the replica.
+func TestMalformedBodiesAreRefused(t *testing.T) {
+	s := newSet(t, 1)
+	h := s.node(0).Handler(func(*http.Request, []byte, []*ecdsa.PublicKey) error { return nil })
+	post := func(path, body string, want int) {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, strings.NewReader(body)))
+		if rec.Code != want {
+			t.Errorf("POST %s with %.12q: %d, want %d", path, body, rec.Code, want)
+		}
+	}
+	for path, limit := range map[string]int{GenesisPath: cdschain.MaxEntryBytes, HandoffPath: 0, GossipPath: 64 << 10, EntriesPath: cdschain.MaxEntryBytes} {
+		post(path, "not json", http.StatusBadRequest)
+		post(path, `{"unknown": 1}`, http.StatusBadRequest)
+		if limit > 0 {
+			post(path, strings.Repeat(" ", limit+1), http.StatusRequestEntityTooLarge)
+		}
+	}
+	if p, _ := s.node(0).Pending(true); p == nil {
+		t.Fatal("a refused body changed the pending replica")
+	}
+}
+
 // Peers that answer but hold only an older head do not confirm a write.
 func TestStalePeersDoNotConfirm(t *testing.T) {
 	s := newSet(t, 3)
