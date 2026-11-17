@@ -166,12 +166,25 @@ func servePolicy(store *allowlist.Store, s *cdschain.State, seed *pkgallowlist.A
 }
 
 // serveRoutes serves the chain's route manifest, none before a routes entry:
-// a resolve that drops a routes entry moves the manifest back.
+// a resolve that drops a routes entry moves the manifest back. Routers keep
+// the highest revision they took until an operator publishes one above it.
 func serveRoutes(store *allowlist.Store, s *cdschain.State) error {
 	if s.Routes == nil {
+		warnRoutesBelowFloor(store, 0)
 		return store.SetRoutes(nil)
 	}
+	m, err := routes.Parse(s.Routes.Manifest)
+	if err != nil {
+		return err
+	}
+	warnRoutesBelowFloor(store, m.Revision)
 	return store.SetRoutes(&routes.Envelope{Manifest: s.Routes.Manifest, Token: s.Routes.Token})
+}
+
+func warnRoutesBelowFloor(store *allowlist.Store, revision uint64) {
+	if floor := store.RoutesFloor(); revision < floor {
+		slog.Error("CDS route manifest moved back below a revision routers took; publish a routes entry above it", "revision", revision, "routers", floor)
+	}
 }
 
 // validateRoutes holds a routes entry to what PUT /routes checks.
@@ -190,10 +203,10 @@ func validateRoutes(b cdschain.Body, mesh *issuer.MeshCA, store *allowlist.Store
 	if err := m.CheckAnchorsExclude([]*x509.Certificate{mesh.Current().CA.Cert}); err != nil {
 		return err
 	}
-	if stored, err := store.LoadRoutes(); err == nil {
-		if old, err := routes.Parse(stored.Manifest); err == nil && m.Revision <= old.Revision {
-			return allowlist.ErrRevisionNotGreater
-		}
+	// Not just above the stored manifest: a router keeps the highest one
+	// served, also after a resolve moved the stored one back.
+	if m.Revision <= store.RoutesFloor() {
+		return allowlist.ErrRevisionNotGreater
 	}
 	return nil
 }
