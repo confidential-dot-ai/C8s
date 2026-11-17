@@ -41,8 +41,10 @@ func (p *cloudProblem) Error() string {
 // from the body and may carry launch input, so it is not reported.
 var problemCodeToken = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 
+// Is matches Cloud's own not-found answer. A 404 without that problem code,
+// as something in front of Cloud answers, is a failed request.
 func (p *cloudProblem) Is(target error) bool {
-	return target == errCloudNotFound && p.status == http.StatusNotFound
+	return target == errCloudNotFound && p.status == http.StatusNotFound && p.code == "not_found"
 }
 
 // problemCode is the Cloud problem code of err, or "" when it has none.

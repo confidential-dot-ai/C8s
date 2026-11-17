@@ -34,6 +34,7 @@ func TestCloudResponseIdentityAndCardinalityContract(t *testing.T) {
 				body = `{"id":"i-one","status":"running"}`
 			case "get-not-found":
 				status = http.StatusNotFound
+				body = `{"code":"not_found"}`
 			case "get-invalid-json":
 				body = `{`
 			case "delete-accepted":
