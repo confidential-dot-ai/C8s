@@ -306,7 +306,16 @@ func TestHandoffRechecksAtNewHead(t *testing.T) {
 		}
 	}
 	s.mu.Unlock()
+	// The hook reads the store's head: slot 2 is down until slot 0 has
+	// written the genesis forward, so no join call to it comes first.
+	s.fault(2, true, 0)
 	s.start(buildA, buildB)
+	s.waitFor("the genesis in the store", func() bool {
+		raw, _ := s.store.GetHead(context.Background())
+		var h cdschain.Head
+		return json.Unmarshal(raw, &h) == nil && h.Hash == s.genesis.Hash()
+	})
+	s.fault(2, false, 0)
 	time.Sleep(10 * T)
 	if s.node(2).State() != nil {
 		t.Fatal("a joiner evicted while it was admitted got the keys")
