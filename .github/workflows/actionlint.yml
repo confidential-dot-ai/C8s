@@ -11,6 +11,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: actionlint-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   lint:
     name: Lint workflows
