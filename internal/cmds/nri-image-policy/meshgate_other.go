@@ -20,3 +20,7 @@ func verifyPodRuleset(podNamespace, meshPolicy, string, []exit) error {
 func extendPodRuleset(podNamespace, meshPolicy, string, []exit) error {
 	return errNoPodRuleset
 }
+
+func releaseExitGuard(podNamespace) error {
+	return errNoPodRuleset
+}

@@ -52,6 +52,8 @@ type meshGate struct {
 	nodeAddress func() (netip.Addr, error)
 	// extend adds granted exits to a pod's live ruleset.
 	extend func(podNamespace, meshPolicy, string, []exit) error
+	// release removes the exit guard of a pod that held exits.
+	release func(podNamespace) error
 }
 
 // noteRecovered marks recovery complete, so a sandbox off the record is then a
@@ -139,7 +141,8 @@ func newMeshGate(policy meshPolicy, logger *slog.Logger) *meshGate {
 		nodeAddress: func() (netip.Addr, error) {
 			return netip.Addr{}, errors.New("this node's own address is unknown")
 		},
-		extend: extendPodRuleset,
+		extend:  extendPodRuleset,
+		release: releaseExitGuard,
 	}
 }
 
@@ -347,10 +350,20 @@ func (s *protectedPod) requireSandboxNetwork(ctr *api.Container, running bool) e
 	return nil
 }
 
+// forget drops a removed sandbox's record. A guard left behind only tightens
+// what a later pod at the same address reaches, so a failed release is
+// logged, not returned.
 func (g *meshGate) forget(sandboxID string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	state := g.pods[sandboxID]
 	delete(g.pods, sandboxID)
+	if state == nil || len(state.exits) == 0 {
+		return
+	}
+	if err := g.release(state.netns); err != nil {
+		g.logger.Warn("could not release the exit guard of a removed pod", "sandbox", sandboxID, "error", err)
+	}
 }
 
 // noteMeshStarted records the start that opens the gate for the rest of a pod.

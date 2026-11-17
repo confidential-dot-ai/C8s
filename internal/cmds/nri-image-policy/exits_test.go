@@ -144,6 +144,29 @@ func TestBindEntryGrantsAndHoldsAPodToItsEntry(t *testing.T) {
 	}
 }
 
+// A removed pod's exit guard is released; a pod that held no exits has none.
+func TestForgetReleasesTheExitGuard(t *testing.T) {
+	gate, _, _ := exitsGate(t)
+	var released []podNamespace
+	gate.release = func(netns podNamespace) error {
+		released = append(released, netns)
+		return nil
+	}
+	collector := meshPod("default", "collector", testNetNS)
+	if err := gate.bindEntry(collector, exitDecision{entry: "collector", exits: relayExit}); err != nil {
+		t.Fatal(err)
+	}
+	netns := gate.pods[collector.GetId()].netns
+	gate.forget(collector.GetId())
+	if !slices.Equal(released, []podNamespace{netns}) {
+		t.Fatalf("forget(collector) released %v, want [%v]", released, netns)
+	}
+	gate.forget(collector.GetId())
+	if len(released) != 1 {
+		t.Fatalf("forget of a forgotten pod released %d guards, want 1", len(released))
+	}
+}
+
 // Without exits held, an unreadable pod grants nothing and refuses nothing.
 func TestBindEntryWithoutExitsHeld(t *testing.T) {
 	gate, state, extended := exitsGate(t)
