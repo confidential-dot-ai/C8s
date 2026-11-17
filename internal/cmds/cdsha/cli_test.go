@@ -702,6 +702,29 @@ func TestGenesisPinForAnOperatorWithoutARecord(t *testing.T) {
 	}
 }
 
+// --genesis is held to the chain also when a record exists, and a malformed
+// one is reported as such.
+func TestGenesisPinWithARecord(t *testing.T) {
+	entries, key := testChain(t, 1)
+	srv := httptest.NewServer(&racedReplica{entries: entries})
+	defer srv.Close()
+	w := &writer{o: &options{stateDir: t.TempDir()}, url: srv.URL, client: srv.Client(), key: key}
+	if _, err := w.verified(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.o.acknowledge(entries[0].Hash(), cdschain.Head{Cluster: "lane", Hash: entries[0].Hash()}); err != nil {
+		t.Fatal(err)
+	}
+	w.o.genesisPin = cdschain.Hash{7}.String()
+	if _, err := w.verified(context.Background()); err == nil || !strings.Contains(err.Error(), "not --genesis") {
+		t.Fatalf("a recorded cluster written against another --genesis: %v", err)
+	}
+	w.o.genesisPin = "not-a-hash"
+	if _, err := w.verified(context.Background()); err == nil || !strings.HasPrefix(err.Error(), "--genesis: ") {
+		t.Fatalf("a malformed --genesis: %v", err)
+	}
+}
+
 // An interrupted wait after a resolve ends at once with the interrupt, not
 // as a --settle-timeout.
 func TestAfterResolveEndsOnTheInterrupt(t *testing.T) {

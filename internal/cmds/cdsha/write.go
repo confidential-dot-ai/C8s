@@ -72,8 +72,13 @@ func (o *options) writer(ctx context.Context) (*writer, error) {
 
 // verified reads the replica's chain, verifies it from its genesis, and
 // holds it to the record as it was before the read: the recorded genesis
-// and acknowledged head.
+// and acknowledged head. Without a record, --genesis or a genesis signed by
+// --operator-key starts one.
 func (w *writer) verified(ctx context.Context) (*cdschain.State, error) {
+	pinned, err := w.o.pinnedGenesis()
+	if err != nil {
+		return nil, err
+	}
 	records, err := w.o.records()
 	if err != nil {
 		return nil, err
@@ -83,24 +88,51 @@ func (w *writer) verified(ctx context.Context) (*cdschain.State, error) {
 		return nil, fmt.Errorf("reading the replica's chain: %w", err)
 	}
 	state := c.state
+	if pinned != nil && *pinned != state.Genesis {
+		return nil, fmt.Errorf("the replica's chain starts at genesis %s, not --genesis %s", state.Genesis, pinned)
+	}
 	rec := records[state.Cluster]
-	switch {
-	case rec != nil && rec.Genesis != state.Genesis:
-		return nil, fmt.Errorf("the replica's chain starts at genesis %s, recorded %s", state.Genesis, rec.Genesis)
-	case rec == nil && w.o.genesisPin != "":
-		if pinned, err := cdschain.ParseHash(w.o.genesisPin); err != nil || pinned != state.Genesis {
-			return nil, fmt.Errorf("the replica's chain starts at genesis %s, not --genesis %s", state.Genesis, w.o.genesisPin)
-		}
-		if err := w.o.acknowledge(state.Genesis, cdschain.Head{V: cdschain.Version, Cluster: state.Cluster, Hash: state.Genesis}); err != nil {
+	if rec == nil {
+		if rec, err = w.startRecord(c, pinned != nil); err != nil {
 			return nil, err
 		}
-	case rec == nil && c.Genesis.VerifySignature([]*ecdsa.PublicKey{&w.key.PublicKey}) != nil:
-		return nil, errors.New("the replica's genesis is not signed by --operator-key and no genesis is recorded: pass --genesis with the hash 'c8s cds ha genesis' printed, or copy the record of the operator who signed it")
-	case rec != nil && (rec.Acknowledged.Seq > state.Head.Seq || c.Hashes[rec.Acknowledged.Seq] != rec.Acknowledged.Hash):
+	}
+	if rec.Genesis != state.Genesis {
+		return nil, fmt.Errorf("the replica's chain starts at genesis %s, recorded %s; after a re-root, remove the record", state.Genesis, rec.Genesis)
+	}
+	if rec.Acknowledged.Seq > state.Head.Seq || c.Hashes[rec.Acknowledged.Seq] != rec.Acknowledged.Hash {
 		return nil, fmt.Errorf("the replica serves a chain without head %d, which was acknowledged before this read: the chain was rolled back, or the replica is behind", rec.Acknowledged.Seq)
 	}
 	w.o.cache(c)
 	return state, nil
+}
+
+// pinnedGenesis is --genesis, nil when it is not set.
+func (o *options) pinnedGenesis() (*cdschain.Hash, error) {
+	if o.genesisPin == "" {
+		return nil, nil
+	}
+	h, err := cdschain.ParseHash(o.genesisPin)
+	if err != nil {
+		return nil, fmt.Errorf("--genesis: %w", err)
+	}
+	return &h, nil
+}
+
+// startRecord is the record of a cluster this CLI has none of yet, at the
+// genesis of c: one --genesis pinned, which it records since the pin is
+// passed once, or one --operator-key signed, recorded by the first write.
+func (w *writer) startRecord(c *verifiedChain, pinned bool) (*record, error) {
+	head := cdschain.Head{V: cdschain.Version, Cluster: c.state.Cluster, Hash: c.state.Genesis}
+	switch {
+	case pinned:
+		if err := w.o.acknowledge(head.Hash, head); err != nil {
+			return nil, err
+		}
+	case c.Genesis.VerifySignature([]*ecdsa.PublicKey{&w.key.PublicKey}) != nil:
+		return nil, errors.New("the replica's genesis is not signed by --operator-key and no genesis is recorded: pass --genesis with the hash 'c8s cds ha genesis' printed, or copy the record of the operator who signed it")
+	}
+	return &record{Cluster: head.Cluster, Genesis: head.Hash, Acknowledged: head}, nil
 }
 
 // verifiedChain is a chain this CLI verified, kept as <cluster>.chain: its
