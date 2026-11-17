@@ -108,7 +108,7 @@ type Replica struct {
 	heard      map[int]heard
 	fork       *Fork
 	dropped    map[cdschain.Hash]uint64
-	done       []cdschain.Head
+	done       []cdschain.Head // confirmed heads, ascending by seq
 	own        map[string]bool // build measurements -> this replica's attestation passes them
 	warned     [2]int64
 	handing    map[int]bool
@@ -641,7 +641,7 @@ func (r *Replica) swap(ctx context.Context, entry func(*cdschain.State) (cdschai
 			return cdschain.Head{}, e, err
 		}
 		b, derr := e.Decode()
-		if derr == nil && b.Seq > 0 {
+		if derr == nil && b.Seq > 0 { // a resubmitted genesis stays a 409
 			r.mu.Lock()
 			accepted := b.Seq < uint64(len(r.chain)) &&
 				bytes.Equal(r.chain[b.Seq].Body, e.Body) && r.chain[b.Seq].Sig == e.Sig
