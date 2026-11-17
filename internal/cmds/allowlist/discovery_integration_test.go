@@ -173,7 +173,9 @@ func approvingVerify(measurement []byte) localverify.VerifyFunc {
 			return nil, localverify.ErrMeasurementNotAllowed
 		}
 		match := true
-		return &teetypes.VerificationResult{SignatureValid: true, ReportDataMatch: &match}, nil
+		result := &teetypes.VerificationResult{Platform: teetypes.NormalizePlatform(platform), SignatureValid: true, ReportDataMatch: &match}
+		result.Claims.LaunchDigest = hex.EncodeToString(measurement)
+		return result, nil
 	}
 }
 
@@ -185,8 +187,6 @@ func boundCDSVerify(measurement []byte) localverify.VerifyFunc {
 		if err != nil {
 			return nil, err
 		}
-		result.Platform = teetypes.PlatformSNP
-		result.Claims.LaunchDigest = hex.EncodeToString(measurement)
 		binding := runtimemeasure.HostData([]byte(testutil.CDSLaunchFile))
 		result.Claims.InitData = binding[:]
 		return result, nil

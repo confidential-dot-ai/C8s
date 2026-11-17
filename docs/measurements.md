@@ -42,7 +42,10 @@ runtime measurement registers, RTMR[0] to RTMR[3], extendable in the guest.
 
 Pinning MRTD alone leaves the guest unpinned: it covers the firmware, so a host
 can boot another kernel under it. `--image-manifest` pins MRTD, RTMR[1] and
-RTMR[2] from one build.
+RTMR[2] from one build. A CDS pin on TDX must carry all three, and the client
+commands (`c8s allowlist`, `c8s secrets`, `c8s volume`, `c8s cds ca`,
+`c8s routes`) refuse a TDX endpoint whose pins leave RTMR[1] or RTMR[2]
+unpinned.
 
 ### Policy history
 
