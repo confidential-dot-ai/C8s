@@ -162,7 +162,8 @@ is IPv4, and is no broader than `/16` (IPv4) or `/48` (IPv6). Ranges that are
 not unicast hosts are refused: `/0`, loopback, link-local, multicast, reserved
 and broadcast, and the IPv6 forms that embed IPv4 addresses. An entry with
 egress pins its launch as a grant does and pins every container's `env`:
-`deny`, `exact`, or `match` with only `exact` matchers, since a variable such
+`deny`, `exact`, or `match` with only `exact` matchers and no `serviceLinks`,
+since a variable such
 as `HTTPS_PROXY` or `SSL_CERT_FILE` can redirect or disable the application TLS
 that protects an exit. A pod's `HOSTNAME` is its name unless the pod sets
 `hostname`, so set it to pin `HOSTNAME`. A node refuses an exit that overlaps a
