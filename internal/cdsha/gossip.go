@@ -14,7 +14,6 @@ import (
 	"maps"
 	"net/http"
 	"slices"
-	"sync"
 	"time"
 
 	"github.com/confidential-dot-ai/c8s/internal/cdschain"
@@ -50,7 +49,8 @@ func (r *Replica) sign(n Note) (Gossip, error) {
 	if err != nil {
 		return Gossip{}, err
 	}
-	e, err := cdschain.Sign(r.member, cdschain.Body{Cluster: r.cfg.Cluster, Type: "gossip", Payload: body})
+	note := cdschain.Body{Cluster: r.cfg.Cluster, Type: "gossip", Payload: body}
+	e, err := cdschain.Sign(r.member, note)
 	return Gossip{Note: e}, err
 }
 
@@ -78,34 +78,54 @@ func open(g Gossip, key string) (Note, error) {
 // members whose pong came back within T and is consistent with this
 // replica's chain after it adopted what the pong carried.
 func (r *Replica) round(ctx context.Context) map[int]cdschain.Head {
-	r.mu.Lock()
-	if r.state == nil {
-		r.mu.Unlock()
+	ping, ok := r.ping()
+	if !ok {
 		return nil
 	}
-	ping := Note{Cluster: r.cfg.Cluster, Slot: r.slot(), Nonce: rand.Text(), Head: r.state.Head, From: r.walkFromLocked(r.state.Head.Seq + 1)}
-	r.mu.Unlock()
 	signed, err := r.sign(ping)
 	if err != nil {
 		return nil
 	}
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	heads := map[int]cdschain.Head{}
+	type pong struct {
+		slot int
+		head cdschain.Head
+		ok   bool
+	}
+	pongs := make(chan pong, len(r.cfg.Endpoints))
+	asked := 0
 	for slot := range r.cfg.Endpoints {
 		if slot == r.slot() {
 			continue
 		}
-		wg.Go(func() {
-			if h, ok := r.exchange(ctx, slot, signed, ping.Nonce); ok {
-				mu.Lock()
-				heads[slot] = h
-				mu.Unlock()
-			}
-		})
+		asked++
+		go func() {
+			h, ok := r.exchange(ctx, slot, signed, ping.Nonce)
+			pongs <- pong{slot: slot, head: h, ok: ok}
+		}()
 	}
-	wg.Wait()
+	heads := map[int]cdschain.Head{}
+	for range asked {
+		if p := <-pongs; p.ok {
+			heads[p.slot] = p.head
+		}
+	}
 	return heads
+}
+
+// ping is this round's note, false while the replica holds no chain.
+func (r *Replica) ping() (Note, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.state == nil {
+		return Note{}, false
+	}
+	return Note{
+		Cluster: r.cfg.Cluster,
+		Slot:    r.slot(),
+		Nonce:   rand.Text(),
+		Head:    r.state.Head,
+		From:    r.walkFromLocked(r.state.Head.Seq + 1),
+	}, true
 }
 
 func (r *Replica) exchange(ctx context.Context, slot int, ping Gossip, nonce string) (cdschain.Head, bool) {
@@ -117,14 +137,12 @@ func (r *Replica) exchange(ctx context.Context, slot int, ping Gossip, nonce str
 		slog.Debug("CDS gossip: no answer", "slot", slot, "error", err)
 		return cdschain.Head{}, false
 	}
-	r.mu.Lock()
-	state := r.state
-	r.mu.Unlock()
 	if claimed, err := open(pong, ""); err == nil && claimed.Pending {
 		go r.handoff(context.WithoutCancel(ctx), slot)
 		return cdschain.Head{}, false
 	}
-	n, err := open(pong, state.Members[slot])
+	key := r.State().Members[slot]
+	n, err := open(pong, key)
 	// Only an answer to this round's ping counts; the call's timeout
 	// is at most T from sending it.
 	if err != nil || n.Cluster != r.cfg.Cluster || n.Slot != slot || n.Nonce != nonce {
@@ -135,7 +153,7 @@ func (r *Replica) exchange(ctx context.Context, slot int, ping Gossip, nonce str
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.heard[slot] = heard{key: state.Members[slot], at: sent, seq: n.Head.Seq}
+	r.heard[slot] = heard{key: key, at: sent, seq: n.Head.Seq}
 	return n.Head, true
 }
 
@@ -328,7 +346,8 @@ type Handoff struct {
 // pins of that head. The giver's own build is not checked (U1).
 func (r *Replica) handoff(ctx context.Context, slot int) {
 	r.mu.Lock()
-	busy, state := r.handing[slot], r.state
+	busy := r.handing[slot]
+	state := r.state
 	r.handing[slot] = true
 	r.mu.Unlock()
 	if busy {
@@ -354,22 +373,8 @@ func (r *Replica) give(ctx context.Context, slot int, state *cdschain.State) err
 		return fmt.Errorf("the joiner is of cluster %q", p.Cluster)
 	}
 	if state.Members[slot] != p.Member {
-		// Signed at the head the write reads, so other writers moving the
-		// head while the attested join ran do not make it lose; but only
-		// while the builds the join was attested under are the accepted
-		// ones.
-		member := func(at *cdschain.State) (cdschain.Entry, error) {
-			switch {
-			case at.Members[slot] == p.Member:
-				return cdschain.Entry{}, errMemberWritten
-			case !slices.Equal(at.Accepted, state.Accepted):
-				return cdschain.Entry{}, fmt.Errorf("%w: the accepted builds changed after the join was attested", ErrConflict)
-			}
-			payload, _ := json.Marshal(cdschain.Member{Slot: slot, Key: p.Member})
-			return cdschain.Sign(r.member, cdschain.Body{Cluster: r.cfg.Cluster, Seq: at.Head.Seq + 1, Prev: at.Head.Hash, Type: cdschain.TypeMember, Payload: payload})
-		}
-		if _, confirmed, err := r.commit(ctx, member, false); !errors.Is(err, errMemberWritten) && (err != nil || !confirmed) {
-			return fmt.Errorf("member entry for slot %d not done: %v", slot, err)
+		if err := r.writeMember(ctx, slot, p.Member, state.Accepted); err != nil {
+			return err
 		}
 	}
 	// The keys leave at the store's head, which may hold an entry gossip
@@ -404,6 +409,28 @@ func (r *Replica) give(ctx context.Context, slot int, state *cdschain.State) err
 	}
 	slog.Info("CDS handed the keys to a joiner", "audit", true, "slot", slot, "head", state.Head.Seq)
 	return nil
+}
+
+// writeMember makes key the member of slot. The entry is signed at the head
+// the write reads, so other writers moving the head while the attested join
+// ran do not make it lose; but only while the accepted builds are the ones
+// the join was attested under.
+func (r *Replica) writeMember(ctx context.Context, slot int, key string, attested []cdschain.Build) error {
+	member := func(at *cdschain.State) (cdschain.Entry, error) {
+		switch {
+		case at.Members[slot] == key:
+			return cdschain.Entry{}, errMemberWritten
+		case !slices.Equal(at.Accepted, attested):
+			return cdschain.Entry{}, fmt.Errorf("%w: the accepted builds changed after the join was attested", ErrConflict)
+		}
+		payload, _ := json.Marshal(cdschain.Member{Slot: slot, Key: key})
+		return cdschain.Sign(r.member, cdschain.Body{Cluster: r.cfg.Cluster, Seq: at.Head.Seq + 1, Prev: at.Head.Hash, Type: cdschain.TypeMember, Payload: payload})
+	}
+	_, confirmed, err := r.commit(ctx, member, false)
+	if errors.Is(err, errMemberWritten) || (err == nil && confirmed) {
+		return nil
+	}
+	return fmt.Errorf("member entry for slot %d not done: %v", slot, err)
 }
 
 // attestedCall calls a replica over a fresh client pinned to state's builds.
@@ -463,7 +490,9 @@ func (r *Replica) Start(h Handoff) error {
 	return nil
 }
 
-const handoffInfo = "c8s-cds-handoff/v1/"
+// handoffSealLabel binds a sealed CA key to the handoff of one cluster (the
+// HPKE info string).
+const handoffSealLabel = "c8s-cds-handoff/v1/"
 
 // sealToMember encrypts plain to a member key (HPKE, DHKEM P-256).
 func sealToMember(memberPEM, cluster string, plain []byte) ([]byte, error) {
@@ -479,7 +508,7 @@ func sealToMember(memberPEM, cluster string, plain []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return hpke.Seal(pk, hpke.HKDFSHA256(), hpke.AES256GCM(), []byte(handoffInfo+cluster), plain)
+	return hpke.Seal(pk, hpke.HKDFSHA256(), hpke.AES256GCM(), []byte(handoffSealLabel+cluster), plain)
 }
 
 // adoptCA opens the CA key sealed to this replica's member key and adopts it.
@@ -492,7 +521,7 @@ func (r *Replica) adoptCA(certPEM, sealed []byte, want *ecdsa.PublicKey) error {
 	if err != nil {
 		return err
 	}
-	keyPEM, err := hpke.Open(k, hpke.HKDFSHA256(), hpke.AES256GCM(), []byte(handoffInfo+r.cfg.Cluster), sealed)
+	keyPEM, err := hpke.Open(k, hpke.HKDFSHA256(), hpke.AES256GCM(), []byte(handoffSealLabel+r.cfg.Cluster), sealed)
 	if err != nil {
 		return fmt.Errorf("the CA key is not sealed to this replica's member key: %w", err)
 	}
@@ -550,7 +579,7 @@ func call(ctx context.Context, client *http.Client, method, url string, in, out 
 	if err != nil {
 		return err
 	}
-	if resp.StatusCode/100 != 2 {
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return &operatorauth.StatusError{Status: resp.StatusCode, Body: string(bytes.TrimSpace(data))}
 	}
 	if out == nil || len(data) == 0 {
