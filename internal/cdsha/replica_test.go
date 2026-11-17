@@ -615,6 +615,58 @@ func TestOperatorRequestsUseTheChainsKeys(t *testing.T) {
 	}
 }
 
+// A body that is not the JSON a route takes is refused with 400, one over
+// its cap with 413, and neither reaches the replica.
+func TestMalformedBodiesAreRefused(t *testing.T) {
+	s := newSet(t, 1)
+	h := s.node(0).Handler(func(*http.Request, []byte, []*ecdsa.PublicKey) error { return nil })
+	post := func(path, body string, want int) {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, strings.NewReader(body)))
+		if rec.Code != want {
+			t.Errorf("POST %s with %.12q: %d, want %d", path, body, rec.Code, want)
+		}
+	}
+	for path, limit := range map[string]int{GenesisPath: cdschain.MaxEntryBytes, HandoffPath: 0, GossipPath: 64 << 10, EntriesPath: cdschain.MaxEntryBytes} {
+		post(path, "not json", http.StatusBadRequest)
+		post(path, `{"unknown": 1}`, http.StatusBadRequest)
+		if limit > 0 {
+			post(path, strings.Repeat(" ", limit+1), http.StatusRequestEntityTooLarge)
+		}
+	}
+	if p, _ := s.node(0).Pending(true); p == nil {
+		t.Fatal("a refused body changed the pending replica")
+	}
+}
+
+// A halted replica still serves the chain it holds, so an operator can read
+// the branches of a fork when every replica halted. The entries verify by
+// signature; a halted replica confirms no head (Status.Serving).
+func TestHaltedReplicaServesItsChain(t *testing.T) {
+	s := newSet(t, 1)
+	s.bootstrap()
+	head := s.write(0)
+	n := s.node(0)
+	n.mu.Lock()
+	n.haltLocked(Fork{Seq: head.Seq, Mine: head.Hash, Theirs: cdschain.Hash{9}, Source: "a test"})
+	n.mu.Unlock()
+	if _, err := s.serves(0); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("negative control: a halted replica served: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	n.Handler(func(*http.Request, []byte, []*ecdsa.PublicKey) error { return nil }).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, ChainPath+"?from=0", nil))
+	var page Chain
+	if err := json.Unmarshal(rec.Body.Bytes(), &page); rec.Code != http.StatusOK || err != nil {
+		t.Fatalf("GET %s: %d %s", ChainPath, rec.Code, rec.Body)
+	}
+	if page.Head != head || uint64(len(page.Entries)) != head.Seq+1 || page.Entries[head.Seq].Hash() != head.Hash {
+		t.Fatalf("served head %+v and %d entries, not the held chain to %+v", page.Head, len(page.Entries), head)
+	}
+	if n.Status().Serving == "" {
+		t.Fatal("a halted replica reports it serves")
+	}
+}
+
 // Peers that answer but hold only an older head do not confirm a write.
 func TestStalePeersDoNotConfirm(t *testing.T) {
 	s := newSet(t, 3)
@@ -804,6 +856,51 @@ func TestBehindReplicaDoesNotAnswerConflict(t *testing.T) {
 	_, _, err := s.node(2).commit(context.Background(), fixed(s.entry(head, 1)), false)
 	if errors.Is(err, ErrConflict) {
 		t.Fatalf("a replica behind answered a conflict: %v", err)
+	}
+}
+
+// hangingStore holds every head read until release is closed, ignoring the
+// read's deadline, as a store whose API server is not up yet.
+type hangingStore struct {
+	Store
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (h *hangingStore) GetHead(context.Context) ([]byte, error) {
+	select {
+	case h.entered <- struct{}{}:
+	default:
+	}
+	<-h.release
+	return nil, errors.New("no answer")
+}
+
+// A pending replica whose store read hangs still answers: findChain reads
+// the store without r.mu (Replica.mu).
+func TestSlowStoreBlocksNoPendingAnswer(t *testing.T) {
+	s := newSet(t, 1)
+	n := s.node(0)
+	entered, release := make(chan struct{}, 1), make(chan struct{})
+	defer close(release)
+	n.setStore(&hangingStore{Store: s.store, entered: entered, release: release})
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the store was never read")
+	}
+	answered := make(chan error, 1)
+	go func() {
+		_, err := n.Pending(false)
+		answered <- err
+	}()
+	select {
+	case err := <-answered:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * T):
+		t.Fatal("Pending waited for the store read")
 	}
 }
 

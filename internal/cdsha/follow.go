@@ -56,7 +56,7 @@ func Follow(ctx context.Context, url string, pin *cdschain.Head, known *cdschain
 		if known != nil && status.Held.Seq < known.Head.Seq {
 			return nil, ErrNotExtending
 		}
-		if cut < 0 || cut > len(got) || (cut > 0 && got[cut-1].Hash() != status.Held.Hash) || (cut == 0 && known.Head != *status.Held) {
+		if !holdsHeadAt(known, got, cut, *status.Held) {
 			return nil, fmt.Errorf("%w: the confirmed head %d is not in it", ErrNotExtending, status.Held.Seq)
 		}
 		if cut == len(got) {
@@ -69,6 +69,18 @@ func Follow(ctx context.Context, url string, pin *cdschain.Head, known *cdschain
 	return nil, errors.New("the replica set's head kept moving; try again")
 }
 
+// holdsHeadAt reports whether head is the last of the first cut entries
+// read after known, or known's own head when cut is 0.
+func holdsHeadAt(known *cdschain.State, got []cdschain.Entry, cut int, head cdschain.Head) bool {
+	switch {
+	case cut < 0 || cut > len(got):
+		return false
+	case cut == 0:
+		return known.Head == head
+	}
+	return got[cut-1].Hash() == head.Hash
+}
+
 func next(known *cdschain.State) uint64 {
 	if known == nil {
 		return 0
@@ -76,9 +88,18 @@ func next(known *cdschain.State) uint64 {
 	return known.Head.Seq + 1
 }
 
+// maxChainRead caps a whole chain read, before it is verified.
+var maxChainRead = maxAnswer
+
+// maxPage caps one chain page: chainPage entries at most, base64-encoded.
+const maxPage = chainPage * cdschain.MaxEntryBytes * 2
+
+// ReadChain reads the served chain from seq from on, page by page, until a
+// page comes back short.
 func ReadChain(ctx context.Context, client *http.Client, url string, from uint64) ([]cdschain.Entry, error) {
 	var all []cdschain.Entry
-	for size := 0; ; {
+	size := 0
+	for full := true; full; {
 		var page Chain
 		if err := call(ctx, client, http.MethodGet, url+ChainPath+"?from="+strconv.FormatUint(from+uint64(len(all)), 10), nil, &page, maxPage); err != nil {
 			return nil, err
@@ -91,17 +112,10 @@ func ReadChain(ctx context.Context, client *http.Client, url string, from uint64
 			return nil, fmt.Errorf("the chain read passed %d bytes", maxChainRead)
 		}
 		all = append(all, page.Entries...)
-		if len(page.Entries) < chainPage {
-			return all, nil
-		}
+		full = len(page.Entries) == chainPage
 	}
+	return all, nil
 }
-
-// maxChainRead caps a whole chain read, before it is verified.
-var maxChainRead = maxAnswer
-
-// maxPage caps one chain page: chainPage entries at most, base64-encoded.
-const maxPage = chainPage * cdschain.MaxEntryBytes * 2
 
 // extend verifies entries after known, holding a new chain to pin.
 func extend(known *cdschain.State, entries []cdschain.Entry, pin *cdschain.Head) (*cdschain.State, error) {
@@ -126,8 +140,13 @@ func extend(known *cdschain.State, entries []cdschain.Entry, pin *cdschain.Head)
 		}
 		state = s
 	}
-	if p := pin; known == nil && p != nil && (p.Seq >= uint64(len(entries)) || entries[p.Seq].Hash() != p.Hash) {
-		return nil, fmt.Errorf("the chain does not hold the pinned entry %d (%s)", p.Seq, p.Hash)
+	if known == nil && pin != nil && !holdsPin(entries, *pin) {
+		return nil, fmt.Errorf("the chain does not hold the pinned entry %d (%s)", pin.Seq, pin.Hash)
 	}
 	return state, nil
+}
+
+// holdsPin reports whether a chain read from genesis holds the pinned entry.
+func holdsPin(entries []cdschain.Entry, pin cdschain.Head) bool {
+	return pin.Seq < uint64(len(entries)) && entries[pin.Seq].Hash() == pin.Hash
 }
