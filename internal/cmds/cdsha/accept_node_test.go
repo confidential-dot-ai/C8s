@@ -217,7 +217,7 @@ func TestAcceptFirstNodeFromEmptyLaunchSet(t *testing.T) {
 	if err != nil || len(set.Images) != 1 || !bytes.Equal(set.Images[0].LaunchFileDigest, digest[:]) {
 		t.Fatalf("first admission = %+v, %v", set, err)
 	}
-	for _, nodes := range [][]byte{empty, a.Nodes} {
+	apply := func(nodes []byte) (*cdschain.State, error) {
 		payload, err := json.Marshal(cdschain.Nodes{Nodes: string(nodes)})
 		if err != nil {
 			t.Fatal(err)
@@ -232,13 +232,12 @@ func TestAcceptFirstNodeFromEmptyLaunchSet(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		next, err := f.state.Apply(entry)
-		if bytes.Equal(nodes, empty) {
-			if err == nil {
-				t.Fatal("chain accepted a signed empty nodes entry")
-			}
-		} else if err != nil || next.Nodes != string(a.Nodes) {
-			t.Fatalf("chain refused first signed admission: %v", err)
-		}
+		return f.state.Apply(entry)
+	}
+	if _, err := apply(empty); err == nil {
+		t.Fatal("chain accepted a signed empty nodes entry")
+	}
+	if next, err := apply(a.Nodes); err != nil || next.Nodes != string(a.Nodes) {
+		t.Fatalf("chain refused first signed admission: %v", err)
 	}
 }

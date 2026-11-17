@@ -2,10 +2,8 @@ package cds
 
 import (
 	"bytes"
-	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
 	"io"
 	"net/http"
@@ -22,6 +20,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cdsha"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	"github.com/confidential-dot-ai/c8s/internal/testutil"
+	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
@@ -48,8 +47,8 @@ func TestRunFreshChainBootstrap(t *testing.T) {
 	}
 	cfg.ha = haConfig{
 		storeMemory:  true,
-		gossip:       time.Second,
-		peerTimeout:  time.Second,
+		gossip:       50 * time.Millisecond,
+		peerTimeout:  50 * time.Millisecond,
 		storeTimeout: time.Second,
 	}
 	// Only the spent-token database persists; the fresh HA chain stays in memory.
@@ -57,9 +56,12 @@ func TestRunFreshChainBootstrap(t *testing.T) {
 	stub := newStubAttestationApi(t, testLaunchDigest)
 	cfg.attestationApiURL = stub.URL()
 	verdict := mockapi.PassingVerdict(testLaunchDigest)
-	binding := runtimemeasure.HostData(document)
-	verdict.Claims.InitData = binding[:]
-	stub.SetVerdict(verdict)
+	launchedWith := func(file []byte) {
+		binding := runtimemeasure.HostData(file)
+		verdict.Claims.InitData = binding[:]
+		stub.SetVerdict(verdict)
+	}
+	launchedWith(document)
 	base, client := startRunServer(t, cfg)
 	t.Cleanup(client.CloseIdleConnections)
 
@@ -129,9 +131,7 @@ func TestRunFreshChainBootstrap(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	binding = runtimemeasure.HostData([]byte(workerLaunch))
-	verdict.Claims.InitData = binding[:]
-	stub.SetVerdict(verdict)
+	launchedWith([]byte(workerLaunch))
 
 	csr, _ := generateCSR(t)
 	issue := func(want int) []byte {
@@ -204,38 +204,19 @@ func TestRunFreshChainBootstrap(t *testing.T) {
 	if err != nil || len(measurements.Images) != 1 || !bytes.Equal(measurements.Images[0].LaunchFile, []byte(workerLaunch)) {
 		t.Fatalf("admitted measurements = %+v, %v", measurements, err)
 	}
-	binding = runtimemeasure.HostData([]byte(workerLaunch))
-	verdict.Claims.InitData = binding[:]
-	stub.SetVerdict(verdict)
 	issued := issue(http.StatusOK)
-	block, _ := pem.Decode(issued)
-	if block == nil {
-		t.Fatalf("issuance returned no certificate: %s", issued)
+	if _, err := certutil.ParseCertificatePEM(issued); err != nil {
+		t.Fatalf("issuance returned no certificate: %v: %s", err, issued)
 	}
-	if _, err := x509.ParseCertificate(block.Bytes); err != nil {
-		t.Fatal(err)
-	}
-	binding = runtimemeasure.HostData([]byte(workerLaunch + "changed: true\n"))
-	verdict.Claims.InitData = binding[:]
-	stub.SetVerdict(verdict)
+	launchedWith([]byte(workerLaunch + "changed: true\n"))
 	issue(http.StatusForbidden)
 
-	der, err := x509.MarshalPKCS8PrivateKey(operator)
-	if err != nil {
-		t.Fatal(err)
-	}
-	signer, err := operatorauth.NewSignerFromKeyPEM(pem.EncodeToMemory(&pem.Block{
-		Type:  "PRIVATE KEY",
-		Bytes: der,
-	}))
+	signer, err := operatorauth.NewSigner(operator)
 	if err != nil {
 		t.Fatal(err)
 	}
 	put := encode(secrets.PutRequest{Value: base64.StdEncoding.EncodeToString([]byte("synthetic-bootstrap-value"))})
-	auth, err := signer.Authorization(http.MethodPut, "/secrets/bootstrap", put)
-	if err != nil {
-		t.Fatal(err)
-	}
+	auth := sign(t, signer, http.MethodPut, "/secrets/bootstrap", put)
 	request(http.MethodPut, "/secrets/bootstrap", put, "", http.StatusUnauthorized)
 	request(http.MethodPut, "/secrets/bootstrap", put, auth, http.StatusCreated)
 	request(http.MethodPut, "/secrets/bootstrap", put, auth, http.StatusConflict)

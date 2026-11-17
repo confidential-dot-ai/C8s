@@ -104,9 +104,15 @@ func (w wire) parse() (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("workloads: %w", err)
 	}
-	nodes, err := parseNodes(w.Nodes)
+	// A standalone CDS pins at least one node. A replica set's launch file
+	// publishes the chain's first set, which may be typed and empty.
+	parseNodes := refvalues.Parse
+	if w.HA != nil {
+		parseNodes = refvalues.ParseRendered
+	}
+	nodes, err := parseNodes([]byte(w.Nodes))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("nodes: %w", err)
 	}
 	var podImages []remote.ImagePin
 	if w.PodImagePolicy != "" {
@@ -123,9 +129,6 @@ func (w wire) parse() (*Config, error) {
 	patterns, err := compileLeafDNS(w.LeafDNSNames, w.LeafDNSPatterns)
 	if err != nil {
 		return nil, err
-	}
-	if nodes.Empty() && w.HA == nil {
-		return nil, errors.New("nodes: CDS certifies only the nodes its launch file names, and this one names none")
 	}
 	kms, err := w.KMS.parse()
 	if err != nil {
@@ -158,15 +161,6 @@ func (w wire) parse() (*Config, error) {
 		return nil, fmt.Errorf("podImagePolicy: %w", err)
 	}
 	return cfg, nil
-}
-
-// parseNodes requires a typed document, even when the initial set is empty.
-func parseNodes(document string) (refvalues.ReferenceValues, error) {
-	nodes, err := refvalues.ParseRendered([]byte(document))
-	if err != nil {
-		return refvalues.ReferenceValues{}, fmt.Errorf("nodes: %w", err)
-	}
-	return nodes, nil
 }
 
 // parseNodeCIDRs builds the inventory bound CDS dials within. Each entry must
