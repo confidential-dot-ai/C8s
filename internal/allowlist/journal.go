@@ -104,23 +104,19 @@ func (s *Store) SetNodeDelay(d time.Duration) {
 	s.nodeDelay = d
 }
 
-// ErrNotYetInEffect is InEffect's answer while the allowlist in effect on
-// nodes is one this store may not hand them; a node asks again later.
+// ErrNotYetInEffect: the allowlist in effect on nodes is below the node
+// floor; the node asks again later.
 var ErrNotYetInEffect = errors.New("no allowlist this CDS may hand nodes is in effect yet")
 
-// HoldNodes refuses nodes every allowlist (ErrNotYetInEffect) until
-// FloorNodesAtHead: for a CDS replica that has not yet served its chain's
-// allowlist, whose history holds only what it started with.
+// HoldNodes hands nodes no allowlist until FloorNodesAtHead.
 func (s *Store) HoldNodes() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.nodeFloor = math.MaxInt64
 }
 
-// FloorNodesAtHead refuses nodes every allowlist written before the one the
-// store serves now. A replica calls it once it serves its chain's allowlist:
-// an older document in its history is one it started with, never one nodes
-// ran under the chain, so nodes wait out the delay for the chain's instead.
+// FloorNodesAtHead hands nodes no allowlist written before the one served
+// now: a CDS replica's older history is only what it started with.
 func (s *Store) FloorNodesAtHead() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

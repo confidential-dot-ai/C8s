@@ -444,6 +444,32 @@ func TestReplicaServesTheChainsRouteManifest(t *testing.T) {
 	}
 }
 
+// After a resolve moves the route manifest back, a routes entry must still
+// go above the highest revision served: a router keeps the highest one it
+// accepted and refuses anything at or below it.
+func TestRoutesEntryGoesAboveTheRevisionRoutersHold(t *testing.T) {
+	store := inMemoryStore(t)
+	mesh, err := issuer.NewMeshCA("lane", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, revision := range []int{5, 3} {
+		if err := serveRoutes(store, &cdschain.State{Routes: &cdschain.Routes{Manifest: manifest(t, revision, ""), Token: "token"}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	entry := func(revision int) cdschain.Body {
+		payload, _ := json.Marshal(cdschain.Routes{Manifest: manifest(t, revision, ""), Token: "token"})
+		return cdschain.Body{Cluster: "lane", Type: cdschain.TypeRoutes, Payload: payload}
+	}
+	if err := validateRoutes(entry(4), mesh, store); !errors.Is(err, allowlist.ErrRevisionNotGreater) {
+		t.Fatalf("a routes entry below the revision routers hold: %v", err)
+	}
+	if err := validateRoutes(entry(6), mesh, store); err != nil {
+		t.Fatalf("negative control: %v", err)
+	}
+}
+
 // failingStore is a chain store whose head reads fail while down is set.
 type failingStore struct {
 	cdsha.Store

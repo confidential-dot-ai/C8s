@@ -39,6 +39,9 @@ type Store struct {
 	// nodeFloor is the lowest history position InEffect hands nodes
 	// (HoldNodes, FloorNodesAtHead).
 	nodeFloor int64
+	// routesFloor is the highest route manifest revision SetRoutes stored
+	// (RoutesFloor).
+	routesFloor uint64
 }
 
 // roleInit / roleMain label the two container partitions in the digest index.

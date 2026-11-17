@@ -14,7 +14,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/util/validation"
 
-	"github.com/confidential-dot-ai/c8s/pkg/cdsgenesis"
+	"github.com/confidential-dot-ai/c8s/pkg/cdspin"
 )
 
 // The CDS endpoint document the enforcer hands an injected credential client:
@@ -115,7 +115,7 @@ func NodeCDSChain(c *http.Client, path string) (*http.Client, error) {
 		return nil, fmt.Errorf("node policy %s: %w", path, err)
 	}
 	_, pin, _ := strings.Cut(strings.TrimSpace(string(data)), " ")
-	return cdsgenesis.Client(c, pin), nil
+	return cdspin.Client(c, pin), nil
 }
 
 // CDSURL is that endpoint as the base URL a client dials. CDS is reached over

@@ -29,7 +29,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
-	"github.com/confidential-dot-ai/c8s/pkg/cdsgenesis"
+	"github.com/confidential-dot-ai/c8s/pkg/cdspin"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
@@ -112,7 +112,7 @@ func slowChain(t *testing.T, pages int, delay time.Duration) (*httptest.Server, 
 			http.NotFound(w, r)
 			return
 		}
-		w.Header().Set(cdsgenesis.Header, r.Header.Get(cdsgenesis.Header))
+		w.Header().Set(cdspin.Header, r.Header.Get(cdspin.Header))
 		if delay < 0 {
 			select {
 			case <-r.Context().Done():
