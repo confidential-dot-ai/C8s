@@ -280,6 +280,51 @@ func TestStartRefusals(t *testing.T) {
 	}
 }
 
+// hangingStore holds every head read until release is closed, ignoring the
+// read's deadline, as a store whose API server is not up yet.
+type hangingStore struct {
+	Store
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (h *hangingStore) GetHead(context.Context) ([]byte, error) {
+	select {
+	case h.entered <- struct{}{}:
+	default:
+	}
+	<-h.release
+	return nil, errors.New("no answer")
+}
+
+// A pending replica whose store read hangs still answers: findChain reads
+// the store without r.mu (Replica.mu).
+func TestSlowStoreBlocksNoPendingAnswer(t *testing.T) {
+	s := newSet(t, 1)
+	n := s.node(0)
+	entered, release := make(chan struct{}, 1), make(chan struct{})
+	defer close(release)
+	n.setStore(&hangingStore{Store: s.store, entered: entered, release: release})
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the store was never read")
+	}
+	answered := make(chan error, 1)
+	go func() {
+		_, err := n.Pending(false)
+		answered <- err
+	}()
+	select {
+	case err := <-answered:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * T):
+		t.Fatal("Pending waited for the store read")
+	}
+}
+
 // A replica still on the dropped branch, which never saw the kept entry, is
 // resolved too: it drops its entry rather than refusing, so the set
 // converges. One holding a third entry refuses.
