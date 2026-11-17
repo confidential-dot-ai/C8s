@@ -10,10 +10,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-const (
-	// instanceSweepInterval spaces the listings of the provider's instances.
-	instanceSweepInterval = time.Minute
-)
+// instanceSweepInterval spaces the listings of the provider's instances.
+const instanceSweepInterval = time.Minute
 
 // sweepInstances destroys the provider's cloud instances that no record
 // owns. The record sweep cannot find them: it starts from the records. It
@@ -61,10 +59,12 @@ func (r *Reconciler) sweepInstance(ctx context.Context, in *instance) error {
 
 // recordAbsent reports whether no record exists under key. A record that
 // cannot be read is not an absent one, and only the API server's own not-found
-// answer is absence: a bare 404 from something in front of it is a failed read.
+// answer is absence. A 404 without a Status body, as something in front of
+// the API server answers, reaches here as not found too, marked as an
+// unexpected server response: that is a failed read.
 func (r *Reconciler) recordAbsent(ctx context.Context, key string) (bool, error) {
 	_, _, err := r.loadRecord(ctx, key)
-	if apierrors.ReasonForError(err) == metav1.StatusReasonNotFound {
+	if apierrors.ReasonForError(err) == metav1.StatusReasonNotFound && !apierrors.IsUnexpectedServerError(err) {
 		return true, nil
 	}
 	return false, err

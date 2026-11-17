@@ -12,8 +12,10 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
@@ -54,7 +56,7 @@ func TestInstanceSweepDestroysOnlyARecordlessInstanceOfItsOwn(t *testing.T) {
 		"record naming no instance":   {in: labelled("i-unrecorded", provider, identityKey(provider, string(fixturePod().UID))), prepare: writeRecord},
 		"unreadable record":           {in: labelled("i-unreadable", provider, orphan), prepare: writeRawRecord(orphan, "{"), fails: true},
 		"failed record read":          {in: labelled("i-unread", provider, orphan), prepare: failRecordReads(errors.New("api server unavailable")), fails: true},
-		"bare 404 on the record read": {in: labelled("i-proxied", provider, orphan), prepare: failRecordReads(&apierrors.StatusError{ErrStatus: metav1.Status{Code: http.StatusNotFound}}), fails: true},
+		"bare 404 on the record read": {in: labelled("i-proxied", provider, orphan), prepare: answerRecordReadsWithABare404, fails: true},
 		"record of another version":   {in: labelled("i-versioned", provider, orphan), prepare: writeRawRecord(orphan, `{"version":2}`), fails: true},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -98,6 +100,22 @@ func writeRawRecord(key, state string) func(*testing.T, *Reconciler) {
 	}
 }
 
+// answerRecordReadsWithABare404 reads records through a real client whose
+// server answers 404 with no Status body, as a proxy in front of the API
+// server does.
+func answerRecordReadsWithABare404(t *testing.T, r *Reconciler) {
+	t.Helper()
+	srv := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(srv.Close)
+	mapper := meta.NewDefaultRESTMapper(nil)
+	mapper.Add(corev1.SchemeGroupVersion.WithKind("Secret"), meta.RESTScopeNamespace)
+	c, err := client.New(&rest.Config{Host: srv.URL}, client.Options{Scheme: scheme.Scheme, Mapper: mapper})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.client = c
+}
+
 // failRecordReads answers every record read with err.
 func failRecordReads(err error) func(*testing.T, *Reconciler) {
 	return func(_ *testing.T, r *Reconciler) {
@@ -123,6 +141,9 @@ func TestInstanceSweepReadsTheRecordAgainUnderTheLock(t *testing.T) {
 				t.Error("the first record read held the lock")
 			}
 			writeRawRecord(key, "{")(t, &Reconciler{client: inner, cfg: r.cfg})
+		} else if r.mu.TryLock() {
+			r.mu.Unlock()
+			t.Error("the second record read did not hold the lock")
 		}
 		return err
 	}})
