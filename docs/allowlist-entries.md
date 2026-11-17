@@ -163,10 +163,13 @@ not unicast hosts are refused: `/0`, loopback, link-local, multicast, reserved
 and broadcast, and the IPv6 forms that embed IPv4 addresses. An entry with
 egress pins its launch as a grant does, and a node refuses one that overlaps a
 cluster range, its own address, the resolver, or CDS. The node drops a
-connection from the pod to one of its egress entries that the node itself
-translates to another destination, such as a Service published with an
+connection from the pod to one of its egress entries that netfilter on the
+node translates to another destination, such as a Service published with an
 `externalIPs` or load-balancer address inside the range: egress reaches the
-range as dialed or not at all.
+range as dialed or not at all. The drop covers translations netfilter
+connection tracking records, such as kube-proxy in iptables or nftables mode.
+It does not cover a translation made in eBPF, such as Cilium's own Service load
+balancing, which never passes the node's netfilter hooks.
 
 ## `hostPorts`
 
