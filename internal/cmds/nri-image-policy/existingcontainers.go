@@ -155,6 +155,7 @@ func (p *plugin) recoverExisting(ctx context.Context, pods []*api.PodSandbox, ct
 			p.removePodWithoutIdentity(pod, err)
 		}
 	}
+	p.mesh.sweepExitGuards(pods)
 }
 
 // reportUnprotected names a pod whose sandbox the gate refused: a pod whose

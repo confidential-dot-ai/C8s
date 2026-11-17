@@ -21,6 +21,10 @@ func extendPodRuleset(podNamespace, meshPolicy, string, []exit) error {
 	return errNoPodRuleset
 }
 
-func releaseExitGuard(podNamespace) error {
+func exitGuards() ([]uint64, error) {
+	return nil, errNoPodRuleset
+}
+
+func releaseExitGuard(uint64) error {
 	return errNoPodRuleset
 }

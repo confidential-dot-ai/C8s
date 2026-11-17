@@ -34,7 +34,9 @@ const ctOriginal = 0
 // no translation of one is kept, whatever it points to.
 //
 // The chain runs after destination NAT on the prerouting hook, so it sees a
-// flow bound for the node itself as well as one routed on. The pod's addresses
+// flow bound for the node itself as well as one routed on. It sees only the
+// translations conntrack records: one made in eBPF, such as Cilium's Service
+// load balancing, never reaches the hook. The pod's addresses
 // are read from its namespace; the worker's Cilium verifies a pod's source
 // address.
 // GuardExits replaces the pod's chain in one transaction and verifies it.
@@ -117,6 +119,34 @@ func ReleaseExitGuard(nodeNetns string, podNamespace uint64) error {
 	})
 }
 
+// ExitGuards lists the namespace inodes of the pods the node network namespace
+// at nodeNetns holds an exit guard for.
+func ExitGuards(nodeNetns string) ([]uint64, error) {
+	var inodes []uint64
+	err := inNetNS(nodeNetns, func() error {
+		conn, err := nftables.New()
+		if err != nil {
+			return fmt.Errorf("open nftables: %w", err)
+		}
+		chains, err := conn.ListChainsOfTableFamily(nftables.TableFamilyINet)
+		if err != nil {
+			return fmt.Errorf("list nftables chains: %w", err)
+		}
+		for _, c := range chains {
+			if c.Table.Name != guardTableName {
+				continue
+			}
+			var inode uint64
+			if _, err := fmt.Sscanf(c.Name, guardChainFormat, &inode); err != nil || guardChainName(inode) != c.Name {
+				return fmt.Errorf("%w: exit guard table holds chain %q", ErrMismatch, c.Name)
+			}
+			inodes = append(inodes, inode)
+		}
+		return nil
+	})
+	return inodes, err
+}
+
 // guardFor is the guard chain of the pod at podNetns with exits.
 func guardFor(podNetns string, exits []Exit) (chain, error) {
 	if len(exits) == 0 {
@@ -166,8 +196,10 @@ func buildGuard(namespace uint64, sources []netip.Addr, exits []Exit) chain {
 	}
 }
 
+const guardChainFormat = "pod-netns-%d"
+
 func guardChainName(namespace uint64) string {
-	return fmt.Sprintf("pod-netns-%d", namespace)
+	return fmt.Sprintf(guardChainFormat, namespace)
 }
 
 // podSources are the attached namespace's addresses a routed packet can come

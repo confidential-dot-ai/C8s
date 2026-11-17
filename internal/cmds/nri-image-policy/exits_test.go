@@ -5,9 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/containerd/nri/pkg/api"
 
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
@@ -147,42 +151,126 @@ func TestBindEntryGrantsAndHoldsAPodToItsEntry(t *testing.T) {
 // A removed pod's exit guard is released; a pod that held no exits has none.
 func TestForgetReleasesTheExitGuard(t *testing.T) {
 	gate, _, _ := exitsGate(t)
-	var released []podNamespace
-	gate.release = func(netns podNamespace) error {
-		released = append(released, netns)
-		return nil
-	}
+	released := recordReleases(gate)
 	collector := meshPod("default", "collector", testNetNS)
 	if err := gate.bindEntry(collector, exitDecision{entry: "collector", exits: relayExit}); err != nil {
 		t.Fatal(err)
 	}
-	netns := gate.pods[collector.GetId()].netns
+	inode := gate.pods[collector.GetId()].netns.id.inode
 	gate.forget(collector.GetId())
-	if !slices.Equal(released, []podNamespace{netns}) {
-		t.Fatalf("forget(collector) released %v, want [%v]", released, netns)
+	if !slices.Equal(*released, []uint64{inode}) {
+		t.Fatalf("forget(collector) released %v, want [%d]", *released, inode)
 	}
 	gate.forget(collector.GetId())
-	if len(released) != 1 {
-		t.Fatalf("forget of a forgotten pod released %d guards, want 1", len(released))
+	if len(*released) != 1 {
+		t.Fatalf("forget of a forgotten pod released %d guards, want 1", len(*released))
+	}
+}
+
+// A grant that failed after the guard went in still releases the guard.
+func TestForgetReleasesTheGuardOfAFailedGrant(t *testing.T) {
+	gate, state, _ := exitsGate(t)
+	released := recordReleases(gate)
+	gate.extend = func(podNamespace, meshPolicy, string, []exit) error { return errors.New("extend failed") }
+	collector := meshPod("default", "collector", testNetNS)
+	if err := gate.bindEntry(collector, exitDecision{entry: "collector", exits: relayExit}); err == nil {
+		t.Fatal("bindEntry with a failing extend = nil, want an error")
+	}
+	gate.forget(collector.GetId())
+	if !slices.Equal(*released, []uint64{state.netns.id.inode}) {
+		t.Fatalf("forget(collector) after a failed grant released %v, want [%d]", *released, state.netns.id.inode)
 	}
 }
 
 // A namespace inode the kernel reused names the guard of the sandbox holding
-// it now, which forgetting the earlier sandbox leaves in place.
-func TestForgetKeepsTheGuardOfAReusedNamespace(t *testing.T) {
-	gate, state, _ := exitsGate(t)
-	released := 0
-	gate.release = func(podNamespace) error {
-		released++
+// it now only when that sandbox is guarded.
+func TestForgetWithAReusedNamespace(t *testing.T) {
+	for name, reusing := range map[string]struct {
+		state       *protectedPod
+		wantRelease int
+	}{
+		"guarded":  {&protectedPod{netns: testNamespace(), exits: relayExit, guarded: true}, 0},
+		"no exits": {&protectedPod{netns: testNamespace()}, 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			gate, state, _ := exitsGate(t)
+			released := recordReleases(gate)
+			state.exits, state.guarded = relayExit, true
+			gate.pods["reusing-sandbox"] = reusing.state
+			collector := meshPod("default", "collector", testNetNS)
+			gate.forget(collector.GetId())
+			if len(*released) != reusing.wantRelease {
+				t.Fatalf("forget(collector) released %d guards, want %d", len(*released), reusing.wantRelease)
+			}
+		})
+	}
+}
+
+// After recovery, only the guards of gone namespaces and of sandboxes that
+// verified without exits are swept.
+func TestSweepExitGuards(t *testing.T) {
+	dir := t.TempDir()
+	namespace := func(name string) (string, uint64) {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		described, err := namespaceFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return path, described.id.inode
+	}
+	guardedPath, guardedInode := namespace("guarded")
+	plainPath, plainInode := namespace("plain")
+	refusedPath, refusedInode := namespace("refused")
+	offRecordPath, offRecordInode := namespace("off-record")
+	const goneInode = 1 << 40
+
+	gate := newMeshGate(*meshRoles(), discardLogger())
+	released := recordReleases(gate)
+	gate.guards = func() ([]uint64, error) {
+		return []uint64{guardedInode, plainInode, refusedInode, offRecordInode, goneInode}, nil
+	}
+	guarded := meshPod("default", "guarded", guardedPath)
+	plain := meshPod("default", "plain", plainPath)
+	refused := meshPod("default", "refused", refusedPath)
+	offRecord := meshPod("default", "off-record", offRecordPath)
+	gone := meshPod("default", "gone", filepath.Join(dir, "gone"))
+	for _, pod := range []*api.PodSandbox{guarded, plain, refused, offRecord, gone} {
+		pod.Id = pod.GetName()
+	}
+	gate.pods["guarded"] = &protectedPod{netns: podNamespace{guardedPath, fileID{inode: guardedInode}}, exits: relayExit, guarded: true}
+	gate.pods["plain"] = &protectedPod{netns: podNamespace{plainPath, fileID{inode: plainInode}}}
+	gate.pods["refused"] = &protectedPod{refusal: errors.New("refused")}
+
+	gate.sweepExitGuards([]*api.PodSandbox{guarded, plain, refused, offRecord, gone})
+	slices.Sort(*released)
+	want := []uint64{plainInode, goneInode}
+	slices.Sort(want)
+	if !slices.Equal(*released, want) {
+		t.Fatalf("sweepExitGuards released %v, want %v", *released, want)
+	}
+}
+
+// A sweep that cannot read the node's guards releases nothing.
+func TestSweepExitGuardsWithoutAGuardList(t *testing.T) {
+	gate := newMeshGate(*meshRoles(), discardLogger())
+	released := recordReleases(gate)
+	gate.guards = func() ([]uint64, error) { return nil, errors.New("netlink refused") }
+	gate.sweepExitGuards([]*api.PodSandbox{meshPod("default", "pod", testNetNS)})
+	if len(*released) != 0 {
+		t.Fatalf("sweepExitGuards without a guard list released %v, want none", *released)
+	}
+}
+
+func recordReleases(gate *meshGate) *[]uint64 {
+	var released []uint64
+	gate.release = func(inode uint64) error {
+		released = append(released, inode)
 		return nil
 	}
-	state.exits = relayExit
-	gate.pods["reusing-sandbox"] = &protectedPod{netns: state.netns, exits: relayExit}
-	collector := meshPod("default", "collector", testNetNS)
-	gate.forget(collector.GetId())
-	if released != 0 {
-		t.Fatalf("forget(collector) released %d guards, want 0 while another sandbox holds the namespace", released)
-	}
+	return &released
 }
 
 // Without exits held, an unreadable pod grants nothing and refuses nothing.

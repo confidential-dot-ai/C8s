@@ -52,8 +52,10 @@ type meshGate struct {
 	nodeAddress func() (netip.Addr, error)
 	// extend adds granted exits to a pod's live ruleset.
 	extend func(podNamespace, meshPolicy, string, []exit) error
-	// release removes the exit guard of a pod that held exits.
-	release func(podNamespace) error
+	// guards lists the namespace inodes the node holds an exit guard for, and
+	// release removes the guard of one.
+	guards  func() ([]uint64, error)
+	release func(inode uint64) error
 }
 
 // noteRecovered marks recovery complete, so a sandbox off the record is then a
@@ -84,6 +86,9 @@ type protectedPod struct {
 	// exits those exits: fixed for the pod's life once granted.
 	exitEntry string
 	exits     []exit
+	// guarded is set once an exit guard may be installed for the namespace,
+	// even by a grant that then failed.
+	guarded bool
 	// starts serializes a workload container's exit decision with its record
 	// in the inventory, so two starts cannot both decide on a set that lacks
 	// the other.
@@ -142,6 +147,7 @@ func newMeshGate(policy meshPolicy, logger *slog.Logger) *meshGate {
 			return netip.Addr{}, errors.New("this node's own address is unknown")
 		},
 		extend:  extendPodRuleset,
+		guards:  exitGuards,
 		release: releaseExitGuard,
 	}
 }
@@ -286,6 +292,7 @@ func (g *meshGate) recovered(pod *api.PodSandbox, ctrs []recoveredContainer, exi
 		kubeNamespace: pod.GetNamespace(),
 		exitEntry:     exits.entry,
 		exits:         exits.exits,
+		guarded:       len(exits.exits) > 0,
 	}
 	for _, c := range ctrs {
 		if err := state.restore(g.policy, c); err != nil {
@@ -353,22 +360,76 @@ func (s *protectedPod) requireSandboxNetwork(ctr *api.Container, running bool) e
 // forget drops a removed sandbox's record. A guard left behind only tightens
 // what a later pod at the same address reaches, so a failed release is
 // logged, not returned. Guards are named by namespace inode, which the kernel
-// reuses: one a sandbox on record now holds is that sandbox's, not this one's.
+// reuses: one a guarded sandbox on record now holds is that sandbox's.
 func (g *meshGate) forget(sandboxID string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	state := g.pods[sandboxID]
 	delete(g.pods, sandboxID)
-	if state == nil || len(state.exits) == 0 {
+	if state == nil || !state.guarded || g.guardHeld(state.netns.id.inode) {
 		return
 	}
-	for _, other := range g.pods {
-		if other.netns.id == state.netns.id {
-			return
+	if err := g.release(state.netns.id.inode); err != nil {
+		g.logger.Warn("could not release the exit guard of a removed pod", "sandbox", sandboxID, "error", err)
+	}
+}
+
+// guardHeld reports whether a guarded sandbox on record holds the namespace
+// inode. The caller holds g.mu.
+func (g *meshGate) guardHeld(inode uint64) bool {
+	for _, state := range g.pods {
+		if state.guarded && state.netns.id.inode == inode {
+			return true
 		}
 	}
-	if err := g.release(state.netns); err != nil {
-		g.logger.Warn("could not release the exit guard of a removed pod", "sandbox", sandboxID, "error", err)
+	return false
+}
+
+// sweepExitGuards removes the exit guards no sandbox needs once recovery has
+// read back the sandboxes in pods: those of namespaces that are gone, and of
+// ones whose sandbox verified with no exits. A guard whose namespace belongs
+// to a sandbox recovery refused stays, since its exit rules may still be live.
+func (g *meshGate) sweepExitGuards(pods []*api.PodSandbox) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	inodes, err := g.guards()
+	if err != nil {
+		g.logger.Warn("could not list the node's exit guards; none is swept", "error", err)
+		return
+	}
+	if len(inodes) == 0 {
+		return
+	}
+	kept := map[uint64]bool{}
+	for _, pod := range pods {
+		state := g.pods[pod.GetId()]
+		if state != nil && state.refusal == nil && !state.guarded {
+			continue
+		}
+		path := podNetworkNamespace(pod)
+		if path == "" {
+			continue
+		}
+		netns, err := namespaceFile(path)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			g.logger.Warn("could not read a sandbox's network namespace; no exit guard is swept",
+				"sandbox", pod.GetId(), "error", err)
+			return
+		}
+		kept[netns.id.inode] = true
+	}
+	for _, inode := range inodes {
+		if kept[inode] || g.guardHeld(inode) {
+			continue
+		}
+		if err := g.release(inode); err != nil {
+			g.logger.Warn("could not release an exit guard no sandbox holds", "netns_inode", inode, "error", err)
+			continue
+		}
+		g.logger.Info("released an exit guard no sandbox holds", "netns_inode", inode)
 	}
 }
 
@@ -494,6 +555,7 @@ func (g *meshGate) bindEntry(pod *api.PodSandbox, decision exitDecision) error {
 	if err := g.requireOffLimits(decision.exits); err != nil {
 		return fmt.Errorf("allowlist entry %q: %w", decision.entry, err)
 	}
+	state.guarded = true
 	if err := g.extend(state.netns, g.rulesetPolicy(), state.kubeNamespace, decision.exits); err != nil {
 		return fmt.Errorf("grant the exits of allowlist entry %q: %w", decision.entry, err)
 	}

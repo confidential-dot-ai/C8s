@@ -62,9 +62,12 @@ func extendPodRuleset(netns podNamespace, policy meshPolicy, namespace string, e
 	return ruleset.Extend(netns.path, policy.podRuleset(namespace, nil), rulesetExits(exits))
 }
 
-// releaseExitGuard removes the exit guard of a removed pod.
-func releaseExitGuard(netns podNamespace) error {
-	return ruleset.ReleaseExitGuard(nodeNetworkNamespace, netns.id.inode)
+func exitGuards() ([]uint64, error) {
+	return ruleset.ExitGuards(nodeNetworkNamespace)
+}
+
+func releaseExitGuard(inode uint64) error {
+	return ruleset.ReleaseExitGuard(nodeNetworkNamespace, inode)
 }
 
 func requireSameNamespace(netns podNamespace) error {
