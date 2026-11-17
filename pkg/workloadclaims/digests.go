@@ -278,19 +278,19 @@ type DigestsClientConfig struct {
 }
 
 func (c DigestsClientConfig) tlsConfig() *armtls.ClientConfig {
-	cfg := &armtls.ClientConfig{
-		Policy:               c.Pins.VerifyPolicy(c.AttestationAPIURL),
+	current := c.CurrentPins
+	if current == nil {
+		current = func() armtls.Pins { return c.Pins }
+	}
+	return &armtls.ClientConfig{
+		Policy: current().VerifyPolicy(c.AttestationAPIURL),
+		Current: func() (*armtls.VerifyPolicy, error) {
+			return current().VerifyPolicy(c.AttestationAPIURL), nil
+		},
 		Platform:             c.Platform,
 		AttestFunc:           c.AttestFunc,
 		MeasuredPoliciesFile: c.MeasuredPoliciesFile,
 	}
-	if current := c.CurrentPins; current != nil {
-		cfg.Policy = current().VerifyPolicy(c.AttestationAPIURL)
-		cfg.Current = func() (*armtls.VerifyPolicy, error) {
-			return current().VerifyPolicy(c.AttestationAPIURL), nil
-		}
-	}
-	return cfg
 }
 
 // CloseIdleConnections drops the connections pooled now. A callback in flight
