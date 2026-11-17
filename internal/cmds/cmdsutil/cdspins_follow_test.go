@@ -57,7 +57,7 @@ func TestCDSClientFollowsTheNodePins(t *testing.T) {
 	defer srv.Close()
 
 	runs(measA)
-	client, err := armtls.NewFollowingHTTPClient(CDSPins(path, ImagePolicySource{}), as.URL())
+	client, err := armtls.NewFollowingHTTPClient(func() (armtls.Pins, error) { return CDSPins(path, ImagePolicySource{}) }, as.URL())
 	if err != nil {
 		t.Fatal(err)
 	}

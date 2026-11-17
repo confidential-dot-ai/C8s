@@ -64,7 +64,7 @@ func TestRouterCDSClientFollowsTheNodePins(t *testing.T) {
 	go func() { _ = srv.Serve(l) }()
 	defer srv.Close()
 
-	client, err := armtls.NewFollowingHTTPClient(routerCDSPins(flag), as.URL())
+	client, err := armtls.NewFollowingHTTPClient(func() (armtls.Pins, error) { return routerCDSPins(flag) }, as.URL())
 	if err != nil {
 		t.Fatal(err)
 	}
