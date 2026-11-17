@@ -44,8 +44,9 @@ func (p *cloudProblem) Error() string {
 // from the body and may carry launch input, so it is not reported.
 var problemCodeToken = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 
+// Is matches only Cloud's own not_found; any other 404 is a failed request.
 func (p *cloudProblem) Is(target error) bool {
-	return target == errCloudNotFound && p.status == http.StatusNotFound
+	return target == errCloudNotFound && p.status == http.StatusNotFound && p.code == "not_found"
 }
 
 // problemCode is the Cloud problem code of err, or "" when it has none.
@@ -88,9 +89,10 @@ func parseRetryAfter(value string, now time.Time) time.Duration {
 // cloudRejected reports whether Cloud refused the request itself (a 4xx)
 // rather than its own state: not found, a request timeout, throttling, a
 // create still in flight or a lack of capacity are answers a retry can change.
+// A 4xx without a Cloud problem code did not come from Cloud.
 func cloudRejected(err error) bool {
 	var p *cloudProblem
-	if !errors.As(err, &p) || p.status < 400 || p.status >= 500 {
+	if !errors.As(err, &p) || p.status < 400 || p.status >= 500 || !problemCodeToken.MatchString(p.code) {
 		return false
 	}
 	switch {
