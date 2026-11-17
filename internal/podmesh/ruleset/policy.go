@@ -10,7 +10,8 @@
 // listeners; everything else is denied in both directions, apart from
 // loopback, pod-local addresses, neighbour discovery, the resolver trusted
 // policy names, the pod's exits, and the destinations each platform role is
-// bound to.
+// bound to. An exit guard in the node's own namespace drops a pod's exit
+// connection that the node translates to another destination.
 //
 // Standalone Pods capture exact signed peer TCP tuples and admit other
 // IPv4 TCP/UDP egress. Guest rules route and masquerade that egress while
