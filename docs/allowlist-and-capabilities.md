@@ -294,6 +294,46 @@ they re-read, print what the other write changed, and make the change to the
 newer document, for a bounded number of attempts. `upload` instead fails,
 since its file is the whole document: run it again to see the new diff.
 
+## Component sets
+
+The components section of the document lists the component sets the cluster
+admits: one release's entries for the containers c8s itself runs, the injected
+sidecars, the router and the node services
+([allowlist-entries.md](allowlist-entries.md#component-sets)). A set without a
+deadline is current; a set with a deadline is retiring and in force until that
+deadline.
+
+A release publishes its set as a **set file**: an allowlist document holding
+that one set and nothing else. `c8s allowlist components add --set-file FILE`
+puts it in as a current set and says what happens to the sets already there:
+
+```
+# add the new set and leave the old one in force
+c8s allowlist components add --set-file component-set.json
+
+# add the new set and give the old one a deadline
+c8s allowlist components add --set-file component-set.json \
+    --retire 0.42.1=2026-12-01T00:00:00Z
+
+# add the new set and take the old one out of the document
+c8s allowlist components add --set-file component-set.json --remove 0.42.1
+```
+
+`--retire` and `--remove` repeat, and name sets the live document holds. A
+deadline is RFC 3339 UTC with second precision and lies ahead. `retire
+VERSION DEADLINE` sets or moves one deadline, `unretire VERSION` takes it off,
+and `remove VERSION` drops one set; each is one write of its own.
+
+`components list` prints every set of the live document in version order: its
+version, whether it is current, retiring until its deadline or ended at a
+deadline past, how many entries it holds, and the digest of those entries.
+
+Each of these commands writes the whole document conditionally, as `apply`
+does, and prints the sets the write left. A set file carrying a deadline,
+workload entries or a second set is refused. `retire` and `remove` refuse a
+result with no current set, which would leave new pods without their c8s
+components, unless `--force`.
+
 ## Refresh and anti-rollback
 
 Every node polls `GET /allowlist` every 5s, the `allowlist.pull.interval` the
