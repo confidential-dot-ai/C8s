@@ -303,6 +303,7 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 		Evidence:             evidenceJSON,
 		SandboxID:            sandbox.SandboxID,
 		MatchedWorkload:      decision.matched,
+		ComponentSet:         decision.set,
 		ClientDocumentDigest: clientDocument,
 	})
 	if errors.Is(err, issuer.ErrSubjectDenied) {
@@ -383,13 +384,13 @@ func decodeAttestRequest(w http.ResponseWriter, r *http.Request) (types.AttestRe
 
 // workloadDecision is what one issuance establishes about the requester's pod:
 // the workload entry its inventory matched, whether it runs the router, and
-// the component sets it is on (empty for a pod on none).
+// the newest component set it is on (nil for a pod on none).
 type workloadDecision struct {
 	matched *armtls.MatchedWorkload
 	router  bool
-	sets    []allowlist.SetRef
-	// setsEnd is when the last of those sets ends, zero while one of them is
-	// current.
+	set     *armtls.ComponentSet
+	// setsEnd is when the last set admitting the pod ends, zero while one of
+	// them is current.
 	setsEnd time.Time
 }
 
@@ -582,12 +583,35 @@ func (h AttestHandler) resolveSandboxWorkload(ctx context.Context, sandbox workl
 	router := slices.ContainsFunc(resp.Containers, func(c workloadclaims.SandboxContainer) bool {
 		return c.Role == allowlist.RoleRouter
 	})
+	stamp, err := newestSetStamp(sets)
+	if err != nil {
+		return workloadDecision{}, err
+	}
 	return workloadDecision{
 		matched: h.matchWorkload(ctx, snapshot, resp, membership, sandbox, now),
 		router:  router,
-		sets:    sets,
+		set:     stamp,
 		setsEnd: retirementEnd(snapshot.Allowlist, sets),
 	}, nil
+}
+
+// newestSetStamp names the newest of the sets admitting the pod — the release
+// it is already on, or has reached — in the form the leaf carries.
+func newestSetStamp(sets []allowlist.SetRef) (*armtls.ComponentSet, error) {
+	if len(sets) == 0 {
+		return nil, nil
+	}
+	newest := sets[len(sets)-1] // SetsInForce order: the highest version last
+	digest, err := types.ParseDigest(newest.Digest)
+	if err != nil {
+		return nil, fmt.Errorf("component set %s: %w", newest.Version, err)
+	}
+	raw, err := hex.DecodeString(digest.Hex())
+	if err != nil {
+		return nil, fmt.Errorf("component set %s: %w", newest.Version, err)
+	}
+	stamp := &armtls.ComponentSet{Version: newest.Version, Digest: raw}
+	return stamp, stamp.Validate()
 }
 
 // retirementEnd is when the last of sets ends, zero while one of them is
