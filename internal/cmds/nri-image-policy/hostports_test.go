@@ -40,7 +40,7 @@ func hostPortBase(t *testing.T) *allowlist.Allowlist {
 	}
 	mesh := allowlist.Container{
 		Digest:  mustDigest(t, pushDigestA),
-		Role:    meshRole,
+		Role:    allowlist.RoleMesh,
 		Command: allowlist.ArgvPolicy{Policy: allowlist.PolicyExact, Argv: []string{"/mesh"}},
 		Args:    allowlist.ArgvPolicy{Policy: allowlist.PolicyAny},
 		Mounts:  allowlist.MountPolicy{Policy: allowlist.PolicyAny},

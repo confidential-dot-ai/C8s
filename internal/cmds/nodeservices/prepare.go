@@ -14,7 +14,6 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
-	nriimagepolicy "github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/nri-image-policy"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/fileutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
@@ -420,15 +419,15 @@ func appendCredentialRole(policy map[string]any, port uint16) error {
 		if !ok {
 			return fmt.Errorf("baked NRI mesh role is %T, not a mapping", declared)
 		}
-		if role["name"] == nriimagepolicy.CredentialRole {
-			return fmt.Errorf("baked NRI mesh policy already binds the %s role", nriimagepolicy.CredentialRole)
+		if role["name"] == allowlist.RoleCredentials {
+			return fmt.Errorf("baked NRI mesh policy already binds the %s role", allowlist.RoleCredentials)
 		}
 		if uid, declared := role["uid"]; declared && fmt.Sprint(uid) == fmt.Sprint(workloadclaims.CredentialsUID) {
-			return fmt.Errorf("baked NRI mesh role %v holds uid %v, reserved for the %s role", role["name"], uid, nriimagepolicy.CredentialRole)
+			return fmt.Errorf("baked NRI mesh role %v holds uid %v, reserved for the %s role", role["name"], uid, allowlist.RoleCredentials)
 		}
 	}
 	policy["roles"] = append(roles, map[string]any{
-		"name": nriimagepolicy.CredentialRole,
+		"name": allowlist.RoleCredentials,
 		"uid":  workloadclaims.CredentialsUID,
 		"port": port,
 	})

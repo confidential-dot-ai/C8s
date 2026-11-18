@@ -61,7 +61,7 @@ func TestPodCredentialVolumeRequiresMeasuredRoleAndExactMemoryMount(t *testing.T
 			source := kubeletRoot + "/pods/" + pod.Uid + "/volumes/" + emptyDirPlugin + "/" + podmesh.CertVolumeName
 			ctr := &api.Container{Name: workloadclaims.MeshContainerName, Mounts: []*api.Mount{readOnlyBind(source, podmesh.CertDir)}}
 			mounts := []allowlist.ObservedMount{{Destination: podmesh.CertDir, Class: allowlist.MountEmptyDir, Storage: allowlist.MountMemory, ReadOnly: true, Volume: podmesh.CertVolumeName}}
-			role := meshRole
+			role := allowlist.RoleMesh
 			if tc.change != nil {
 				tc.change(pod, ctr, &mounts, &role)
 			}

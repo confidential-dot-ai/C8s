@@ -264,21 +264,6 @@ func ParseMeshProbePath(rendered string) (int32, string, error) {
 	return int32(port), appPath, nil
 }
 
-// MeshRole and CredentialsRole are the platform roles of the containers the
-// webhook adds to every member pod: the endpoint that carries the pod's
-// traffic, and the clients that fetch its credentials. Workload matching runs
-// without them (internal/secrets.WorkloadContainers), so a workload entry
-// never enumerates them. A role a pod runs for a purpose of its own, like the
-// router's, is matched like any other container.
-const (
-	MeshRole        = "mesh"
-	CredentialsRole = "credentials"
-)
-
-// RouterRole is the role of the router's front door. Trust Authority gives a sandbox
-// running one a short-lived leaf.
-const RouterRole = "router"
-
 // CredentialsUID is the reserved identity of the injected credential clients.
 // The node binds it to the Trust Authority address, and the enforcer refuses it in any
 // other container, so a pod cannot reach the Trust Authority with a socket of its own.

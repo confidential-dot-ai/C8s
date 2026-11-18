@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/podmesh/ruleset"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
@@ -56,7 +57,7 @@ func TestPodRulesetServesOwnPortsOnlyInTheRouterNamespace(t *testing.T) {
 func TestPodRulesetCarriesOnlyTheGrantedExits(t *testing.T) {
 	policy := meshRoles()
 	policy.Roles = append(policy.Roles, roleBinding{
-		Name: CredentialRole,
+		Name: allowlist.RoleCredentials,
 		UID:  workloadclaims.CredentialsUID,
 		Port: 30808,
 	})
@@ -80,7 +81,7 @@ func TestPodRulesetAdmitsTheCredentialAttestationPort(t *testing.T) {
 	policy.CredentialAttestationPort = 8400
 	policy.nodeAddr = netip.MustParseAddr("172.18.0.2")
 	policy.Roles = append(policy.Roles, roleBinding{
-		Name: CredentialRole,
+		Name: allowlist.RoleCredentials,
 		UID:  workloadclaims.CredentialsUID,
 		Port: 8443,
 	})

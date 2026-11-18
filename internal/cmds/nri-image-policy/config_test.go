@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/attestclient"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
@@ -776,7 +777,7 @@ func podRoleConfig(t *testing.T) config {
 	cfg.Measure.RTMR3 = true
 	cfg.Platform = "tdx"
 	cfg.Allowlist.Pull.TAMeasurementsConfig = "/run/c8s-launch/cds.json"
-	cfg.Allowlist.Base = roleBase(t, pushDigestB, meshRole, []string{"/mesh"})
+	cfg.Allowlist.Base = roleBase(t, pushDigestB, allowlist.RoleMesh, []string{"/mesh"})
 	cfg.Mesh.Pod = &podMeshPolicy{}
 	cfg.Mesh.Roles = cfg.Mesh.Roles[:1]
 	cfg.Mesh.ExemptNamespaces = nil

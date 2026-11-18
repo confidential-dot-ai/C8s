@@ -7,6 +7,7 @@ import (
 
 	"github.com/containerd/nri/pkg/api"
 
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
@@ -36,9 +37,9 @@ func (c nodeCVM) containerMounts(ctx context.Context, pod *api.PodSandbox, ctr *
 	if !holdsCredentialsIdentity(ctr) && !injected {
 		return nil, nil
 	}
-	if holdsCredentialsIdentity(ctr) && p.measuredRole(ctx, pod, ctr) != CredentialRole {
+	if holdsCredentialsIdentity(ctr) && p.measuredRole(ctx, pod, ctr) != allowlist.RoleCredentials {
 		return nil, fmt.Errorf("container %q runs as the credentials identity (uid %d) but this node's measured base grants it no %s role, so it would reach Trust Authority unpinned",
-			ctr.GetName(), workloadclaims.CredentialsUID, CredentialRole)
+			ctr.GetName(), workloadclaims.CredentialsUID, allowlist.RoleCredentials)
 	}
 	socketDir := ""
 	if servesInventory := p.inventory != nil; servesInventory {

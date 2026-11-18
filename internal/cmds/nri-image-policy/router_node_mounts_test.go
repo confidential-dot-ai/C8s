@@ -24,11 +24,11 @@ func TestChartRouterNodeMountAdmission(t *testing.T) {
 	}{
 		{
 			name: workloadclaims.AttestContainerName,
-			role: upstreamRole,
+			role: allowlist.RoleUpstream,
 		},
 		{
 			name: "allowlist-proxy",
-			role: CredentialRole,
+			role: allowlist.RoleCredentials,
 		},
 	} {
 		t.Run(client.name, func(t *testing.T) {
@@ -67,7 +67,7 @@ func TestChartRouterNodeMountAdmission(t *testing.T) {
 			if err != nil || len(containers) != 1 || containers[0].Role != client.role {
 				t.Fatalf("inventory = %v, %v; want role %s", containers, err, client.role)
 			}
-			if client.role == CredentialRole {
+			if client.role == allowlist.RoleCredentials {
 				socket := onlyMountAt(t, containers[0].Mounts, workloadclaims.SidecarSocketDir)
 				if socket.Class != allowlist.MountHost {
 					t.Fatalf("router socket bypassed its exact host mount rule: %+v", socket)
@@ -190,7 +190,7 @@ func routerNodeMountPlugin(t *testing.T) *plugin {
 	// cluster's Trust Authority serves, and the role its clients hold (nodeservices).
 	cfg.taAddress = "cds.example.org:8443"
 	cfg.Mesh.Roles = append(cfg.Mesh.Roles, roleBinding{
-		Name: CredentialRole,
+		Name: allowlist.RoleCredentials,
 		UID:  workloadclaims.CredentialsUID,
 		Port: 8443,
 	})

@@ -328,7 +328,7 @@ func completeConfig(data []byte) (*config, error) {
 	}
 	cfg.taAddress = address
 	if err := bindCredentialRole(cfg); err != nil {
-		return nil, fmt.Errorf("bind the %s role to the Trust Authority this node reaches: %w", CredentialRole, err)
+		return nil, fmt.Errorf("bind the %s role to the Trust Authority this node reaches: %w", allowlist.RoleCredentials, err)
 	}
 	if err := cfg.validateMeshRoleBindings(); err != nil {
 		return nil, fmt.Errorf("validate mesh role bindings: %w", err)
@@ -681,7 +681,7 @@ func (c *config) validatePod() error {
 	if len(c.Policy.ExemptNamespaces) != 0 || len(c.Mesh.ExemptNamespaces) != 0 || c.Pod.Namespace == routerNamespace {
 		return fmt.Errorf("the Pod broker permits no namespace exemptions or router namespace")
 	}
-	if len(c.Mesh.Roles) != 1 || c.Mesh.Roles[0].Name != meshRole || c.Mesh.Roles[0].UID != workloadclaims.MeshUID || c.Mesh.Roles[0].Port != 0 || c.Mesh.CredentialAttestationPort != 0 {
+	if len(c.Mesh.Roles) != 1 || c.Mesh.Roles[0].Name != allowlist.RoleMesh || c.Mesh.Roles[0].UID != workloadclaims.MeshUID || c.Mesh.Roles[0].Port != 0 || c.Mesh.CredentialAttestationPort != 0 {
 		return fmt.Errorf("the Pod broker requires only the mesh role and no Pod credential-client bypass")
 	}
 	if c.Pod.UID == "" || c.Pod.Namespace == "" || c.Pod.Name == "" {
