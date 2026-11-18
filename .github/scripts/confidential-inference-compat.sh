@@ -155,9 +155,19 @@ if ! curl -sS --fail-with-body --max-time 600 "$api/v1/chat/completions" \
   fail "the model API refused the request: $(head -c 400 "$work/reply")"
 fi
 report=$(jq -r '.choices[0].message.content' "$work/reply")
-read -r verdict <<<"$report"
-case "$verdict" in
-  COMPATIBLE) printf '%s\n' "$report"; exit 0 ;;
-  INCOMPATIBLE) printf '%s\n' "$report"; exit 1 ;;
-  *) fail "the model gave no verdict on its first line: $(head -c 300 <<<"$report")" ;;
-esac
+
+# The verdict is the reply's first word. Models put emphasis around it or run
+# the reason onto its line; the report still opens with the bare verdict.
+report=${report#"${report%%[![:space:]]*}"}
+first=${report%%$'\n'*}
+verdict_line='^[*_#[:space:]]*(INCOMPATIBLE|COMPATIBLE)([^[:alnum:]].*)?$'
+[[ $first =~ $verdict_line ]] ||
+  fail "the model gave no verdict on its first line: $(head -c 300 <<<"$report")"
+verdict=${BASH_REMATCH[1]}
+[[ ${BASH_REMATCH[2]} =~ ^[*_]*[[:space:]]*[:.,-]?[[:space:]]*(.*)$ ]]
+reason=${BASH_REMATCH[1]}
+
+printf '%s\n' "$verdict"
+[ -z "$reason" ] || printf '\n%s\n' "$reason"
+[ "$first" = "$report" ] || printf '%s\n' "${report#*$'\n'}"
+[ "$verdict" = COMPATIBLE ] || exit 1
