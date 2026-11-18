@@ -181,6 +181,9 @@ func fetchBlob(ctx context.Context, cfg config, client *http.Client, pub crypto.
 // openOne hands the blob to the node daemon, which resolves this pod from the
 // socket's peer credentials and mounts the volume into it.
 func openOne(ctx context.Context, cfg config, daemon *http.Client, daemonBase, name string, blob volume.Blob) error {
+	if blob.Name != name {
+		return fmt.Errorf("volume key blob name %q does not match requested name %q", blob.Name, name)
+	}
 	body, err := json.Marshal(volumed.OpenRequest{Name: name, Blob: blob})
 	if err != nil {
 		return err
