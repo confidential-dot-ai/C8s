@@ -31,7 +31,7 @@ remains binding even with an existing local record. Signing authorizes the
 entry at this position, but does not commit it or reserve the position.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			target, err := o.policyTarget(cluster, expected)
+			target, err := o.policyTarget("prepare-policy", cluster, expected)
 			if err != nil {
 				return err
 			}
@@ -59,13 +59,13 @@ entry at this position, but does not commit it or reserve the position.`,
 	return cmd
 }
 
-// policyTarget is the independently trusted position the flags name.
-func (o *options) policyTarget(cluster, expected string) (policyTarget, error) {
+// policyTarget is the independently trusted position the flags of command name.
+func (o *options) policyTarget(command, cluster, expected string) (policyTarget, error) {
 	if o.Insecure {
-		return policyTarget{}, errors.New("prepare-policy requires attested HTTPS; --insecure is not allowed")
+		return policyTarget{}, fmt.Errorf("%s requires attested HTTPS; --insecure is not allowed", command)
 	}
 	if o.MeasurementsConfig == "" {
-		return policyTarget{}, errors.New("prepare-policy requires independent CDS pins: pass --image-policy-file")
+		return policyTarget{}, fmt.Errorf("%s requires independent CDS pins: pass --image-policy-file", command)
 	}
 	if strings.TrimSpace(cluster) == "" {
 		return policyTarget{}, errors.New("--cluster must not be empty")

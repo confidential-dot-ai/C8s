@@ -33,10 +33,18 @@ import (
 )
 
 // Only a 200 naming the entry is done; a 202 or a broken answer
-// after the entry left may have been applied (exit 3); a 409 applied nothing.
+// after the entry left may have been applied (exit 3); a 409 refuses this attempt.
 func TestSubmitAnswers(t *testing.T) {
-	e := cdschain.Entry{Body: []byte(`{"v":1}`), Sig: "x"}
-	done, _ := json.Marshal(cdschain.Head{Seq: 1, Hash: e.Hash()})
+	e := cdschain.Entry{
+		Body: []byte(`{"v":1,"cluster":"lane","seq":1}`),
+		Sig:  "x",
+	}
+	done, _ := json.Marshal(cdschain.Head{
+		V:       cdschain.Version,
+		Cluster: "lane",
+		Seq:     1,
+		Hash:    e.Hash(),
+	})
 	for _, tc := range []struct {
 		code         int
 		body         string
@@ -201,7 +209,12 @@ func (f *racedReplica) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		f.entries = append(f.entries, e)
-		head := cdschain.Head{Cluster: state.Cluster, Seq: state.Head.Seq + 1, Hash: e.Hash()}
+		head := cdschain.Head{
+			V:       cdschain.Version,
+			Cluster: state.Cluster,
+			Seq:     state.Head.Seq + 1,
+			Hash:    e.Hash(),
+		}
 		if f.answer != nil {
 			f.answer(&head)
 		}
