@@ -2,6 +2,7 @@ package verify
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -69,7 +70,8 @@ func TestVerifyPodLeaf(t *testing.T) {
 			t.Fatal(err)
 		}
 		var out bytes.Buffer
-		return verifyPodLeaf(cfg, plan, ev, nil, &out), out.String()
+		code := verifyEvidence(context.Background(), cfg, plan, ev, nil, operatorKeysReport{}, measurementsReport{}, &out, &out)
+		return code, out.String()
 	}
 	code, out := run(config{kind: "workload", meshCA: caPath, sandboxID: podInstance})
 	if code != exitVerified || !strings.Contains(out, backendMeshChain) || strings.Contains(out, "measurement:") {
