@@ -60,6 +60,9 @@ func (p *plugin) ValidateContainerAdjustment(ctx context.Context, req *api.Valid
 	if verdict == verdictDeny && p.cfg.Policy.Mode != ModeAudit {
 		return p.denyContainerCreation(req.GetPod().GetId(), ctr.GetName(), fmt.Errorf("%s", reason))
 	}
+	if err := p.noteNodeService(ctx, observed); err != nil {
+		return p.denyContainerCreation(req.GetPod().GetId(), ctr.GetName(), err)
+	}
 	p.noteCapabilityGrant(ctx, observed)
 	// No inventory record here: later validators can still reject creation, and
 	// CDI transformations under an any policy have not happened yet.

@@ -216,3 +216,61 @@ func TestEarliestDeadline(t *testing.T) {
 		t.Fatal("a current set named a deadline")
 	}
 }
+
+// volumedSet is a set whose one entry is the volumed node service, retiring at
+// deadline when retiring.
+func volumedSet(version, digest string, retiring bool) string {
+	retire := ""
+	if retiring {
+		retire = `"retire":{"deadline":"2026-12-01T00:00:00Z"},`
+	}
+	return `"` + version + `":{` + retire + `"entries":{"volumed":{"nodeService":true,"containers":[` +
+		nodeServiceContainer(digest) + `]}}}`
+}
+
+// volumedLaunch is the launch nodeServiceContainer admits.
+func volumedLaunch(t *testing.T, digest string) RunningContainer {
+	t.Helper()
+	env, err := ObserveEnv([]string{"HOME=/root"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return RunningContainer{
+		Digest: digest,
+		Argv:   []string{"/app/c8s", "volumed", "--state-dir", "/run/c8s"},
+		Env:    env,
+		Mounts: []ObservedMount{{
+			Destination: "/run/c8s",
+			Class:       MountEmptyDir,
+			Storage:     MountMemory,
+		}},
+	}
+}
+
+// A node service is named by the marked entry of a set in force, under the
+// newest set that carries it, and by nothing once that set has ended.
+func TestNodeServiceAdmitting(t *testing.T) {
+	al := mustParse(t, componentsDoc(currentSet(), volumedSet("0.42.1", digestB, true), volumedSet("0.44.0", digestB, false)))
+	launch := volumedLaunch(t, digestB)
+	service, named := al.NodeServiceAdmitting(launch, deadline.Add(-time.Hour))
+	if !named || service.Entry != "volumed" || service.Set.Version != "0.44.0" {
+		t.Fatalf("NodeServiceAdmitting = %+v, %v, want volumed of set 0.44.0", service, named)
+	}
+	if service.Set.Digest != al.Components["0.44.0"].DigestString() {
+		t.Fatalf("the named set digest %s is not the set's", service.Set.Digest)
+	}
+	if _, named := al.NodeServiceAdmitting(meshLaunch(digestA), deadline.Add(-time.Hour)); named {
+		t.Fatal("an entry without the mark named a node service")
+	}
+
+	retiring := mustParse(t, componentsDoc(currentSet(), volumedSet("0.42.1", digestB, true)))
+	if _, named := retiring.NodeServiceAdmitting(launch, deadline.Add(-time.Hour)); !named {
+		t.Fatal("a retiring set named no node service before its deadline")
+	}
+	if _, named := retiring.NodeServiceAdmitting(launch, deadline); named {
+		t.Fatal("a set past its deadline named a node service")
+	}
+	if !retiring.DeclaresNodeService(deadline.Add(-time.Hour)) || retiring.DeclaresNodeService(deadline) {
+		t.Fatal("DeclaresNodeService does not follow the deadline")
+	}
+}

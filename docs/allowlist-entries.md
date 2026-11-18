@@ -224,6 +224,22 @@ entry's `nodeService`, which marks the entry of a node service — a pod of one
 container serving the whole node. A set entry's mount rule may also name one of
 the pod's own volumes in `source`.
 
+A `nodeService` entry grants its container the host privilege a worker's static
+pod holds, host ports aside: a host namespace, a host bind mount, a device and
+the marks of a privileged container, which every other pod of a node is refused
+([allowlist-and-capabilities.md](allowlist-and-capabilities.md#host-privilege)).
+It is granted while all three hold:
+
+- the container's launch is the one the entry pins — digest, `command`, `args`,
+  `env` and `mounts`;
+- it is the only container of its pod;
+- no other pod on the node runs that entry's container.
+
+A launch the entry admits in a pod that breaks the second or third rule is
+refused, naming the rule. Host ports stay refused unless the entry declares
+them. A retiring set admits its node service until its deadline, so the pod
+starts again after a crash.
+
 A set without `retire` is current. A set with one is retiring. A set is in
 force while it is current, or retiring with its deadline still ahead. A
 deadline is RFC 3339 UTC with second precision (`2026-12-01T00:00:00Z`); any
