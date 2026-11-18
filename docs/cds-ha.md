@@ -124,6 +124,11 @@ and does not reapply the payload. It runs a fresh gossip round as in step 5 and
 returns the original entry's head, even when later entries exist; the old policy
 does not become active again.
 
+Overlapping retries of the same body and signature share one in-progress round.
+Every caller still checks the store and serving state; completed rounds are not
+cached for later retries. Cancelling the request that started the round can leave
+its waiters unconfirmed; they retry the unchanged entry.
+
 A newly signed copy of the same body has the same entry hash but is not an exact
 retry and is refused (409). An exact retry remains valid after its signing key is
 retired, because the held entry was verified under the authority at its original

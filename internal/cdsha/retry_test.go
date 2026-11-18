@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/confidential-dot-ai/c8s/internal/cdschain"
@@ -211,6 +212,115 @@ func TestRetryRequiresFreshMajority(t *testing.T) {
 }
 
 type retryRoundKey struct{}
+
+type retryFanout struct {
+	http.RoundTripper
+	gate  <-chan struct{}
+	calls *atomic.Int64
+}
+
+func (f retryFanout) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Context().Value(retryRoundKey{}) != nil {
+		f.calls.Add(1)
+		select {
+		case <-f.gate:
+		case <-req.Context().Done():
+			return nil, req.Context().Err()
+		}
+	}
+	return f.RoundTripper.RoundTrip(req)
+}
+
+func TestOverlappingRetryConfirmation(t *testing.T) {
+	for _, change := range []string{"none", "cancel waiter", "cancel leader", "fork", "resolve", "newer entry"} {
+		t.Run(change, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				s := newSet(t, 3)
+				n := s.node(0)
+				gate := make(chan struct{})
+				var calls atomic.Int64
+				n.cfg.Peer.Transport = retryFanout{n.cfg.Peer.Transport, gate, &calls}
+				s.bootstrap()
+				for _, peer := range s.nodes {
+					peer.cancel()
+				}
+				e := s.entry(n.State().Head, 1)
+				s.storeWrite(e)
+				for _, peer := range s.nodes {
+					if _, err := peer.refresh(context.Background()); err != nil {
+						t.Fatal(err)
+					}
+				}
+				type result struct {
+					head cdschain.Head
+					done bool
+					err  error
+				}
+				start := func(ctx context.Context, entry cdschain.Entry) chan result {
+					ch := make(chan result, 1)
+					go func() {
+						head, done, err := n.Submit(ctx, entry)
+						ch <- result{head, done, err}
+					}()
+					return ch
+				}
+				ctx := context.WithValue(context.Background(), retryRoundKey{}, true)
+				leader, cancelLeader := context.WithCancel(ctx)
+				defer cancelLeader()
+				waiter, cancelWaiter := context.WithCancel(ctx)
+				defer cancelWaiter()
+				first := start(leader, e)
+				synctest.Wait()
+				second, third := start(waiter, e), start(ctx, e)
+				synctest.Wait()
+				if calls.Load() != 2 {
+					t.Fatalf("overlapping retries sent %d peer requests, want 2", calls.Load())
+				}
+				var fourth chan result
+				switch change {
+				case "cancel waiter":
+					cancelWaiter()
+				case "cancel leader":
+					cancelLeader()
+				case "fork":
+					n.mu.Lock()
+					n.haltLocked(Fork{Seq: n.state.Head.Seq, Mine: e.Hash(), Theirs: cdschain.Hash{7}})
+					n.mu.Unlock()
+				case "resolve":
+					if err := n.Resolve(n.State().Head.Seq, cdschain.Hash{7}, e.Hash()); err != nil {
+						t.Fatal(err)
+					}
+				case "newer entry":
+					fourth = start(ctx, s.entry(n.State().Head, 2))
+					synctest.Wait()
+					if calls.Load() != 4 {
+						t.Fatal("a newer entry shared a round started before it was held")
+					}
+				}
+				synctest.Wait()
+				close(gate)
+				for i, ch := range []chan result{first, second, third} {
+					got := <-ch
+					cancelled := change == "cancel leader" && i == 0 || change == "cancel waiter" && i == 1
+					wantDone := change == "none" || change == "newer entry" || change == "cancel waiter" && !cancelled
+					if got.done != wantDone || got.head.Hash != e.Hash() || (got.err != nil) != cancelled {
+						t.Fatalf("caller %d after %s: %+v", i, change, got)
+					}
+				}
+				if fourth != nil {
+					if got := <-fourth; got.err != nil || !got.done || got.head.Seq != 2 {
+						t.Fatalf("newer entry failed its separate round: %+v", got)
+					}
+				}
+				if change == "none" || change == "cancel leader" {
+					if got := <-start(ctx, e); got.err != nil || !got.done || calls.Load() != 4 {
+						t.Fatalf("later retry must start another round: %+v, calls=%d", got, calls.Load())
+					}
+				}
+			})
+		})
+	}
+}
 
 type retryBarrier struct {
 	http.RoundTripper
