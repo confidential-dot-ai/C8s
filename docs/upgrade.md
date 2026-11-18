@@ -49,6 +49,16 @@ itself, so `c8s install` installs on AKS and GKE confidential VMs alone: a
 cluster of workers carries those services in its measured image
 ([overview.md](overview.md#cvm-modes-and-hardware-platforms)).
 
+## Entries with exits need a pinned env
+
+From this release, an entry that declares `egress` must pin every container's
+`env` ([allowlist-entries.md](allowlist-entries.md)). CDS refuses any write
+that keeps an older entry with exits and an unpinned env, and a node grants
+that entry no exits. To find such entries, run `c8s allowlist export` and look
+for `egress` beside an absent `env`, `any`, or a `present` matcher. Repair each
+with `c8s allowlist edit <NAME>`, or remove it with `c8s allowlist delete
+<NAME>`, before any other write.
+
 ## 1. Render the new release's CDS seed
 
 Render from the values the upgrade will apply, or the entries you publish are
