@@ -6,6 +6,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -72,5 +73,35 @@ func TestDeletionDoesNotWaitForAPodThatHasEnded(t *testing.T) {
 	}
 	if err := r.client.Get(context.Background(), client.ObjectKeyFromObject(pod), pod); !notFound(err) {
 		t.Fatalf("ended Pod still held inside the grace period: %v", err)
+	}
+}
+
+// The Pod's author chooses its grace period, so a long one must not keep the
+// instance past the operator's maximum.
+func TestDeletionGraceIsBoundedByTheConfiguredMaximum(t *testing.T) {
+	deleted := time.Now()
+	r := &Reconciler{cfg: &Config{MaxDeletionGraceSeconds: 300}, now: func() time.Time { return deleted }}
+	rec := &record{instanceIntent: instanceIntent{CreateAttempted: true}}
+	for _, tc := range []struct{ grace, want int64 }{{0, 0}, {120, 120}, {300, 300}, {86400, 300}} {
+		pod := fixturePod()
+		pod.DeletionTimestamp = &metav1.Time{Time: deleted.Add(time.Duration(tc.grace) * time.Second)}
+		pod.DeletionGracePeriodSeconds = &tc.grace
+		if got := r.graceRemaining(pod, rec); got != time.Duration(tc.want)*time.Second {
+			t.Fatalf("grace period %ds: instance left for %s, want %ds", tc.grace, got, tc.want)
+		}
+	}
+}
+
+func TestMaxDeletionGraceBoundsAndDefault(t *testing.T) {
+	for _, seconds := range []int64{-1, 0, 1, 300, 3600, 3601} {
+		cfg := fixtureConfig(t)
+		cfg.MaxDeletionGraceSeconds = seconds
+		err := cfg.validate()
+		if valid := seconds >= 0 && seconds <= 3600; (err == nil) != valid {
+			t.Fatalf("maximum %d: %v", seconds, err)
+		}
+		if seconds == 0 && cfg.MaxDeletionGraceSeconds != 300 {
+			t.Fatal("missing default")
+		}
 	}
 }

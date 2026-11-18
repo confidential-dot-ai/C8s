@@ -319,11 +319,16 @@ func (r *Reconciler) deletePod(ctx context.Context, pod *corev1.Pod) (ctrl.Resul
 	return ctrl.Result{}, r.discard(ctx, secret)
 }
 
+// defaultMaxDeletionGraceSeconds bounds the deletion grace when the
+// configuration sets none.
+const defaultMaxDeletionGraceSeconds = 300
+
 // graceRemaining is how long a deleted Pod's instance must still be left
 // running. The API server sets DeletionTimestamp to the end of the grace
-// period and moves it earlier when a later delete shortens it. Nothing is
-// left to wait for once the Pod has ended or its instance's destruction was
-// already decided.
+// period and moves it earlier when a later delete shortens it. The Pod's
+// author chooses the grace period, so the configured maximum bounds it.
+// Nothing is left to wait for once the Pod has ended or its instance's
+// destruction was already decided.
 func (r *Reconciler) graceRemaining(pod *corev1.Pod, rec *record) time.Duration {
 	if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
 		return 0
@@ -331,7 +336,11 @@ func (r *Reconciler) graceRemaining(pod *corev1.Pod, rec *record) time.Duration 
 	if !rec.CreateAttempted || rec.DeleteRequested || rec.Deleted || rec.TerminalStatus != nil {
 		return 0
 	}
-	return pod.DeletionTimestamp.Sub(r.now())
+	end := pod.DeletionTimestamp.Time
+	if grace := pod.DeletionGracePeriodSeconds; grace != nil && *grace > r.cfg.MaxDeletionGraceSeconds {
+		end = end.Add(-time.Duration(*grace-r.cfg.MaxDeletionGraceSeconds) * time.Second)
+	}
+	return end.Sub(r.now())
 }
 
 // terminalStatus is the phase a deleted pod leaves with: the terminal status
