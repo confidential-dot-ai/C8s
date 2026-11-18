@@ -25,7 +25,7 @@ func TestCloudProblemCodes(t *testing.T) {
 		{http.StatusBadRequest, `{"code":"invalid_request"}`, "invalid_request", true, false},
 		{http.StatusUnprocessableEntity, `{"code":"unsupported_combination"}`, "unsupported_combination", true, false},
 		{http.StatusNotFound, `{"code":"not_found"}`, "not_found", true, true},
-		{http.StatusNotFound, ``, "", false, true},
+		{http.StatusNotFound, ``, "", false, false},
 		{http.StatusConflict, `{"code":"idempotency_in_flight","retryable":true}`, "idempotency_in_flight", false, false},
 		{http.StatusTooManyRequests, `{"code":"rate_limited","retryable":true}`, "rate_limited", false, false},
 		{http.StatusUnauthorized, `{"code":"unauthenticated"}`, "unauthenticated", false, false},

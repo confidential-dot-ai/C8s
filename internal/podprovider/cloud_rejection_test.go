@@ -95,6 +95,8 @@ func TestCloudRejectedClassification(t *testing.T) {
 		{http.StatusBadRequest, "invalid_request", true},
 		{http.StatusUnprocessableEntity, "unsupported_combination", true},
 		{http.StatusForbidden, "forbidden", true},
+		{http.StatusForbidden, "", false},
+		{http.StatusForbidden, "<html>", false},
 		{http.StatusNotFound, "not_found", false},
 		{http.StatusTooManyRequests, "rate_limited", false},
 		{http.StatusConflict, "insufficient_capacity", false},
