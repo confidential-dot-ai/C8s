@@ -25,8 +25,16 @@ func gateSourceScript(t *testing.T) string {
 	return ""
 }
 
-func TestGateImageRefUsesCheckout(t *testing.T) {
-	run := gateSourceScript(t)
+// gateRepo is a git repository holding the files the source-selection step
+// reads, with a classifier stub that reports image=true exactly when a path
+// named "measured" changed.
+type gateRepo struct {
+	t   *testing.T
+	dir string
+}
+
+func newGateRepo(t *testing.T) *gateRepo {
+	t.Helper()
 	for key, value := range map[string]string{
 		"GIT_CONFIG_GLOBAL": os.DevNull, "GIT_CONFIG_SYSTEM": os.DevNull,
 		"GIT_ALLOW_PROTOCOL": "file", "GIT_TERMINAL_PROMPT": "0",
@@ -35,93 +43,162 @@ func TestGateImageRefUsesCheckout(t *testing.T) {
 	} {
 		t.Setenv(key, value)
 	}
-	repo := t.TempDir()
-	git := func(args ...string) string {
-		t.Helper()
-		cmd := exec.Command("git", args...)
-		cmd.Dir = repo
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-		return strings.TrimSpace(string(out))
+	r := &gateRepo{t: t, dir: t.TempDir()}
+	r.git("init", "-q", "-b", "main")
+	r.git("remote", "add", "origin", "file://"+r.dir)
+	classifier := "#!/usr/bin/env bash\nif tr '\\0' '\\n' <\"$3\" | grep -qx measured; then echo image=true; else echo image=false; fi\n"
+	r.write(".github/scripts/repro-gate-changes", classifier)
+	r.write(".github/build-pins.json", "{}\n")
+	r.commit("base")
+	return r
+}
+
+func (r *gateRepo) git(args ...string) string {
+	r.t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = r.dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		r.t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
-	git("init", "-q")
-	git("-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "base")
-	base := git("rev-parse", "HEAD")
-	git("-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "gated checkout")
-	head := git("rev-parse", "HEAD")
-	output := filepath.Join(repo, "output")
-	// A dispatch: no pull request or merge group, so the gate builds the checkout.
-	t.Setenv("PR", "")
-	t.Setenv("BASE_SHA", "")
-	t.Setenv("GITHUB_SHA", base)
-	t.Setenv("GITHUB_OUTPUT", output)
-	t.Setenv("GITHUB_STEP_SUMMARY", filepath.Join(repo, "summary"))
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	return strings.TrimSpace(string(out))
+}
+
+func (r *gateRepo) write(name, content string) {
+	r.t.Helper()
+	path := filepath.Join(r.dir, name)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		r.t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+		r.t.Fatal(err)
+	}
+}
+
+// commit commits every change and returns the new HEAD.
+func (r *gateRepo) commit(message string) string {
+	r.t.Helper()
+	r.git("add", "-A")
+	r.git("-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", message)
+	return r.git("rev-parse", "HEAD")
+}
+
+// selectSource runs the source-selection step with env and returns its
+// GITHUB_OUTPUT and combined output.
+func (r *gateRepo) selectSource(env ...string) (outputs, log string, err error) {
+	r.t.Helper()
+	output := filepath.Join(r.t.TempDir(), "output")
+	ctx, cancel := context.WithTimeout(r.t.Context(), 10*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "bash", "-c", run)
-	cmd.Dir = repo
-	if log, err := cmd.CombinedOutput(); err != nil {
+	cmd := exec.CommandContext(ctx, "bash", "-c", gateSourceScript(r.t))
+	cmd.Dir = r.dir
+	cmd.Env = append(os.Environ(), "PR=", "BASE_SHA=", "BASE_REF=", "RUNNER_TEMP="+r.t.TempDir(),
+		"GITHUB_OUTPUT="+output, "GITHUB_STEP_SUMMARY="+filepath.Join(r.t.TempDir(), "summary"))
+	cmd.Env = append(cmd.Env, env...)
+	out, err := cmd.CombinedOutput()
+	got, _ := os.ReadFile(output)
+	return string(got), string(out), err
+}
+
+func TestGateImageRefUsesCheckout(t *testing.T) {
+	r := newGateRepo(t)
+	head := r.commit("gated checkout")
+	// A dispatch: no pull request or merge group, so the gate builds the checkout.
+	got, log, err := r.selectSource()
+	if err != nil {
 		t.Fatalf("select gate source: %v\n%s", err, log)
 	}
-	got, err := os.ReadFile(output)
-	if err != nil || !strings.Contains(string(got), "\nc8s_ref="+head+"\n") {
-		t.Fatalf("gate ref must equal full checkout SHA %s: %q (%v)", head, got, err)
+	if !strings.Contains(got, "image=true\nc8s_ref="+head+"\n") {
+		t.Fatalf("gate ref must equal full checkout SHA %s: %q", head, got)
+	}
+}
+
+func TestGatePullRequestDiffsFirstParent(t *testing.T) {
+	r := newGateRepo(t)
+	r.git("checkout", "-q", "-b", "pr")
+	r.write("measured", "x")
+	r.commit("pr")
+	r.git("checkout", "-q", "main")
+	r.write("other", "x")
+	r.commit("main moves on")
+	// GitHub's PR merge commit: first parent the base branch, second the PR.
+	r.git("-c", "commit.gpgsign=false", "merge", "-q", "--no-ff", "-m", "merge", "pr")
+	got, log, err := r.selectSource("PR=1")
+	if err != nil {
+		t.Fatalf("select gate source: %v\n%s", err, log)
+	}
+	if !strings.Contains(got, "image=true\n") {
+		t.Fatalf("pull request must be charged with its own changes only: %q", got)
 	}
 }
 
 func TestGateMergeGroupForkCheck(t *testing.T) {
-	run := gateSourceScript(t)
 	tests := []struct {
-		name    string
-		entries string
-		wantErr bool
-		want    string
+		name string
+		// entries is the merge queue as `gh api graphql --jq` prints it; HEAD
+		// stands for the merge group's commit.
+		entries   string
+		wantImage string
+		wantErr   string
 	}{
 		{
-			name:    "fork entry ahead",
-			entries: `[{"position":1,"pullRequest":{"number":7,"isCrossRepository":true}},{"position":2,"pullRequest":{"number":9,"isCrossRepository":false}}]`,
-			want:    "image=false",
+			name:      "same-repo entries",
+			entries:   `[{"position":1,"headCommit":{"oid":"0"},"pullRequest":{"number":7,"isCrossRepository":false}},{"position":2,"headCommit":{"oid":"HEAD"},"pullRequest":{"number":9,"isCrossRepository":false}}]`,
+			wantImage: "true",
 		},
 		{
-			name:    "fork entry itself",
-			entries: `[{"position":1,"pullRequest":{"number":9,"isCrossRepository":true}}]`,
-			want:    "image=false",
+			name:      "fork entry behind",
+			entries:   `[{"position":1,"headCommit":{"oid":"HEAD"},"pullRequest":{"number":9,"isCrossRepository":false}},{"position":2,"headCommit":{"oid":"0"},"pullRequest":{"number":7,"isCrossRepository":true}}]`,
+			wantImage: "true",
+		},
+		{
+			name:      "fork entry ahead",
+			entries:   `[{"position":1,"headCommit":{"oid":"0"},"pullRequest":{"number":7,"isCrossRepository":true}},{"position":2,"headCommit":{"oid":"HEAD"},"pullRequest":{"number":9,"isCrossRepository":false}}]`,
+			wantImage: "false",
+		},
+		{
+			name:      "fork entry itself",
+			entries:   `[{"position":1,"headCommit":{"oid":"HEAD"},"pullRequest":{"number":9,"isCrossRepository":true}}]`,
+			wantImage: "false",
 		},
 		{
 			name:    "entry missing from the queue",
-			entries: `[{"position":1,"pullRequest":{"number":7,"isCrossRepository":false}}]`,
-			wantErr: true,
+			entries: `[{"position":1,"headCommit":{"oid":"HEAD"},"pullRequest":{"number":7,"isCrossRepository":false}}]`,
+			wantErr: "no merge queue entry",
+		},
+		{
+			name:    "entry regrouped onto another commit",
+			entries: `[{"position":1,"headCommit":{"oid":"0"},"pullRequest":{"number":9,"isCrossRepository":false}}]`,
+			wantErr: "no merge queue entry",
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			dir := t.TempDir()
-			// The stub prints the queue entries the way `gh api graphql --jq` would.
-			stub := "#!/bin/sh\ncat <<'EOF'\n" + tc.entries + "\nEOF\n"
-			if err := os.WriteFile(filepath.Join(dir, "gh"), []byte(stub), 0o755); err != nil {
+			r := newGateRepo(t)
+			base := r.git("rev-parse", "HEAD")
+			r.write("measured", "x")
+			head := r.commit("queued PR")
+			stubs := t.TempDir()
+			stub := "#!/bin/sh\ncat <<'EOF'\n" + strings.ReplaceAll(tc.entries, "HEAD", head) + "\nEOF\n"
+			if err := os.WriteFile(filepath.Join(stubs, "gh"), []byte(stub), 0o755); err != nil {
 				t.Fatal(err)
 			}
-			output := filepath.Join(dir, "output")
-			cmd := exec.CommandContext(t.Context(), "bash", "-c", run)
-			cmd.Dir = dir
-			cmd.Env = append(os.Environ(),
-				"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"),
-				"PR=", "BASE_SHA=0123456789abcdef", "BASE_REF=refs/heads/main",
-				"GITHUB_REF=refs/heads/gh-readonly-queue/main/pr-9-0123456789abcdef",
-				"GITHUB_REPOSITORY=owner/repo",
-				"GITHUB_OUTPUT="+output, "GITHUB_STEP_SUMMARY="+filepath.Join(dir, "summary"))
-			log, err := cmd.CombinedOutput()
-			if tc.wantErr {
-				if err == nil {
-					t.Fatalf("fork check passed, want failure:\n%s", log)
+			got, log, err := r.selectSource(
+				"PATH="+stubs+string(os.PathListSeparator)+os.Getenv("PATH"),
+				"BASE_SHA="+base, "BASE_REF=refs/heads/main", "GITHUB_SHA="+head,
+				"GITHUB_REF=refs/heads/gh-readonly-queue/main/pr-9-"+base,
+				"GITHUB_REPOSITORY=owner/repo")
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(log, tc.wantErr) {
+					t.Fatalf("select gate source = %v, want error %q\n%s", err, tc.wantErr, log)
 				}
 				return
 			}
-			got, _ := os.ReadFile(output)
-			if !strings.Contains(string(got), tc.want+"\n") {
-				t.Fatalf("fork check output = %q, want %q (%v)\n%s", got, tc.want, err, log)
+			if err != nil {
+				t.Fatalf("select gate source: %v\n%s", err, log)
+			}
+			if !strings.Contains(got, "image="+tc.wantImage+"\n") {
+				t.Fatalf("select gate source outputs = %q, want image=%s", got, tc.wantImage)
 			}
 		})
 	}

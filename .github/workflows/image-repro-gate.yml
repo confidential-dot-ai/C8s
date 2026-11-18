@@ -52,20 +52,22 @@ jobs:
           base=
           if [ -n "$BASE_SHA" ]; then
             # The group holds this queue entry's PR and every entry ahead of it.
-            # Read them from the queue itself: commit messages are not trusted.
+            # Read them from the queue itself, not from commit messages, and only
+            # while the entry still points at this commit.
             pr=$(sed -nE 's|^refs/heads/gh-readonly-queue/.+/pr-([0-9]+)-[0-9a-f]+$|\1|p' <<<"$GITHUB_REF")
             # shellcheck disable=SC2016 # GraphQL variables, not shell.
             query='query($owner: String!, $name: String!, $branch: String!) {
               repository(owner: $owner, name: $name) { mergeQueue(branch: $branch) {
-                entries(first: 100) { nodes { position pullRequest { number isCrossRepository } } }
+                entries(first: 100) { nodes { position headCommit { oid } pullRequest { number isCrossRepository } } }
               } }
             }'
             entries=$(gh api graphql -f query="$query" -f owner="${GITHUB_REPOSITORY%/*}" \
               -f name="${GITHUB_REPOSITORY#*/}" -f branch="${BASE_REF#refs/heads/}" \
               --jq '.data.repository.mergeQueue.entries.nodes')
-            position=$(jq -r --arg pr "$pr" '.[] | select(.pullRequest.number == ($pr | tonumber)) | .position' <<<"$entries")
+            position=$(jq -r --arg pr "$pr" --arg sha "$GITHUB_SHA" \
+              '.[] | select(.pullRequest.number == ($pr | tonumber) and .headCommit.oid == $sha) | .position' <<<"$entries")
             if [ -z "$pr" ] || [ -z "$position" ]; then
-              echo "::error::no merge queue entry for $GITHUB_REF" >&2
+              echo "::error::no merge queue entry for $GITHUB_REF at $GITHUB_SHA" >&2
               exit 1
             fi
             forks=$(jq -r --argjson pos "$position" \

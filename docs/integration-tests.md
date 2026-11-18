@@ -10,9 +10,9 @@ here proves a confidential property. Four harnesses:
   loopback addresses, each with its own attestation-api
   (`make test-integration-cdsha`, Linux only).
 
-CI runs them as the Integration, Integration (cluster) and CDS HA jobs; the
-first two run in the merge queue only. Terms are defined in
-[glossary.md](glossary.md).
+CI runs them as the Integration, Integration (cluster) and CDS HA jobs. For
+main, the first two run in its merge queue rather than on pull requests. Terms
+are defined in [glossary.md](glossary.md).
 
 Prerequisites:
 
