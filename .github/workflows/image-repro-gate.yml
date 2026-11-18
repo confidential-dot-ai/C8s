@@ -35,17 +35,21 @@ jobs:
       - id: diff
         env:
           BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          BASE_REF: ${{ github.event.merge_group.base_ref }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           image=true
           if [ -n "$BASE_SHA" ]; then
             # The gate build legs run on the-machine (self-hosted): never on
-            # fork code. Each queued PR lands as one squash commit "... (#N)".
-            prs=$(gh api "repos/$GITHUB_REPOSITORY/compare/$BASE_SHA...$GITHUB_SHA" \
-              --jq '.commits[].commit.message | split("\n")[0] | capture("\\(#(?<n>[0-9]+)\\)$").n')
-            if [ -z "$prs" ]; then
-              echo "::error::no PR number in the merge group's commits" >&2
+            # fork code. The tree holds every PR queued ahead too, so check from
+            # the base branch, not BASE_SHA. Each lands as one squash commit "... (#N)".
+            subjects=$(gh api "repos/$GITHUB_REPOSITORY/compare/${BASE_REF#refs/heads/}...$GITHUB_SHA" \
+              --jq '.commits[].commit.message | split("\n")[0]')
+            prs=$(sed -nE 's/.*\(#([0-9]+)\)$/\1/p' <<<"$subjects")
+            if [ -z "$subjects" ] || [ "$(wc -l <<<"$subjects")" -ne "$(wc -l <<<"$prs")" ]; then
+              echo "::error::every merge group commit must name its PR as (#N):" >&2
+              echo "$subjects" >&2
               exit 1
             fi
             for pr in $prs; do

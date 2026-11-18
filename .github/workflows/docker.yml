@@ -219,7 +219,7 @@ jobs:
           context: .
           file: ${{ matrix.dockerfile }}
           # Publish on push AND on workflow_dispatch (the manual rebuild path).
-          # PR runs still only `load` for the scan.
+          # Merge queue runs only `load` for the scan.
           push: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
           load: ${{ !(github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
           # Apply ALL computed tags, not just tags[0]. metadata-action emits
@@ -238,7 +238,7 @@ jobs:
           # binary COPY, and sharing those is what matters: the release
           # rebuild in semver-tag.yml resolves the same packages as the
           # image CI scanned instead of whatever the mirror holds later.
-          # PR runs read :main and, not pushing, write nothing.
+          # Merge queue runs read :main and, not pushing, write nothing.
           cache-from: type=registry,ref=${{ matrix.image }}:main
           cache-to: type=inline
 
