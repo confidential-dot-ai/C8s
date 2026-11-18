@@ -184,8 +184,8 @@ tagged with `C8S_REF`.
 `C8S_PROFILE=pod images/node-guest/build` (TDX only) stacks `pod/` after the
 worker profile and writes `output/c8s-pod/`. A pod CVM runs one assigned pod
 under a standalone kubelet and joins no cluster. It reuses the worker's
-kernel, runtime binaries, runtime wrapper, NRI plugin, boot gates and floor,
-and changes what stages and starts them:
+kernel, runtime binaries, runtime wrapper, NRI plugin and boot gates, bakes a
+floor of its own, and changes what stages and starts them:
 
 - `40-pod.preset` turns off worker staging, the worker's containerd,
   kubelet, attest-proxy and volumed. `pod-stage.service` replaces worker
@@ -198,12 +198,13 @@ and changes what stages and starts them:
   `podcvm-containerd` (which wants `nri-image-policy`) and, once the plugin
   reports the pod registered, publishes the manifest and starts
   `podcvm-kubelet`.
-- The pod's runtime policy is rendered from the worker floor: the mesh
-  endpoint entry and role only, the assigned entries, the TA from the launch
-  document, and RTMR[3] image measurement. The endpoint is the worker's:
-  the worker sync pins armtls-mesh by digest in the floor, the pod's endpoint
-  container names that `repo@digest`, and containerd pulls it at pod start.
-  The image bakes no endpoint bytes.
+- The pod's runtime policy is rendered from this image's floor, which the pod
+  sync builds with `c8s worker pod-floor` from the worker profile's floor
+  template: the mesh endpoint entry and role only, the assigned entries, the
+  TA from the launch document, and RTMR[3] image measurement. The endpoint is
+  the worker's: the worker sync pins armtls-mesh by digest in the template,
+  the pod's endpoint container names that `repo@digest`, and containerd pulls
+  it at pod start. The image bakes no endpoint bytes.
 - `scratch-enforce` keeps its crypt check but drops the 64G floor on an image
   that bakes `/usr/lib/c8s/pod-image`, and accepts memory-backed state there:
   a pod CVM runs one pod and is launched with a small scratch disk or none.

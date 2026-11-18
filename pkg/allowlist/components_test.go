@@ -51,6 +51,22 @@ func TestComponentSetRetires(t *testing.T) {
 	}
 }
 
+// A beta release publishes a set too, so a pre-release version keys one, and
+// it orders before the version it leads to.
+func TestComponentSetVersionsCarryAPreRelease(t *testing.T) {
+	beta := `"0.44.0-beta.1":{"entries":{}}`
+	al := mustParse(t, componentsDoc(currentSet(), beta))
+	if _, listed := al.Components["0.44.0-beta.1"]; !listed {
+		t.Fatalf("components = %v, want the beta's set", al.Components)
+	}
+	if got := al.SetsInForce(time.Now()); len(got) != 2 || got[0].Version != currentSetVersion || got[1].Version != "0.44.0-beta.1" {
+		t.Fatalf("sets in force = %v, want %s before the beta of 0.44.0", got, currentSetVersion)
+	}
+	if CompareSetVersions("0.44.0-beta.1", "0.44.0") >= 0 {
+		t.Error("a beta does not order before the version it leads to")
+	}
+}
+
 // An authored document is refused over a set a check refuses, naming the set;
 // a served document loses that set alone and keeps the rest in force.
 func TestComponentSetChecks(t *testing.T) {
@@ -58,10 +74,12 @@ func TestComponentSetChecks(t *testing.T) {
 		version string
 		json    string
 	}{
-		"version is not a semver":       {"0.42", `"0.42":{"entries":{}}`},
-		"version has a leading zero":    {"0.042.1", `"0.042.1":{"entries":{}}`},
-		"unsupported major version":     {"1.0.0", `"1.0.0":{"entries":{}}`},
-		"retirement without a deadline": {"0.42.1", `"0.42.1":{"retire":{},"entries":{}}`},
+		"version is not a semver":        {"0.42", `"0.42":{"entries":{}}`},
+		"version has a leading zero":     {"0.042.1", `"0.042.1":{"entries":{}}`},
+		"version carries build metadata": {"0.42.1+2026", `"0.42.1+2026":{"entries":{}}`},
+		"version keeps its v":            {"v0.42.1", `"v0.42.1":{"entries":{}}`},
+		"unsupported major version":      {"1.0.0", `"1.0.0":{"entries":{}}`},
+		"retirement without a deadline":  {"0.42.1", `"0.42.1":{"retire":{},"entries":{}}`},
 		"invalid entry": {"0.42.1", `"0.42.1":{"entries":{"c8s-get-cert":{"containers":[` +
 			`{"digest":"` + digestB + `","command":{"policy":"exact"},"args":{"policy":"any"},` +
 			`"mounts":{"policy":"exact","rules":[{"destination":"/run/c8s","kind":"emptyDir"}]}}]}}}`},

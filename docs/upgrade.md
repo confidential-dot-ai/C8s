@@ -116,6 +116,24 @@ Every entry gets a diff line — `+ <name> (new)`, `~ <name>`, or
 the whole live entry of every name. A lint error prints on stderr and nothing is
 written.
 
+A cluster of measured workers admits c8s's own components — the injected
+sidecars and the router — from the component sets in force, not from a worker
+image's base allowlist, so publish the new release's set too, naming what
+happens to the one it replaces:
+
+```sh
+c8s allowlist components add --set-file component-set-<PLATFORM>.json \
+  --url "$TA" --image-policy-file cds-pin.json \
+  --operator-key c8s-operator.key --retire <X.Y.Z>=<DEADLINE>
+```
+
+`component-set-<PLATFORM>.json` is the release asset for the CPU TEE of the
+worker image, and `<X.Y.Z>` the version of the set in force
+([releases.md](releases.md)). `--remove <X.Y.Z>` ends the old set with this
+write instead of at a deadline, and a new cluster takes this write, with
+neither flag, before its first pod
+([allowlist-and-capabilities.md](allowlist-and-capabilities.md#component-sets)).
+
 ## 4. Check the TA's version, and raise it if a node is ahead
 
 ```sh

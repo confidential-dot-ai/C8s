@@ -42,6 +42,16 @@ func workerRenderConfig() nodeImageRenderConfig {
 	}
 }
 
+// Only the image render reads a floor template; the control-plane render's
+// inputs validate without one.
+func TestWorkerControlPlaneRenderTakesNoFloorTemplate(t *testing.T) {
+	cfg := workerRenderConfig()
+	cfg.outputDir = t.TempDir()
+	if err := cfg.validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // renderTestWorkerCluster is worker control-plane render's cluster.yaml for
 // the worker image build's configuration on platform.
 func renderTestWorkerCluster(t *testing.T, platform string) map[string]unstructured.Unstructured {
@@ -172,8 +182,9 @@ func TestWorkerClusterRouterIsTheImagesSeededRouter(t *testing.T) {
 	for _, platform := range []string{"sev-snp", "tdx"} {
 		cfg := workerRenderConfig()
 		cfg.platform = platform
+		cfg.floorTemplate = floorTemplateFile
 		cfg.outputDir = t.TempDir()
-		if err := renderNodeImage(context.Background(), cfg); err != nil {
+		if err := renderNodeImage(context.Background(), cfg, io.Discard); err != nil {
 			t.Fatal(err)
 		}
 		data, err := os.ReadFile(filepath.Join(cfg.outputDir, "allowlist-seed.json"))

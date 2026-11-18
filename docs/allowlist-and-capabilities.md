@@ -322,19 +322,23 @@ deadline is current; a set with a deadline is retiring and in force until that
 deadline.
 
 A release publishes its set as a **set file**: an allowlist document holding
-that one set and nothing else. `c8s allowlist components add FILE` puts it in
-as a current set and says what happens to the sets already there:
+that one set and nothing else, one per CPU TEE
+(`component-set-{tdx,sev-snp}.json`, [releases.md](releases.md)), since the
+router's entry pins the CPU TEE it attests on. A cluster needs one such write
+before its first pod: a worker image admits its own components from the set in
+force, not from its measured base. `c8s allowlist components add FILE` puts the
+set in as a current set and says what happens to the sets already there:
 
 ```
 # add the new set and leave the old one in force
-c8s allowlist components add component-set.json
+c8s allowlist components add component-set-sev-snp.json
 
 # add the new set and give the old one a deadline
-c8s allowlist components add component-set.json \
+c8s allowlist components add component-set-sev-snp.json \
     --retire 0.42.1=2026-12-01T00:00:00Z
 
 # add the new set and take the old one out of the document
-c8s allowlist components add component-set.json \
+c8s allowlist components add component-set-sev-snp.json \
     --remove 0.42.1
 ```
 
@@ -453,7 +457,8 @@ Two documents start the platform before the TA serves anything. The base allowli
 is the set of entries each plugin holds in its own boot config, checked ahead of
 every pulled snapshot and never changed by a pull, so a node admits the platform
 before the TA is reachable and a failed pull never drops it. The chart renders it
-from `nriImagePolicy.bootstrapAllowlist`; a measured node image carries it in
+from `nriImagePolicy.bootstrapAllowlist`; a measured worker image carries the
+entries of its own static pods, and nothing else, in
 the floor its own build rendered, which it bakes at
 `/usr/lib/c8s/image-policy.yaml` and staging fills in and writes to
 `/etc/nri/conf.d/image-policy.yaml`, where the plugin reads it
@@ -497,7 +502,8 @@ was built with:
 c8s node-image render --output-dir seed \
     --hardware-platform sev-snp --kube-version v1.36.6 \
     --image-digest sha256:<operator/get-cert digest> \
-    --armtls-mesh-image-digest sha256:<armTLS mesh digest>
+    --armtls-mesh-image-digest sha256:<armTLS mesh digest> \
+    --floor-template images/node-guest/worker/image-policy.yaml.in
 c8s ta config new --allowlist-seed seed/allowlist-seed.json ...
 ```
 
