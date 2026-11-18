@@ -25,12 +25,28 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/routes"
 )
 
-// ErrNotConfirmed is a write that may have been applied: the replica
-// answered "committed, not confirmed" (202), or nothing after the entry
-// was sent. It is never recorded as acknowledged; `c8s` exits 3.
+// ErrNotConfirmed marks a write that may have been applied: no answer
+// confirmed or refused it. It is never recorded as acknowledged; c8s exits 3.
 var ErrNotConfirmed error = &cmdsutil.ExitStatusError{
 	Status: cmdsutil.ExitNotConfirmed,
-	Err:    errors.New("the write may have been applied but is not confirmed: check the replicas' heads with c8s cds ha status before writing again"),
+	Err:    errors.New("the write may have been applied: check the replicas' heads with c8s cds ha status before writing again"),
+}
+
+// errRecordNotSaved marks a write CDS answered done whose record failed: a
+// retry would find the entry applied and hide the failure. c8s exits 3.
+var errRecordNotSaved error = &cmdsutil.ExitStatusError{
+	Status: cmdsutil.ExitNotConfirmed,
+	Err:    errors.New("the write is applied: once the record can be saved, the next write records its head"),
+}
+
+// recordFailure is the error of a write CDS answered done, as applied
+// names it, whose acknowledgement failed with err. A record that disagrees
+// is not a failed save: its advice does not apply, and c8s exits 1.
+func recordFailure(applied string, err error) error {
+	if errors.Is(err, ErrRecordConflict) {
+		return fmt.Errorf("%s, but %w", applied, err)
+	}
+	return fmt.Errorf("%s, but its local record was not saved (%w): %w", applied, err, errRecordNotSaved)
 }
 
 // writer appends operator-signed entries through one replica.
@@ -74,6 +90,9 @@ func (o *options) writer(ctx context.Context) (*writer, error) {
 func (w *writer) verified(ctx context.Context) (*cdschain.State, error) {
 	pinned, err := w.o.pinnedGenesis()
 	if err != nil {
+		return nil, err
+	}
+	if err := w.o.prepareStateDir(); err != nil {
 		return nil, err
 	}
 	records, err := w.o.records()
@@ -263,8 +282,11 @@ func (w *writer) append(ctx context.Context, state *cdschain.State, typ cdschain
 	if head.Cluster != state.Cluster || head.Seq != state.Head.Seq+1 {
 		return head, fmt.Errorf("the replica answered done for head %d of %q, not %d of %q: %w", head.Seq, head.Cluster, state.Head.Seq+1, state.Cluster, ErrNotConfirmed)
 	}
+	if err := w.o.acknowledge(state.Genesis, head); err != nil {
+		return head, recordFailure(fmt.Sprintf("CDS confirmed head %d (%s)", head.Seq, head.Hash), err)
+	}
 	fmt.Fprintf(os.Stderr, "committed head %d (%s)\n", head.Seq, head.Hash)
-	return head, w.o.acknowledge(state.Genesis, head)
+	return head, nil
 }
 
 // errHeadMoved is a 409: the replica's head moved past the entry's prev.

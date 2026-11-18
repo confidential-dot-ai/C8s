@@ -56,8 +56,8 @@ type ExitStatusError struct {
 func (e *ExitStatusError) Error() string { return e.Err.Error() }
 func (e *ExitStatusError) Unwrap() error { return e.Err }
 
-// ExitNotConfirmed is the status of a CDS write that may have been applied:
-// no answer confirmed or refused it.
+// ExitNotConfirmed marks a possibly applied CDS write whose confirmation
+// or local acknowledgement did not complete.
 const ExitNotConfirmed = 3
 
 // ExitStatus is the status a failed run exits with: 1 unless err names one.
