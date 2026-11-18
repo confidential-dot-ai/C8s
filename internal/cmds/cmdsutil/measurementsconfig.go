@@ -85,13 +85,16 @@ func (s ImagePolicySource) ValuesExcluding(pins MeasurementPins) (refvalues.Refe
 var ErrCDSPinUnbound = errors.New("is not one CDS VM's identity")
 
 // CDSLaunchFile is the configuration a pin set identifies its CDS by: every
-// entry must bind the same launch file, and a set binding none, or two, names
-// no one VM. A CDS is the cluster's trust root, and its image alone says
-// nothing about the cluster it serves — the configuration does, and the launch
-// binding is what proves it.
+// entry must pin the registers its family identifies a guest by, and bind the
+// same launch file; a set binding none, or two, names no one VM. A CDS is the
+// cluster's trust root, and its image alone says nothing about the cluster it
+// serves — the configuration does, and the launch binding is what proves it.
 func CDSLaunchFile(values refvalues.ReferenceValues) ([]byte, error) {
 	if values.Empty() {
 		return nil, fmt.Errorf("%w: it pins no image, so nothing tells this cluster's CDS from any other attested TEE", ErrCDSPinUnbound)
+	}
+	if err := armtls.RequireImageRegisters(values.Family, values.Images); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrCDSPinUnbound, err)
 	}
 	file := values.Images[0].LaunchFile
 	for _, image := range values.Images {

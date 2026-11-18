@@ -177,6 +177,7 @@ func TestRunCreateStoresBlobAndPrintsGuidance(t *testing.T) {
 		t.Fatalf("escrow blob: %v", err)
 	}
 	if stored.Key != escrowed.Key ||
+		stored.Name != cfg.name || escrowed.Name != cfg.name ||
 		(stored.Verity == nil) != (escrowed.Verity == nil) ||
 		(stored.Verity != nil && *stored.Verity != *escrowed.Verity) {
 		t.Fatal("the blob stored in CDS differs from the escrowed one")
@@ -272,6 +273,9 @@ func TestRunCreateMutableDryRunBuildsAndEscrows(t *testing.T) {
 	}
 	if !blob.Mutable || blob.Verity != nil {
 		t.Fatalf("escrow blob = %+v, want mutable with no verity", blob)
+	}
+	if blob.Name != cfg.name {
+		t.Fatalf("escrow name = %q, want %q", blob.Name, cfg.name)
 	}
 
 	// The escrowed key must decrypt the image, or the escrow recovers nothing.

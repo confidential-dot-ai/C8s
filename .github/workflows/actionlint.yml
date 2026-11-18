@@ -31,6 +31,9 @@ jobs:
       - name: Test the release CLI build
         run: bash .github/scripts/tests/test-release-cli.sh
 
+      - name: Test the release allowlist seed render
+        run: bash .github/scripts/tests/test-release-seeds.sh
+
       - name: Test the confos mkosi pin reader
         run: bash .github/scripts/tests/test-confos-mkosi-pin.sh
 
@@ -42,6 +45,9 @@ jobs:
 
       - name: Test the chart's third-party image pins
         run: bash .github/scripts/tests/test-chart-image-pins.sh
+
+      - name: Test the confidential-inference compatibility judge
+        run: bash .github/scripts/tests/test-confidential-inference-compat.sh
 
       - uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5.1.0
         with:
@@ -112,4 +118,8 @@ jobs:
             .github/scripts/pin-watch-pr.sh \
             .github/scripts/tests/test-pin-watch-pr.sh \
             .github/scripts/publish-ref-images.sh \
-            .github/scripts/tests/test-publish-ref-images.sh
+            .github/scripts/tests/test-publish-ref-images.sh \
+            .github/scripts/confidential-inference-compat.sh \
+            .github/scripts/tests/test-confidential-inference-compat.sh \
+            .github/scripts/release-seeds.sh \
+            .github/scripts/tests/test-release-seeds.sh
