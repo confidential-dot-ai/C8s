@@ -46,12 +46,12 @@ jobs:
             # the base branch, not BASE_SHA. Each lands as one squash commit "... (#N)".
             subjects=$(gh api "repos/$GITHUB_REPOSITORY/compare/${BASE_REF#refs/heads/}...$GITHUB_SHA" \
               --jq '.commits[].commit.message | split("\n")[0]')
-            prs=$(sed -nE 's/.*\(#([0-9]+)\)$/\1/p' <<<"$subjects")
-            if [ -z "$subjects" ] || [ "$(wc -l <<<"$subjects")" -ne "$(wc -l <<<"$prs")" ]; then
+            if [ -z "$subjects" ] || grep -qvE '\(#[0-9]+\)$' <<<"$subjects"; then
               echo "::error::every merge group commit must name its PR as (#N):" >&2
               echo "$subjects" >&2
               exit 1
             fi
+            prs=$(sed -E 's/.*\(#([0-9]+)\)$/\1/' <<<"$subjects")
             for pr in $prs; do
               head=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr" --jq '.head.repo.full_name // ""')
               if [ "$head" != "$GITHUB_REPOSITORY" ]; then
