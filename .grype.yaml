@@ -8,27 +8,7 @@ ignore:
     reason: The affected contrib/infback9 code is absent from this zlib package.
     package:
       name: zlib
-      version: 1.3.2-r0
-      type: apk
-  # Remove when the router image includes a patched zlib package.
-  - vulnerability: CVE-2026-85091
-    reason: Router nginx uses only zlib's deflate/inflate APIs.
-    package:
-      name: zlib
-      version: 1.3.2-r0
-      type: apk
-  # Remove when the router image includes musl >= 1.2.6-r3.
-  - vulnerability: CVE-2026-107891
-    reason: Needs an untrusted pattern passed to musl regcomp. Router nginx compiles its regexes with pcre2 and imports no regcomp; only the image's entrypoint scripts reach it, with their own fixed patterns.
-    package:
-      name: musl
-      version: 1.2.6-r2
-      type: apk
-  - vulnerability: CVE-2026-107891
-    reason: Same musl build as the musl rule above.
-    package:
-      name: musl-utils
-      version: 1.2.6-r2
+      version: 1.3.2-r1
       type: apk
   # OpenSSL 3.5.10 fixes the four advisories below; Alpine 3.24 still ships
   # 3.5.9-r0. Nothing in the image that links OpenSSL (nginx, nginx-debug,
