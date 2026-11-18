@@ -42,6 +42,9 @@ type policyStore struct {
 	snap   atomic.Pointer[policySnapshot]
 	// clock is the Trust Authority time component-set deadlines are judged by.
 	clock *taClock
+	// freshness is how far behind the Trust Authority the served snapshot may
+	// be.
+	freshness *freshness
 }
 
 // newPolicyStore seeds the store with an empty snapshot (version 0) so admission
@@ -52,12 +55,19 @@ func newPolicyStore(base *allowlist.Allowlist, clock *taClock) *policyStore {
 		base = &allowlist.Allowlist{}
 	}
 	s := &policyStore{
-		base:   base.BuildIndex(),
-		grants: withoutStaticPods(base).BuildIndex(),
-		clock:  clock,
+		base:      base.BuildIndex(),
+		grants:    withoutStaticPods(base).BuildIndex(),
+		clock:     clock,
+		freshness: newFreshness(clock.local),
 	}
-	s.snap.Store(&policySnapshot{index: (&allowlist.Allowlist{}).BuildIndex()})
+	s.snap.Store(&policySnapshot{index: emptyIndex()})
 	return s
+}
+
+// emptyIndex admits nothing: the served view of a node with no document of
+// the Trust Authority's in force.
+func emptyIndex() *allowlist.Index {
+	return (&allowlist.Allowlist{}).BuildIndex()
 }
 
 // withoutStaticPods is a without its allowlist.Workload.StaticPod entries.
@@ -249,6 +259,25 @@ func (s *policyStore) rebuildEndedSets() bool {
 // component container of a set holds one the base binds nothing.
 func (s *policyStore) baseBindsRole(r allowlist.RunningContainer) bool {
 	return s.base.RoleOf(r) != ""
+}
+
+// dropServed drops the served document, keeping its version so a rolled-back
+// one cannot take its place, and reports whether one was in force. The base
+// allowlist alone judges until a pull lands again.
+func (s *policyStore) dropServed() bool {
+	for {
+		cur := s.snap.Load()
+		if cur == nil || cur.pulled == nil {
+			return false
+		}
+		empty := &policySnapshot{
+			index:   emptyIndex(),
+			version: cur.version,
+		}
+		if s.snap.CompareAndSwap(cur, empty) {
+			return true
+		}
+	}
 }
 
 // declaresNodeService reports whether a component set snap's document holds in

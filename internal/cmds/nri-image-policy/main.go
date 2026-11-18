@@ -465,6 +465,11 @@ type healthResponse struct {
 	// PodEnded reports that the Pod identity ended for the rest of this boot.
 	PodEnded       bool   `json:"pod_ended,omitempty"`
 	AllowlistStall string `json:"allowlist_stall,omitempty"`
+	// Fresh reports the last poll naming the allowlist admission applies,
+	// and FreshnessLimitSeconds how long this node admits from a served
+	// allowlist without such a poll. Absent where nothing is pulled.
+	Fresh                 bool  `json:"fresh"`
+	FreshnessLimitSeconds int64 `json:"freshness_limit_seconds,omitempty"`
 }
 
 // startHealthServer starts an HTTP server for readiness/liveness probes.
@@ -477,6 +482,10 @@ func startHealthServer(ctx context.Context, cfg healthServerConfig) error {
 			Status:           "ok",
 			AllowlistVersion: cfg.plugin.AppliedAllowlistVersion(),
 			AllowlistStall:   cfg.allowlistStall(),
+		}
+		if cfg.pull != nil {
+			fresh, limit := cfg.plugin.policy.freshness.report()
+			body.Fresh, body.FreshnessLimitSeconds = fresh, int64(limit.Seconds())
 		}
 		if cfg.plugin.cfg.podRole() {
 			body.PodUID = cfg.plugin.cfg.Pod.UID
