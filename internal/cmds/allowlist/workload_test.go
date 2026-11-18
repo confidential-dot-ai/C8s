@@ -467,3 +467,34 @@ func TestSecretsSummary(t *testing.T) {
 		t.Fatalf("deny summary = %q", got)
 	}
 }
+
+// An entry stored before a rule refused it (exits without a pinned env) does
+// not block the delete that removes it, and a write that keeps it names it.
+func TestWorkloadDeleteEntryARuleNowRefuses(t *testing.T) {
+	dir := t.TempDir()
+	keyPath, pub := newOperatorKeypair(t, dir, "op.key")
+	srv, cds := cdsTestServer(t, []*ecdsa.PublicKey{pub})
+	stored, err := pkgallowlist.ParseServedJSON([]byte(`{"schema":"c8s.allowlist/v1","workloads":{"relay":{"containers":[` +
+		`{"digest":"` + digA + `","command":{"policy":"exact","argv":["/app"]},"args":{"policy":"deny"}}],` +
+		`"egress":[{"cidr":"203.0.113.7/32","port":443}]}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cds.seedWorkload("relay", stored.Workloads["relay"])
+	cds.seedWorkload("keep", oneContainerEntry(t, digA))
+	cds.seedWorkload("old", oneContainerEntry(t, digA))
+
+	_, _, err = runCmd("delete", "old", "--url", srv.URL, "--insecure", "--operator-key", keyPath)
+	if err == nil || !strings.Contains(err.Error(), `workload "relay"`) {
+		t.Fatalf("delete old = %v, want CDS to refuse the write naming relay", err)
+	}
+	if _, _, err := runCmd("delete", "relay", "--url", srv.URL, "--insecure", "--operator-key", keyPath); err != nil {
+		t.Fatalf("delete relay = %v, want nil", err)
+	}
+	if _, ok := cds.workload("relay"); ok {
+		t.Fatal("relay survived its delete")
+	}
+	if _, ok := cds.workload("keep"); !ok {
+		t.Fatal("an entry the delete did not name was lost")
+	}
+}

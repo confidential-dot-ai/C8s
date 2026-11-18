@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -88,7 +89,7 @@ func testBlob(t *testing.T) volume.Blob {
 	for i := range key {
 		key[i] = byte(i)
 	}
-	blob, err := volume.NewBlob(key, volume.Verity{
+	blob, err := volume.NewBlob("weights", key, volume.Verity{
 		RootHash:   strings.Repeat("ab", 32),
 		Salt:       strings.Repeat("cd", 16),
 		DataBlocks: 4,
@@ -115,7 +116,7 @@ func testMutableBlobJSON(t *testing.T) []byte {
 	for i := range key {
 		key[i] = byte(i)
 	}
-	blob, err := volume.NewMutableBlob(key)
+	blob, err := volume.NewMutableBlob("weights", key)
 	if err != nil {
 		t.Fatalf("blob: %v", err)
 	}
@@ -234,5 +235,28 @@ func TestEveryRequestTakesAFreshChallengeAndToken(t *testing.T) {
 	}
 	if len(f.tokens) == 2 && f.tokens[0] == f.tokens[1] {
 		t.Error("the same sandbox token was presented twice")
+	}
+}
+
+func TestOpenOneRejectsAnotherVolumeBeforeCallingDaemon(t *testing.T) {
+	var called atomic.Bool
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called.Store(true)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer daemon.Close()
+
+	mutable, err := volume.NewMutableBlob("weights", make([]byte, volume.KeyBytes))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, blob := range []volume.Blob{testBlob(t), mutable} {
+		err := openOne(t.Context(), flowConfig(t, ""), daemon.Client(), daemon.URL, "other", blob)
+		if err == nil {
+			t.Errorf("accepted a blob for another volume (mutable=%t)", blob.Mutable)
+		}
+	}
+	if called.Load() {
+		t.Fatal("sent another volume's blob to the daemon")
 	}
 }

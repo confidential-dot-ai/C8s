@@ -74,7 +74,7 @@ func BindFlags(pf *pflag.FlagSet, o *Options) {
 	if o.DirectCDS {
 		urlHelp = "direct CDS base URL, https://<host>:<port> using the install's --cds-address (required); a router front door does not relay this API"
 	} else {
-		pf.StringSliceVar(&o.Measurements, "measurements", nil, "trusted router build ID(s) (repeatable/comma-separated) for a CDS-issued public TLS front door; an https --url requires a pin")
+		pf.StringSliceVar(&o.Measurements, "measurements", nil, "trusted router launch digest(s) (repeatable/comma-separated) for a CDS-issued public TLS front door; an https --url requires a pin, and a TDX endpoint needs --image-policy-file with RTMR[1] and RTMR[2]")
 		pf.StringVar(&o.MeasurementsFile, "measurements-file", "", "text file of trusted router SHA-384 hex digests, one per line; use --image-policy-file for complete JSON policies")
 	}
 	pf.StringVar(&o.URL, "url", "", urlHelp)
@@ -214,13 +214,12 @@ func (o *Options) loadPins() (refvalues.ReferenceValues, error) {
 	return refvalues.FromFlags(digests, nil), err
 }
 
+// pinVerifier holds the endpoint to pins as images, whichever flag supplied
+// them: a flat digest is an image pinning its launch digest alone.
 func (o *Options) pinVerifier(pins refvalues.ReferenceValues) PinVerifier {
 	verify := o.Verifier
 	if verify == nil {
 		verify = LocalVerifier{}
-	}
-	if o.MeasurementsConfig == "" {
-		return verify
 	}
 	return ImagePinVerifier{Verifier: verify, Images: pins.Images}
 }
