@@ -8,6 +8,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
@@ -42,15 +43,30 @@ func (e entryDiff) empty() bool {
 	return e.Label == nil && e.Secrets == nil && e.Egress == nil && e.HostPorts == nil && len(e.Added) == 0 && len(e.Removed) == 0 && len(e.Changed) == 0
 }
 
+// setDiff names one component set's changes: when it ends, and the bytes of
+// the entries it holds.
+type setDiff struct {
+	Deadline *changedEntry `json:"deadline,omitempty"`
+	Entries  *changedEntry `json:"entries,omitempty"`
+}
+
+func (s setDiff) empty() bool {
+	return s.Deadline == nil && s.Entries == nil
+}
+
 // allowlistDiff is the entry-level diff of two allowlists.
 type allowlistDiff struct {
 	WorkloadsAdded   []string             `json:"workloadsAdded"`
 	WorkloadsRemoved []string             `json:"workloadsRemoved"`
 	WorkloadsChanged map[string]entryDiff `json:"workloadsChanged"`
+	SetsAdded        []string             `json:"componentSetsAdded,omitempty"`
+	SetsRemoved      []string             `json:"componentSetsRemoved,omitempty"`
+	SetsChanged      map[string]setDiff   `json:"componentSetsChanged,omitempty"`
 }
 
 func (d allowlistDiff) empty() bool {
-	return len(d.WorkloadsAdded) == 0 && len(d.WorkloadsRemoved) == 0 && len(d.WorkloadsChanged) == 0
+	return len(d.WorkloadsAdded) == 0 && len(d.WorkloadsRemoved) == 0 && len(d.WorkloadsChanged) == 0 &&
+		len(d.SetsAdded) == 0 && len(d.SetsRemoved) == 0 && len(d.SetsChanged) == 0
 }
 
 // diffAllowlists computes the entry- and field-level diff of desired over live.
@@ -73,7 +89,52 @@ func diffAllowlists(live, desired *pkgallowlist.Allowlist) allowlistDiff {
 	}
 	sort.Strings(d.WorkloadsAdded)
 	sort.Strings(d.WorkloadsRemoved)
+	diffComponents(&d, live, desired)
 	return d
+}
+
+// diffComponents adds the component-set changes of desired over live.
+func diffComponents(d *allowlistDiff, live, desired *pkgallowlist.Allowlist) {
+	for version, ds := range desired.Components {
+		ls, ok := live.Components[version]
+		if !ok {
+			d.SetsAdded = append(d.SetsAdded, version)
+			continue
+		}
+		if sd := diffSet(ls, ds); !sd.empty() {
+			if d.SetsChanged == nil {
+				d.SetsChanged = map[string]setDiff{}
+			}
+			d.SetsChanged[version] = sd
+		}
+	}
+	for version := range live.Components {
+		if _, ok := desired.Components[version]; !ok {
+			d.SetsRemoved = append(d.SetsRemoved, version)
+		}
+	}
+	slices.SortFunc(d.SetsAdded, pkgallowlist.CompareSetVersions)
+	slices.SortFunc(d.SetsRemoved, pkgallowlist.CompareSetVersions)
+}
+
+// diffSet compares two sets under the same version.
+func diffSet(live, desired pkgallowlist.ComponentSet) setDiff {
+	var sd setDiff
+	if from, to := setEnd(live), setEnd(desired); from != to {
+		sd.Deadline = &changedEntry{From: from, To: to}
+	}
+	if from, to := live.DigestString(), desired.DigestString(); from != to {
+		sd.Entries = &changedEntry{From: from, To: to}
+	}
+	return sd
+}
+
+// setEnd renders when a set ends, "current" when it does not.
+func setEnd(set pkgallowlist.ComponentSet) string {
+	if set.Current() {
+		return "current"
+	}
+	return set.Retire.Deadline.UTC().Format(time.RFC3339)
 }
 
 // diffEntry compares two workload entries field by field.
@@ -240,7 +301,31 @@ func printDiff(w io.Writer, format string, d allowlistDiff) error {
 		fmt.Fprintf(w, "~ %s\n", name)
 		printEntryDiff(w, d.WorkloadsChanged[name])
 	}
+	printComponentDiff(w, d)
 	return nil
+}
+
+func printComponentDiff(w io.Writer, d allowlistDiff) {
+	if len(d.SetsAdded) == 0 && len(d.SetsRemoved) == 0 && len(d.SetsChanged) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "component sets:")
+	for _, version := range d.SetsAdded {
+		fmt.Fprintf(w, "+ %s\n", version)
+	}
+	for _, version := range d.SetsRemoved {
+		fmt.Fprintf(w, "- %s\n", version)
+	}
+	for _, version := range slices.SortedFunc(maps.Keys(d.SetsChanged), pkgallowlist.CompareSetVersions) {
+		fmt.Fprintf(w, "~ %s\n", version)
+		sd := d.SetsChanged[version]
+		if sd.Deadline != nil {
+			fmt.Fprintf(w, "    deadline: %s -> %s\n", sd.Deadline.From, sd.Deadline.To)
+		}
+		if sd.Entries != nil {
+			fmt.Fprintf(w, "    entries: %s -> %s\n", sd.Entries.From, sd.Entries.To)
+		}
+	}
 }
 
 func printEntryDiff(w io.Writer, e entryDiff) {

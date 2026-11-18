@@ -402,7 +402,7 @@ func documentWith(read allowlistRead, entries map[string]pkgallowlist.Workload) 
 	merged := make(map[string]pkgallowlist.Workload, len(read.document.Workloads)+len(entries))
 	maps.Copy(merged, read.document.Workloads)
 	maps.Copy(merged, entries)
-	return &pkgallowlist.Allowlist{Schema: read.document.Schema, Workloads: merged}
+	return documentWithWorkloads(read, merged)
 }
 
 // documentWithout is the document read without the named entries.
@@ -411,7 +411,17 @@ func documentWithout(read allowlistRead, names []string) *pkgallowlist.Allowlist
 	for _, name := range names {
 		delete(kept, name)
 	}
-	return &pkgallowlist.Allowlist{Schema: read.document.Schema, Workloads: kept}
+	return documentWithWorkloads(read, kept)
+}
+
+// documentWithWorkloads is the document read with workloads in place of its
+// workloads section. Every other section goes back as it was read.
+func documentWithWorkloads(read allowlistRead, workloads map[string]pkgallowlist.Workload) *pkgallowlist.Allowlist {
+	return &pkgallowlist.Allowlist{
+		Schema:     read.document.Schema,
+		Workloads:  workloads,
+		Components: read.document.Components,
+	}
 }
 
 // sameDocument reports whether a and b have the same canonical bytes.

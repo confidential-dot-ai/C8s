@@ -104,7 +104,7 @@ func TestSetsInForceAreOrderedByVersion(t *testing.T) {
 	versions := []string{}
 	for _, ref := range refs {
 		versions = append(versions, ref.Version)
-		if digest := al.Components[ref.Version].digestString(); ref.Digest != digest {
+		if digest := al.Components[ref.Version].DigestString(); ref.Digest != digest {
 			t.Errorf("set %s names digest %s, want %s", ref.Version, ref.Digest, digest)
 		}
 	}
