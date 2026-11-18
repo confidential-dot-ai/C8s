@@ -444,7 +444,7 @@ allowlist").`
 
 	wantFlags := map[string]string{
 		"url":          "CDS-issued-TLS router or direct CDS base URL (required); WebPKI router URLs are not attestation-bound",
-		"measurements": "trusted router build ID(s) (repeatable/comma-separated) for a CDS-issued public TLS front door; an https --url requires a pin",
+		"measurements": "trusted router launch digest(s) (repeatable/comma-separated) for a CDS-issued public TLS front door; an https --url requires a pin, and a TDX endpoint needs --image-policy-file with RTMR[1] and RTMR[2]",
 	}
 	for name, want := range wantFlags {
 		flag := cmd.PersistentFlags().Lookup(name)

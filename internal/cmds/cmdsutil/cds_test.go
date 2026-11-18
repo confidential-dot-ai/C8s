@@ -20,6 +20,16 @@ var digestOnlyPin = fmt.Sprintf(
 	testutil.TestMeasurement,
 )
 
+// tdxPin binds the launch file to a TDX image pinned by MRTD and the given
+// rtmr array, which on TDX covers the firmware alone unless RTMR[1] and
+// RTMR[2] are in it.
+func tdxPin(rtmr string) string {
+	return fmt.Sprintf(
+		`{"schema_version":"2","tee":"tdx","measurements":[{"name":"cds","mrtd":%q,"rtmr":%s,"launch_file":%q}]}`,
+		testutil.TestMeasurement, rtmr, testutil.CDSLaunchFile,
+	)
+}
+
 // Each refusal names the rule that owns it.
 func TestCDSParseRefusesWhatAClientCannotUse(t *testing.T) {
 	for _, tc := range []struct {
@@ -56,6 +66,8 @@ func TestCDSParseRefusesAPinThatIsNoIdentity(t *testing.T) {
 	}{
 		{name: "malformed measurements", measurements: "{", want: "cds.measurements"},
 		{name: "pin without a launch file", measurements: digestOnlyPin, want: "launch file"},
+		{name: "tdx pin by mrtd alone", measurements: tdxPin(`[null,null,null,null]`), want: "leaves RTMR[1] unpinned"},
+		{name: "tdx pin without rtmr2", measurements: tdxPin(fmt.Sprintf(`[null,%q,null,null]`, testutil.TestMeasurement)), want: "leaves RTMR[2] unpinned"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cds := CDS{Address: "192.0.2.50:8443", Measurements: tc.measurements}
@@ -63,6 +75,16 @@ func TestCDSParseRefusesAPinThatIsNoIdentity(t *testing.T) {
 				t.Fatalf("Parse = %v, want %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// A TDX CDS is one VM once MRTD, RTMR[1] and RTMR[2] are pinned together with
+// its launch file.
+func TestCDSParseAcceptsATDXPinWithItsGuestRegisters(t *testing.T) {
+	rtmr := fmt.Sprintf(`[null,%q,%q,null]`, testutil.TestMeasurement, testutil.TestMeasurement)
+	cds := CDS{Address: "192.0.2.50:8443", Measurements: tdxPin(rtmr)}
+	if _, err := cds.Parse(); err != nil {
+		t.Fatalf("Parse = %v, want the pinned TDX CDS accepted", err)
 	}
 }
 
