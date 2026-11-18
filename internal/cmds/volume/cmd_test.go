@@ -45,7 +45,7 @@ func (p *putServer) start(t *testing.T) *httptest.Server {
 
 func testBlob(t *testing.T) Blob {
 	t.Helper()
-	b, err := NewBlob(testKey(), validVerity())
+	b, err := NewBlob("weights", testKey(), validVerity())
 	if err != nil {
 		t.Fatalf("blob: %v", err)
 	}

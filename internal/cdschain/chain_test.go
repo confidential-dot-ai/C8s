@@ -5,6 +5,8 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"encoding/json"
+	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -135,6 +137,119 @@ func TestApply(t *testing.T) {
 	e, _ = Sign(f.member, next(TypeMember, Member{Slot: 1, Key: stranger}))
 	if _, err := f.state.Apply(e); err != nil {
 		t.Fatalf("a member may name a slot's member: %v", err)
+	}
+}
+
+func TestAcceptedBuildsCheckTheirOwnFamily(t *testing.T) {
+	register := `"` + strings.Repeat("b2", 48) + `"`
+	tdx := func(rtmr1, rtmr2 string) Build {
+		return Build{
+			Measurements: fmt.Sprintf(`{"schema_version":"2","tee":"tdx","measurements":[{"name":"cds","mrtd":%q,"rtmr":[null,%s,%s,null],"launch_file":"launch"}]}`, testutil.TestMeasurement, rtmr1, rtmr2),
+			Version:      "v1.1.0",
+		}
+	}
+	missing1, missing2 := tdx("null", register), tdx(register, "null")
+	complete := tdx(register, register)
+	otherLaunch := Build{
+		Measurements: testutil.CDSPinDocument(testutil.TestMeasurement, "another launch"),
+		Version:      "v1.2.0",
+	}
+	for _, tc := range []struct {
+		name   string
+		builds []Build
+		want   string
+	}{
+		{
+			name:   "missing RTMR1",
+			builds: []Build{missing1},
+			want:   "RTMR[1]",
+		},
+		{
+			name:   "missing RTMR2",
+			builds: []Build{missing2},
+			want:   "RTMR[2]",
+		},
+		{
+			name:   "complete TDX",
+			builds: []Build{complete},
+		},
+		{
+			name:   "missing RTMR1 before SNP",
+			builds: []Build{missing1, build},
+			want:   "RTMR[1]",
+		},
+		{
+			name:   "missing RTMR1 after SNP",
+			builds: []Build{build, missing1},
+			want:   "RTMR[1]",
+		},
+		{
+			name:   "missing RTMR2 before SNP",
+			builds: []Build{missing2, build},
+			want:   "RTMR[2]",
+		},
+		{
+			name:   "missing RTMR2 after SNP",
+			builds: []Build{build, missing2},
+			want:   "RTMR[2]",
+		},
+		{
+			name:   "complete TDX before SNP",
+			builds: []Build{complete, build},
+			want:   "different TEE families",
+		},
+		{
+			name:   "complete TDX after SNP",
+			builds: []Build{build, complete},
+			want:   "different TEE families",
+		},
+		{
+			name:   "different launch files",
+			builds: []Build{build, otherLaunch},
+			want:   "another configuration",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			head, accepted := f.state.Head, slices.Clone(f.state.Accepted)
+			for _, typ := range []Type{TypeGenesis, TypeAccepted} {
+				t.Run(string(typ), func(t *testing.T) {
+					body := Body{Cluster: f.state.Cluster, Type: typ}
+					if typ == TypeGenesis {
+						body.Payload = mustJSON(t, Genesis{
+							Endpoints:    f.state.Endpoints,
+							Members:      f.members,
+							OperatorKeys: f.opPEM,
+							CAKey:        f.opPEM,
+							Accepted:     tc.builds,
+						})
+					} else {
+						body.Seq, body.Prev = f.state.Head.Seq+1, f.state.Head.Hash
+						body.Payload = mustJSON(t, Accepted{Accepted: tc.builds})
+					}
+					entry, err := Sign(f.op, body)
+					if err != nil {
+						t.Fatal(err)
+					}
+					var state *State
+					if typ == TypeGenesis {
+						state, err = VerifyGenesis(entry)
+					} else {
+						state, err = f.state.Apply(entry)
+					}
+					if tc.want == "" {
+						if err != nil {
+							t.Fatalf("valid accepted builds refused: %v", err)
+						}
+					} else if err == nil || !strings.Contains(err.Error(), tc.want) {
+						t.Fatalf("error = %v, want %q", err, tc.want)
+					}
+					if tc.want != "" && (state != nil || f.state.Head != head || !slices.Equal(f.state.Accepted, accepted)) {
+						t.Fatal("rejected builds returned a state or changed the prior head or accepted builds")
+					}
+				})
+			}
+		})
 	}
 }
 

@@ -41,6 +41,11 @@ permissions:
 env:
   REGISTRY: ghcr.io
 
+# Only pull request runs supersede each other; every other run is unique.
+concurrency:
+  group: docker-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   # Per-image jobs run only when the component's own cmd/<X> or
   # internal/cmds/<X> changed (this applies to both PR events and

@@ -28,7 +28,7 @@ const (
 func exitsAllowlist(t *testing.T, extra string) *allowlist.Allowlist {
 	t.Helper()
 	any := func(digest string) string {
-		return `{"digest":"` + digest + `","command":{"policy":"exact","argv":["/run"]},"args":{"policy":"deny"}}`
+		return `{"digest":"` + digest + `","command":{"policy":"exact","argv":["/run"]},"args":{"policy":"deny"},"env":{"policy":"deny"}}`
 	}
 	doc := `{"schema":"c8s.allowlist/v1","workloads":{
 		"collector":{"initContainers":[` + any(collectorInit) + `],"containers":[` + any(collectorDigest) + `],"egress":[{"cidr":"203.0.113.7/32","port":443}]},
@@ -45,9 +45,17 @@ func exitsAllowlist(t *testing.T, extra string) *allowlist.Allowlist {
 func running(digests ...string) []allowlist.RunningContainer {
 	out := make([]allowlist.RunningContainer, 0, len(digests))
 	for _, d := range digests {
-		out = append(out, allowlist.RunningContainer{Digest: d, Argv: []string{"/run"}, Mounts: []allowlist.ObservedMount{}})
+		out = append(out, allowlist.RunningContainer{Digest: d, Argv: []string{"/run"}, Mounts: []allowlist.ObservedMount{}, Env: emptyEnv()})
 	}
 	return out
+}
+
+func emptyEnv() *allowlist.EnvObservation {
+	env, err := allowlist.ObserveEnv(nil)
+	if err != nil {
+		panic(err)
+	}
+	return env
 }
 
 // The decision is a function of the set of workload containers: an entry with
@@ -78,6 +86,10 @@ func TestDecideExits(t *testing.T) {
 		{
 			name: "an unpinned entry claims nothing", running: []string{sidecarDigest},
 			extra: `,"loose":{"containers":[{"digest":"` + sidecarDigest + `","command":{"policy":"exact","argv":["/run"]},"args":{"policy":"any"}}],"egress":[{"cidr":"198.51.100.7/32","port":443}]}`, shadowed: true,
+		},
+		{
+			name: "an entry leaving env to the host claims nothing", running: []string{sidecarDigest},
+			extra: `,"loose":{"containers":[{"digest":"` + sidecarDigest + `","command":{"policy":"exact","argv":["/run"]},"args":{"policy":"deny"}}],"egress":[{"cidr":"198.51.100.7/32","port":443}]}`, shadowed: true,
 		},
 		{
 			name: "two entries with exits in one pod are refused", running: []string{collectorDigest, sidecarDigest},
@@ -207,7 +219,7 @@ func TestBindEntryRefusesAnExitIntoTheClusterOrOntoTheNode(t *testing.T) {
 func recovered(digests ...string) []workloadclaims.SandboxContainer {
 	out := make([]workloadclaims.SandboxContainer, 0, len(digests))
 	for _, d := range digests {
-		out = append(out, workloadclaims.SandboxContainer{Digest: d, Argv: []string{"/run"}, Mounts: []allowlist.ObservedMount{}})
+		out = append(out, workloadclaims.SandboxContainer{Digest: d, Argv: []string{"/run"}, Mounts: []allowlist.ObservedMount{}, Env: emptyEnv()})
 	}
 	return out
 }
