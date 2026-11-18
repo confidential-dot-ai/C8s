@@ -33,7 +33,7 @@ gate.
 | Component images: `c8s-operator`, `cds`, `get-cert`, `armtls-mesh`, `nri-image-policy`, `volumed` | `ghcr.io/confidential-dot-ai/<name>`, tagged `vX.Y.Z`, `X.Y.Z`, and the 7-character commit SHA |
 | Helm chart | `ghcr.io/confidential-dot-ai/charts/c8s-cloud`, version `X.Y.Z`, carrying the release's component image digests, packaged byte-reproducibly from the release commit |
 | Guest images | `ghcr.io/confidential-dot-ai/guests/worker:vX.Y.Z-{tdx,sev-snp}[-kubevirt]` and `ghcr.io/confidential-dot-ai/guests/cds:vX.Y.Z[-kubevirt]` |
-| GitHub release | `release-statement.json`, `release-statement.sigstore.json`, and the CLI as `c8s-linux-amd64` and `c8s-darwin-arm64` |
+| GitHub release | `release-statement.json`, `release-statement.sigstore.json`, the CLI as `c8s-linux-amd64` and `c8s-darwin-arm64`, and `allowlist-seed-tdx.json` and `allowlist-seed-snp.json` |
 
 A release also moves the `X.Y` image alias when it is the newest patch of that
 series, and `latest` when it is the newest stable release across all series. It
@@ -60,7 +60,7 @@ Each release from `v0.36.0` on has a GitHub release carrying
 `release-statement.json`:
 
 ```json
-{"chart":"ghcr.io/confidential-dot-ai/charts/c8s-cloud@sha256:<DIGEST>","cli":{"darwin-arm64":{"asset":"c8s-darwin-arm64","sha256":"<HEX>"},"linux-amd64":{"asset":"c8s-linux-amd64","sha256":"<HEX>"}},"commit":"<SHA>","repository":"confidential-dot-ai/C8s","tag":"vX.Y.Z"}
+{"allowlistSeeds":{"snp":{"asset":"allowlist-seed-snp.json","sha256":"<HEX>"},"tdx":{"asset":"allowlist-seed-tdx.json","sha256":"<HEX>"}},"chart":"ghcr.io/confidential-dot-ai/charts/c8s-cloud@sha256:<DIGEST>","cli":{"darwin-arm64":{"asset":"c8s-darwin-arm64","sha256":"<HEX>"},"linux-amd64":{"asset":"c8s-linux-amd64","sha256":"<HEX>"}},"commit":"<SHA>","repository":"confidential-dot-ai/C8s","tag":"vX.Y.Z"}
 ```
 
 `chart` names the published chart by its manifest digest, which a Flux
@@ -152,6 +152,31 @@ cmp "rebuilt/c8s-$PLATFORM" "c8s-$PLATFORM"
 `cmp` prints nothing when the files are equal.
 [`release-cli.sh`](../.github/scripts/release-cli.sh) fixes every build input,
 so the same commit, tag, toolchain and platform give the same bytes on any host.
+
+### Verify an allowlist seed
+
+The statement's `allowlistSeeds` object names the `tdx` and `snp` assets and
+SHA-256 digests, as `cli` does for binaries. These are the release's core
+allowlist entries, not the contents of the worker image's empty seed file.
+The release renders them with the worker build's Helm and Kubernetes versions,
+its release CLI, and the operator and armTLS mesh image digests the release
+publishes. A deployment includes these entries unchanged in its allowlist.
+
+After verifying the statement's signature and release identity above:
+
+```sh
+PLATFORM=tdx # or snp
+gh release download "$TAG" --repo confidential-dot-ai/C8s \
+  --pattern "allowlist-seed-$PLATFORM.json"
+jq -r --arg p "$PLATFORM" \
+  '.allowlistSeeds[$p] | "\(.sha256)  \(.asset)"' release-statement.json \
+  | sha256sum -c -
+```
+
+On macOS, use `shasum -a 256 -c -`. Releases before `v0.95.0` published seeds;
+some later releases omit `allowlistSeeds`. Published statements do not change:
+when it is absent, render the seed from that release's source and worker build
+inputs. Do not substitute a seed from another release.
 
 ## Beta releases
 

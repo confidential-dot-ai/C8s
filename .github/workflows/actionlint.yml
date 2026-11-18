@@ -31,6 +31,9 @@ jobs:
       - name: Test the release CLI build
         run: bash .github/scripts/tests/test-release-cli.sh
 
+      - name: Test release allowlist seeds
+        run: bash .github/scripts/tests/test-release-seeds.sh
+
       - name: Test the confos mkosi pin reader
         run: bash .github/scripts/tests/test-confos-mkosi-pin.sh
 
@@ -94,6 +97,8 @@ jobs:
             .github/scripts/calculate-release-version.sh \
             .github/scripts/pin-manifest.sh \
             .github/scripts/release-pin.sh \
+            .github/scripts/release-seeds.sh \
+            .github/scripts/tests/test-release-seeds.sh \
             .github/scripts/confos-mkosi-pin.sh \
             .github/scripts/ghcr-digest.sh \
             .github/scripts/chart-attestation-api-digest.sh \

@@ -136,6 +136,11 @@ group.
 build-time Helm binary and the baked Kubernetes version, and `c8s worker floor`
 over that render, which carries the c8s-worker chart's static pod templates,
 and this profile's floor template.
+The release also publishes this render's core allowlist seed for each platform,
+with its digest in the signed release statement. Consumers can verify and use
+those assets without reproducing the build tools; see
+[Verify an allowlist seed](../../docs/releases.md#verify-an-allowlist-seed).
+
 The CDS those components trust runs on a confidential VM of its own, which
 `c8s cds config new` writes the configuration and the pin for, so the image
 neither renders a CDS nor preloads its image.

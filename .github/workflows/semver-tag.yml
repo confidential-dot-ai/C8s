@@ -32,6 +32,7 @@ env:
   RELEASE_ASSET_TIMEOUT: 10m
   # Platforms whose CLI binary is a release asset, each as <os>-<arch>.
   RELEASE_CLI_PLATFORMS: linux-amd64 darwin-arm64
+  RELEASE_SEED_PLATFORMS: tdx snp
   RELEASE_MAJOR: "0"
   RELEASE_WAIT_ATTEMPTS: "60"
   RELEASE_WAIT_INTERVAL: 15s
@@ -339,7 +340,7 @@ jobs:
 
   chart:
     name: Build release chart
-    needs: [calculate, images]
+    needs: [calculate, images, cli]
     if: needs.calculate.outputs.publish == 'true' && needs.images.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -389,6 +390,23 @@ jobs:
           cat "$RUNNER_TEMP"/release-digest/*.tsv > "$RUNNER_TEMP/release-image-digests"
           cp -rL "$CHART_DIR" "$RUNNER_TEMP/c8s-cloud"
           .github/scripts/chart-stamp.sh stamp "$RUNNER_TEMP/c8s-cloud" "$RUNNER_TEMP/release-image-digests"
+
+      - name: Download release CLI for seed rendering
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: c8s-release-cli-${{ inputs.target-sha }}
+          path: cli
+
+      - name: Render release allowlist seeds
+        run: .github/scripts/release-seeds.sh cli/c8s-linux-amd64 "$RUNNER_TEMP/release-image-digests" seeds
+
+      - name: Upload release allowlist seeds
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: c8s-release-seeds-${{ inputs.target-sha }}
+          path: seeds/allowlist-seed-*.json
+          if-no-files-found: error
+          retention-days: 1
 
       - name: Package deterministic release chart
         env:
@@ -721,12 +739,12 @@ jobs:
           [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
 
-  # A keyless Sigstore signature over {repository, tag, commit, chart, cli}
+  # A keyless Sigstore signature over the tag, chart, CLI and allowlist seeds
   # lets downstream automation trust a tag, the chart manifest it names and
   # the CLI binaries it lists by sha256, without trusting everyone who can
   # push tags. Only this job holds an OIDC token. It neither checks out nor
   # runs repository source: it hashes and uploads the binaries the cli job
-  # built.
+  # built, and the seeds the chart job rendered.
   sign:
     name: Sign release tag
     needs: [calculate, publish, cli]
@@ -771,6 +789,12 @@ jobs:
         with:
           name: c8s-release-cli-${{ inputs.target-sha }}
           path: cli
+
+      - name: Download release allowlist seeds
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: c8s-release-seeds-${{ inputs.target-sha }}
+          path: seeds
 
       # The statement names the commit that the published tag object points
       # at, read back from GitHub rather than taken from the caller. In a
@@ -834,13 +858,28 @@ jobs:
           test "$count" -gt 0
           test "$(find cli -mindepth 1 | wc -l)" -eq "$count"
 
+          allowlist_seeds='{}'
+          count=0
+          for platform in $RELEASE_SEED_PLATFORMS; do
+            asset="allowlist-seed-$platform.json"
+            test -f "seeds/$asset"
+            test ! -L "seeds/$asset"
+            sha="$(sha256sum < "seeds/$asset")"
+            allowlist_seeds="$(jq -c --arg p "$platform" --arg a "$asset" --arg s "${sha%% *}" \
+              '.[$p] = {asset: $a, sha256: $s}' <<< "$allowlist_seeds")"
+            count=$((count + 1))
+          done
+          test "$count" -gt 0
+          test "$(find seeds -mindepth 1 | wc -l)" -eq "$count"
+
           jq -cnS \
             --arg repository "$GITHUB_REPOSITORY" \
             --arg tag "$RELEASE_TAG" \
             --arg commit "$TARGET_SHA" \
             --arg chart "$CHART_IMAGE@$CHART_DIGEST" \
             --argjson cli "$cli" \
-            '{repository: $repository, tag: $tag, commit: $commit, chart: $chart, cli: $cli}' \
+            --argjson allowlistSeeds "$allowlist_seeds" \
+            '{repository: $repository, tag: $tag, commit: $commit, chart: $chart, cli: $cli, allowlistSeeds: $allowlistSeeds}' \
             > "$STATEMENT"
           cat "$STATEMENT"
 
@@ -850,7 +889,7 @@ jobs:
       # marked Latest only when this tag is the newest stable release, so a
       # repair run for an older tag cannot take Latest back. A beta is always a
       # GitHub prerelease and never Latest.
-      - name: Sign and publish or verify release statement and CLI
+      - name: Sign and publish or verify release statement and assets
         run: |
           set -euo pipefail
 
@@ -901,6 +940,19 @@ jobs:
             fi
           done
 
+          for platform in $RELEASE_SEED_PLATFORMS; do
+            asset="allowlist-seed-$platform.json"
+            if has_asset "$asset"; then
+              gh_release_asset download "$RELEASE_TAG" --dir published --pattern "$asset"
+              if ! cmp "seeds/$asset" "published/$asset"; then
+                echo "::error::$asset on release $RELEASE_TAG differs from this run's seed; see Recovery in docs/releases.md"
+                exit 1
+              fi
+            else
+              missing+=("seeds/$asset")
+            fi
+          done
+
           if has_asset "$STATEMENT" && has_asset "$BUNDLE"; then
             gh_release download "$RELEASE_TAG" --dir published \
               --pattern "$STATEMENT" --pattern "$BUNDLE"
@@ -924,12 +976,12 @@ jobs:
               --latest="$UPDATE_LATEST" \
               --prerelease="$prerelease" \
               --title "$RELEASE_TAG" \
-              --notes "Release $RELEASE_TAG from $TARGET_SHA. See docs/releases.md to verify $STATEMENT and the c8s binaries it lists." \
+              --notes "Release $RELEASE_TAG from $TARGET_SHA. See docs/releases.md to verify $STATEMENT and the assets it lists." \
               "${missing[@]}"
             exit 0
           fi
-          # One asset at a time, binaries first, so a visible statement never
-          # names a binary the release lacks.
+          # One asset at a time, payloads first, so a visible statement never
+          # names an asset the release lacks.
           for asset in "${missing[@]}"; do
             gh_release_asset upload "$RELEASE_TAG" "$asset"
           done
