@@ -42,9 +42,11 @@ type Config struct {
 	Gossip       time.Duration
 	PeerTimeout  time.Duration
 	StoreTimeout time.Duration
-	WarnEntries  int
-	WarnBytes    int64
-	Mesh         *issuer.MeshCA
+	// InputConfigMap opts into signed policy/routes input in the store namespace.
+	InputConfigMap string
+	WarnEntries    int
+	WarnBytes      int64
+	Mesh           *issuer.MeshCA
 	// Peer reaches the other replicas for gossip, which member signatures
 	// authenticate; Attested(pins) admits only a replica whose attested
 	// build pins name (key handoff).
@@ -134,6 +136,9 @@ type Replica struct {
 
 // New starts a pending replica with a fresh member key.
 func New(cfg Config, store Store) (*Replica, error) {
+	if err := validateInput(cfg, store); err != nil {
+		return nil, err
+	}
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, err

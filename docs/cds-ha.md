@@ -32,6 +32,7 @@ Replica flags (none of them is measured; a wrong value costs availability, not s
 | `--ha-self` | this replica's endpoint. Without it, the replica asks every endpoint for its status and takes the one that names its own member key |
 | `--ha-store-etcd` / `--ha-runtime-dir` | an etcd client file, given directly or as `etcd.yaml` of the runtime disk. Without it, the store is the Kubernetes API of the cluster's control plane, reached with the credential `c8s cds ha store-credential` posts |
 | `--ha-store-memory` | a single replica keeps the chain in its own memory |
+| `--ha-input-configmap` | optional signed policy/routes input in the Kubernetes store credential's namespace; empty disables consumption |
 | `--ha-gossip-interval` | T (default 2s) |
 | `--ha-peer-timeout`, `--ha-store-timeout` | per-exchange and per-store-call timeouts |
 | `--ha-chain-warn-entries`, `--ha-chain-warn-bytes` | the chain-size warning thresholds (an ERROR is logged at each multiple; v1 never prunes) |
@@ -40,6 +41,45 @@ The Kubernetes store is the control plane the workers join, outside every TEE, a
 `c8s worker control-plane render` creates its account, `c8s-cds/cds-store`, which may get, create and update the ConfigMaps of `c8s-cds`.
 `c8s worker control-plane credentials` also writes `c8s-cds-store.kubeconfig`, a token of that account, which `c8s cds ha store-credential --file` posts to the replicas.
 Each replica must reach the API server it names.
+
+### Signed policy input from Kubernetes
+
+With the Kubernetes chain store, start each replica with
+`--ha-input-configmap policy-input`. Use a ConfigMap name outside the reserved
+`cds-<cluster>-` prefix. Etcd and memory stores do not support this input.
+Install the usual store credential and establish genesis first. The consumer
+waits until the replica serves; replacing the credential updates its API client
+and namespace for subsequent polls.
+
+The ConfigMap must contain only `binaryData.entry`, holding one base64-encoded
+native signed entry file, with no `data` fields. For example:
+
+```sh
+kubectl -n c8s-cds create configmap policy-input \
+  --from-file=entry=policy.entry --dry-run=client -o json |
+  jq '.binaryData.entry = (.data.entry | @base64) | del(.data)' > policy-input.json
+```
+
+This generates a local manifest; publish it through the system that manages the
+input ConfigMap. The namespace must match the store credential. The decoded
+file is limited to 1 MiB, including its encoding and whitespace. CDS accepts only
+non-genesis `policy` and `routes` entries through this input, using the same
+validation, commit and confirmation path as `POST /ha/entries`.
+
+Polling runs independently of gossip, every five seconds normally, with jittered
+backoff up to one minute for unavailable or unconfirmed input. Each attempt uses
+`--ha-store-timeout`. Unchanged confirmed or rejected artifacts are not submitted
+again unless the verified head changes. Uncertain submissions retry the original
+body and signature while that artifact remains published. Keep it published until
+attested observation confirms acceptance. Replacing or deleting it ends its retries;
+missing, deleted or invalid input never clears accepted policy.
+
+Logs report the file digest, supplied entry identity, observed head and outcome.
+An entry identity read from input is unverified until acceptance; logs do not
+replace attested observation. The publisher needs write access only to this input
+object, never to accepted chain objects. CDS only reads the input and needs no
+operator private key. Kubernetes synchronization does not establish CDS acceptance
+or application readiness.
 
 ### Starting without workers
 
