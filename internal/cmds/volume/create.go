@@ -133,7 +133,7 @@ func runCreate(cmd *cobra.Command, o *options, cfg createConfig) error {
 		if err != nil {
 			return err
 		}
-		blob, err = NewMutableBlob(key)
+		blob, err = NewMutableBlob(cfg.name, key)
 	} else {
 		verity, err = Build(cmd.Context(), BuildConfig{
 			Source: cfg.source, Out: cfg.out, Key: key, WorkDir: cfg.workDir, Run: cfg.run, Jobs: cfg.jobs,
@@ -141,7 +141,7 @@ func runCreate(cmd *cobra.Command, o *options, cfg createConfig) error {
 		if err != nil {
 			return err
 		}
-		blob, err = NewBlob(key, verity)
+		blob, err = NewBlob(cfg.name, key, verity)
 	}
 	if err != nil {
 		return err

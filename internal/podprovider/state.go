@@ -66,6 +66,11 @@ func (r *Reconciler) loadRecord(ctx context.Context, key string) (*record, *core
 	if rec.Key != key || identityKey(rec.ProviderID, string(rec.UID)) != key {
 		return nil, nil, errors.New("provider record identity differs from its key")
 	}
+	// The assignment and its serving key are saved together; status is read
+	// from the key, so a record holding one without the other is refused.
+	if (len(rec.Assignment) == 0) != (len(rec.ServingKey) == 0) {
+		return nil, nil, errors.New("provider record holds an assignment or a serving key without the other")
+	}
 	return &rec, secret, nil
 }
 
@@ -78,7 +83,7 @@ func (r *Reconciler) ensureRecord(ctx context.Context, pod *corev1.Pod) (*record
 	if err == nil {
 		return rec, secret, nil
 	}
-	if !apierrors.IsNotFound(err) {
+	if !notFound(err) {
 		return nil, nil, err
 	}
 	req, frozen, clientDocument, err := r.cfg.launch(pod)
@@ -124,7 +129,7 @@ func (r *Reconciler) heldRecords(ctx context.Context) (int64, error) {
 	var held int64
 	for _, secret := range list.Items {
 		rec, _, err := r.loadRecord(ctx, secret.Name)
-		if apierrors.IsNotFound(err) {
+		if notFound(err) {
 			continue
 		}
 		if err != nil || !rec.Deleted {
@@ -151,5 +156,5 @@ func (r *Reconciler) save(ctx context.Context, rec *record, secret *corev1.Secre
 }
 
 func (r *Reconciler) discard(ctx context.Context, secret *corev1.Secret) error {
-	return client.IgnoreNotFound(r.client.Delete(ctx, secret, &client.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &secret.UID, ResourceVersion: &secret.ResourceVersion}}))
+	return ignoreNotFound(r.client.Delete(ctx, secret, &client.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &secret.UID, ResourceVersion: &secret.ResourceVersion}}))
 }
