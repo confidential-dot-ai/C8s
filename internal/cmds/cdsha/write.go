@@ -25,11 +25,18 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/routes"
 )
 
-// ErrNotConfirmed marks a possibly applied write without a durable local
-// acknowledgement: confirmation or record persistence failed. c8s exits 3.
+// ErrNotConfirmed marks a write that may have been applied: no answer
+// confirmed or refused it. It is never recorded as acknowledged; c8s exits 3.
 var ErrNotConfirmed error = &cmdsutil.ExitStatusError{
 	Status: cmdsutil.ExitNotConfirmed,
 	Err:    errors.New("the write may have been applied: check the replicas' heads with c8s cds ha status before writing again"),
+}
+
+// errRecordNotSaved marks a write CDS answered done whose record failed: a
+// retry would find the entry applied and hide the failure. c8s exits 3.
+var errRecordNotSaved error = &cmdsutil.ExitStatusError{
+	Status: cmdsutil.ExitNotConfirmed,
+	Err:    errors.New("the write is applied: once the record can be saved, the next write records its head"),
 }
 
 // writer appends operator-signed entries through one replica.
@@ -237,7 +244,7 @@ func (o *options) cache(c *verifiedChain) {
 		return
 	}
 	data, err := json.Marshal(c)
-	if err == nil && os.MkdirAll(dir, 0o700) == nil {
+	if err == nil && fileutil.MkdirAllDurable(dir, 0o700) == nil {
 		_ = fileutil.WriteAtomic(filepath.Join(dir, c.state.Cluster+".chain"), data, 0o600)
 	}
 }
@@ -267,11 +274,11 @@ func (w *writer) append(ctx context.Context, state *cdschain.State, typ cdschain
 		head,
 	); err != nil {
 		return head, fmt.Errorf(
-			"CDS confirmed head %d (%s), but saving its local record failed (%w): %w",
+			"CDS confirmed head %d (%s), but its local record was not saved (%w): %w",
 			head.Seq,
 			head.Hash,
 			err,
-			ErrNotConfirmed,
+			errRecordNotSaved,
 		)
 	}
 	fmt.Fprintf(os.Stderr, "committed head %d (%s)\n", head.Seq, head.Hash)

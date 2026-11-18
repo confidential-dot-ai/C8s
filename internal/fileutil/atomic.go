@@ -20,8 +20,8 @@ import (
 // replace on POSIX filesystems; a /tmp tmp would silently degrade to a
 // copy+remove on cross-mount writes.
 func WriteAtomic(path string, data []byte, mode os.FileMode) error {
-	if path != "" && os.IsPathSeparator(path[len(path)-1]) {
-		return fmt.Errorf("write atomically: path %q ends in a path separator", path)
+	if err := rejectTrailingSeparator("write atomically", path); err != nil {
+		return err
 	}
 	dir := filepath.Dir(path)
 	base := filepath.Base(path)
@@ -48,10 +48,9 @@ func WriteAtomicRoot(root *os.Root, name string, data []byte, mode os.FileMode) 
 }
 
 // WriteAtomicDurable syncs the temporary file before replacement, then the
-// destination directory and its physical ancestors. The parent must exist
-// and support syncing; path components must remain stable. Any symlink used
-// to reach the parent must already be durably reachable.
-// An error after replacement can leave the new contents visible.
+// destination directory. The directory must exist and already be durable:
+// MkdirAllDurable creates one that is. An error after replacement can leave
+// the new contents visible.
 func WriteAtomicDurable(path string, data []byte, mode os.FileMode) error {
 	return writeAtomicDurable(
 		path,
@@ -62,21 +61,10 @@ func WriteAtomicDurable(path string, data []byte, mode os.FileMode) error {
 }
 
 func writeAtomicDurable(path string, data []byte, mode os.FileMode, syncFile func(*os.File) error) error {
-	if path != "" && os.IsPathSeparator(path[len(path)-1]) {
-		return fmt.Errorf(
-			"write durably: path %q ends in a path separator",
-			path,
-		)
-	}
-	dir, err := filepath.Abs(filepath.Dir(path))
-	if err != nil {
+	if err := rejectTrailingSeparator("write durably", path); err != nil {
 		return err
 	}
-	dir, err = filepath.EvalSymlinks(dir)
-	if err != nil {
-		return err
-	}
-	root, err := os.OpenRoot(dir)
+	root, err := os.OpenRoot(filepath.Dir(path))
 	if err != nil {
 		return err
 	}
@@ -94,27 +82,63 @@ func writeAtomicDurable(path string, data []byte, mode os.FileMode, syncFile fun
 	if err != nil {
 		return err
 	}
-	for {
-		if err := errors.Join(
-			syncFile(directory),
-			directory.Close(),
-		); err != nil {
-			return fmt.Errorf(
-				"sync directory %s: %w",
-				dir,
-				err,
-			)
+	return syncAndClose(directory, syncFile)
+}
+
+// MkdirAllDurable creates path like os.MkdirAll and syncs the parent of each
+// directory it created. Directories that already exist are taken as durable.
+// A failed sync removes the created directories, so a retry syncs them again.
+func MkdirAllDurable(path string, perm os.FileMode) error {
+	return mkdirAllDurable(
+		path,
+		perm,
+		(*os.File).Sync,
+	)
+}
+
+func mkdirAllDurable(path string, perm os.FileMode, syncFile func(*os.File) error) error {
+	var created []string
+	for dir := filepath.Clean(path); ; dir = filepath.Dir(dir) {
+		_, err := os.Stat(dir)
+		if err == nil {
+			break
 		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return nil
+		if !errors.Is(err, os.ErrNotExist) {
+			return err
 		}
-		dir = parent
-		directory, err = os.Open(dir)
+		created = append(created, dir)
+	}
+	if err := os.MkdirAll(path, perm); err != nil {
+		return err
+	}
+	for _, dir := range created {
+		parent, err := os.Open(filepath.Dir(dir))
+		if err == nil {
+			err = syncAndClose(parent, syncFile)
+		}
 		if err != nil {
+			// Deepest first, so each is empty when its turn comes.
+			for _, dir := range created {
+				_ = os.Remove(dir)
+			}
 			return err
 		}
 	}
+	return nil
+}
+
+func syncAndClose(directory *os.File, syncFile func(*os.File) error) error {
+	if err := errors.Join(syncFile(directory), directory.Close()); err != nil {
+		return fmt.Errorf("sync directory %s: %w", directory.Name(), err)
+	}
+	return nil
+}
+
+func rejectTrailingSeparator(op, path string) error {
+	if path != "" && os.IsPathSeparator(path[len(path)-1]) {
+		return fmt.Errorf("%s: path %q ends in a path separator", op, path)
+	}
+	return nil
 }
 
 func writeAtomicRoot(root *os.Root, name string, data []byte, mode os.FileMode, syncFile func(*os.File) error) error {

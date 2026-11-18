@@ -115,10 +115,10 @@ func (o *options) genesis(ctx context.Context, out io.Writer, urls []string, clu
 		head,
 	); err != nil {
 		return fmt.Errorf(
-			"CDS accepted genesis %s, but saving its local record failed (%w): %w",
+			"CDS accepted genesis %s, but its local record was not saved (%w): %w",
 			head.Hash,
 			err,
-			ErrNotConfirmed,
+			errRecordNotSaved,
 		)
 	}
 	fmt.Fprintf(out, "genesis %s\n", head.Hash)

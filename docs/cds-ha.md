@@ -208,18 +208,8 @@ Notes:
 - `c8s allowlist` and `c8s routes` write to a replica set as chain entries. A replica answers the old `PUT /allowlist` and `PUT /routes` with 409; a single replica still takes `PUT /secrets`.
 - The CLI records, per cluster (`--state-dir`, default `c8s/cds-ha` in the user config directory), the genesis and the last head a write was answered done for. It refuses a replica serving a chain without that head, or of another genesis. Without a record, it takes only a genesis signed by `--operator-key`; an operator who did not sign it passes `--genesis <hash>` to a `c8s cds ha` write once, which records it.
 - A write that may have been applied exits 3, as does a `c8s allowlist` write to a single CDS that no answer confirmed. A genesis no answer confirmed exits 3 too and names its hash: once `c8s cds ha status` shows the replicas hold it, pass that hash as `--genesis`.
-
-A successful CLI write syncs its acknowledged-head record, its directory and
-parent directories before printing success. Concurrent commands retain the
-highest acknowledged head; retrying an equal or older head persists that record
-again. If CDS accepts a write but saving the local record fails, the command
-exits 3 and names the accepted head. The new record may already be visible
-despite that error.
-
-Keep `--state-dir` on persistent, trusted local storage that supports file and
-directory sync. Its path must remain stable during use. If it uses symlinks,
-those links and their parent directories must already be durable. The `.chain`
-cache remains best effort; it does not replace the acknowledged-head record.
+- A successful CLI write syncs its acknowledged-head record and its directory before printing success. When the CLI creates the state directory, it also syncs the parent of each directory it created. Concurrent commands retain the highest acknowledged head; retrying an equal or older head persists that record again. If CDS accepts a write but the local record is not saved, the command exits 3 and names the accepted head. The new record may already be visible despite that error.
+- Keep `--state-dir` on persistent, trusted local storage that supports file and directory sync. Its path must remain stable during use. Directories and symlinks already on that path must be durable: the CLI does not sync them. The `.chain` cache remains best effort; it does not replace the acknowledged-head record.
 
 ## Deployment and upgrades
 
