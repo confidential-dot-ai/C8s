@@ -5,7 +5,10 @@ Pod on a virtual node. The operator then launches one Cloud CVM for that Pod
 UID from a generic launch document that names no pod, verifies that the guest
 has run no containers, delivers the pod through one authenticated assignment,
 and projects verified guest status back to Kubernetes. Deleting the Pod
-terminates its CVM before releasing the provider finalizer.
+terminates its CVM before releasing the provider finalizer. A running Pod's CVM
+is terminated once the deletion's grace period has passed, so a delete with the
+default grace period keeps the CVM for 30 seconds; `--grace-period=0 --force`
+terminates it at once. The guest is not told to stop its containers earlier.
 
 Every pod CVM boots generic and receives exactly one pod. An assigned, rebooted
 or terminal VM is never reused for another Pod. Kubernetes workload controllers

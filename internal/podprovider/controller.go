@@ -304,6 +304,9 @@ func (r *Reconciler) deletePod(ctx context.Context, pod *corev1.Pod) (ctrl.Resul
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+	if wait := r.graceRemaining(pod, rec); wait > 0 {
+		return ctrl.Result{RequeueAfter: wait}, nil
+	}
 	done, err := r.removeInstance(ctx, rec, secret)
 	if err != nil || !done {
 		return ctrl.Result{RequeueAfter: pollInterval}, err
@@ -314,6 +317,21 @@ func (r *Reconciler) deletePod(ctx context.Context, pod *corev1.Pod) (ctrl.Resul
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{}, r.discard(ctx, secret)
+}
+
+// graceRemaining is how long a deleted Pod's instance must still be left
+// running. The API server sets DeletionTimestamp to the end of the grace
+// period and moves it earlier when a later delete shortens it. Nothing is
+// left to wait for once the Pod has ended or its instance's destruction was
+// already decided.
+func (r *Reconciler) graceRemaining(pod *corev1.Pod, rec *record) time.Duration {
+	if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
+		return 0
+	}
+	if !rec.CreateAttempted || rec.DeleteRequested || rec.Deleted || rec.TerminalStatus != nil {
+		return 0
+	}
+	return pod.DeletionTimestamp.Sub(r.now())
 }
 
 // terminalStatus is the phase a deleted pod leaves with: the terminal status
