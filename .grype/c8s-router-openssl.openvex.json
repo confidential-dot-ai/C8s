@@ -1,0 +1,69 @@
+{
+  "@context": "https://openvex.dev/ns/v0.2.0",
+  "@id": "https://github.com/confidential-dot-ai/C8s/blob/main/.grype/c8s-router-openssl.openvex.json",
+  "author": "Confidential AI",
+  "timestamp": "2026-11-18T14:54:49Z",
+  "version": 1,
+  "statements": [
+    {
+      "vulnerability": { "name": "CVE-2026-88823" },
+      "products": [{
+        "@id": "pkg:oci/nginx-unprivileged@sha256%3A5d8bb9437d74a600ec5dbf90c035451c724dc33eac8d3a71078f6f8612c345f6?repository_url=docker.io%2Fnginxinc%2Fnginx-unprivileged",
+        "subcomponents": [
+          { "@id": "pkg:apk/alpine/libcrypto3@3.5.9-r0?arch=x86_64" },
+          { "@id": "pkg:apk/alpine/libssl3@3.5.9-r0?arch=x86_64" },
+          { "@id": "pkg:apk/alpine/libcrypto3@3.5.9-r0?arch=aarch64" },
+          { "@id": "pkg:apk/alpine/libssl3@3.5.9-r0?arch=aarch64" }
+        ]
+      }],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The TLS suites in charts/lib/files/router-nginx/nginx.conf do not use AES-GCM-SIV. The router has no application use of this cipher."
+    },
+    {
+      "vulnerability": { "name": "CVE-2026-95692" },
+      "products": [{
+        "@id": "pkg:oci/nginx-unprivileged@sha256%3A5d8bb9437d74a600ec5dbf90c035451c724dc33eac8d3a71078f6f8612c345f6?repository_url=docker.io%2Fnginxinc%2Fnginx-unprivileged",
+        "subcomponents": [
+          { "@id": "pkg:apk/alpine/libcrypto3@3.5.9-r0?arch=x86_64" },
+          { "@id": "pkg:apk/alpine/libssl3@3.5.9-r0?arch=x86_64" },
+          { "@id": "pkg:apk/alpine/libcrypto3@3.5.9-r0?arch=aarch64" },
+          { "@id": "pkg:apk/alpine/libssl3@3.5.9-r0?arch=aarch64" }
+        ]
+      }],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The C8s nginx router does not select AES-GCM-SIV or supply a nonce to that cipher."
+    },
+    {
+      "vulnerability": { "name": "CVE-2026-95691" },
+      "products": [{
+        "@id": "pkg:oci/nginx-unprivileged@sha256%3A5d8bb9437d74a600ec5dbf90c035451c724dc33eac8d3a71078f6f8612c345f6?repository_url=docker.io%2Fnginxinc%2Fnginx-unprivileged",
+        "subcomponents": [
+          { "@id": "pkg:apk/alpine/libcrypto3@3.5.9-r0?arch=x86_64" },
+          { "@id": "pkg:apk/alpine/libssl3@3.5.9-r0?arch=x86_64" },
+          { "@id": "pkg:apk/alpine/libcrypto3@3.5.9-r0?arch=aarch64" },
+          { "@id": "pkg:apk/alpine/libssl3@3.5.9-r0?arch=aarch64" }
+        ]
+      }],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The shipped C8s nginx router accepts TCP connections and proxies to loopback HTTP listeners. These paths do not create an OpenSSL QUIC client."
+    },
+    {
+      "vulnerability": { "name": "CVE-2026-107496" },
+      "products": [{
+        "@id": "pkg:oci/nginx-unprivileged@sha256%3A5d8bb9437d74a600ec5dbf90c035451c724dc33eac8d3a71078f6f8612c345f6?repository_url=docker.io%2Fnginxinc%2Fnginx-unprivileged",
+        "subcomponents": [
+          { "@id": "pkg:apk/alpine/libcrypto3@3.5.9-r0?arch=x86_64" },
+          { "@id": "pkg:apk/alpine/libssl3@3.5.9-r0?arch=x86_64" },
+          { "@id": "pkg:apk/alpine/libcrypto3@3.5.9-r0?arch=aarch64" },
+          { "@id": "pkg:apk/alpine/libssl3@3.5.9-r0?arch=aarch64" }
+        ]
+      }],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The C8s nginx router uses its certificates for TLS. It does not encrypt CMS messages to recipient certificates."
+    }
+  ]
+}
