@@ -1035,6 +1035,17 @@ func TestDigestsClientCertificateListsMeasuredPolicies(t *testing.T) {
 	}
 }
 
+func TestDigestsClientEmptyPins(t *testing.T) {
+	cfg := DigestsClientConfig{AttestationAPIURL: "http://127.0.0.1:1"}
+	if _, _, err := armtls.NewClientTLSConfig(cfg.tlsConfig()); !errors.Is(err, armtls.ErrUnpinned) {
+		t.Fatalf("static empty pins = %v, want ErrUnpinned", err)
+	}
+	cfg.CurrentPins = func() armtls.Pins { return armtls.Pins{} }
+	if _, _, err := armtls.NewClientTLSConfig(cfg.tlsConfig()); err != nil {
+		t.Fatalf("dynamic empty pins: %v", err)
+	}
+}
+
 // With CurrentPins, CDS holds an inventory to the set in force at each
 // handshake, not the set it started with.
 func TestDigestsClientFollowsCurrentPins(t *testing.T) {
