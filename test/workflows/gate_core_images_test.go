@@ -49,8 +49,8 @@ func TestGateImageRefUsesCheckout(t *testing.T) {
 	git("-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "gated checkout")
 	head := git("rev-parse", "HEAD")
 	output := filepath.Join(repo, "output")
-	t.Setenv("PR", "")
-	t.Setenv("BASE_SHA", base)
+	// A dispatch: no merge group base, so the gate builds the checkout.
+	t.Setenv("BASE_SHA", "")
 	t.Setenv("GITHUB_SHA", base)
 	t.Setenv("GITHUB_OUTPUT", output)
 	t.Setenv("GITHUB_STEP_SUMMARY", filepath.Join(repo, "summary"))
