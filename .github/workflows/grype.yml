@@ -101,10 +101,21 @@ jobs:
           echo "::error file=charts/lib/files/components.yaml::routerNginx.image.digest must be a sha256 pin, got '$digest'"; exit 1
         fi
         echo "ref=${repo}@${digest}" >> "$GITHUB_OUTPUT"
-        # Exceptions assessed for another digest do not carry over to this one.
-        if [[ "$(yq -r .digest .grype-router.yaml)" == "$digest" ]]; then
-          yq -i '.ignore += load(".grype-router.yaml").ignore' .grype.yaml
+        echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+
+    # .grype-router.yaml lists exceptions that were checked against one image
+    # digest. They are used only when that is the digest being scanned.
+    - name: Add the exceptions assessed for this image
+      env:
+        PINNED: ${{ steps.image.outputs.digest }}
+      run: |
+        set -euo pipefail
+        assessed=$(yq -r '.digest' .grype-router.yaml)
+        if [[ "$assessed" != "$PINNED" ]]; then
+          echo "::notice file=.grype-router.yaml::Assessed for $assessed, not the pinned $PINNED: scanning without these exceptions."
+          exit 0
         fi
+        yq -i '.ignore += load(".grype-router.yaml").ignore' .grype.yaml
 
     - uses: ./.github/actions/setup-grype
 
