@@ -31,6 +31,15 @@ type Outcome struct {
 	Pinned            bool   `json:"measurement_pinned"`
 	Error             string `json:"error,omitempty"`
 
+	// TDXTCBStatus is the least favourable Intel TCB status of the TDX
+	// platform, TDX module and QE, checked against --tdx-tcb-status, with the
+	// Intel advisories its matched TCB levels name. TDXCollateralExpiresAt is
+	// the earliest nextUpdate of the TCB info, QE identity and CRLs.
+	// All three are set only on a verdict that checked the status.
+	TDXTCBStatus           string     `json:"tdx_tcb_status,omitempty"`
+	TDXAdvisoryIDs         []string   `json:"tdx_advisory_ids,omitempty"`
+	TDXCollateralExpiresAt *time.Time `json:"tdx_collateral_expires_at,omitempty"`
+
 	// InitData is the init-data digest the verified evidence commits, and
 	// InitDataNote says what stands behind it: compared against --init-data,
 	// enforced as a launch-file pin, or reported unpinned.
@@ -177,6 +186,12 @@ func renderText(cfg config, oc Outcome, out io.Writer) {
 	}
 	if hardware {
 		fmt.Fprintf(out, "  TCB:          %s   debug=%t smt=%t\n", oc.CurrentTCB, oc.Debug, oc.SMT)
+	}
+	if oc.TDXTCBStatus != "" {
+		fmt.Fprintf(out, "  Intel TCB:    %s (Intel PCS collateral, expires %s)\n", oc.TDXTCBStatus, oc.TDXCollateralExpiresAt.Format(time.RFC3339))
+		if len(oc.TDXAdvisoryIDs) > 0 {
+			fmt.Fprintf(out, "  advisories:   %s\n", strings.Join(oc.TDXAdvisoryIDs, ", "))
+		}
 	}
 	if oc.CertSHA256 != "" {
 		fmt.Fprintf(out, "  cert sha256:  %s\n", oc.CertSHA256)

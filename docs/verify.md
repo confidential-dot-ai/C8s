@@ -20,6 +20,8 @@ Prerequisites:
   `--cds-address`: the front door relays neither CDS endpoint used here.
 - Outbound HTTPS to `kdsintf.amd.com` for AMD endorsement certificates
   evidence does not carry inline.
+- For TDX, outbound HTTPS to `api.trustedservices.intel.com`
+  and `certificates.trustedservices.intel.com` for Intel collateral.
 - The measurements you accept, from the operator or from the image build.
 
 ## Choose the pins and the CA anchor
@@ -140,6 +142,53 @@ c8s cds verify https://<CDS_ADDRESS> --image-policy-file cds-pin.json
 "Check the routes" below. Add `--server-name <HOST>` when the name you dial is
 not the name the endpoint serves, as through a port-forward.
 
+## Require a current Intel TCB on TDX
+
+A TDX quote proves what booted, and it carries the TCB levels of the platform:
+microcode, firmware and the TDX module. Only Intel's current collateral says
+whether those levels are up to date. An `OutOfDate` platform can have known
+vulnerabilities. `c8s verify` requires `UpToDate` by default for TDX.
+Use `--tdx-offline` to skip fetching Intel collateral for live or saved evidence.
+Offline mode does not check the TCB status and warns on a passing verdict:
+
+```text
+  WARNING:      Intel TCB status not checked: --tdx-offline accepts an out-of-date TDX platform
+```
+
+The default is equivalent to this explicit policy:
+
+```sh
+c8s cds verify https://<CDS_ADDRESS> --image-policy-file cds-pin.json \
+    --tdx-tcb-status UpToDate
+```
+
+The check runs in every mode that carries TDX evidence, including
+`--from-file`, and requires a positive `--timeout`. It makes these checks:
+
+- It fetches the TCB info, the QE identity and the PCK and root CRLs from
+  Intel PCS, within `--timeout`, and checks Intel's signatures on them.
+- It refuses collateral after its `nextUpdate`, and a revoked PCK certificate.
+- It requires the status of the platform, the TDX module and the quoting
+  enclave (QE) to be in the accepted set.
+
+Repeat the flag to accept more statuses, for example
+`--tdx-tcb-status UpToDate --tdx-tcb-status SWHardeningNeeded`. `Revoked` is
+never accepted. `--tdx-offline` excludes `--tdx-tcb-status`. Explicit status
+flags against SEV-SNP evidence are a policy error; use `--min-tcb-*` there.
+The default Intel policy does not change SEV-SNP or CA-issued Pod CVM leaf
+verification.
+
+A passing verdict reports the least favourable status, the Intel advisories of
+the matched TCB levels, and when the collateral expires:
+
+```text
+  Intel TCB:    UpToDate (Intel PCS collateral, expires 2026-12-17T21:30:01Z)
+```
+
+`-o json` carries these as `tdx_tcb_status`, `tdx_advisory_ids` and
+`tdx_collateral_expires_at`. A status outside the set fails the verdict
+(exit 2). Collateral that cannot be fetched exits 3, so a gate can retry.
+
 ## Read the verdict
 
 The first line is the verdict and the exit code repeats it:
@@ -151,8 +200,9 @@ The first line is the verdict and the exit code repeats it:
 | `✗ NOT VERIFIED  (attestation-go backend)` | 2 | Verification or a policy check failed; `reason:` names it. |
 
 Exit 1 (usage) prints only an `error:` line on stderr. Exit 3 prints that line
-and no verdict when no evidence could be fetched, and a `✗ NOT VERIFIED`
-verdict when a policy-history fetch could not be reached. A passing router
+and no verdict when no evidence, AMD KDS certificate or Intel PCS collateral
+could be fetched, and a `✗ NOT VERIFIED` verdict when a policy-history fetch
+could not be reached. A passing router
 check prints, with `…` for elided lines:
 
 ```text

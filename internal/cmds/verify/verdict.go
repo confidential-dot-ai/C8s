@@ -14,6 +14,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
+	"github.com/confidential-dot-ai/c8s/internal/localverify"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 )
@@ -88,6 +89,9 @@ func enforcePins(
 	}
 	if err := enforceMinTCB(oc.Platform, cfg, result); err != nil {
 		return err
+	}
+	if len(plan.tdxTCBStatuses) > 0 && !isTDX(oc.Platform) {
+		return fmt.Errorf("--tdx-tcb-status is set but the evidence platform is %q: an Intel TCB status exists only for TDX, so this policy cannot be enforced against %q evidence", oc.Platform, oc.Platform)
 	}
 	coverage, err := enforceImagePolicy(oc, measured, result, plan)
 	if err != nil {
@@ -324,6 +328,25 @@ func replayedHistory(response remote.VerifyResponse, images []remote.ImagePin, p
 		return slices.Clone(replayed[:k]), true
 	}
 	return nil, false
+}
+
+// tdxTCBUncheckedWarning marks a TDX verdict that did not check the
+// platform's Intel TCB status.
+const tdxTCBUncheckedWarning = "Intel TCB status not checked: --tdx-offline accepts an out-of-date TDX platform"
+
+// applyTDXTCBStatus reports the Intel TCB status a TDX verdict checked, or
+// warns that it checked none. A failed verdict reports neither.
+func applyTDXTCBStatus(oc *Outcome, result *teetypes.VerificationResult, collateral *localverify.TDXCollateral) {
+	if oc.Error != "" || !isTDX(oc.Platform) {
+		return
+	}
+	if result.TCBStatus == nil || collateral == nil {
+		oc.Warnings = append(oc.Warnings, tdxTCBUncheckedWarning)
+		return
+	}
+	oc.TDXTCBStatus = string(result.TCBStatus.TCBStatus)
+	oc.TDXAdvisoryIDs = result.TCBStatus.AdvisoryIDs
+	oc.TDXCollateralExpiresAt = &collateral.NextUpdate
 }
 
 // enforceMinTCB settles the --min-tcb-* floor on the signature-verified

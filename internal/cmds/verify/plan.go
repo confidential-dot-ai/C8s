@@ -18,6 +18,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/c8s/internal/localverify"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
@@ -51,6 +52,9 @@ type verifyPlan struct {
 	// operatorKeysDigest is the digest the set a kind=cds target serves at
 	// /operator-keys must equal, nil when no --operator-keys bundle pins it.
 	operatorKeysDigest []byte
+	// tdxTCBStatuses are the Intel TCB statuses --tdx-tcb-status accepts,
+	// nil before the default TDX policy is applied or in offline mode.
+	tdxTCBStatuses []teetypes.TdxTcbStatus
 }
 
 // buildPolicy parses the measurement allowlist, resolves the register pins and
@@ -58,6 +62,9 @@ type verifyPlan struct {
 // min-TCB are enforced on the verifier verdict (newOutcome / verifyInProcess);
 // only Measurements and AllowDebug are read by the verifier itself.
 func buildPolicy(cfg config) (*verifyPlan, error) {
+	if cfg.tdxOffline && len(cfg.tdxTCBStatuses) > 0 {
+		return nil, fmt.Errorf("--tdx-offline excludes --tdx-tcb-status")
+	}
 	if err := refuseMeshLeafFlagsWithKindCDS(cfg); err != nil {
 		return nil, err
 	}
@@ -190,6 +197,10 @@ func buildPolicy(cfg config) (*verifyPlan, error) {
 	if err != nil {
 		return nil, err
 	}
+	tdxTCBStatuses, err := parseTDXTCBStatuses(cfg.tdxTCBStatuses)
+	if err != nil {
+		return nil, err
+	}
 
 	return &verifyPlan{
 		// RTMRs is still set: it is what enforces the pin if this policy is
@@ -209,7 +220,21 @@ func buildPolicy(cfg config) (*verifyPlan, error) {
 		routes:             routes,
 		trustKeys:          trustKeys,
 		operatorKeysDigest: operatorKeysDigest,
+		tdxTCBStatuses:     tdxTCBStatuses,
 	}, nil
+}
+
+// parseTDXTCBStatuses parses --tdx-tcb-status, in Intel PCS spelling.
+func parseTDXTCBStatuses(flags []string) ([]teetypes.TdxTcbStatus, error) {
+	var statuses []teetypes.TdxTcbStatus
+	for _, f := range flags {
+		status, err := localverify.ParseTDXTCBStatus(strings.TrimSpace(f))
+		if err != nil {
+			return nil, fmt.Errorf("--tdx-tcb-status: %w", err)
+		}
+		statuses = append(statuses, status)
+	}
+	return statuses, nil
 }
 
 // parseInitDataPin parses --init-data: the SHA-256 hex digest of the init-data

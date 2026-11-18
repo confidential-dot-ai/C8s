@@ -44,6 +44,11 @@ Pinning MRTD alone leaves the guest unpinned: it covers the firmware, so a host
 can boot another kernel under it. `--image-manifest` pins MRTD, RTMR[1] and
 RTMR[2] from one build.
 
+The quote also carries the TCB levels of the platform and the TDX module. Only
+Intel's current collateral says whether those levels are up to date, which
+`c8s verify` checks by default (`--tdx-tcb-status` selects accepted statuses)
+([verify.md](verify.md#require-a-current-intel-tcb-on-tdx)).
+
 ### Policy history
 
 RTMR[3] is extended by software inside the guest, so on its own it says nothing
