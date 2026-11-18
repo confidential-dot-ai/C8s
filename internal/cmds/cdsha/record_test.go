@@ -293,3 +293,30 @@ func TestResolveStopsOnAnUnsavedRecord(t *testing.T) {
 		t.Fatalf("policy at seq %d, want one refresh above %d", got, held)
 	}
 }
+
+// A rerun resumes from the plan, so it is written as durably as the record.
+func TestResolvePlanIsWrittenDurably(t *testing.T) {
+	var persisted []string
+	o := &options{stateDir: t.TempDir()}
+	o.persist = func(path string, data []byte, mode os.FileMode) error {
+		persisted = append(persisted, path)
+		return fileutil.WriteAtomic(path, data, mode)
+	}
+	want := resolvePlan{Seq: 4, Keep: cdschain.Hash{9}, Drop: cdschain.Hash{8}, Held: 6}
+	if err := o.savePlan("lane", &want); err != nil {
+		t.Fatal(err)
+	}
+	path, err := o.planPath("lane")
+	if err != nil || len(persisted) != 1 || persisted[0] != path {
+		t.Fatalf("plan written through %v, want one durable write of %s", persisted, path)
+	}
+	if got, err := o.plan("lane"); err != nil || got == nil || *got != want {
+		t.Fatalf("read back %+v, %v", got, err)
+	}
+	if err := o.savePlan("lane", nil); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := o.plan("lane"); err != nil || got != nil {
+		t.Fatalf("a finished resolve left its plan: %+v, %v", got, err)
+	}
+}

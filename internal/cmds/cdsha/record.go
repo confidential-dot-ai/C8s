@@ -139,9 +139,13 @@ func (o *options) acknowledge(genesis cdschain.Hash, head cdschain.Head) error {
 	if err != nil {
 		return err
 	}
-	persist := o.persist
-	if persist == nil {
-		persist = fileutil.WriteAtomicDurable
+	return o.writeDurable(path, append(data, '\n'))
+}
+
+// writeDurable replaces path with data, private to the operator, and syncs it.
+func (o *options) writeDurable(path string, data []byte) error {
+	if o.persist != nil {
+		return o.persist(path, data, 0o600)
 	}
-	return persist(path, append(data, '\n'), 0o600)
+	return fileutil.WriteAtomicDurable(path, data, 0o600)
 }

@@ -17,7 +17,6 @@ import (
 
 	"github.com/confidential-dot-ai/c8s/internal/cdschain"
 	haapi "github.com/confidential-dot-ai/c8s/internal/cdsha"
-	"github.com/confidential-dot-ai/c8s/internal/fileutil"
 )
 
 func newResolveCmd(o *options) *cobra.Command {
@@ -190,7 +189,8 @@ func (o *options) savePlan(cluster string, p *resolvePlan) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	return fileutil.WriteAtomic(path, append(data, '\n'), 0o600)
+	// A rerun after a crash resumes from this plan, so it must outlive one.
+	return o.writeDurable(path, append(data, '\n'))
 }
 
 // ackedAt is the entry at seq on the chain of this CLI's acknowledged head,
