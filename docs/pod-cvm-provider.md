@@ -9,7 +9,11 @@ terminates its CVM before releasing the provider finalizer. A running Pod's CVM
 is terminated once the deletion's grace period has passed, or after
 `maxDeletionGraceSeconds` if that is shorter, so a delete with the default
 grace period keeps the CVM for 30 seconds; `--grace-period=0 --force`
-terminates it at once. The guest is not told to stop its containers earlier.
+terminates it at once, and so does deleting a Pod its CVM has not received
+yet. The guest is not told to stop its containers earlier. A Pod whose
+verification deadline passes during the grace period reports
+`GuestVerificationTimedOut` then; its CVM still stays until the grace period
+ends.
 
 Every pod CVM boots generic and receives exactly one pod. An assigned, rebooted
 or terminal VM is never reused for another Pod. Kubernetes workload controllers

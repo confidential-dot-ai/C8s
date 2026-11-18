@@ -305,7 +305,7 @@ func (r *Reconciler) deletePod(ctx context.Context, pod *corev1.Pod) (ctrl.Resul
 		return ctrl.Result{}, err
 	}
 	if wait := r.graceRemaining(pod, rec); wait > 0 {
-		return ctrl.Result{RequeueAfter: wait}, nil
+		return r.holdForGrace(ctx, pod, rec, wait)
 	}
 	done, err := r.removeInstance(ctx, rec, secret)
 	if err != nil || !done {
@@ -327,13 +327,10 @@ const defaultMaxDeletionGraceSeconds = 300
 // running. The API server sets DeletionTimestamp to the end of the grace
 // period and moves it earlier when a later delete shortens it. The Pod's
 // author chooses the grace period, so the configured maximum bounds it.
-// Nothing is left to wait for once the Pod has ended or its instance's
-// destruction was already decided.
+// Nothing is left to wait for when the guest was never sent the Pod, so runs
+// no containers, or when the instance's destruction was already decided.
 func (r *Reconciler) graceRemaining(pod *corev1.Pod, rec *record) time.Duration {
-	if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
-		return 0
-	}
-	if !rec.CreateAttempted || rec.DeleteRequested || rec.Deleted || rec.TerminalStatus != nil {
+	if len(rec.Assignment) == 0 || rec.DeleteRequested || rec.Deleted || rec.TerminalStatus != nil {
 		return 0
 	}
 	end := pod.DeletionTimestamp.Time
@@ -341,6 +338,23 @@ func (r *Reconciler) graceRemaining(pod *corev1.Pod, rec *record) time.Duration 
 		end = end.Add(-time.Duration(*grace-r.cfg.MaxDeletionGraceSeconds) * time.Second)
 	}
 	return end.Sub(r.now())
+}
+
+// holdForGrace leaves the instance running for wait, the rest of the grace
+// period. A verification deadline that passes meanwhile still fails the Pod;
+// its instance stays until the grace period ends.
+func (r *Reconciler) holdForGrace(ctx context.Context, pod *corev1.Pod, rec *record, wait time.Duration) (ctrl.Result, error) {
+	if rec.VerificationDeadline == nil {
+		return ctrl.Result{RequeueAfter: wait}, nil
+	}
+	if !r.verificationExpired(rec) {
+		return ctrl.Result{RequeueAfter: min(wait, rec.VerificationDeadline.Sub(r.now()))}, nil
+	}
+	err := r.publishEndpoints(ctx, pod, nil)
+	if pod.Status.Phase != corev1.PodFailed {
+		err = errors.Join(err, r.publishStatus(ctx, pod, failedStatus(pod, verificationTimeoutReason, r.now())))
+	}
+	return ctrl.Result{RequeueAfter: wait}, err
 }
 
 // terminalStatus is the phase a deleted pod leaves with: the terminal status
