@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # confidential-inference-compat.sh against a small c8s repository, a
 # confidential-inference tree that pins its first commit, and a fake curl that
-# records the request and answers with $REPLY.
+# lists one model, records the chat call and answers it with $REPLY.
 
 set -euo pipefail
 
@@ -33,12 +33,17 @@ cat >"$work/bin/curl" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 for arg in "$@"; do
-  case "$arg" in @*) cp "${arg#@}" "$FAKE_REQUEST" ;; esac
+  case "$arg" in
+    */v1/models) echo '{"data": [{"id": "test-model"}]}'; exit 0 ;;
+    @*) cp "${arg#@}" "$FAKE_REQUEST" ;;
+  esac
 done
-jq -n --arg text "$REPLY" '{content: [{type: "text", text: $text}]}'
+printf '%s\n' "$@" >"$FAKE_ARGS"
+jq -n --arg text "$REPLY" '{choices: [{message: {content: $text}}]}'
 EOF
 chmod +x "$work/bin/curl"
-export PATH="$work/bin:$PATH" FAKE_REQUEST="$work/request" ANTHROPIC_API_KEY=test
+export PATH="$work/bin:$PATH" FAKE_REQUEST="$work/request" FAKE_ARGS="$work/args" \
+  CONFIDENTIAL_INFERENCE_API_KEY=test
 
 # The c8s repository: one hashed source file, one other source file, a test
 # and a doc.
@@ -76,17 +81,20 @@ REPLY=unused judge "$pinned" "$docs_only"
 [ ! -e "$work/request" ] || fail "a tests-and-docs change asked the model"
 pass
 
-# A source change is judged by the model: the request carries the commit, the
-# diff and the contract files; the verdict is the reply's first line.
+# A source change is judged by the served model: the request carries the
+# commit, the diff and the contract files; the verdict is the reply's first line.
 echo 'package allowlist; func Parse() {}' >"$work/c8s/pkg/allowlist/allowlist.go"
 api_change=$(commit "feat(allowlist): add Parse")
 REPLY=$'INCOMPATIBLE\n\n- pkg/allowlist gained Parse' judge "$docs_only" "$api_change"
 [ "$status" -eq 1 ] || fail "INCOMPATIBLE did not exit 1 (exit $status)"
 grep -q 'pkg/allowlist gained Parse' "$work/report" || fail "the report is not the model's reply"
-user=$(jq -r '.messages[0].content' "$work/request")
+grep -qx 'https://api.confidential.ai/v1/chat/completions' "$work/args" || fail "the request did not go to chat completions"
+grep -qx 'Authorization: Bearer test' "$work/args" || fail "the request lacks the bearer key"
+[ "$(jq -r '.model' "$work/request")" = test-model ] || fail "the request does not name the served model"
+user=$(jq -r '.messages[1].content' "$work/request")
 grep -q 'feat(allowlist): add Parse' <<<"$user" || fail "the request lacks the commit subject"
 grep -q '+package allowlist; func Parse' <<<"$user" || fail "the request lacks the diff"
-system=$(jq -r '.system' "$work/request")
+system=$(jq -r '.messages[0].content' "$work/request")
 grep -q 'contract scripts/bump-c8s.py' <<<"$system" || fail "the request lacks a contract file"
 grep -q '"internal/cmds/cds/routes.go"' <<<"$system" || fail "the request lacks the hashed source files"
 grep -q 'sha256:0' <<<"$system" && fail "the request carries the source hashes"
