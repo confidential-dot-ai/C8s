@@ -140,8 +140,9 @@ exec path ([overview.md](overview.md#cvm-modes-and-hardware-platforms)).
   outside the node's own exempt namespaces; the pod sandbox keeps the
   privileges the runtime gave it —
   [node-exec-mode.md](node-exec-mode.md#the-privilege-floor).
-- **Platform role**: the identity a measured base grants one C8s node-side
-  invocation, with the command line and mounts its measured declaration pins —
+- **Platform role**: the identity a measured base, or a component set in force,
+  grants one C8s node-side invocation, with the command line and mounts its
+  declaration pins —
   [allowlist-and-capabilities.md](allowlist-and-capabilities.md#host-privilege).
 
 Creating a pod is not what this closes: whoever can create one chooses its

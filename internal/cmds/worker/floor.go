@@ -125,7 +125,8 @@ func parseTemplate(data []byte) (*floorTemplate, error) {
 }
 
 // requirePlatformRoles refuses a base entry whose containers do not all carry
-// a platform role: a worker grants roles from this measured base alone.
+// a platform role: a worker's measured base describes its own platform
+// invocations.
 func requirePlatformRoles(base *allowlist.Allowlist) error {
 	for _, name := range slices.Sorted(maps.Keys(base.Workloads)) {
 		containers := slices.Concat(base.Workloads[name].InitContainers, base.Workloads[name].Containers)

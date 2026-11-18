@@ -16,6 +16,9 @@ type policyTarget interface {
 	// replace puts a later pull into force and stops the running containers
 	// it no longer admits.
 	replace(ctx context.Context, pulled *allowlist.Allowlist, version uint64) error
+	// endSets puts the end of a retired component set into force: the sets a
+	// kept document holds are the ones in force at the Trust Authority's time.
+	endSets(ctx context.Context)
 }
 
 func policyTargetFor(cfg *config, plugin *plugin) policyTarget {
@@ -55,6 +58,12 @@ func (n nodeTarget) replace(
 	return nil
 }
 
+func (n nodeTarget) endSets(ctx context.Context) {
+	if n.store.rebuildEndedSets() {
+		n.killRevoked(ctx)
+	}
+}
+
 // podTarget is a Pod guest's policy, which applyPodPolicy installs under
 // admission's lock.
 type podTarget struct {
@@ -79,4 +88,10 @@ func (p podTarget) replace(
 	version uint64,
 ) error {
 	return p.plugin.applyPodPolicy(ctx, pulled, version)
+}
+
+func (p podTarget) endSets(ctx context.Context) {
+	if p.plugin.policy.rebuildEndedSets() {
+		p.plugin.KillRevoked(ctx)
+	}
 }

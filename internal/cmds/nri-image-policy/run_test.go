@@ -607,7 +607,7 @@ func TestPullInitial_BacksOffBetweenAttempts(t *testing.T) {
 	defer srv.Close()
 
 	client := allowlistclient.NewClientWithHTTP(srv.URL, &http.Client{Timeout: time.Second})
-	store := newPolicyStore(nil)
+	store := newPolicyStore(nil, localClock())
 
 	start := time.Now()
 	_, err := pullInitial(context.Background(), pullArgs{
@@ -631,7 +631,7 @@ func TestPullInitial_BacksOffBetweenAttempts(t *testing.T) {
 
 func TestNewPlugin_WorkloadClaimsWiring(t *testing.T) {
 	t.Setenv("NRI_PLUGIN_NAME", "")
-	store := newPolicyStore(nil)
+	store := newPolicyStore(nil, localClock())
 	for _, tc := range []struct {
 		name         string
 		socketDir    string

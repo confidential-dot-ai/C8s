@@ -325,7 +325,7 @@ func IsSocketConsumer(name string) bool {
 
 // IsInjectedContainerName reports whether name is one the admission webhook
 // injects. Names are host-written, so it holds only over authored input;
-// runtime matching goes by the role a node's measured base binds to a launch
+// runtime matching goes by the role a node's policy binds to a launch
 // (internal/secrets.WorkloadContainers).
 func IsInjectedContainerName(name string) bool {
 	return IsSidecarContainer(name) || name == CertWaitContainerName || name == MeshContainerName
@@ -429,10 +429,10 @@ type SandboxContainer struct {
 	Env    *allowlist.EnvObservation `json:"env,omitempty"`
 	Mounts []allowlist.ObservedMount `json:"mounts"`
 	Digest string                    `json:"digest"`
-	// Role is the platform role the node's own measured base binds to this
-	// launch, and is empty for a container outside every role. It is the
-	// enforcer's reading of its boot config, so nothing a Trust Authority serves and no
-	// pod spec can claim one (pkg/allowlist).
+	// Role is the platform role the node's measured base, or a component set
+	// in force, binds to this launch, and is empty for a container outside
+	// every role. It is the enforcer's own reading of its policy, so no pod
+	// spec can claim one (pkg/allowlist).
 	Role string `json:"role,omitempty"`
 	// Argv is the effective OCI process.args — the merged image-config and
 	// pod-spec command, which is what the argv policy is written against.

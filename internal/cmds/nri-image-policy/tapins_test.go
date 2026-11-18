@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/containerd/nri/pkg/api"
 
@@ -42,7 +43,7 @@ func TestPrepareTAPinsRendersTheConfiguredDocument(t *testing.T) {
 	})
 
 	if err := p.prepareTAPins(nodeTAPins(t, p)); err != nil {
-		t.Fatalf("prepareCDSPins: %v", err)
+		t.Fatalf("prepareTAPins: %v", err)
 	}
 	if want := filepath.Join(enforcerRuntimeDir, renderedTAPinsName); p.taPins != want {
 		t.Fatalf("pins path = %q, want %q", p.taPins, want)
@@ -74,7 +75,7 @@ func TestPrepareTAPinsStagesACopyEveryClientCanRead(t *testing.T) {
 	})
 
 	if err := p.prepareTAPins(nodeTAPins(t, p)); err != nil {
-		t.Fatalf("prepareCDSPins: %v", err)
+		t.Fatalf("prepareTAPins: %v", err)
 	}
 	staged, err := os.Stat(p.taPins)
 	if err != nil {
@@ -97,7 +98,7 @@ func TestPrepareTAPinsAcceptsTheTAVMsOwnFamily(t *testing.T) {
 	})
 
 	if err := p.prepareTAPins(nodeTAPins(t, p)); err != nil {
-		t.Fatalf("prepareCDSPins: %v", err)
+		t.Fatalf("prepareTAPins: %v", err)
 	}
 	rendered, err := refvalues.Load(p.taPins)
 	if err != nil {
@@ -113,7 +114,7 @@ func TestPrepareTAPinsAcceptsTheTAVMsOwnFamily(t *testing.T) {
 func TestPrepareTAPinsEmptyWithoutInventory(t *testing.T) {
 	p := testPlugin(t, &config{Allowlist: allowlistConfig{Pull: pullConfig{TAMeasurementsConfig: testTAPinFile(t)}}})
 	if err := p.prepareTAPins(nodeTAPins(t, p)); err != nil {
-		t.Fatalf("prepareCDSPins: %v", err)
+		t.Fatalf("prepareTAPins: %v", err)
 	}
 	if p.taPins != "" {
 		t.Fatalf("pins path = %q, want none", p.taPins)
@@ -148,7 +149,7 @@ func TestSidecarAdjustmentMountsTheNodePolicy(t *testing.T) {
 		Allowlist:      allowlistConfig{Pull: pullConfig{TAMeasurementsConfig: testTAPinFile(t)}},
 	})
 	if err := p.prepareTAPins(nodeTAPins(t, p)); err != nil {
-		t.Fatalf("prepareCDSPins: %v", err)
+		t.Fatalf("prepareTAPins: %v", err)
 	}
 	pod := &api.PodSandbox{
 		Id:          "sandbox",
@@ -227,9 +228,9 @@ func TestSidecarAdjustmentFollowsTheMeasuredCredentialsRole(t *testing.T) {
 		WorkloadClaims: workloadClaimsConfig{SocketDir: dir},
 		Allowlist:      allowlistConfig{Base: base, Pull: pullConfig{TAMeasurementsConfig: testTAPinFile(t)}},
 	})
-	p.policy = newPolicyStore(base)
+	p.policy = newPolicyStore(base, localClock())
 	if err := p.prepareTAPins(nodeTAPins(t, p)); err != nil {
-		t.Fatalf("prepareCDSPins: %v", err)
+		t.Fatalf("prepareTAPins: %v", err)
 	}
 	pod := &api.PodSandbox{
 		Id:        "sandbox",
@@ -312,7 +313,7 @@ func testPlugin(t *testing.T, cfg *config) *plugin {
 	if cfg.Mesh == nil {
 		cfg.Mesh = meshRoles()
 	}
-	p, err := newPlugin(cfg, &fakeContainerd{}, newPolicyStore(nil), audit.NewLogger(), discardLogger())
+	p, err := newPlugin(cfg, &fakeContainerd{}, newPolicyStore(nil, localClock()), audit.NewLogger(), discardLogger())
 	if err != nil {
 		t.Fatalf("newPlugin: %v", err)
 	}
@@ -343,31 +344,13 @@ func TestCertGateTakesNoSocketDirectory(t *testing.T) {
 		WorkloadClaims: workloadClaimsConfig{SocketDir: dir},
 		Allowlist:      allowlistConfig{Base: base, Pull: pullConfig{TAMeasurementsConfig: testTAPinFile(t)}},
 	})
-	p.policy = newPolicyStore(base)
+	p.policy = newPolicyStore(base, localClock())
 	p.mountStorage = fixedStorage(allowlist.MountMemory)
 	p.inventory = newAdmissionInventory(t.TempDir())
 	if err := p.prepareTAPins(nodeTAPins(t, p)); err != nil {
-		t.Fatalf("prepareCDSPins: %v", err)
+		t.Fatalf("prepareTAPins: %v", err)
 	}
-	pod := &api.PodSandbox{
-		Id:          "sandbox",
-		Uid:         "uid",
-		Namespace:   "default",
-		Annotations: map[string]string{workloadclaims.AnnotationInjected: "true"},
-	}
-	gate := &api.Container{
-		Name:         workloadclaims.CertWaitContainerName,
-		PodSandboxId: "sandbox",
-		Annotations:  map[string]string{annotationImageName: "registry/c8s@" + pushDigestA},
-		Args:         []string{"/c8s", "probe-file", "--wait", workloadclaims.MemberCertDir + "/tls.crt"},
-		User:         &api.User{Uid: workloadclaims.CredentialsUID},
-		Mounts: []*api.Mount{{
-			Source:      kubeletRoot + "/pods/uid/volumes/" + emptyDirPlugin + "/c8s-certs",
-			Destination: workloadclaims.MemberCertDir,
-			Type:        "bind",
-			Options:     []string{"rbind", "rw"},
-		}},
-	}
+	pod, gate := certGatePod(), certGateContainer()
 	adjust := mustCredentialMounts(t, p, pod, gate)
 	if mountTo(adjust, workloadclaims.CDSPinsPath) == nil {
 		t.Error("the certificate gate was handed no Trust Authority policy")
@@ -399,4 +382,72 @@ func mountTo(adjust *api.ContainerAdjustment, destination string) *api.Mount {
 		}
 	}
 	return nil
+}
+
+// certGatePod and certGateContainer are the certificate gate as the webhook
+// asks for it: the credentials identity and the member certificate volume.
+func certGatePod() *api.PodSandbox {
+	return &api.PodSandbox{
+		Id:          "sandbox",
+		Uid:         "uid",
+		Namespace:   "default",
+		Annotations: map[string]string{workloadclaims.AnnotationInjected: "true"},
+	}
+}
+
+func certGateContainer() *api.Container {
+	return &api.Container{
+		Name:         workloadclaims.CertWaitContainerName,
+		PodSandboxId: "sandbox",
+		Annotations:  map[string]string{annotationImageName: "registry/c8s@" + pushDigestA},
+		Args:         []string{"/c8s", "probe-file", "--wait", workloadclaims.MemberCertDir + "/tls.crt"},
+		User:         &api.User{Uid: workloadclaims.CredentialsUID},
+		Mounts: []*api.Mount{{
+			Source:      kubeletRoot + "/pods/uid/volumes/" + emptyDirPlugin + "/c8s-certs",
+			Destination: workloadclaims.MemberCertDir,
+			Type:        "bind",
+			Options:     []string{"rbind", "rw"},
+		}},
+	}
+}
+
+// A component set in force grants the credentials role as the measured base
+// does: the node hands the gate its Trust Authority policy, and refuses it
+// once the set is no longer in force.
+func TestCredentialRoleFromAComponentSetInForce(t *testing.T) {
+	renderInTempDir(t)
+	taTime := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	deadline := taTime.Add(time.Hour)
+	certs := allowlist.MountRule{Destination: workloadclaims.MemberCertDir, Kind: allowlist.MountEmptyDir, Source: "c8s-certs"}
+	entry := allowlist.Container{
+		Digest:  mustDigestOrPanic(pushDigestA),
+		Role:    allowlist.RoleCredentials,
+		Command: allowlist.ArgvPolicy{Policy: allowlist.PolicyExact, Argv: []string{"/c8s", "probe-file"}},
+		Args:    allowlist.ArgvPolicy{Policy: allowlist.PolicyAny},
+		Mounts:  allowlist.MountPolicy{Policy: allowlist.PolicyExact, Rules: []allowlist.MountRule{certs}},
+	}
+	p := testPlugin(t, &config{
+		Platform:       "sev-snp",
+		WorkloadClaims: workloadClaimsConfig{SocketDir: t.TempDir()},
+		Allowlist:      allowlistConfig{Pull: pullConfig{TAMeasurementsConfig: testTAPinFile(t)}},
+	})
+	p.policy = newPolicyStore(nil, newTAClock(func() time.Time { return taTime }))
+	p.policy.apply(componentDocument(t, &allowlist.Retirement{Deadline: allowlist.Deadline{Time: deadline}}, entry), 1)
+	p.mountStorage = fixedStorage(allowlist.MountMemory)
+	p.inventory = newAdmissionInventory(t.TempDir())
+	if err := p.prepareTAPins(nodeTAPins(t, p)); err != nil {
+		t.Fatalf("prepareTAPins: %v", err)
+	}
+
+	pod, gate := certGatePod(), certGateContainer()
+	adjust := mustCredentialMounts(t, p, pod, gate)
+	if mountTo(adjust, workloadclaims.CDSPinsPath) == nil {
+		t.Error("the gate the set grants the credentials role was handed no Trust Authority policy")
+	}
+
+	taTime = deadline
+	p.policy.rebuildEndedSets()
+	if _, err := p.cvm().containerMounts(context.Background(), pod, certGateContainer()); err == nil {
+		t.Error("the gate holds the credentials identity under no role in force, and was not refused")
+	}
 }

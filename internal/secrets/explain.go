@@ -23,8 +23,7 @@ import (
 const ExplainRoute = "/secrets-explain/{sandboxID}"
 
 // ReportedContainer is one container the inventory named, and whether the
-// release path drops it as one the node's measured base binds a platform role
-// to.
+// release path drops it as one the node binds a platform role to.
 type ReportedContainer struct {
 	Env      *pkgallowlist.EnvObservation `json:"env,omitempty"`
 	Mounts   []pkgallowlist.ObservedMount `json:"mounts"`
