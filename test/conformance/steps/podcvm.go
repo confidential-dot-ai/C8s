@@ -38,6 +38,7 @@ func registerPodCVM(sc *godog.ScenarioContext) {
 		return reportsReason(ctx, name, "Failed", reason)
 	})
 	sc.Step(`^"([^"]*)" is pending$`, podPending)
+	sc.Step(`^"([^"]*)" is running in its pod CVM$`, podRunsInCVM)
 	sc.Step(`^the provider holds (a|no) record for "([^"]*)"$`, providerHoldsRecord)
 
 	sc.Step(`^the virtual node is labelled and tainted with the opt-in key$`, virtualNodeCarriesOptIn)
@@ -373,6 +374,29 @@ func podPending(ctx context.Context, name string) error {
 		return fmt.Errorf("%q is %s", name, obj.Status.Phase)
 	}
 	return nil
+}
+
+// podRunsInCVM waits for the provider to report the pod running, which it
+// does only from a guest it verified and sent the pod to. It skips where the
+// backend's cloud API starts no such guest (pod_cvm_guest).
+func podRunsInCVM(ctx context.Context, name string) error {
+	w := getWorld(ctx)
+	if _, err := w.be.call("pod_cvm_guest"); err != nil {
+		return err
+	}
+	var phase string
+	running, err := poll(5*time.Minute, func() (bool, error) {
+		obj, err := w.podObject(name)
+		if err != nil {
+			return false, err
+		}
+		phase = obj.Status.Phase
+		return phase == "Running", nil
+	})
+	if err == nil && !running {
+		err = fmt.Errorf("%q is %s, not running in its pod CVM", name, phase)
+	}
+	return err
 }
 
 // allocation is the allocation identity the backend's provider derives for
