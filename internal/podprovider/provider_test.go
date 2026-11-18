@@ -151,9 +151,10 @@ type fakeGuest struct {
 	r                              *Reconciler
 	key                            *ecdsa.PrivateKey
 	assigned                       map[string]bool
-	prepares, sends                int
+	prepares, sends, reads         int
 	lostResponse, failBeforeCommit bool
 	beforeSend                     func()
+	onVerify, afterPrepare         func()
 }
 
 type fakeSession struct {
@@ -164,6 +165,9 @@ type fakeSession struct {
 func (g *fakeGuest) verify(_ context.Context, rec *record, _ string) (assignmentSession, error) {
 	if g.assigned[rec.Key] {
 		return nil, errors.New("generic measurements are not empty")
+	}
+	if g.onVerify != nil {
+		g.onVerify()
 	}
 	return &fakeSession{g, rec}, nil
 }
@@ -183,6 +187,9 @@ func (s *fakeSession) Prepare(_ context.Context, key *ecdsa.PrivateKey, manifest
 	req, err := podassign.Sign(key, &s.guest.key.PublicKey, podassign.Request{Nonce: nonce, Manifest: manifest, Entries: entries, MeshPeers: peers, ClientDocument: clientDocument})
 	if err != nil {
 		return nil, err
+	}
+	if s.guest.afterPrepare != nil {
+		s.guest.afterPrepare()
 	}
 	return podassign.Encode(req)
 }
@@ -214,6 +221,7 @@ func (s *fakeSession) Send(ctx context.Context, body []byte) (string, error) {
 }
 func (*fakeSession) Close() {}
 func (g *fakeGuest) read(_ context.Context, rec *record, _ string) (podstatus.PodProjection, error) {
+	g.reads++
 	if !g.assigned[rec.Key] {
 		return podstatus.PodProjection{}, errors.New("guest waiting for assignment")
 	}

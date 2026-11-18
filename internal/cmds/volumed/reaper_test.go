@@ -49,6 +49,7 @@ func openerWithVolumes(t *testing.T, ops *fakeOps, names ...string) *Opener {
 	for _, n := range names {
 		req := testRequest(t)
 		req.Name = n
+		req.Blob.Name = n
 		if err := o.Open(t.Context(), req); err != nil {
 			t.Fatalf("open %s: %v", n, err)
 		}
@@ -119,6 +120,7 @@ func TestSweepIsPerPod(t *testing.T) {
 	for name, uid := range map[string]string{"weights": testPodUID, "datasets": other} {
 		req := testRequest(t)
 		req.Name, req.Pod = name, testPod(uid)
+		req.Blob.Name = name
 		if err := o.Open(t.Context(), req); err != nil {
 			t.Fatalf("open %s: %v", name, err)
 		}

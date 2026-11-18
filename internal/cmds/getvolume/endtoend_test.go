@@ -226,8 +226,14 @@ func TestSidecarRepeatIsIdempotent(t *testing.T) {
 // mistaken for success.
 func TestSidecarReportsADaemonRefusal(t *testing.T) {
 	endpoint := "unix://" + testutil.StartInventory(t)
+	blob := testBlob(t)
+	blob.Name = "absent"
+	raw, err := blob.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
 	_, url := newFakeCDS(t, map[string][]reply{
-		"GET /secrets/tenant-a/volumes/weights": {{status: http.StatusOK, value: testBlobJSON(t)}},
+		"GET /secrets/tenant-a/volumes/absent": {{status: http.StatusOK, value: raw}},
 	})
 
 	socketDir := t.TempDir()
@@ -236,7 +242,7 @@ func TestSidecarReportsADaemonRefusal(t *testing.T) {
 	cfg := flowConfig(t, url)
 	cfg.SocketDir = socketDir
 	// A volume the pod has no emptyDir for: the daemon has nowhere to mount it.
-	cfg.Volumes = []volumeRequest{{Name: "absent", Path: "/tenant-a/volumes/weights"}}
+	cfg.Volumes = []volumeRequest{{Name: "absent", Path: "/tenant-a/volumes/absent"}}
 	daemon, daemonBase := daemonClient(cfg)
 	if err := openAllWith(context.Background(), cfg, http.DefaultClient, testKey(t), endpoint, daemon, daemonBase); err == nil {
 		t.Fatal("a refused open was reported as success")
