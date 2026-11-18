@@ -91,6 +91,9 @@ type Wrapper struct {
 	// is granted beyond the node's default set
 	// (nriimagepolicy.CapabilityGrantDir).
 	CapGrantDir string
+	// NodeServiceGrantDir is where admission records the containers it
+	// admitted as a node service (nriimagepolicy.NodeServiceGrantDir).
+	NodeServiceGrantDir string
 	// CopyDir is where the checked process of an allowed exec is copied, on a
 	// filesystem every node has writable.
 	CopyDir string
@@ -108,20 +111,21 @@ type Wrapper struct {
 func New(stderr io.Writer) Wrapper {
 	floor, err := nriimagepolicy.LoadMeshFloor(meshConfig)
 	return Wrapper{
-		Mode:         mode,
-		RealRunc:     realRunc,
-		MeshConfig:   meshConfig,
-		Floor:        floor,
-		FloorError:   err,
-		State:        runtimeState,
-		ConsumeStart: podstart.Consume,
-		ExecGrantDir: nriimagepolicy.ExecGrantDir,
-		CapGrantDir:  nriimagepolicy.CapabilityGrantDir,
-		CopyDir:      "/run",
-		Stdin:        os.Stdin,
-		Exec:         syscall.Exec,
-		Env:          os.Environ(),
-		Err:          stderr,
+		Mode:                mode,
+		RealRunc:            realRunc,
+		MeshConfig:          meshConfig,
+		Floor:               floor,
+		FloorError:          err,
+		State:               runtimeState,
+		ConsumeStart:        podstart.Consume,
+		ExecGrantDir:        nriimagepolicy.ExecGrantDir,
+		CapGrantDir:         nriimagepolicy.CapabilityGrantDir,
+		NodeServiceGrantDir: nriimagepolicy.NodeServiceGrantDir,
+		CopyDir:             "/run",
+		Stdin:               os.Stdin,
+		Exec:                syscall.Exec,
+		Env:                 os.Environ(),
+		Err:                 stderr,
 	}
 }
 
@@ -190,7 +194,7 @@ func (w Wrapper) checkFloor(args []string) error {
 	if err != nil {
 		return err
 	}
-	return requireFloor(spec, containerID, w.Stdin, w.Floor, w.CapGrantDir)
+	return requireFloor(spec, containerID, w.Stdin, w.Floor, w.CapGrantDir, w.NodeServiceGrantDir)
 }
 
 // deny reports msg on stderr and, when the caller asked runc to log to a file,

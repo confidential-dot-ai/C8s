@@ -251,6 +251,26 @@ func (s *policyStore) baseBindsRole(r allowlist.RunningContainer) bool {
 	return s.base.RoleOf(r) != ""
 }
 
+// declaresNodeService reports whether a component set snap's document holds in
+// force marks an entry as a node service.
+func (s *policyStore) declaresNodeService(snap *policySnapshot) bool {
+	if s == nil || snap == nil || snap.pulled == nil {
+		return false
+	}
+	return snap.pulled.DeclaresNodeService(s.clock.now())
+}
+
+// nodeServiceOf is the node-service entry a component set snap's document
+// holds in force binds to this launch
+// (allowlist.Allowlist.NodeServiceAdmitting). The measured base declares none:
+// what it pins is a static pod, excused as such (nodetcb.go).
+func (s *policyStore) nodeServiceOf(snap *policySnapshot, r allowlist.RunningContainer) (allowlist.NodeServiceRef, bool) {
+	if s == nil || snap == nil || snap.pulled == nil {
+		return allowlist.NodeServiceRef{}, false
+	}
+	return snap.pulled.NodeServiceAdmitting(r, s.clock.now())
+}
+
 // roleOf is the platform role the base allowlist, or a component set the
 // applied document holds in force, binds to this launch. Two of them binding
 // different roles bind none, as two declarations within one index do.

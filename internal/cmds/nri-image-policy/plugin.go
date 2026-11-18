@@ -66,6 +66,11 @@ type plugin struct {
 	// container admission clears, for the runtime wrapper
 	// (capabilitygrants.go).
 	capGrants *grantRecords
+	// nodeServiceGrants records the containers admission admitted as a node
+	// service, for the runtime wrapper (nodeservicegrants.go).
+	nodeServiceGrants *grantRecords
+	// nodeServices is this node's node-service count (nodeservice.go).
+	nodeServices nodeServices
 
 	// mesh is the mesh gate (meshgate.go), under the mesh policy the measured
 	// config carries.
@@ -177,6 +182,7 @@ func newPlugin(
 	// A served allowlist can declare capabilities the base does not, so the
 	// records are kept whatever the base declares.
 	p.capGrants = newCapabilityGrantRecords(CapabilityGrantDir)
+	p.nodeServiceGrants = newNodeServiceGrantRecords(NodeServiceGrantDir)
 
 	// Check if running as pre-installed plugin (containerd sets these env vars)
 	isPreInstalled := os.Getenv("NRI_PLUGIN_NAME") != ""
@@ -289,6 +295,7 @@ func (p *plugin) RemoveContainer(ctx context.Context, pod *api.PodSandbox, ctr *
 	p.running.remove(ctr.GetId())
 	p.execGrants.remove(ctr.GetId())
 	p.capGrants.remove(ctr.GetId())
+	p.nodeServiceGrants.remove(ctr.GetId())
 	if p.inventory != nil {
 		p.inventory.remove(ctr.GetId())
 	}
@@ -326,6 +333,7 @@ func (p *plugin) RemovePodSandbox(ctx context.Context, pod *api.PodSandbox) erro
 	if p.inventory != nil {
 		p.inventory.removeSandbox(pod.GetId())
 	}
+	p.nodeServices.forget(pod.GetId())
 	p.mesh.forget(pod.GetId())
 	return nil
 }
