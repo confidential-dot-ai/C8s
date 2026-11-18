@@ -43,7 +43,7 @@ var errRecordNotSaved error = &cmdsutil.ExitStatusError{
 // names it, whose acknowledgement failed with err. A record that disagrees
 // is not a failed save: its advice does not apply, and c8s exits 1.
 func recordFailure(applied string, err error) error {
-	if errors.Is(err, errRecordConflict) {
+	if errors.Is(err, ErrRecordConflict) {
 		return fmt.Errorf("%s, but %w", applied, err)
 	}
 	return fmt.Errorf("%s, but its local record was not saved (%w): %w", applied, err, errRecordNotSaved)
@@ -90,6 +90,9 @@ func (o *options) writer(ctx context.Context) (*writer, error) {
 func (w *writer) verified(ctx context.Context) (*cdschain.State, error) {
 	pinned, err := w.o.pinnedGenesis()
 	if err != nil {
+		return nil, err
+	}
+	if err := w.o.prepareStateDir(); err != nil {
 		return nil, err
 	}
 	records, err := w.o.records()
@@ -271,9 +274,6 @@ func (w *writer) append(ctx context.Context, state *cdschain.State, typ cdschain
 	}
 	if _, err := state.Apply(e); err != nil {
 		return cdschain.Head{}, fmt.Errorf("the entry does not verify against the chain: %w", err)
-	}
-	if err := w.o.prepareRecord(state.Cluster); err != nil {
-		return cdschain.Head{}, fmt.Errorf("the state directory cannot hold the record, so nothing was sent: %w", err)
 	}
 	head, err := Submit(ctx, w.client, w.url, e)
 	if err != nil {

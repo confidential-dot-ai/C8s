@@ -118,6 +118,9 @@ func (o *options) resolve(ctx context.Context, out io.Writer, urls []string, seq
 		}
 		plan = &resolvePlan{Seq: seq, Keep: kept, Drop: drop, Held: held}
 	}
+	if err := o.prepareStateDir(); err != nil {
+		return err
+	}
 	if err := o.savePlan(cluster, plan); err != nil {
 		return err
 	}
@@ -313,7 +316,8 @@ func (o *options) afterResolve(ctx context.Context, urls []string, held uint64, 
 			if err = (&writer{o: o, url: url, client: client, key: key}).refreshPolicy(ctx, held); err == nil {
 				return nil
 			}
-			if errors.Is(err, errRecordNotSaved) || errors.Is(err, errRecordConflict) {
+			// Local failures: another replica or another second changes nothing.
+			if errors.Is(err, errRecordNotSaved) || errors.Is(err, ErrRecordConflict) || errors.Is(err, errStateDir) {
 				return err
 			}
 		}

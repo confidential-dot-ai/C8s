@@ -101,8 +101,13 @@ func (o *options) genesis(ctx context.Context, out io.Writer, urls []string, clu
 	if _, err := cdschain.VerifyGenesis(e); err != nil {
 		return err
 	}
-	if err := o.prepareRecord(cluster); err != nil {
-		return fmt.Errorf("the state directory cannot hold the record, so nothing was sent: %w", err)
+	if err := o.prepareStateDir(); err != nil {
+		return err
+	}
+	if rec, err := o.record(cluster); err != nil {
+		return fmt.Errorf("the record of cluster %s cannot be read, so nothing was sent: %w", cluster, err)
+	} else if rec != nil && rec.Genesis != e.Hash() {
+		return fmt.Errorf("cluster %s is recorded with genesis %s, not %s, so nothing was sent; after a re-root, remove the record", cluster, rec.Genesis, e.Hash())
 	}
 	if err := haapi.Call(ctx, client, http.MethodPost, urls[0]+haapi.GenesisPath, e, nil); err != nil {
 		var refusal *operatorauth.StatusError

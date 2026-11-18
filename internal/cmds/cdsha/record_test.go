@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -82,7 +83,7 @@ func TestAcknowledgeRetriesPersistence(t *testing.T) {
 			conflict := head
 			conflict.Hash = cdschain.Hash{7}
 			err = o.acknowledge(genesis, conflict)
-			if !errors.Is(err, errRecordConflict) || cmdsutil.ExitStatus(recordFailure("CDS confirmed it", err)) == cmdsutil.ExitNotConfirmed {
+			if !errors.Is(err, ErrRecordConflict) || cmdsutil.ExitStatus(recordFailure("CDS confirmed it", err)) == cmdsutil.ExitNotConfirmed {
 				t.Fatalf("a conflicting hash at the same sequence: %v", err)
 			}
 			rec, err = o.record(head.Cluster)
@@ -172,29 +173,98 @@ func failedPersist(string, []byte, os.FileMode) error {
 }
 
 // An unusable state directory refuses the write before it is sent.
-func TestAppendChecksTheStateDirBeforeSending(t *testing.T) {
-	entries, key := testChain(t, 1)
-	state, err := cdschain.Verify(entries)
-	if err != nil {
+// Each case fails a different step of the check, so none can be dropped.
+func TestWriteChecksTheStateDirBeforeAnythingIsSent(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory modes")
+	}
+	_, key := testChain(t, 1)
+	for name, stateDir := range map[string]func(locked string) string{
+		"not a directory": func(string) string { return blockedRecordDir(t) },
+		"new levels under an unreadable directory": func(locked string) string {
+			return filepath.Join(locked, "c8s", "cds-ha")
+		},
+		"unreadable parent": func(locked string) string {
+			return makeDir(t, filepath.Join(locked, "cds-ha"), 0o700)
+		},
+		"read-only directory": func(locked string) string {
+			return makeDir(t, filepath.Join(locked, "cds-ha"), 0o500)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			locked := makeDir(t, filepath.Join(t.TempDir(), "locked"), 0o700)
+			dir := stateDir(locked)
+			if name != "read-only directory" {
+				chmod(t, locked, 0o300)
+			}
+			requests := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requests++ }))
+			defer srv.Close()
+			w := &writer{o: &options{stateDir: dir}, url: srv.URL, client: srv.Client(), key: key}
+			_, err := w.verified(context.Background())
+			if !errors.Is(err, errStateDir) || cmdsutil.ExitStatus(err) == cmdsutil.ExitNotConfirmed || requests != 0 {
+				t.Fatalf("unusable state directory: %d request(s), %v", requests, err)
+			}
+		})
+	}
+}
+
+// A save that skipped the parent sync would pass here: the parent is
+// writable through, but cannot be opened.
+func TestAcknowledgeSyncsTheParent(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory modes")
+	}
+	locked := makeDir(t, filepath.Join(t.TempDir(), "locked"), 0o700)
+	o := &options{stateDir: makeDir(t, filepath.Join(locked, "cds-ha"), 0o700)}
+	chmod(t, locked, 0o300)
+	head := cdschain.Head{V: cdschain.Version, Cluster: "lane", Hash: cdschain.Hash{1}}
+	if err := o.acknowledge(head.Hash, head); err == nil {
+		t.Fatal("saved a record without syncing the state directory's parent")
+	}
+}
+
+func TestGenesisChecksTheRecordBeforeSending(t *testing.T) {
+	l := newLiveReplica(t)
+	o := l.options()
+	run := func() error {
+		pins := []byte(testutil.CDSPinDocument(testutil.TestMeasurement, "launch"))
+		return o.genesis(context.Background(), io.Discard, []string{l.url}, "lane", "v1.0.0", pins, "")
+	}
+	o.stateDir = blockedRecordDir(t)
+	if err := run(); !errors.Is(err, errStateDir) {
+		t.Fatalf("unusable state directory: %v", err)
+	}
+	o.stateDir = t.TempDir()
+	if err := o.acknowledge(cdschain.Hash{9}, cdschain.Head{V: cdschain.Version, Cluster: "lane", Hash: cdschain.Hash{9}}); err != nil {
 		t.Fatal(err)
 	}
-	replica := &racedReplica{entries: entries}
-	srv := httptest.NewServer(replica)
-	defer srv.Close()
-	w := &writer{o: &options{stateDir: blockedRecordDir(t)}, url: srv.URL, client: srv.Client(), key: key}
-	pub, err := cdschain.PublicKeyPEM(&key.PublicKey)
-	if err != nil {
+	if err := run(); err == nil || !strings.Contains(err.Error(), "nothing was sent") {
+		t.Fatalf("record of another genesis: %v", err)
+	}
+	// Neither refusal reached the replica: it still takes a genesis.
+	o.stateDir = t.TempDir()
+	if err := run(); err != nil {
+		t.Fatalf("genesis after two unsent refusals: %v", err)
+	}
+}
+
+func makeDir(t *testing.T, path string, mode os.FileMode) string {
+	t.Helper()
+	if err := os.Mkdir(path, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	_, err = w.append(context.Background(), state, cdschain.TypeOperatorKeys, cdschain.OperatorKeys{Keys: pub})
-	if err == nil || !strings.Contains(err.Error(), "nothing was sent") || cmdsutil.ExitStatus(err) == cmdsutil.ExitNotConfirmed {
-		t.Fatalf("write with an unusable state directory: %v", err)
+	chmod(t, path, mode)
+	return path
+}
+
+// chmod sets mode until the test ends, so that t.TempDir can be removed.
+func chmod(t *testing.T, path string, mode os.FileMode) {
+	t.Helper()
+	if err := os.Chmod(path, mode); err != nil {
+		t.Fatal(err)
 	}
-	replica.mu.Lock()
-	defer replica.mu.Unlock()
-	if len(replica.entries) != 1 {
-		t.Fatal("sent the entry before checking the state directory")
-	}
+	t.Cleanup(func() { _ = os.Chmod(path, 0o700) })
 }
 
 func blockedRecordDir(t *testing.T) string {

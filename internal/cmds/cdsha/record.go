@@ -73,28 +73,36 @@ func (o *options) record(cluster string) (*record, error) {
 	return &rec, json.Unmarshal(data, &rec)
 }
 
-// errRecordConflict marks a head the record refuses: it names another
-// genesis, or another hash at the acknowledged seq.
-var errRecordConflict = errors.New("the local record disagrees")
+// ErrRecordConflict marks a head the record refuses: it names another
+// genesis, or another hash at the acknowledged seq. The write it follows
+// was applied.
+var ErrRecordConflict = errors.New("the local record disagrees")
 
-// prepareRecord makes the record's directory and lock file and syncs them,
-// so that an unusable state directory refuses a write before it is sent.
-func (o *options) prepareRecord(cluster string) error {
-	path, err := o.recordPath(cluster)
+// errStateDir is a state directory that cannot hold a record, found before
+// anything was sent.
+var errStateDir = errors.New("the state directory cannot hold the record, so nothing was sent")
+
+// prepareStateDir makes the state directory, creates and removes a file in
+// it, and syncs it as a save does. A write runs it before anything else
+// creates the directory, so an unusable one refuses the write unsent.
+func (o *options) prepareStateDir() error {
+	dir, err := o.recordDir()
+	if err == nil {
+		err = fileutil.MkdirAllDurable(dir, 0o700)
+	}
+	if err == nil {
+		var probe *os.File
+		if probe, err = os.CreateTemp(dir, ".probe-*"); err == nil {
+			err = errors.Join(probe.Close(), os.Remove(probe.Name()))
+		}
+	}
+	if err == nil {
+		err = fileutil.SyncDirWithParent(dir)
+	}
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %w", errStateDir, err)
 	}
-	if err := fileutil.MkdirAllDurable(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	lock, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return err
-	}
-	if err := lock.Close(); err != nil {
-		return err
-	}
-	return fileutil.SyncDirWithParent(filepath.Dir(path))
+	return nil
 }
 
 // acknowledge records head, answered done on the chain of genesis. The
@@ -120,9 +128,9 @@ func (o *options) acknowledge(genesis cdschain.Hash, head cdschain.Head) error {
 	case err != nil:
 		return err
 	case rec != nil && rec.Genesis != genesis:
-		return fmt.Errorf("cluster %s is recorded with genesis %s, not %s; after a re-root, remove the record: %w", head.Cluster, rec.Genesis, genesis, errRecordConflict)
+		return fmt.Errorf("cluster %s is recorded with genesis %s, not %s; after a re-root, remove the record: %w", head.Cluster, rec.Genesis, genesis, ErrRecordConflict)
 	case rec != nil && head.Seq == rec.Acknowledged.Seq && head.Hash != rec.Acknowledged.Hash:
-		return fmt.Errorf("cluster %s already acknowledged %s at seq %d; check c8s cds ha status for a fork: %w", head.Cluster, rec.Acknowledged.Hash, head.Seq, errRecordConflict)
+		return fmt.Errorf("cluster %s already acknowledged %s at seq %d; check c8s cds ha status for a fork: %w", head.Cluster, rec.Acknowledged.Hash, head.Seq, ErrRecordConflict)
 	case rec != nil && head.Seq <= rec.Acknowledged.Seq:
 		head = rec.Acknowledged
 	}
