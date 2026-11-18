@@ -25,6 +25,7 @@ import (
 
 	"golang.org/x/crypto/acme"
 
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 )
@@ -32,9 +33,7 @@ import (
 const (
 	challengePrefix = "/.well-known/acme-challenge/"
 	issueTimeout    = 5 * time.Minute
-	// recheckInterval paces the renewal loop; retryInterval is its pace while
-	// the disk certificate misses a configured name, so a hostname that starts
-	// reaching this router is picked up quickly.
+	// recheckInterval and retryInterval pace the renewal loop (manager.pace).
 	recheckInterval = time.Hour
 	retryInterval   = time.Minute
 	accountKeyFile  = "account.key"
@@ -54,8 +53,14 @@ type manager struct {
 	email        string
 	certDir      string
 	keyDir       string
-	domains      []string
-	log          *slog.Logger
+	// domains is what the certificate covers: launchDomains plus the hosts of
+	// the route manifest the router applied.
+	domains       []string
+	launchDomains []string
+	// routeHostsFile is where the router's route authority publishes those
+	// hosts; empty leaves the launch hostnames alone.
+	routeHostsFile string
+	log            *slog.Logger
 	// httpPort is nginx's :80 server on pod loopback, probed before any CA
 	// contact so a validation is never sent at a listener that is still
 	// starting. 0 (tests without a front door) skips the probe; the CLI
@@ -77,15 +82,16 @@ type manager struct {
 
 func newManager(directoryURL, email, certDir, keyDir string, domains []string, log *slog.Logger) *manager {
 	return &manager{
-		directoryURL: directoryURL,
-		email:        email,
-		certDir:      certDir,
-		keyDir:       keyDir,
-		domains:      domains,
-		log:          log,
-		recheck:      recheckInterval,
-		retry:        retryInterval,
-		tokens:       make(map[string]string),
+		directoryURL:  directoryURL,
+		email:         email,
+		certDir:       certDir,
+		keyDir:        keyDir,
+		domains:       domains,
+		launchDomains: domains,
+		log:           log,
+		recheck:       recheckInterval,
+		retry:         retryInterval,
+		tokens:        make(map[string]string),
 	}
 }
 
@@ -135,17 +141,62 @@ func (m *manager) run(ctx context.Context) {
 		m.log.Error("bootstrap certificate failed", "error", err)
 	}
 	for {
+		m.refreshDomains()
 		m.ensure(ctx)
-		wait := m.recheck
-		if m.needsIssue() {
-			wait = m.retry
-		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(wait):
+		case <-time.After(m.pace()):
 		}
 	}
+}
+
+// pace is how long the loop waits before it looks again: retryInterval while
+// the disk certificate misses a configured name or a route manifest can add
+// one, else recheckInterval.
+func (m *manager) pace() time.Duration {
+	if m.needsIssue() || m.routeHostsFile != "" {
+		return m.retry
+	}
+	return m.recheck
+}
+
+// refreshDomains sets the names the certificate covers to the launch
+// hostnames plus the hosts the route authority last published.
+func (m *manager) refreshDomains() {
+	hosts, err := m.publishedRouteHosts()
+	if err != nil {
+		m.log.Warn("route hosts file unreadable; keeping the current certificate names", "path", m.routeHostsFile, "error", err)
+		return
+	}
+	domains := slices.Concat(m.launchDomains, hosts)
+	slices.Sort(domains)
+	m.domains = slices.Compact(domains)
+}
+
+// publishedRouteHosts are the hosts of the applied route manifest, less any
+// name a certificate cannot carry. An absent file is none: the router applies
+// its first manifest after this sidecar starts.
+func (m *manager) publishedRouteHosts() ([]string, error) {
+	if m.routeHostsFile == "" {
+		return nil, nil
+	}
+	data, err := os.ReadFile(m.routeHostsFile)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var hosts []string
+	for _, host := range strings.Fields(string(data)) {
+		if err := cmdsutil.ValidateHostname(host); err != nil {
+			m.log.Warn("route manifest host left out of the certificate", "error", err)
+			continue
+		}
+		hosts = append(hosts, host)
+	}
+	return hosts, nil
 }
 
 func (m *manager) diskLeaf() (*x509.Certificate, error) {
@@ -444,7 +495,7 @@ func (m *manager) fulfillAuthorization(ctx context.Context, client *acme.Client,
 }
 
 // needsIssueFor keeps a valid certificate when it already covers the reachable
-// names. Names outside the signed launch configuration are never retained.
+// names. A name outside the set the certificate is to cover is never retained.
 // A configured name the certificate covers but the probe missed may be a
 // transient failure, so it blocks issuance until 5/6 of the lifetime.
 func (m *manager) needsIssueFor(domains []string) bool {

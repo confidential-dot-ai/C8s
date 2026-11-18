@@ -270,8 +270,11 @@ unaffected.
 
 ACME issuance covers the names the sidecar is configured with — a baked node's
 launch file `router.hostnames`
-([launch-configuration.md](launch-configuration.md)) — and never one outside
-that set. It keeps one certificate for those whose public challenge path
+([launch-configuration.md](launch-configuration.md)) and the hosts of the
+applied route manifest ([Route manifest](#route-manifest)) — and never one
+outside that set. `router.hostnames` is what turns ACME on: with none the
+sidecar stands by, whatever the manifest holds.
+It keeps one certificate for those whose public challenge path
 reaches this router, probing each with a one-off token first, so an
 unreachable name blocks no other. The certificate is kept while it covers the
 reachable names, renewal fires at two thirds of its lifetime, and a covered name
@@ -296,6 +299,10 @@ detectable only by pinning the route digest or the operator keys.
   refuse, and when, is [routes-evidence.md](routes-evidence.md).
 - A request whose `Host` is not a manifest host, or whose path matches no route,
   gets 404. The router's own paths are never routed by the manifest.
+- On an `acme` front door every manifest host is also a certificate name: a new
+  public hostname is its DNS record and one signed manifest write, picked up
+  within about a minute of the router applying the manifest. A pattern names a
+  host suffix, so it gets no certificate name of its own.
 - A workload backend is dialed as a mesh client: the peer must present a leaf
   chaining to the mesh CA, carrying that route's workload name, and that entry
   must be the same in the allowlist its leaf is stamped under as in the one

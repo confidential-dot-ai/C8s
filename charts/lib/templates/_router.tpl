@@ -74,6 +74,10 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- define "router.tunnelBodyDir" -}}/var/lib/c8s-tunnel-body{{- end -}}
 {{- define "router.acmeCertDir" -}}/etc/c8s-acme-tls{{- end -}}
 {{- define "router.acmeKeyDir" -}}/etc/c8s-acme-key{{- end -}}
+{{/* The hosts of the applied route manifest: cds-attest writes the file, the
+     acme sidecar reads it. */}}
+{{- define "router.routeHostsDir" -}}/run/c8s-route-hosts{{- end -}}
+{{- define "router.routeHostsFile" -}}{{ include "router.routeHostsDir" . }}/hosts{{- end -}}
 {{- define "router.discoveryFilePath" -}}/discovery/discovery.json{{- end -}}
 {{- define "router.discoveryPath" -}}/v1/discovery{{- end -}}
 {{- define "router.cdsCertPath" -}}/.well-known/cds-cert.pem{{- end -}}

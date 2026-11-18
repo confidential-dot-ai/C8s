@@ -49,6 +49,7 @@ type routingConfig struct {
 	imagePolicyFile  string
 	launchKeysFile   string // empty means nodeOperatorKeysFile; tests point it elsewhere
 	operatorKeysFile string
+	routeHostsFile   string
 	pollInterval     time.Duration
 	host             string
 	port             int
@@ -62,6 +63,7 @@ func bindRoutingFlags(f *pflag.FlagSet, cfg *routingConfig) {
 	f.StringVar(&cfg.cdsURL, "cds-url", "", "CDS base URL (https, armTLS-verified) to poll the signed route manifest from; required unless this node's enforcer mounts the endpoint")
 	cmdsutil.BindImagePolicyFlags(f, &cfg.imagePolicyFile, nil, "pins the CDS endpoint (REQUIRED), every entry bound to the launch file that CDS runs on")
 	f.StringVar(&cfg.operatorKeysFile, "operator-keys-file", "", "PEM operator public keys a route manifest must be signed under, used when the node's launch configuration carries none; unset, the keys come from the verified CDS's GET /operator-keys")
+	f.StringVar(&cfg.routeHostsFile, "route-hosts-file", "", "file to write the applied route manifest's host names to, one per line, for the acme sidecar to include in the public certificate; unset writes none")
 	f.DurationVar(&cfg.pollInterval, "routes-poll-interval", 30*time.Second, "how often to poll the CDS for the route manifest")
 	f.StringVar(&cfg.host, "routing-host", "127.0.0.1", "routing listener host (loopback: nginx proxies application requests to it)")
 	f.IntVar(&cfg.port, "routing-port", 0, "REQUIRED: routing listener port")
@@ -167,6 +169,7 @@ func newRoutingEngine(ctx context.Context, cfg config, bindings *Bindings, logge
 			Fetcher:    cds,
 			Keys:       keys,
 			Transports: transports,
+			Applied:    routeHostsWriter(r.routeHostsFile),
 			Interval:   r.pollInterval,
 			Logger:     logger,
 		}),

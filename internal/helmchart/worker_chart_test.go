@@ -357,6 +357,51 @@ func TestWorkerChartRouterReadsLaunchFiles(t *testing.T) {
 	assertContainerMount(t, attest, "node-config", "/run/c8s-node")
 }
 
+// The route authority publishes the applied manifest's hosts into a volume the
+// acme sidecar reads, so a manifest host becomes a certificate name without a
+// relaunch. cds-attest writes it; the sidecar that orders the certificate only
+// reads it.
+func TestWorkerChartRouterSharesTheRouteHostsFile(t *testing.T) {
+	t.Parallel()
+	out, err := helmTemplateWorker(t)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	const file = "/run/c8s-route-hosts/hosts"
+	pod := renderedDeployment(t, out, "c8s-router").Spec.Template.Spec
+	assertPodVolume(t, &pod, "route-hosts", func(v corev1.Volume) bool {
+		return v.EmptyDir != nil && v.EmptyDir.Medium == corev1.StorageMediumMemory
+	})
+	attest := renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")
+	assertContainerHasArg(t, "cds-attest", attest.Args, "--route-hosts-file="+file)
+	if mount := containerMount(t, attest, "route-hosts"); mount.ReadOnly {
+		t.Error("cds-attest cannot write the hosts of the manifest it applies")
+	}
+	acme, ok := findContainer(renderedDeploymentInitContainers(t, out, "c8s-router"), "acme")
+	if !ok {
+		t.Fatal("launch-driven router lacks the acme sidecar")
+	}
+	assertContainerHasArg(t, "acme", acme.Args, "--route-hosts-file="+file)
+	if mount := containerMount(t, acme, "route-hosts"); !mount.ReadOnly {
+		t.Error("the acme sidecar mounts the route hosts writable")
+	}
+}
+
+// containerMount is the container's single mount of the named volume.
+func containerMount(t *testing.T, c corev1.Container, name string) corev1.VolumeMount {
+	t.Helper()
+	var found []corev1.VolumeMount
+	for _, m := range c.VolumeMounts {
+		if m.Name == name {
+			found = append(found, m)
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("container %s mounts volume %q %d times, want once: %+v", c.Name, name, len(found), c.VolumeMounts)
+	}
+	return found[0]
+}
+
 // A measured router must also provide the workload identity that clients pin.
 // Image admission alone does not put a matched-workload stamp in its mesh leaf.
 func TestWorkerChartRouterRequestsWorkloadIdentity(t *testing.T) {

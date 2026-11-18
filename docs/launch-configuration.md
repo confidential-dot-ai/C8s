@@ -32,7 +32,7 @@ decree that admits it names the worker image it is bound to
 | `cds.measurements` | yes | One measurements JSON document ([measurements.md](measurements.md)), pinning the CDS image to the launch file that VM boots with. Every entry must bind that file. |
 | `cds.pinFloor` | no | The lowest cluster version a worker takes a CDS pin decree at. |
 | `tlsSAN` | yes | The DNS name of the router's front-door certificate. The CDS configuration `cds.measurements` binds must let a leaf carry it. |
-| `router.hostnames` | no | Up to 100 lowercase DNS names the router serves. A non-empty list puts the baked front door in ACME mode at boot. |
+| `router.hostnames` | no | Up to 100 lowercase DNS names the router serves. A non-empty list puts the baked front door in ACME mode at boot, and the public certificate then also covers the hosts of the applied route manifest ([operator.md](operator.md#route-manifest)). |
 | `router.acmeEmail` | no | Bare email address for the ACME account. Requires `hostnames`. |
 | `router.acmeDirectoryURL` | no | An `https` ACME directory URL, for example a staging directory. Requires `hostnames`. |
 | `router.maxRequestBodyBytes` | no | Largest application request body the public listener accepts. Default 1048576. |
