@@ -352,6 +352,15 @@ func applyClientDocumentPolicy(oc *Outcome, cfg config, ev *evidence) {
 	}
 }
 
+// leafComponentSet is the component set the leaf names, nil when there is no
+// leaf or it carries no stamp.
+func leafComponentSet(leaf *x509.Certificate) (*armtls.ComponentSet, error) {
+	if leaf == nil {
+		return nil, nil
+	}
+	return armtls.ComponentSetFromCert(leaf)
+}
+
 // applyWorkloadPolicy surfaces the leaf's matched-workload stamp and enforces
 // --workload / --allowlist, mirroring applySandboxPolicy's ordering: an
 // unparseable stamp fails closed; the mesh-CA chain check (applySandboxPolicy,
@@ -367,6 +376,16 @@ func applyWorkloadPolicy(oc *Outcome, cfg config, ev *evidence, held *heldAllowl
 	if ev.workloadErr != nil {
 		fail("workload_malformed: matched-workload extension unparseable or duplicated (newer target than this CLI?): %v", ev.workloadErr)
 		return
+	}
+
+	set, setErr := leafComponentSet(ev.leaf)
+	if setErr != nil {
+		fail("component_set_malformed: component-set extension unparseable or duplicated (newer target than this CLI?): %v", setErr)
+		return
+	}
+	if oc.Verified && set != nil {
+		oc.ComponentSet = set.Version
+		oc.ComponentSetDigest = hex.EncodeToString(set.Digest)
 	}
 
 	// Report the stamp only once the hardware evidence (and, with --mesh-ca,

@@ -36,6 +36,12 @@ type SignCSRParams struct {
 	// workload").
 	MatchedWorkload *armtls.MatchedWorkload
 
+	// ComponentSet, when set, is stamped as the component-set extension
+	// (armtls.OIDComponentSet). The caller MUST have resolved it from the sets
+	// in force in one atomic allowlist snapshot that admit the pod's component
+	// containers (docs/armtls.md, "Sandbox identity").
+	ComponentSet *armtls.ComponentSet
+
 	// ClientDocumentDigest, when set, is stamped as the client-document-digest
 	// extension (armtls.OIDClientDocumentDigest). The caller MUST have read it
 	// from Pod claims the verified evidence binds.
@@ -98,6 +104,13 @@ func (c *CA) SignCSR(p SignCSRParams) (certPEM []byte, subjectCN string, serial 
 			return nil, "", nil, err
 		}
 		template.ExtraExtensions = append(template.ExtraExtensions, workloadExt)
+	}
+	if p.ComponentSet != nil {
+		setExt, err := armtls.MarshalComponentSetExtension(p.ComponentSet)
+		if err != nil {
+			return nil, "", nil, err
+		}
+		template.ExtraExtensions = append(template.ExtraExtensions, setExt)
 	}
 	if p.ClientDocumentDigest != nil {
 		ext, err := armtls.MarshalClientDocumentDigestExtension(p.ClientDocumentDigest)

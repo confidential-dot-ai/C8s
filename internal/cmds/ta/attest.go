@@ -293,6 +293,7 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 		Evidence:             evidenceJSON,
 		SandboxID:            sandbox.SandboxID,
 		MatchedWorkload:      decision.matched,
+		ComponentSet:         decision.set,
 		ClientDocumentDigest: clientDocument,
 	})
 	if errors.Is(err, issuer.ErrSubjectDenied) {
@@ -373,11 +374,11 @@ func decodeAttestRequest(w http.ResponseWriter, r *http.Request) (types.AttestRe
 
 // workloadDecision is what one issuance establishes about the requester's pod:
 // the workload entry its containers matched, the platform roles the report
-// binds to them, and the component sets it is on (empty for a pod on none).
+// binds to them, and the newest component set it is on (nil for a pod on none).
 type workloadDecision struct {
 	matched *armtls.MatchedWorkload
 	roles   []string
-	sets    []allowlist.SetRef
+	set     *armtls.ComponentSet
 	// admissionEnd is when the first admission the membership gate relied on
 	// ends, zero while a workload entry or a current set lists every image the
 	// pod reported.
@@ -586,12 +587,35 @@ func (h AttestHandler) decideWorkload(ctx context.Context, in reportedSandbox) (
 	if err != nil {
 		return workloadDecision{}, err
 	}
+	stamp, err := newestSetStamp(sets)
+	if err != nil {
+		return workloadDecision{}, err
+	}
 	return workloadDecision{
 		matched:      h.matchWorkload(ctx, in),
 		roles:        reportedRoles(in.answer.Containers),
-		sets:         sets,
+		set:          stamp,
 		admissionEnd: admitted.end,
 	}, nil
+}
+
+// newestSetStamp names the newest of the sets admitting the pod — the release
+// it is already on, or has reached — in the form the leaf carries.
+func newestSetStamp(sets []allowlist.SetRef) (*armtls.ComponentSet, error) {
+	if len(sets) == 0 {
+		return nil, nil
+	}
+	newest := sets[len(sets)-1] // SetsInForce order: the highest version last
+	digest, err := types.ParseDigest(newest.Digest)
+	if err != nil {
+		return nil, fmt.Errorf("component set %s: %w", newest.Version, err)
+	}
+	raw, err := hex.DecodeString(digest.Hex())
+	if err != nil {
+		return nil, fmt.Errorf("component set %s: %w", newest.Version, err)
+	}
+	stamp := &armtls.ComponentSet{Version: newest.Version, Digest: raw}
+	return stamp, stamp.Validate()
 }
 
 // reportedRoles are the platform roles the report binds to the sandbox's
