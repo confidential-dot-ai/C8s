@@ -49,15 +49,17 @@ func TestAcknowledgeRetriesPersistence(t *testing.T) {
 				}
 				return injected
 			}
-			if err := o.acknowledgeWith(genesis, head, persist); !errors.Is(err, injected) {
+			o.persist = persist
+			if err := o.acknowledge(genesis, head); !errors.Is(err, injected) {
 				t.Fatal("persistence failure was hidden")
 			}
 			retry := head
 			retry.Seq = seq
 			retry.Hash = cdschain.Hash{byte(seq)}
-			if err := o.acknowledgeWith(genesis, retry, persist); !errors.Is(err, injected) || calls != 2 {
+			if err := o.acknowledge(genesis, retry); !errors.Is(err, injected) || calls != 2 {
 				t.Fatal("visible record bypassed a retry of persistence")
 			}
+			o.persist = nil
 			if err := o.acknowledge(genesis, retry); err != nil {
 				t.Fatal(err)
 			}
@@ -79,8 +81,9 @@ func TestAcknowledgeRetriesPersistence(t *testing.T) {
 			}
 			conflict := head
 			conflict.Hash = cdschain.Hash{7}
-			if err := o.acknowledge(genesis, conflict); err == nil {
-				t.Fatal("acknowledged a conflicting hash at the same sequence")
+			err = o.acknowledge(genesis, conflict)
+			if !errors.Is(err, errRecordConflict) || cmdsutil.ExitStatus(recordFailure("CDS confirmed it", err)) == cmdsutil.ExitNotConfirmed {
+				t.Fatalf("a conflicting hash at the same sequence: %v", err)
 			}
 			rec, err = o.record(head.Cluster)
 			if err != nil || rec == nil || rec.Acknowledged != head {
@@ -100,7 +103,7 @@ func TestAppendRecordFailureIsPossiblyApplied(t *testing.T) {
 	srv := httptest.NewServer(replica)
 	defer srv.Close()
 	w := &writer{
-		o:      &options{stateDir: blockedRecordDir(t)},
+		o:      &options{stateDir: t.TempDir(), persist: failedPersist},
 		url:    srv.URL,
 		client: srv.Client(),
 		key:    key,
@@ -141,7 +144,7 @@ func TestAppendRecordFailureIsPossiblyApplied(t *testing.T) {
 func TestGenesisRecordFailurePreservesHash(t *testing.T) {
 	l := newLiveReplica(t)
 	o := l.options()
-	o.stateDir = blockedRecordDir(t)
+	o.stateDir, o.persist = t.TempDir(), failedPersist
 	var out bytes.Buffer
 	err := o.genesis(
 		context.Background(),
@@ -164,6 +167,36 @@ func TestGenesisRecordFailurePreservesHash(t *testing.T) {
 	}
 }
 
+func failedPersist(string, []byte, os.FileMode) error {
+	return errors.New("record sync failed")
+}
+
+// An unusable state directory refuses the write before it is sent.
+func TestAppendChecksTheStateDirBeforeSending(t *testing.T) {
+	entries, key := testChain(t, 1)
+	state, err := cdschain.Verify(entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replica := &racedReplica{entries: entries}
+	srv := httptest.NewServer(replica)
+	defer srv.Close()
+	w := &writer{o: &options{stateDir: blockedRecordDir(t)}, url: srv.URL, client: srv.Client(), key: key}
+	pub, err := cdschain.PublicKeyPEM(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = w.append(context.Background(), state, cdschain.TypeOperatorKeys, cdschain.OperatorKeys{Keys: pub})
+	if err == nil || !strings.Contains(err.Error(), "nothing was sent") || cmdsutil.ExitStatus(err) == cmdsutil.ExitNotConfirmed {
+		t.Fatalf("write with an unusable state directory: %v", err)
+	}
+	replica.mu.Lock()
+	defer replica.mu.Unlock()
+	if len(replica.entries) != 1 {
+		t.Fatal("sent the entry before checking the state directory")
+	}
+}
+
 func blockedRecordDir(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "file")
@@ -181,7 +214,7 @@ func TestResolveStopsOnAnUnsavedRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 	held := l.waitServing(t).PolicySeq
-	o.stateDir = blockedRecordDir(t)
+	o.persist = failedPersist
 	err := o.afterResolve(ctx, []string{l.url}, held, 10*time.Second)
 	if !errors.Is(err, errRecordNotSaved) || cmdsutil.ExitStatus(err) != cmdsutil.ExitNotConfirmed {
 		t.Fatalf("refresh with a failed record: %v", err)

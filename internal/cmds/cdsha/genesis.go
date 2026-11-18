@@ -101,6 +101,9 @@ func (o *options) genesis(ctx context.Context, out io.Writer, urls []string, clu
 	if _, err := cdschain.VerifyGenesis(e); err != nil {
 		return err
 	}
+	if err := o.prepareRecord(cluster); err != nil {
+		return fmt.Errorf("the state directory cannot hold the record, so nothing was sent: %w", err)
+	}
 	if err := haapi.Call(ctx, client, http.MethodPost, urls[0]+haapi.GenesisPath, e, nil); err != nil {
 		var refusal *operatorauth.StatusError
 		if errors.As(err, &refusal) && (refusal.Status < 500 || refusal.Status == http.StatusServiceUnavailable) {
@@ -110,16 +113,8 @@ func (o *options) genesis(ctx context.Context, out io.Writer, urls []string, clu
 			"no answer confirmed the genesis %s (%w): if c8s cds ha status shows the replicas hold it, write with --genesis %s", e.Hash(), err, e.Hash())}
 	}
 	head := cdschain.Head{V: cdschain.Version, Cluster: cluster, Hash: e.Hash()}
-	if err := o.acknowledge(
-		head.Hash,
-		head,
-	); err != nil {
-		return fmt.Errorf(
-			"CDS accepted genesis %s, but its local record was not saved (%w): %w",
-			head.Hash,
-			err,
-			errRecordNotSaved,
-		)
+	if err := o.acknowledge(head.Hash, head); err != nil {
+		return recordFailure(fmt.Sprintf("CDS accepted genesis %s", head.Hash), err)
 	}
 	fmt.Fprintf(out, "genesis %s\n", head.Hash)
 	return nil

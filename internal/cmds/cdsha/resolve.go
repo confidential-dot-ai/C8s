@@ -184,7 +184,7 @@ func (o *options) savePlan(cluster string, p *resolvePlan) error {
 	if err != nil {
 		return err
 	}
-	if err := fileutil.MkdirAllDurable(filepath.Dir(path), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
 	return fileutil.WriteAtomic(path, append(data, '\n'), 0o600)
@@ -313,7 +313,7 @@ func (o *options) afterResolve(ctx context.Context, urls []string, held uint64, 
 			if err = (&writer{o: o, url: url, client: client, key: key}).refreshPolicy(ctx, held); err == nil {
 				return nil
 			}
-			if errors.Is(err, errRecordNotSaved) {
+			if errors.Is(err, errRecordNotSaved) || errors.Is(err, errRecordConflict) {
 				return err
 			}
 		}

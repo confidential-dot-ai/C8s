@@ -39,6 +39,16 @@ var errRecordNotSaved error = &cmdsutil.ExitStatusError{
 	Err:    errors.New("the write is applied: once the record can be saved, the next write records its head"),
 }
 
+// recordFailure is the error of a write CDS answered done, as applied
+// names it, whose acknowledgement failed with err. A record that disagrees
+// is not a failed save: its advice does not apply, and c8s exits 1.
+func recordFailure(applied string, err error) error {
+	if errors.Is(err, errRecordConflict) {
+		return fmt.Errorf("%s, but %w", applied, err)
+	}
+	return fmt.Errorf("%s, but its local record was not saved (%w): %w", applied, err, errRecordNotSaved)
+}
+
 // writer appends operator-signed entries through one replica.
 type writer struct {
 	o      *options
@@ -244,7 +254,7 @@ func (o *options) cache(c *verifiedChain) {
 		return
 	}
 	data, err := json.Marshal(c)
-	if err == nil && fileutil.MkdirAllDurable(dir, 0o700) == nil {
+	if err == nil && os.MkdirAll(dir, 0o700) == nil {
 		_ = fileutil.WriteAtomic(filepath.Join(dir, c.state.Cluster+".chain"), data, 0o600)
 	}
 }
@@ -262,6 +272,9 @@ func (w *writer) append(ctx context.Context, state *cdschain.State, typ cdschain
 	if _, err := state.Apply(e); err != nil {
 		return cdschain.Head{}, fmt.Errorf("the entry does not verify against the chain: %w", err)
 	}
+	if err := w.o.prepareRecord(state.Cluster); err != nil {
+		return cdschain.Head{}, fmt.Errorf("the state directory cannot hold the record, so nothing was sent: %w", err)
+	}
 	head, err := Submit(ctx, w.client, w.url, e)
 	if err != nil {
 		return head, err
@@ -269,17 +282,8 @@ func (w *writer) append(ctx context.Context, state *cdschain.State, typ cdschain
 	if head.Cluster != state.Cluster || head.Seq != state.Head.Seq+1 {
 		return head, fmt.Errorf("the replica answered done for head %d of %q, not %d of %q: %w", head.Seq, head.Cluster, state.Head.Seq+1, state.Cluster, ErrNotConfirmed)
 	}
-	if err := w.o.acknowledge(
-		state.Genesis,
-		head,
-	); err != nil {
-		return head, fmt.Errorf(
-			"CDS confirmed head %d (%s), but its local record was not saved (%w): %w",
-			head.Seq,
-			head.Hash,
-			err,
-			errRecordNotSaved,
-		)
+	if err := w.o.acknowledge(state.Genesis, head); err != nil {
+		return head, recordFailure(fmt.Sprintf("CDS confirmed head %d (%s)", head.Seq, head.Hash), err)
 	}
 	fmt.Fprintf(os.Stderr, "committed head %d (%s)\n", head.Seq, head.Hash)
 	return head, nil

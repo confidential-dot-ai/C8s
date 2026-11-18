@@ -48,9 +48,9 @@ func WriteAtomicRoot(root *os.Root, name string, data []byte, mode os.FileMode) 
 }
 
 // WriteAtomicDurable syncs the temporary file before replacement, then the
-// destination directory. The directory must exist and already be durable:
-// MkdirAllDurable creates one that is. An error after replacement can leave
-// the new contents visible.
+// destination directory and that directory's parent, which holds its entry.
+// Both must exist and be readable; directories above them are not opened.
+// An error after replacement can leave the new contents visible.
 func WriteAtomicDurable(path string, data []byte, mode os.FileMode) error {
 	return writeAtomicDurable(
 		path,
@@ -64,7 +64,11 @@ func writeAtomicDurable(path string, data []byte, mode os.FileMode, syncFile fun
 	if err := rejectTrailingSeparator("write durably", path); err != nil {
 		return err
 	}
-	root, err := os.OpenRoot(filepath.Dir(path))
+	dir, err := physicalDir(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	root, err := os.OpenRoot(dir)
 	if err != nil {
 		return err
 	}
@@ -82,49 +86,53 @@ func writeAtomicDurable(path string, data []byte, mode os.FileMode, syncFile fun
 	if err != nil {
 		return err
 	}
-	return syncAndClose(directory, syncFile)
-}
-
-// MkdirAllDurable creates path like os.MkdirAll and syncs the parent of each
-// directory it created. Directories that already exist are taken as durable.
-// A failed sync removes the created directories, so a retry syncs them again.
-func MkdirAllDurable(path string, perm os.FileMode) error {
-	return mkdirAllDurable(
-		path,
-		perm,
-		(*os.File).Sync,
-	)
-}
-
-func mkdirAllDurable(path string, perm os.FileMode, syncFile func(*os.File) error) error {
-	var created []string
-	for dir := filepath.Clean(path); ; dir = filepath.Dir(dir) {
-		_, err := os.Stat(dir)
-		if err == nil {
-			break
-		}
-		if !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
-		created = append(created, dir)
-	}
-	if err := os.MkdirAll(path, perm); err != nil {
+	if err := syncAndClose(directory, syncFile); err != nil {
 		return err
 	}
-	for _, dir := range created {
-		parent, err := os.Open(filepath.Dir(dir))
-		if err == nil {
-			err = syncAndClose(parent, syncFile)
-		}
-		if err != nil {
-			// Deepest first, so each is empty when its turn comes.
-			for _, dir := range created {
-				_ = os.Remove(dir)
-			}
-			return err
-		}
+	return syncParent(dir, syncFile)
+}
+
+// SyncDirWithParent syncs dir and its parent, as WriteAtomicDurable does
+// after a write. It tells a caller whether dir can hold a durable file.
+func SyncDirWithParent(dir string) error {
+	return syncDirWithParent(dir, (*os.File).Sync)
+}
+
+func syncDirWithParent(dir string, syncFile func(*os.File) error) error {
+	dir, err := physicalDir(dir)
+	if err != nil {
+		return err
 	}
-	return nil
+	directory, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	if err := syncAndClose(directory, syncFile); err != nil {
+		return err
+	}
+	return syncParent(dir, syncFile)
+}
+
+// physicalDir resolves symlinks, so that the parent is the directory that
+// holds dir's entry.
+func physicalDir(dir string) (string, error) {
+	dir, err := filepath.Abs(dir)
+	if err != nil {
+		return "", err
+	}
+	return filepath.EvalSymlinks(dir)
+}
+
+func syncParent(dir string, syncFile func(*os.File) error) error {
+	parent := filepath.Dir(dir)
+	if parent == dir {
+		return nil
+	}
+	directory, err := os.Open(parent)
+	if err != nil {
+		return err
+	}
+	return syncAndClose(directory, syncFile)
 }
 
 func syncAndClose(directory *os.File, syncFile func(*os.File) error) error {
