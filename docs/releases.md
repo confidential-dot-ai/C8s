@@ -33,7 +33,7 @@ gate.
 | Component images: `c8s-operator`, `cds`, `get-cert`, `armtls-mesh`, `nri-image-policy`, `volumed` | `ghcr.io/confidential-dot-ai/<name>`, tagged `vX.Y.Z`, `X.Y.Z`, and the 7-character commit SHA |
 | Helm chart | `ghcr.io/confidential-dot-ai/charts/c8s-cloud`, version `X.Y.Z`, carrying the release's component image digests, packaged byte-reproducibly from the release commit |
 | Guest images | `ghcr.io/confidential-dot-ai/guests/worker:vX.Y.Z-{tdx,sev-snp}[-kubevirt]` and `ghcr.io/confidential-dot-ai/guests/cds:vX.Y.Z[-kubevirt]` |
-| GitHub release | `release-statement.json`, `release-statement.sigstore.json`, and the CLI as `c8s-linux-amd64` and `c8s-darwin-arm64` |
+| GitHub release | `release-statement.json`, `release-statement.sigstore.json`, the CLI as `c8s-linux-amd64` and `c8s-darwin-arm64`, and the allowlist seed of each CPU TEE as `allowlist-seed-tdx.json` and `allowlist-seed-sev-snp.json` |
 
 A release also moves the `X.Y` image alias when it is the newest patch of that
 series, and `latest` when it is the newest stable release across all series. It
@@ -52,7 +52,12 @@ listed in the statement and reproducible. A
 released binary prints its tag with `c8s --version`. The release workflow
 stamps that tag; a plain `go build` of the same commit prints `dev`. A released
 `c8s install` reads the image digests from the chart of its own version; any
-other build needs `--chart`.
+other build needs `--chart`. An allowlist seed holds the component entries a
+CDS serves for a cluster of workers booted from this release's worker image,
+the input of `c8s cds config new --allowlist-seed`
+([allowlist-and-capabilities.md](allowlist-and-capabilities.md#bootstrap)). The
+release's CLI renders it from the release's image digests with the kubelet and
+Helm versions of the worker image build.
 
 ## Verify a release
 
@@ -60,13 +65,17 @@ Each release from `v0.36.0` on has a GitHub release carrying
 `release-statement.json`:
 
 ```json
-{"chart":"ghcr.io/confidential-dot-ai/charts/c8s-cloud@sha256:<DIGEST>","cli":{"darwin-arm64":{"asset":"c8s-darwin-arm64","sha256":"<HEX>"},"linux-amd64":{"asset":"c8s-linux-amd64","sha256":"<HEX>"}},"commit":"<SHA>","repository":"confidential-dot-ai/C8s","tag":"vX.Y.Z"}
+{"allowlistSeeds":{"sev-snp":{"asset":"allowlist-seed-sev-snp.json","sha256":"<HEX>"},"tdx":{"asset":"allowlist-seed-tdx.json","sha256":"<HEX>"}},"chart":"ghcr.io/confidential-dot-ai/charts/c8s-cloud@sha256:<DIGEST>","cli":{"darwin-arm64":{"asset":"c8s-darwin-arm64","sha256":"<HEX>"},"linux-amd64":{"asset":"c8s-linux-amd64","sha256":"<HEX>"}},"commit":"<SHA>","repository":"confidential-dot-ai/C8s","tag":"vX.Y.Z"}
 ```
 
 `chart` names the published chart by its manifest digest, which a Flux
 `OCIRepository` can pin. `cli` names each CLI asset and its SHA-256, keyed by
-`<os>-<arch>`. A statement without `cli` belongs to a release older than the
-CLI assets; published statements do not change, so build that CLI from source.
+`<os>-<arch>`; `allowlistSeeds` names each allowlist seed asset and its SHA-256,
+keyed by CPU TEE, `tdx` or `sev-snp`. A statement without `cli` or
+`allowlistSeeds` belongs to a release older than those assets; published
+statements do not change, so build that CLI from source, and render that seed
+as [allowlist-and-capabilities.md](allowlist-and-capabilities.md#bootstrap)
+describes.
 
 and `release-statement.sigstore.json`, a Sigstore bundle over those bytes,
 signed keyless through GitHub Actions OIDC, so there is no release key. A
@@ -153,6 +162,42 @@ cmp "rebuilt/c8s-$PLATFORM" "c8s-$PLATFORM"
 [`release-cli.sh`](../.github/scripts/release-cli.sh) fixes every build input,
 so the same commit, tag, toolchain and platform give the same bytes on any host.
 
+### Verify an allowlist seed
+
+After the two release checks above, download the seed for the CPU TEE of your
+worker image and compare it with the digest the statement lists. `PLATFORM` is
+`tdx` or `sev-snp`:
+
+```sh
+PLATFORM=tdx
+gh release download "$TAG" --repo confidential-dot-ai/C8s --pattern "allowlist-seed-$PLATFORM.json"
+jq -r --arg p "$PLATFORM" '.allowlistSeeds[$p] | "\(.sha256)  \(.asset)"' release-statement.json \
+  | sha256sum -c -
+```
+
+```text
+allowlist-seed-tdx.json: OK
+```
+
+A platform the statement does not list fails this check.
+
+The seed is a render of the release commit, so you can also render it again and
+compare. In a checkout of the release commit, with the verified
+`c8s-linux-amd64`, `crane`, and Helm at the version
+[`mkosi.sync`](../images/node-guest/worker/mkosi.sync) pins as `HELM_VERSION`
+first on `PATH`:
+
+```sh
+OPERATOR=$(crane digest "ghcr.io/confidential-dot-ai/c8s-operator:$TAG")
+MESH=$(crane digest "ghcr.io/confidential-dot-ai/armtls-mesh:$TAG")
+.github/scripts/release-seeds.sh ./c8s-linux-amd64 rendered "$OPERATOR" "$MESH" "$PLATFORM"
+cmp "rendered/allowlist-seed-$PLATFORM.json" "allowlist-seed-$PLATFORM.json"
+```
+
+[`release-seeds.sh`](../.github/scripts/release-seeds.sh) renders with the
+kubelet version `mkosi.sync` pins, so the same commit, CLI, digests and Helm
+give the same bytes on any host.
+
 ## Beta releases
 
 A push to the protected `beta` branch runs the same pipeline and releases
@@ -193,12 +238,12 @@ A release needs:
 Creating `refs/tags/vX.Y.Z` reserves the version before any registry write.
 Registry publication is not a transaction, so a failure after that can leave a
 release incomplete. Re-run the failed **Docker** workflow to repair component
-and chart publication, the CLI assets and the signed statement; re-run the
-**c8s-image** workflow to repair guest-image aliases. Missing aliases are
-created and matching ones verified by digest. A re-run rebuilds the CLI with the
-toolchain of the published binary and
-requires each published binary and the published statement to equal what it
-built; it uploads only what is missing. If an interrupted first run left a draft
+and chart publication, the CLI assets, the allowlist seeds and the signed
+statement; re-run the **c8s-image** workflow to repair guest-image aliases.
+Missing aliases are created and matching ones verified by digest. A re-run
+rebuilds the CLI with the toolchain of the published binary and requires each
+published binary and seed and the published statement to equal what it built;
+it uploads only what is missing. If an interrupted first run left a draft
 release, a re-run cannot read its binaries and builds with the current Go
 patch: when that differs, the re-run fails on the binary comparison, so delete
 the draft release and re-run. Neither workflow moves a Git tag,

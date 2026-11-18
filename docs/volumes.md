@@ -50,7 +50,7 @@ The key blob stored at the secret path holds all that opening the volume needs,
 and nothing else.
 
 ```json
-{ "type": "c8s.volume/v1", "key": "<base64, 64 bytes>",
+{ "type": "c8s.volume/v1", "name": "weights", "key": "<base64, 64 bytes>",
   "verity": { "root_hash": "<hex>", "salt": "<hex>",
               "data_blocks": 26214400, "hash_offset": 107374182400 } }
 ```
@@ -58,6 +58,12 @@ and nothing else.
 The root hash rides here rather than in an annotation or the entry because it is
 the integrity anchor, and an anchor the host can edit anchors nothing. A mutable
 blob carries `"mutable": true` and no tree; one with both or neither is refused.
+
+The required `name` is the name passed to `volume create --name`.
+`get-volume` and `volumed` require it to match the requested volume name before
+opening the volume. Names must be DNS-1123 labels of at most 12 characters.
+Blobs without a name are rejected. The name check does not provide freshness
+for blobs sharing a name.
 
 ### Keep the escrow file
 

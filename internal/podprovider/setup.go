@@ -204,7 +204,7 @@ func nodeObject(cfg *Config) *corev1.Node {
 
 func ensureOwnedNode(ctx context.Context, api coreclient.NodeInterface, want *corev1.Node) error {
 	current, err := api.Get(ctx, want.Name, metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
+	if notFound(err) {
 		starting := want.DeepCopy()
 		starting.Status.Conditions[0].Status = corev1.ConditionUnknown
 		starting.Status.Conditions[0].Reason = "ProviderStarting"

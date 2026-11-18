@@ -86,6 +86,9 @@ Entry types:
 | `nodes` | the whole set of node images the CDS certifies (a measurements document); every entry binds a launch | an operator key |
 
 Notes on the rules:
+- All accepted builds use the same TEE family and CDS launch file. Each pin
+  includes that family's required guest registers; TDX pins need RTMR[1] and
+  RTMR[2] ([image pins](measurements.md)).
 - Raising the build floor means writing an `accepted` set without the old builds. `c8s cds ha raise-floor` does that.
 - Until the first `nodes` entry, a replica certifies the launch file's `nodes`. After one, `/attest`, the sandbox-digests callback and `/measurements` all follow the newest entry.
 - There is no log key. A head is vouched for by the replica that serves it over attested TLS.

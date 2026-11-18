@@ -42,7 +42,10 @@ runtime measurement registers, RTMR[0] to RTMR[3], extendable in the guest.
 
 Pinning MRTD alone leaves the guest unpinned: it covers the firmware, so a host
 can boot another kernel under it. `--image-manifest` pins MRTD, RTMR[1] and
-RTMR[2] from one build.
+RTMR[2] from one build. A CDS pin on TDX must carry all three, and the client
+commands (`c8s allowlist`, `c8s secrets`, `c8s volume`, `c8s cds ca`,
+`c8s routes`) refuse a TDX endpoint whose pins leave RTMR[1] or RTMR[2]
+unpinned.
 
 ### Policy history
 
@@ -82,6 +85,11 @@ proves; `--pin-policy`, or `--trust-operator` with `--trust-operator-keys`,
 then judge the policies. Without
 one of those, a non-empty history leaves the verdict partial: the register is
 accounted for, the policies are not ([verify.md](verify.md)).
+
+Nothing authenticates the list until it replays, so `c8s verify` checks it
+only where it replays: against an `--image-policy-file` image with an
+`approver_key`, or an `--operator-pkey`, whose seed RTMR[3] has moved past.
+An unanchored image, or a register still at its seed, ignores the list.
 
 ## Where the evidence comes from
 
