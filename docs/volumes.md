@@ -163,6 +163,21 @@ On a node running the C8s worker image, volumed runs as the host service
 it is a chart DaemonSet, off by default because it is privileged, with `hostPID`
 and a writable kubelet-directory bind; `--volumes` on `c8s install` turns it on.
 
+### Surviving a volumed restart
+
+The kernel keeps a volume mounted while volumed restarts, so volumed records
+what it opened: one file per volume under `--state-dir`, naming the mapping, the
+mount path and the pod the volume belongs to. Both lanes point it at
+`/var/lib/c8s/volumed` on the node.
+
+The replacement volumed reconciles the records with the mappings on the node
+before it serves. A recorded volume whose pod is still there stays mounted and
+is torn down when that pod goes. A recorded volume whose pod went while no
+volumed ran is closed, as is a mapping no record covers — after a node reboot,
+or from a volumed that could not record its open. A record naming no mapping is
+removed. An open that cannot be recorded fails, because the next volumed would
+close it under a running pod.
+
 ### Teardown
 
 Releasing the volumes is the sidecar's last act: the kubelet stops sidecars only
@@ -187,9 +202,9 @@ and names the pods it passed: their mappings stay open, holding the volumes
 decrypted on nodes the uninstall stops enforcing, and an open mapping holds its
 backing disk open against the next install. Reboot those nodes.
 
-volumed closes the C8s mappings it finds at startup, so reinstalling reaps a
-mapping nothing mounts. One a pod still mounts stays mapped until the node
-reboots.
+volumed closes the C8s mappings it finds without a record at startup, so
+reinstalling reaps a mapping nothing holds. One recorded against a pod still on
+the node is kept, and closed when that pod goes.
 
 A disk built by `c8s volume attach` is separate state. The host sweep, on by
 default, removes the idle ones and names any still held; a release whose pinned
