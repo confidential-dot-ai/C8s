@@ -71,7 +71,7 @@ requires initial node pins.
 
 An entry is a signed body: `{v, cluster, seq, prev, type, payload}`.
 - The body is signed with `operatorauth.SignDetached`.
-- An entry's hash is SHA-256 over its body alone, so a re-encoded signature does not change it.
+- An entry's hash is `SHA-256("c8s-cds-chain-entry-v1\x00" || body)`, where `\x00` is one zero byte and `body` is the exact signed body. The signature is excluded.
 
 Entry types:
 
@@ -200,6 +200,7 @@ The clients that do this: get-cert, the sidecars, allowlist-proxy, cds-attest an
 |---|---|
 | `status` | every replica's status |
 | `genesis --cluster --version` | signs entry 0 (`--image-policy-file` pins the replicas and is the first accepted build) |
+| `prepare-policy --cluster --genesis --expect-head --file --policy-sha256 --out` | signs a reviewed canonical policy into a new native entry file without submitting it |
 | `accept-image --new-pin --version [--floor] [--force]` | accepts a build, optionally evicting builds below a version |
 | `raise-floor --to [--force]` | evicts builds below a version |
 | `accept-node --worker-document --worker-image` | admits a worker document: writes a `nodes` entry adding the worker image bound to the document's digest, after you confirm the facts it prints |
@@ -215,6 +216,42 @@ Notes:
 - A write that may have been applied exits 3, as does a `c8s allowlist` write to a single CDS that no answer confirmed. A genesis no answer confirmed exits 3 too and names its hash: once `c8s cds ha status` shows the replicas hold it, pass that hash as `--genesis`. One applied write exits 1 instead: CDS confirmed it, but the local record names another genesis, or another hash at the same seq. The error says so; check `c8s cds ha status` for a fork.
 - A successful CLI write syncs its acknowledged-head record, the state directory and that directory's parent before printing success. Before it reads or sends anything, it creates the state directory if needed, creates and removes a file in it, and syncs it, so an unusable `--state-dir` refuses with nothing sent. `genesis` also reads the cluster's record first and refuses one of another genesis. Concurrent commands retain the highest acknowledged head; retrying an equal or older head persists that record again. If CDS accepts a write but the local record is not saved, the command exits 3 and names the accepted head. The new record may already be visible despite that error.
 - Keep `--state-dir` on persistent, trusted local storage that supports file and directory sync. Its path must remain stable during use. The CLI needs read and write access to the state directory and read access to its parent. When it creates directories on the path, it also syncs each directory it added one to. Directories that already exist above the parent, and symlinks on the path, must already be durable: the CLI does not sync them, including one an earlier run created and failed to sync. The `.chain` cache remains best effort; it does not replace the acknowledged-head record.
+
+### Prepare a reviewed policy
+
+Review the canonical allowlist file and obtain its SHA-256 independently of the
+preparation command. Supply the intended cluster, trusted genesis and expected
+predecessor independently too. Replace the uppercase placeholders:
+
+```sh
+c8s cds ha prepare-policy \
+  --url https://CDS_HOST:PORT --image-policy-file cds-pin.json \
+  --state-dir durable-state --cluster CLUSTER --genesis GENESIS_HASH \
+  --expect-head SEQ:HEAD_HASH --operator-key operator.pem \
+  --file canonical-policy.json --policy-sha256 POLICY_SHA256 \
+  --out policy.entry.json
+```
+
+The command requires attested HTTPS under the supplied CDS pins and refuses
+`--insecure`. It checks the target, expected head and remembered acknowledged
+floor before establishing a genesis record or updating its verified-chain
+cache. An explicit genesis remains binding when a record already exists.
+
+The file must already contain canonical allowlist bytes, with no trailing
+newline, and be at most 1 MiB. `c8s allowlist export <file>` writes the
+allowlist CDS serves in that form: compact JSON of the normalized document. No
+command rewrites an edited file into it, so re-serialize an edited file the same
+way before computing its SHA-256. Preparation rejects a hash mismatch or
+noncanonical input and preserves the exact checked bytes in the policy payload.
+It refuses an existing output path, or one in a missing directory, before it
+contacts CDS. It validates the authorized signature and entry against the
+verified predecessor, then creates a mode-0600 file containing the native `body`
+and `sig`, and syncs it before reporting success.
+
+Signing authorizes the entry at that position. Preparation does not submit it,
+acknowledge its head, cache it as accepted policy or reserve its sequence. If
+another entry takes that position, prepare a replacement with a new expected
+head and output path; the original artifact stays unchanged.
 
 ## Deployment and upgrades
 
