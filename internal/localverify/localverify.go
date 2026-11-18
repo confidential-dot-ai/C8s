@@ -81,6 +81,11 @@ type Params struct {
 	// list. Verify ignores it; a caller enforcing anchored image pins replays
 	// it (armtls.EnforceImages).
 	RuntimeExtensions []string
+
+	// TDXTCBStatuses, when set, checks TDX evidence against fresh Intel PCS
+	// collateral and requires the platform, TDX module and QE TCB statuses
+	// to be in this set. Empty verifies TDX offline. Other platforms ignore it.
+	TDXTCBStatuses []teetypes.TdxTcbStatus
 }
 
 // VerifyFunc is the signature of [Verify], taken as a parameter by consumers
@@ -88,7 +93,7 @@ type Params struct {
 type VerifyFunc func(ctx context.Context, platform string, evidence json.RawMessage, p Params) (*teetypes.VerificationResult, error)
 
 // CollateralError marks a failure to obtain verification collateral (AMD KDS
-// unreachable, context expired): no verdict was reached. Every other Verify
+// or Intel PCS unreachable, context expired): no verdict was reached. Every other Verify
 // error is a verdict — evidence was obtained and rejected.
 type CollateralError struct{ Err error }
 
@@ -99,34 +104,70 @@ func (e *CollateralError) Unwrap() error { return e.Err }
 var ErrMeasurementNotAllowed = errors.New("launch measurement not in the allowed set")
 
 // Verify verifies a self-describing evidence envelope and enforces p. The
-// chain, binding, debug, min-TCB, and init-data checks are attestation-go's
-// verdict; the measurement allowlist is enforced here on its claims. ctx
-// bounds any AMD KDS collateral fetch.
+// chain, binding, debug, min-TCB, TDX TCB status and init-data checks are
+// attestation-go's verdict; the measurement allowlist is enforced here on its
+// claims. ctx bounds any AMD KDS or Intel PCS collateral fetch.
 func Verify(ctx context.Context, platform string, evidence json.RawMessage, p Params) (*teetypes.VerificationResult, error) {
+	res, _, err := VerifyWithCollateral(ctx, platform, evidence, p)
+	return res, err
+}
+
+// VerifyWithCollateral is Verify that also describes the Intel PCS collateral
+// a TDX TCB status check used; that description is nil when no check ran.
+func VerifyWithCollateral(ctx context.Context, platform string, evidence json.RawMessage, p Params) (*teetypes.VerificationResult, *TDXCollateral, error) {
 	envelope := teetypes.AttestationEvidence{
 		Platform: teetypes.NormalizePlatform(platform),
 		Evidence: evidence,
 	}
 	// A bare armTLS serving cert carries the SNP report with no inline VCEK;
 	// the Getter lets the snp and gcp-snp arms fetch it from AMD KDS, bounded
-	// by ctx. Nothing else here reaches the network.
-	res, err := teeverify.VerifyEnvelope(ctx, envelope, p.VerifyParams, teeverify.Options{
+	// by ctx. TDX reaches Intel PCS only when p asks for a TCB status check.
+	opts := teeverify.Options{
 		SNP: snp.Options{Getter: snp.NewCachingKDSGetter(defaultKDSCacheDir(), kdsGetter())},
-	})
+	}
+	checkTCB := len(p.TDXTCBStatuses) > 0 && envelope.Platform.IsTDX()
+	var fetch *collateralFetch
+	if checkTCB {
+		fetch = newCollateralFetch(ctx)
+		opts.TDX = tdxOptions(fetch, p.TDXTCBStatuses)
+	}
+	res, err := teeverify.VerifyEnvelope(ctx, envelope, p.VerifyParams, opts)
 	if err != nil {
 		var re *trust.AttestationRecreationErr
 		if errors.Is(err, snp.ErrCollateralUnavailable) || errors.As(err, &re) {
-			return nil, &CollateralError{Err: err}
+			return nil, nil, &CollateralError{Err: err}
+		}
+		if fetch != nil && fetch.failure() != nil {
+			return nil, nil, &CollateralError{Err: fetch.failure()}
 		}
 		// attestation-go returns an error (not a false verdict) on a bad
 		// signature, chain, policy, or REPORTDATA mismatch — a
 		// reachable-but-rejected outcome, i.e. a security verdict.
-		return nil, err
+		return nil, nil, err
 	}
 	if err := enforceResult(res, p); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return res, nil
+	if !checkTCB {
+		return res, nil, nil
+	}
+	if err := enforceTDXTCBStatus(res, p.TDXTCBStatuses); err != nil {
+		return nil, nil, err
+	}
+	collateral, err := fetch.collateral(res.TCBStatus)
+	if err != nil {
+		return nil, nil, err
+	}
+	return res, collateral, nil
+}
+
+// enforceTDXTCBStatus re-checks the TCB status the verifier reported against
+// the accepted set, so a result without one cannot read as a pass.
+func enforceTDXTCBStatus(res *teetypes.VerificationResult, accepted []teetypes.TdxTcbStatus) error {
+	if res.TCBStatus == nil || !slices.Contains(accepted, res.TCBStatus.TCBStatus) {
+		return fmt.Errorf("TDX TCB status not proven to be one of %v", accepted)
+	}
+	return nil
 }
 
 // enforceResult re-checks the verdict against p on the verifier's own claims.
