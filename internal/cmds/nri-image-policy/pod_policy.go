@@ -49,5 +49,5 @@ func (p *plugin) podPolicyChanged(ctx context.Context) {
 	p.inventory.revision++
 	p.inventory.mu.Unlock()
 	p.podChanged()
-	p.KillRevoked(ctx)
+	p.recheckRunning(ctx)
 }
