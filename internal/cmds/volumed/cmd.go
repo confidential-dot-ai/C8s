@@ -22,6 +22,7 @@ const SocketName = "volumed.sock"
 
 type config struct {
 	socketDir   string
+	stateDir    string
 	kubeletRoot string
 	cgroupRoot  string
 	// socketGID group-owns the socket so the non-root fetcher sidecar can
@@ -58,6 +59,10 @@ caller says about itself.`,
 	// in-pod path a sidecar sees it at is not where this daemon serves.
 	f.StringVar(&cfg.socketDir, "socket-dir", "",
 		"host directory holding the admission inventory's socket, where this daemon creates its own (required)")
+	// No default: the records must land on a host path that outlives the
+	// daemon, and where that is mounted is a deployment decision.
+	f.StringVar(&cfg.stateDir, "state-dir", "",
+		"directory holding one record per open volume, read at startup to keep a live pod's volume mounted (required)")
 	f.StringVar(&cfg.kubeletRoot, "kubelet-root", "/var/lib/kubelet", "kubelet's root directory, holding per-pod volume directories")
 	f.StringVar(&cfg.cgroupRoot, "cgroup-root", DefaultCgroupRoot, "cgroup mount, where a pod's slice going away is what triggers teardown")
 	f.DurationVar(&cfg.reapInterval, "reap-interval", DefaultReapInterval, "how often to tear down volumes whose pod has gone")
@@ -75,16 +80,22 @@ func runDaemon(ctx context.Context, cfg config) error {
 func runNode(ctx context.Context, cfg config) error {
 	// A running kubelet creates <root>/pods before it starts any pod, so its
 	// absence means the flag does not name this node's kubelet root dir.
-	podsDir := filepath.Join(cfg.kubeletRoot, "pods")
-	fi, err := os.Stat(podsDir)
-	if err == nil && !fi.IsDir() {
-		err = fmt.Errorf("%s is not a directory", podsDir)
-	}
-	if err != nil {
+	if err := dirExists(filepath.Join(cfg.kubeletRoot, "pods")); err != nil {
 		return fmt.Errorf("--kubelet-root %q is not the kubelet's root dir on this node: %v", cfg.kubeletRoot, err)
 	}
+	// The records outlive the daemon, so the directory is one the deployment
+	// provides, not one this process can create where it happens to run.
+	if err := dirExists(cfg.stateDir); err != nil {
+		return fmt.Errorf("--state-dir %q is not a directory on this node: %v", cfg.stateDir, err)
+	}
 
-	opener := &Opener{Ops: SystemOps{}, Targets: KubeletTargets{Root: cfg.kubeletRoot}, MaxMounts: cfg.maxMounts}
+	opener := &Opener{
+		Ops:       SystemOps{},
+		Targets:   KubeletTargets{Root: cfg.kubeletRoot},
+		MaxMounts: cfg.maxMounts,
+		Records:   FileRecords{Dir: cfg.stateDir},
+	}
+	liveness := CgroupLiveness{Root: cfg.cgroupRoot}
 	srv := &Server{
 		Identity: PeerIdentity{},
 		Opener:   opener,
@@ -98,15 +109,17 @@ func runNode(ctx context.Context, cfg config) error {
 	}
 	defer l.Close()
 
-	// Mappings an earlier volumed left behind hold the backing disk open, so a
-	// volume they cover cannot be reopened until they go. Sweep before serving.
-	if closed, stuck := opener.SweepStale(ctx); closed > 0 || len(stuck) > 0 {
-		slog.Info("swept mappings left by an earlier volumed", "closed", closed, "still_in_use", stuck)
+	// Volumes an earlier volumed opened are still mounted, and the mappings of
+	// pods that have gone hold their backing disks open. Reconcile both against
+	// the records before serving.
+	if adopted, closed, stuck := opener.Adopt(ctx, liveness); adopted > 0 || closed > 0 || len(stuck) > 0 {
+		slog.Info("reconciled the mappings of an earlier volumed",
+			"adopted", adopted, "closed", closed, "still_in_use", stuck)
 	}
 
 	reaper := &Reaper{
 		Opener:   opener,
-		Liveness: CgroupLiveness{Root: cfg.cgroupRoot},
+		Liveness: liveness,
 		Interval: cfg.reapInterval,
 		Logger:   slog.Default(),
 	}
@@ -125,6 +138,17 @@ func listen(dir string, gid int) (net.Listener, error) {
 	return workloadclaims.ListenUnix(filepath.Join(dir, SocketName), gid)
 }
 
+func dirExists(path string) error {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if !fi.IsDir() {
+		return fmt.Errorf("%s is not a directory", path)
+	}
+	return nil
+}
+
 func validate(cfg config) error {
 	if cfg.maxMounts <= 0 {
 		return fmt.Errorf("--max-mounts must be positive")
@@ -132,6 +156,8 @@ func validate(cfg config) error {
 	switch {
 	case cfg.socketDir == "":
 		return fmt.Errorf("--socket-dir is required")
+	case cfg.stateDir == "":
+		return fmt.Errorf("--state-dir is required")
 	case cfg.kubeletRoot == "":
 		return fmt.Errorf("--kubelet-root is required")
 	case cfg.cgroupRoot == "":

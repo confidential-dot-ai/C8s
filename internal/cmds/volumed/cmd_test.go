@@ -11,9 +11,11 @@ import (
 	"time"
 )
 
-func goodConfig(dir string) config {
+func goodConfig(t *testing.T, socketDir string) config {
+	t.Helper()
 	return config{
-		socketDir:   dir,
+		socketDir:   socketDir,
+		stateDir:    t.TempDir(),
 		kubeletRoot: "/var/lib/kubelet",
 		cgroupRoot:  DefaultCgroupRoot,
 		// InventorySocketGID needs root; our own gid still proves the chgrp.
@@ -24,7 +26,7 @@ func goodConfig(dir string) config {
 }
 
 func TestValidateAcceptsACompleteConfig(t *testing.T) {
-	if err := validate(goodConfig(t.TempDir())); err != nil {
+	if err := validate(goodConfig(t, t.TempDir())); err != nil {
 		t.Fatalf("rejected a complete config: %v", err)
 	}
 }
@@ -32,13 +34,14 @@ func TestValidateAcceptsACompleteConfig(t *testing.T) {
 func TestValidateRequiresEveryDependency(t *testing.T) {
 	cases := map[string]func(*config){
 		"socket dir":    func(c *config) { c.socketDir = "" },
+		"state dir":     func(c *config) { c.stateDir = "" },
 		"kubelet root":  func(c *config) { c.kubeletRoot = "" },
 		"cgroup root":   func(c *config) { c.cgroupRoot = "" },
 		"reap interval": func(c *config) { c.reapInterval = -1 },
 		"max mounts":    func(c *config) { c.maxMounts = 0 },
 	}
 	for name, mutate := range cases {
-		cfg := goodConfig(t.TempDir())
+		cfg := goodConfig(t, t.TempDir())
 		mutate(&cfg)
 		if err := validate(cfg); err == nil {
 			t.Errorf("%s: accepted", name)
@@ -60,7 +63,7 @@ func kubeletRootWithPods(t *testing.T) string {
 // The daemon makes no network calls, so a full run is exercised here: it serves
 // on its socket and unwinds when its context goes.
 func TestRunDaemonServesUntilItsContextIsDone(t *testing.T) {
-	cfg := goodConfig(t.TempDir())
+	cfg := goodConfig(t, t.TempDir())
 	cfg.kubeletRoot, cfg.cgroupRoot = kubeletRootWithPods(t), t.TempDir()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -99,7 +102,7 @@ func TestRunDaemonRejectsAnIncompleteConfig(t *testing.T) {
 }
 
 func TestRunDaemonReportsAnUnusableSocketDir(t *testing.T) {
-	cfg := goodConfig(filepath.Join(t.TempDir(), "absent"))
+	cfg := goodConfig(t, filepath.Join(t.TempDir(), "absent"))
 	cfg.kubeletRoot, cfg.cgroupRoot = kubeletRootWithPods(t), t.TempDir()
 	if err := runDaemon(context.Background(), cfg); err == nil {
 		t.Fatal("ran with a socket directory that does not exist")
@@ -118,7 +121,7 @@ func TestRunDaemonRejectsAKubeletRootWithoutPods(t *testing.T) {
 		"no pods entry":  t.TempDir(),
 		"pods is a file": withPodsFile,
 	} {
-		cfg := goodConfig(t.TempDir())
+		cfg := goodConfig(t, t.TempDir())
 		cfg.kubeletRoot, cfg.cgroupRoot = root, t.TempDir()
 		err := runDaemon(context.Background(), cfg)
 		if err == nil {
@@ -214,7 +217,7 @@ func TestListenReportsAnUnusableDirectory(t *testing.T) {
 
 func TestNewCmdHasTheDaemonFlags(t *testing.T) {
 	cmd := NewCmd()
-	for _, flag := range []string{"socket-dir", "kubelet-root", "cgroup-root", "reap-interval", "max-mounts"} {
+	for _, flag := range []string{"socket-dir", "state-dir", "kubelet-root", "cgroup-root", "reap-interval", "max-mounts"} {
 		if cmd.Flags().Lookup(flag) == nil {
 			t.Errorf("missing --%s", flag)
 		}
