@@ -20,6 +20,7 @@ import (
 	"golang.org/x/mod/semver"
 	"k8s.io/apimachinery/pkg/util/validation"
 
+	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
@@ -408,13 +409,35 @@ func (s *State) setMember(slot int, key string) error {
 }
 
 func (s *State) setAccepted(builds []Build) error {
+	if len(builds) == 0 {
+		return fmt.Errorf("%w: no accepted build pins an image", cmdsutil.ErrCDSPinUnbound)
+	}
 	seen := map[string]bool{}
+	var launchFile []byte
+	var family teetypes.Family
 	for _, b := range builds {
 		if !semver.IsValid(b.Version) {
 			return fmt.Errorf("build version %q is not a semantic version", b.Version)
 		}
-		if _, err := b.Values(); err != nil {
+		values, err := b.Values()
+		if err != nil {
 			return fmt.Errorf("build %s: %w", b.Version, err)
+		}
+		// The combined pin set retains only one family; validate before combining.
+		if err := cmdsutil.CheckCDSPins(values); err != nil {
+			return fmt.Errorf("build %s: %w", b.Version, err)
+		}
+		if family == "" {
+			family = values.Family
+		} else if values.Family != family {
+			return fmt.Errorf("accepted builds use different TEE families: %s and %s", family, values.Family)
+		}
+		file := values.Images[0].LaunchFile
+		if launchFile == nil {
+			launchFile = file
+		}
+		if !bytes.Equal(file, launchFile) {
+			return fmt.Errorf("build %s: %w: binds another configuration, and one pin names one CDS", b.Version, cmdsutil.ErrCDSPinUnbound)
 		}
 		if seen[b.Measurements] {
 			return fmt.Errorf("build %s is listed twice", b.Version)
@@ -422,10 +445,7 @@ func (s *State) setAccepted(builds []Build) error {
 		seen[b.Measurements] = true
 	}
 	s.Accepted = builds
-	// INVARIANT: every accepted image binds the one launch file, so a replica
-	// is admitted only on the operator's configuration, and the set is
-	// a pin every node client loads. An empty set is refused here too.
-	return cmdsutil.CheckCDSPins(s.Pins())
+	return nil
 }
 
 // CheckNodes holds a node image set to what a nodes entry may carry: at least

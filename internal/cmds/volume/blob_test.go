@@ -16,7 +16,7 @@ func validVerity() Verity {
 
 func validBlob(t *testing.T) Blob {
 	t.Helper()
-	b, err := NewBlob(testKey(), validVerity())
+	b, err := NewBlob("weights", testKey(), validVerity())
 	if err != nil {
 		t.Fatalf("new blob: %v", err)
 	}
@@ -32,6 +32,9 @@ func TestBlobRoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
+	if got.Name != "weights" {
+		t.Fatalf("name = %q, want weights", got.Name)
+	}
 	key, err := got.DecodeKey()
 	if err != nil {
 		t.Fatalf("decode key: %v", err)
@@ -45,7 +48,7 @@ func TestBlobRoundTrips(t *testing.T) {
 }
 
 func TestNewBlobRejectsWrongKeyLength(t *testing.T) {
-	if _, err := NewBlob(make([]byte, 32), validVerity()); err == nil {
+	if _, err := NewBlob("weights", make([]byte, 32), validVerity()); err == nil {
 		t.Fatal("accepted a 32-byte key")
 	}
 }
@@ -114,7 +117,7 @@ func TestDecodeKeyFailsOnCorruptKey(t *testing.T) {
 }
 
 func TestMutableBlobRoundTrips(t *testing.T) {
-	b, err := NewMutableBlob(testKey())
+	b, err := NewMutableBlob("weights", testKey())
 	if err != nil {
 		t.Fatalf("new mutable blob: %v", err)
 	}
@@ -122,9 +125,6 @@ func TestMutableBlobRoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	// A mutable blob carries nothing but the key: there is no tree to
-	// describe, and a "verity" key left in the JSON would invite a reader to
-	// expect one.
 	if strings.Contains(string(raw), "verity") {
 		t.Fatalf("mutable blob names verity: %s", raw)
 	}
@@ -135,10 +135,11 @@ func TestMutableBlobRoundTrips(t *testing.T) {
 	if !got.Mutable || got.Verity != nil {
 		t.Fatalf("decoded %+v, want mutable with no verity", got)
 	}
+	if got.Name != "weights" {
+		t.Fatalf("name = %q, want weights", got.Name)
+	}
 }
 
-// A pre-mutable blob — type, key, verity — decodes as immutable: escrow files
-// written before this field existed must keep opening their volumes.
 func TestBlobWithoutMutableFieldDecodesImmutable(t *testing.T) {
 	raw, err := validBlob(t).Marshal()
 	if err != nil {
@@ -165,7 +166,7 @@ func TestValidateRejectsModeAndTreeMismatch(t *testing.T) {
 		t.Error("accepted mutable with verity geometry")
 	}
 
-	neither, err := NewMutableBlob(testKey())
+	neither, err := NewMutableBlob("weights", testKey())
 	if err != nil {
 		t.Fatalf("new mutable blob: %v", err)
 	}
@@ -176,7 +177,45 @@ func TestValidateRejectsModeAndTreeMismatch(t *testing.T) {
 }
 
 func TestNewMutableBlobRejectsWrongKeyLength(t *testing.T) {
-	if _, err := NewMutableBlob(make([]byte, 32)); err == nil {
+	if _, err := NewMutableBlob("weights", make([]byte, 32)); err == nil {
 		t.Fatal("accepted a 32-byte key")
+	}
+}
+
+func TestBlobRejectsInvalidNames(t *testing.T) {
+	for _, name := range []string{"", "Weights", "../weights", strings.Repeat("a", MaxNameLen+1)} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := NewBlob(name, testKey(), validVerity()); err == nil {
+				t.Error("immutable constructor accepted an invalid name")
+			}
+			if _, err := NewMutableBlob(name, testKey()); err == nil {
+				t.Error("mutable constructor accepted an invalid name")
+			}
+			mutable, err := NewMutableBlob("weights", testKey())
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, b := range []Blob{validBlob(t), mutable} {
+				b.Name = name
+				raw, err := b.Marshal()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := DecodeBlob(raw); err == nil {
+					t.Errorf("decoded an invalid name (mutable=%t)", b.Mutable)
+				}
+			}
+		})
+	}
+}
+
+func TestDecodeBlobRejectsMissingName(t *testing.T) {
+	raw, err := validBlob(t).Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw = []byte(strings.ReplaceAll(string(raw), `"name":"weights",`, ""))
+	if _, err := DecodeBlob(raw); err == nil {
+		t.Fatal("accepted a nameless blob")
 	}
 }
