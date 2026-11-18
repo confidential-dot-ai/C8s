@@ -93,14 +93,15 @@ func CDSLaunchFile(values refvalues.ReferenceValues) ([]byte, error) {
 	return values.Images[0].LaunchFile, nil
 }
 
-// CheckCDSPins holds a pin set to naming one CDS VM: every entry must bind
-// the same launch file, and a set binding none, or two, names no one VM. A
-// CDS is the cluster's trust root, and its image alone says nothing about the
-// cluster it serves — the configuration does, and the launch binding is what
-// proves it.
+// CheckCDSPins requires every image to pin its family's guest registers and
+// bind the same CDS launch file. The launch binding identifies the cluster;
+// an image alone does not.
 func CheckCDSPins(values refvalues.ReferenceValues) error {
 	if values.Empty() {
 		return fmt.Errorf("%w: it pins no image, so nothing tells this cluster's CDS from any other attested TEE", ErrCDSPinUnbound)
+	}
+	if err := armtls.RequireImageRegisters(values.Family, values.Images); err != nil {
+		return fmt.Errorf("%w: %w", ErrCDSPinUnbound, err)
 	}
 	file := values.Images[0].LaunchFile
 	for _, image := range values.Images {

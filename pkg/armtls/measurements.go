@@ -43,6 +43,31 @@ func ImageRegisters(family teetypes.Family) ([]int, bool) {
 	return registers, identified
 }
 
+// RequireImageRegisters refuses pins that leave a guest on family
+// unidentified: every image must pin each register ImageRegisters names, since
+// a launch digest alone admits any guest booted under the same firmware.
+func RequireImageRegisters(family teetypes.Family, images []remote.ImagePin) error {
+	registers, identified := ImageRegisters(family)
+	if !identified {
+		return fmt.Errorf("family %q has no guest image identity to pin", family)
+	}
+	for _, image := range images {
+		if index, unpinned := firstUnpinned(image, registers); unpinned {
+			return fmt.Errorf("pin %q leaves RTMR[%d] unpinned, and a %s launch digest covers the firmware alone", image.Name, index, family)
+		}
+	}
+	return nil
+}
+
+func firstUnpinned(image remote.ImagePin, registers []int) (int, bool) {
+	for _, index := range registers {
+		if _, pinned := image.Registers[index]; !pinned {
+			return index, true
+		}
+	}
+	return 0, false
+}
+
 // EnforceImages is [remote.EnforceImagesWithRuntimeLog] with every Anchor or
 // LaunchFileDigest pin accepting any runtime extension that replays. It does
 // not judge which digests the peer measured: that is an external verifier's

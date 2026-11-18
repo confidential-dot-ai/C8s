@@ -366,8 +366,18 @@ untouched, so an operator edit survives until the CDS VM restarts and a
 deleted entry returns then for as long as the configuration carries it.
 
 A cluster of workers runs no chart install, so it has no `--allowlist-seed-out` to
-take the seed from. `c8s node-image render` writes the same document instead,
-given the digests the worker image's own release published:
+take the seed from. The worker image's release publishes the seed instead, as
+`allowlist-seed-tdx.json` and `allowlist-seed-sev-snp.json`, listed by SHA-256
+in its signed statement
+([releases.md](releases.md#verify-an-allowlist-seed)):
+
+```sh
+c8s cds config new --allowlist-seed allowlist-seed-sev-snp.json ...
+```
+
+For a worker image built from a commit without a release, `c8s node-image
+render` of that commit writes the same document, given the digests the image
+was built with:
 
 ```sh
 c8s node-image render --output-dir seed \
@@ -377,7 +387,7 @@ c8s node-image render --output-dir seed \
 c8s cds config new --allowlist-seed seed/allowlist-seed.json ...
 ```
 
-The digests must be the release the worker image was built from: a seed from
+The seed must be the release the worker image was built from: a seed from
 another release leaves pods waiting in `c8s-cert-wait`.
 
 ## Allowlist history

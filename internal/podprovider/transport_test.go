@@ -58,6 +58,7 @@ func TestCloudWireContractAndFailureRedaction(t *testing.T) {
 			_, _ = io.WriteString(w, `{"code":"idempotency_in_flight","detail":"private launch policy"}`)
 		case 4:
 			w.WriteHeader(http.StatusNotFound)
+			_, _ = io.WriteString(w, `{"code":"not_found"}`)
 		default:
 			t.Error("unexpected Cloud operation")
 		}
