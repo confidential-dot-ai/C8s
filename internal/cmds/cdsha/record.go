@@ -84,7 +84,7 @@ func (o *options) prepareRecord(cluster string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := fileutil.MkdirAllDurable(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
 	lock, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0o600)

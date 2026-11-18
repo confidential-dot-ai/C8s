@@ -170,3 +170,32 @@ func TestSyncDirWithParent(t *testing.T) {
 		t.Fatalf("missing directory: %v", err)
 	}
 }
+
+func TestMkdirAllDurableSyncsEveryDirectoryItAddsTo(t *testing.T) {
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var synced []string
+	record := func(f *os.File) error {
+		synced = append(synced, f.Name())
+		return nil
+	}
+	dir := filepath.Join(base, "a", "b", "c")
+	if err := mkdirAllDurable(dir, 0o700, record); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{filepath.Join(base, "a", "b"), filepath.Join(base, "a"), base}
+	if !slices.Equal(synced, want) {
+		t.Fatalf("synced %v, want %v", synced, want)
+	}
+	synced = nil
+	if err := mkdirAllDurable(dir, 0o700, record); err != nil || synced != nil {
+		t.Fatalf("existing directory: synced %v, %v", synced, err)
+	}
+	failed := errors.New("sync failed")
+	err = mkdirAllDurable(filepath.Join(dir, "d"), 0o700, func(*os.File) error { return failed })
+	if !errors.Is(err, failed) {
+		t.Fatalf("sync failure: %v", err)
+	}
+}
