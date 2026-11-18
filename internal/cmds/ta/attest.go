@@ -48,6 +48,10 @@ type AttestHandler struct {
 	MeshCA            meshCA
 	CertTTL           time.Duration
 
+	// Now decides which component sets are in force for a request; nil reads
+	// the wall clock.
+	Now func() time.Time
+
 	// RequestTimeout caps how long /attest may spend on attestation
 	// verification + signing. Zero = no timeout.
 	RequestTimeout time.Duration
@@ -146,7 +150,7 @@ type issuanceProfile interface {
 	// see THREAT MODEL above.
 	admitImage(w http.ResponseWriter, verified remote.VerifyResponse, launchDigest string) bool
 
-	resolveWorkload(ctx context.Context, sandbox workloadclaims.VerifiedSandbox) (matched *armtls.MatchedWorkload, router bool, err error)
+	resolveWorkload(ctx context.Context, sandbox workloadclaims.VerifiedSandbox) (workloadDecision, error)
 
 	// clientDocument is the digest stamped on the leaf, with the raw claim the
 	// issuance record names it by.
@@ -247,7 +251,7 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	matched, router, err := profile.resolveWorkload(ctx, sandbox)
+	decision, err := profile.resolveWorkload(ctx, sandbox)
 	if err != nil {
 		// The detail stays in the log. A requester picks both the sandbox ID and
 		// the address Trust Authority just dialled, so echoing what happened there would
@@ -264,7 +268,14 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ttl := h.leafTTL(matched, router)
+	ttl, err := h.leafTTL(decision)
+	if err != nil {
+		slog.Warn("sandbox workload rejected",
+			"sandbox_id", sandbox.SandboxID, "inventory_addr", sandbox.InventoryHost, "error", err,
+			"remote_addr", r.RemoteAddr)
+		httputil.WriteError(w, http.StatusForbidden, types.ErrorCodeCSRDenied, "sandbox workload not authorized")
+		return
+	}
 	// One read: the certificate that signs the leaf is the chain returned with it.
 	signing, issuing := h.MeshCA.Current()
 	if !issuing {
@@ -281,7 +292,7 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 		TTL:                  ttl,
 		Evidence:             evidenceJSON,
 		SandboxID:            sandbox.SandboxID,
-		MatchedWorkload:      matched,
+		MatchedWorkload:      decision.matched,
 		ClientDocumentDigest: clientDocument,
 	})
 	if errors.Is(err, issuer.ErrSubjectDenied) {
@@ -311,7 +322,7 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 	if sandbox.SandboxID != "" {
 		issued = append(issued, "sandbox_id", sandbox.SandboxID, "inventory_addr", sandbox.InventoryHost)
 	}
-	if matched != nil {
+	if matched := decision.matched; matched != nil {
 		issued = append(issued,
 			"workload", matched.Name,
 			"allowlist_version", matched.AllowlistVersion,
@@ -360,21 +371,50 @@ func decodeAttestRequest(w http.ResponseWriter, r *http.Request) (types.AttestRe
 	return req, fields, true
 }
 
+// workloadDecision is what one issuance establishes about the requester's pod:
+// the workload entry its inventory matched, whether it runs the router, and
+// the component sets it is on (empty for a pod on none).
+type workloadDecision struct {
+	matched *armtls.MatchedWorkload
+	router  bool
+	sets    []allowlist.SetRef
+	// setsEnd is when the last of those sets ends, zero while one of them is
+	// current.
+	setsEnd time.Time
+}
+
 // leafTTL is an issued leaf's lifetime. issuer.MaxNamedLeafTTL is a ceiling
-// NamedCertTTL can only lower; a non-positive NamedCertTTL lands on it.
-func (h AttestHandler) leafTTL(matched *armtls.MatchedWorkload, router bool) time.Duration {
+// NamedCertTTL can only lower; a non-positive NamedCertTTL lands on it. A leaf
+// never outlives the last component set that admits its pod, and a pod whose
+// sets have ended since they were resolved is refused rather than issued a
+// certificate expiring in the past.
+func (h AttestHandler) leafTTL(decision workloadDecision) (time.Duration, error) {
 	ttl := issuer.CapTTL(h.CertTTL, issuer.MaxLeafTTL)
-	if matched != nil {
+	if decision.matched != nil {
 		namedTTL := issuer.MaxNamedLeafTTL
 		if h.NamedCertTTL > 0 && h.NamedCertTTL < namedTTL {
 			namedTTL = h.NamedCertTTL
 		}
 		ttl = issuer.CapTTL(ttl, namedTTL)
 	}
-	if router && h.RouterCertTTL > 0 {
+	if decision.router && h.RouterCertTTL > 0 {
 		ttl = min(ttl, h.RouterCertTTL)
 	}
-	return ttl
+	if !decision.setsEnd.IsZero() {
+		remaining := decision.setsEnd.Sub(h.now())
+		if remaining <= 0 {
+			return 0, fmt.Errorf("every component set admitting the pod has ended")
+		}
+		ttl = min(ttl, remaining)
+	}
+	return ttl, nil
+}
+
+func (h AttestHandler) now() time.Time {
+	if h.Now != nil {
+		return h.Now()
+	}
+	return time.Now()
 }
 
 // matchPinnedNodeImage holds the verified evidence to one node image this Trust Authority
@@ -486,48 +526,74 @@ func (h AttestHandler) verifySandboxToken(ctx context.Context, raw json.RawMessa
 // or allowlist store, a malformed digests view, or a non-allowlisted image is
 // fail-closed — Trust Authority cannot establish what the pod runs, or has established
 // that it should not run, and it never stamps from stale cached state.
-func (h AttestHandler) resolveSandboxWorkload(ctx context.Context, sandbox workloadclaims.VerifiedSandbox) (matched *armtls.MatchedWorkload, router bool, err error) {
+func (h AttestHandler) resolveSandboxWorkload(ctx context.Context, sandbox workloadclaims.VerifiedSandbox) (workloadDecision, error) {
 	if sandbox.SandboxID == "" {
-		return nil, false, nil
+		return workloadDecision{}, nil
 	}
 	if h.AllowlistStore == nil {
-		return nil, false, fmt.Errorf("sandbox token presented but this Trust Authority has no allowlist to check it against")
+		return workloadDecision{}, fmt.Errorf("sandbox token presented but this Trust Authority has no allowlist to check it against")
 	}
 	if h.SandboxDigests == nil {
-		return nil, false, fmt.Errorf("sandbox token presented but this Trust Authority cannot reach the inventory for its digests")
+		return workloadDecision{}, fmt.Errorf("sandbox token presented but this Trust Authority cannot reach the inventory for its digests")
 	}
 	resp, err := h.SandboxDigests.FetchSandbox(ctx, sandbox.InventoryHost, sandbox.SandboxID)
 	if err != nil {
-		return nil, false, fmt.Errorf("resolve sandbox digests from %s: %w", sandbox.InventoryHost, err)
+		return workloadDecision{}, fmt.Errorf("resolve sandbox digests from %s: %w", sandbox.InventoryHost, err)
 	}
 	snapshot, err := h.policySnapshot()
 	if err != nil {
-		return nil, false, err
+		return workloadDecision{}, err
 	}
+	now := h.now()
 
 	if len(resp.Digests) == 0 {
 		// "No containers" is not "nothing to check" — it is no evidence at all,
 		// and looping over it would pass the gate vacuously. A sandbox always
 		// runs at least the sidecar that is asking, so an empty answer means
 		// the inventory is still syncing (or is lying), both of which must wait.
-		return nil, false, fmt.Errorf("inventory reports no containers in sandbox %s", sandbox.SandboxID)
+		return workloadDecision{}, fmt.Errorf("inventory reports no containers in sandbox %s", sandbox.SandboxID)
 	}
 	membership := make(map[string]struct{}, len(resp.Digests))
 	for _, d := range resp.Digests {
 		digest, err := types.ParseDigest(d)
 		if err != nil {
-			return nil, false, fmt.Errorf("container digest %q: %w", d, err)
+			return workloadDecision{}, fmt.Errorf("container digest %q: %w", d, err)
 		}
-		if !snapshot.Contains(digest.String()) {
-			return nil, false, fmt.Errorf("container image %s is not allowlisted", digest)
+		if !snapshot.Contains(digest.String(), now) {
+			return workloadDecision{}, fmt.Errorf("container image %s is not allowlisted", digest)
 		}
 		membership[digest.String()] = struct{}{}
 	}
 
-	router = slices.ContainsFunc(resp.Containers, func(c workloadclaims.SandboxContainer) bool {
+	sets, err := secrets.ComponentSets(snapshot.Allowlist, resp.Containers, now)
+	if err != nil {
+		return workloadDecision{}, fmt.Errorf("sandbox %s: %w", sandbox.SandboxID, err)
+	}
+	router := slices.ContainsFunc(resp.Containers, func(c workloadclaims.SandboxContainer) bool {
 		return c.Role == allowlist.RoleRouter
 	})
-	return h.matchWorkload(ctx, snapshot, resp, membership, sandbox), router, nil
+	return workloadDecision{
+		matched: h.matchWorkload(ctx, snapshot, resp, membership, sandbox, now),
+		router:  router,
+		sets:    sets,
+		setsEnd: retirementEnd(snapshot.Allowlist, sets),
+	}, nil
+}
+
+// retirementEnd is when the last of sets ends, zero while one of them is
+// current: a pod on a current set has no component deadline to renew before.
+func retirementEnd(al *allowlist.Allowlist, sets []allowlist.SetRef) time.Time {
+	var last time.Time
+	for _, ref := range sets {
+		set := al.Components[ref.Version]
+		if set.Current() {
+			return time.Time{}
+		}
+		if deadline := set.Retire.Deadline.Time; deadline.After(last) {
+			last = deadline
+		}
+	}
+	return last
 }
 
 // policySnapshot returns the one immutable snapshot this issuance decides
@@ -544,7 +610,14 @@ func (h AttestHandler) policySnapshot() (*PolicySnapshot, error) {
 // issuance: every failure returns nil (unnamed) with a bounded log line —
 // the diagnostics name the sandbox and attested inventory, never the full
 // inventory response.
-func (h AttestHandler) matchWorkload(ctx context.Context, snapshot *PolicySnapshot, resp workloadclaims.SandboxDigestsResponse, membership map[string]struct{}, sandbox workloadclaims.VerifiedSandbox) *armtls.MatchedWorkload {
+func (h AttestHandler) matchWorkload(
+	ctx context.Context,
+	snapshot *PolicySnapshot,
+	resp workloadclaims.SandboxDigestsResponse,
+	membership map[string]struct{},
+	sandbox workloadclaims.VerifiedSandbox,
+	now time.Time,
+) *armtls.MatchedWorkload {
 	unnamed := func(level slog.Level, why string, args ...any) *armtls.MatchedWorkload {
 		args = append(args, "sandbox_id", sandbox.SandboxID, "inventory_addr", sandbox.InventoryHost)
 		slog.Log(ctx, level, "issuing unnamed: "+why, args...)
@@ -586,7 +659,7 @@ func (h AttestHandler) matchWorkload(ctx context.Context, snapshot *PolicySnapsh
 	}
 
 	candidates := secrets.WorkloadContainers(canonical)
-	name, _, err := snapshot.Allowlist.MatchWorkload(candidates)
+	name, _, err := snapshot.Allowlist.MatchWorkloadAt(candidates, now)
 	if err != nil {
 		// ErrNoMatch mid-lifecycle and ErrAmbiguous are ordinary unnamed
 		// states, not faults.

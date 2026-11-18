@@ -346,6 +346,11 @@ by that monotone version: a consumer applies a pull only if its version is not
 below the last applied, and a 304 raises the last applied version to the one
 it names.
 
+Every reply, including a 304, carries `X-C8s-Certificate-Lifetime`, the seconds
+of the longest leaf the Trust Authority issues (`--cert-ttl`, capped at 24h), so
+a poller knows how long a certificate issued under a document it has not yet
+seen can live.
+
 Nodes ask for the allowlist in effect (`?requester=node`). The node plugin
 sends it over attested TLS to the TA; anything else sending it just gets the
 allowlist in effect. An allowlist write takes effect on nodes

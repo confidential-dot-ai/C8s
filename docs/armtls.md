@@ -275,6 +275,20 @@ configuration's `nodeCIDRs`; an empty bound refuses every token). The TA then
 verifies the token and asks `/digests/{id}`, where every image reported must be
 in the allowlist — the operator policy of workload
 entries the TA serves and every node enforces — and an empty answer is refused.
+An entry of a component set in force admits an image as a workload entry does,
+so a sidecar the cluster's release declares needs no workload entry
+([allowlist-entries.md](allowlist-entries.md#component-sets)). The deadline
+alone ends that admission: the same inventory answer passes the gate before the
+deadline and fails after it, with no write in between.
+
+The containers the inventory reports with a c8s component role decide which
+sets the pod is on: the sets in force that admit every one of them. A pod whose
+component containers share no such set — two sets, or one set beside a
+container only a node's measured base admits — is refused a certificate, a
+secret and a volume key. A pod no set admits a component container of is judged
+by the workloads section alone, as a pod from before sets is. A leaf for a pod
+only retiring sets admit expires with the last of their deadlines, so it renews
+under the set that replaces them or loses its identity.
 
 Issuance gates on membership, not on a whole workload entry
 ([allowlist-and-capabilities.md](allowlist-and-capabilities.md) owns that rule),

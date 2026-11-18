@@ -77,15 +77,17 @@ func (h AttestHandler) resolvePodWorkload(ctx context.Context, pod workloadclaim
 	if err != nil {
 		return nil, err
 	}
+	now := h.now()
 	membership := make(map[string]struct{}, len(pod.RuntimeExtensions))
 	for _, d := range pod.RuntimeExtensions {
-		if !snapshot.Contains(d) {
+		if !snapshot.Contains(d, now) {
 			return nil, fmt.Errorf("pod image membership not authorized")
 		}
 		membership[d] = struct{}{}
 	}
 	resp := workloadclaims.SandboxDigestsResponse{Digests: pod.RuntimeExtensions, Containers: pod.Containers}
-	return h.matchWorkload(ctx, snapshot, resp, membership, workloadclaims.VerifiedSandbox{SandboxID: pod.InstanceID()}), nil
+	sandbox := workloadclaims.VerifiedSandbox{SandboxID: pod.InstanceID()}
+	return h.matchWorkload(ctx, snapshot, resp, membership, sandbox, now), nil
 }
 
 // podIssuance is the Pod CVM profile: the quote binds the pod claims, and the
@@ -126,11 +128,11 @@ func (p podIssuance) admitImage(w http.ResponseWriter, verified remote.VerifyRes
 	return true
 }
 
-// resolveWorkload reports no router: the router role comes from the inventory
-// containers view, which a Pod CVM is not served by.
-func (p podIssuance) resolveWorkload(ctx context.Context, _ workloadclaims.VerifiedSandbox) (*armtls.MatchedWorkload, bool, error) {
+// resolveWorkload reports no router and no component set: both come from the
+// inventory containers view, which a Pod CVM is not served by.
+func (p podIssuance) resolveWorkload(ctx context.Context, _ workloadclaims.VerifiedSandbox) (workloadDecision, error) {
 	matched, err := p.h.resolvePodWorkload(ctx, p.claims)
-	return matched, false, err
+	return workloadDecision{matched: matched}, err
 }
 
 // clientDocument states what the claims carry: a digest that is not hex stamps
