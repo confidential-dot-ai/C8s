@@ -104,9 +104,23 @@ REPLY=$'COMPATIBLE\n\nOnly a new function.' judge "$docs_only" "$api_change"
 [ "$status" -eq 0 ] || fail "COMPATIBLE did not exit 0 (exit $status)"
 pass
 
-REPLY='I am not sure.' judge "$docs_only" "$api_change"
-[[ $status -eq 2 && $(head -n1 "$work/report") = *'no verdict'* ]] ||
-  fail "a reply without a verdict was not a failed check: $(cat "$work/report")"
+# The verdict is the reply's first word: a reason run onto its line, or
+# emphasis around it, moves below a first line that is the bare verdict.
+REPLY=$'COMPATIBLE: the change only adds `Parse`.' judge "$docs_only" "$api_change"
+[[ $status -eq 0 && $(cat "$work/report") = $'COMPATIBLE\n\nthe change only adds `Parse`.' ]] ||
+  fail "a verdict with its reason on the same line was not read (exit $status): $(cat "$work/report")"
+pass
+
+REPLY=$'\n**INCOMPATIBLE**\n\n- pkg/allowlist gained Parse' judge "$docs_only" "$api_change"
+[[ $status -eq 1 && $(cat "$work/report") = $'INCOMPATIBLE\n\n- pkg/allowlist gained Parse' ]] ||
+  fail "an emphasised verdict was not read (exit $status): $(cat "$work/report")"
+pass
+
+for reply in 'I am not sure.' 'COMPATIBLEish.' 'Not INCOMPATIBLE.'; do
+  REPLY=$reply judge "$docs_only" "$api_change"
+  [[ $status -eq 2 && $(head -n1 "$work/report") = *'no verdict'* ]] ||
+    fail "the reply '$reply' was not a failed check: $(cat "$work/report")"
+done
 pass
 
 # Deleting a hashed source file is incompatible without asking the model.
