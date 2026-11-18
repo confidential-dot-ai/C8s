@@ -107,7 +107,7 @@ func TestBuildProducesDecryptableConcatenation(t *testing.T) {
 	if v.DataBlocks != uint64(f.dataBytes)/VerityBlockSize {
 		t.Errorf("data_blocks = %d, want %d", v.DataBlocks, f.dataBytes/VerityBlockSize)
 	}
-	if _, err := NewBlob(key, v); err != nil {
+	if _, err := NewBlob("weights", key, v); err != nil {
 		t.Errorf("build produced geometry a blob rejects: %v", err)
 	}
 }

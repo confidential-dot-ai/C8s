@@ -139,7 +139,7 @@ func TestServerRefusesAWrongKeyForAnOpenVolume(t *testing.T) {
 	}
 
 	body := openBody(t)
-	blob, err := volume.NewBlob(make([]byte, volume.KeyBytes), *body.Blob.Verity)
+	blob, err := volume.NewBlob("weights", make([]byte, volume.KeyBytes), *body.Blob.Verity)
 	if err != nil {
 		t.Fatalf("blob: %v", err)
 	}
@@ -218,7 +218,7 @@ func TestServerReportsAConflictingOpen(t *testing.T) {
 	f := newServerFixture(t, resolvedIdentity())
 	f.srv.Devices = fakeDevices{device: "/dev/vdb"}
 	body := openBody(t)
-	blob, err := volume.NewMutableBlob(mustKey(t, body))
+	blob, err := volume.NewMutableBlob("weights", mustKey(t, body))
 	if err != nil {
 		t.Fatalf("blob: %v", err)
 	}
@@ -229,7 +229,7 @@ func TestServerReportsAConflictingOpen(t *testing.T) {
 
 	// Same device, another name, same mutable key: one device, one mount.
 	other := openBody(t)
-	otherBlob, err := volume.NewMutableBlob(mustKey(t, other))
+	otherBlob, err := volume.NewMutableBlob("datasets", mustKey(t, other))
 	if err != nil {
 		t.Fatalf("blob: %v", err)
 	}
@@ -262,6 +262,7 @@ func TestServerReportsTheNodeMountCap(t *testing.T) {
 
 	body := openBody(t)
 	body.Name = "datasets"
+	body.Blob.Name = "datasets"
 	if got := f.post(t, body).StatusCode; got != http.StatusInsufficientStorage {
 		t.Fatalf("status = %d, want %d", got, http.StatusInsufficientStorage)
 	}
@@ -444,5 +445,17 @@ func TestServerReopensAfterClose(t *testing.T) {
 	}
 	if f.opener.Len() != 1 {
 		t.Fatalf("opener holds %d mounts, want 1", f.opener.Len())
+	}
+}
+
+func TestServerRejectsAnotherVolumeBlob(t *testing.T) {
+	f := newServerFixture(t, resolvedIdentity())
+	body := openBody(t)
+	body.Blob.Name = "other"
+	if got := f.post(t, body).StatusCode; got != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", got, http.StatusForbidden)
+	}
+	if got := f.ops.sequence(); got != "" {
+		t.Fatalf("device operations = %q", got)
 	}
 }

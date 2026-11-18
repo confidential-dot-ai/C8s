@@ -49,6 +49,9 @@ Entry types:
 | `member` | slot → member key | a current member key (written by a giver at handoff) or an operator key |
 
 Notes on the rules:
+- All accepted builds use the same TEE family and CDS launch file. Each pin
+  includes that family's required guest registers; TDX pins need RTMR[1] and
+  RTMR[2] ([image pins](measurements.md)).
 - Raising the build floor means writing an `accepted` set without the old builds. `c8s cds ha raise-floor` does that.
 - There is no log key. A head is vouched for by the replica that serves it over attested TLS.
 - Gossip is signed with member keys.

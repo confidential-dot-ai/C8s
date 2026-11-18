@@ -445,14 +445,16 @@ func requireEntries(read allowlistRead, names []string) error {
 //
 // INVARIANT: every entry the write does not name goes back with all of its
 // fields. The served parse is lenient: it drops fields this c8s does not know
-// and entries no longer valid (an over-long legacy name). The write path's
-// strict parse refuses both instead, so nothing is lost by writing back.
+// and entries no longer valid (an over-long legacy name). The stored parse
+// refuses both instead, so nothing is lost by writing back. It keeps an entry
+// that fails a pinning rule added since it was written, so delete or edit can
+// remove or repair it; CDS refuses any write that keeps it.
 func readForWrite(ctx context.Context, c allowlistclient.Client) (allowlistRead, error) {
 	raw, version, err := c.CanonicalBytes(ctx)
 	if err != nil {
 		return allowlistRead{}, err
 	}
-	live, err := pkgallowlist.ParseJSON(raw)
+	live, err := pkgallowlist.ParseStoredJSON(raw)
 	if err != nil {
 		return allowlistRead{}, fmt.Errorf("the served allowlist holds content this c8s cannot write back unchanged "+
 			"(a field it does not know, or an entry no longer valid such as a name over 63 bytes); "+
@@ -565,7 +567,11 @@ func editWorkloadInEditor(w pkgallowlist.Workload, name string) (*pkgallowlist.W
 	if err != nil {
 		return nil, err
 	}
-	return pkgallowlist.ParseWorkloadJSON(edited)
+	entry, err := pkgallowlist.ParseWorkloadJSON(edited)
+	if err != nil {
+		return nil, fmt.Errorf("workload %q: %w", name, err)
+	}
+	return entry, nil
 }
 
 func runEditor(path string) error {
