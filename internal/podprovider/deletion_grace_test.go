@@ -101,10 +101,11 @@ func TestDeletionDoesNotWaitForAPodItsGuestNeverReceived(t *testing.T) {
 	}
 }
 
-// A verification deadline that passes inside the grace period fails the Pod
-// then, and its instance still stays until the grace period ends.
-func TestVerificationDeadlineInsideTheGracePeriodFailsThePodAndKeepsItsInstance(t *testing.T) {
+// Deleting a Pod must not keep an unverified guest longer than leaving it
+// would: a verification deadline inside the grace period ends the wait.
+func TestVerificationDeadlineEndsTheGracePeriod(t *testing.T) {
 	pod := fixturePod()
+	pod.Finalizers = []string{"example.invalid/hold"}
 	r, cloud := fixtureReconciler(t, pod)
 	runToRunning(t, r, pod)
 	end := deleteWithGraceLeft(t, r, pod, 30*time.Second)
@@ -117,38 +118,36 @@ func TestVerificationDeadlineInsideTheGracePeriodFailsThePodAndKeepsItsInstance(
 	if err := r.save(context.Background(), rec, secret); err != nil {
 		t.Fatal(err)
 	}
-	req := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(pod)}
 
-	res, err := r.Reconcile(context.Background(), req)
+	res, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(pod)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.RequeueAfter != 20*time.Second {
-		t.Fatalf("requeued after %s, want the 20s until the verification deadline", res.RequeueAfter)
-	}
-	if got := getPod(t, r, pod); got.Status.Phase != corev1.PodRunning {
-		t.Fatalf("Pod is %s before its verification deadline, want Running", got.Status.Phase)
+	if cloud.deleteCalls != 0 || res.RequeueAfter != 20*time.Second {
+		t.Fatalf("%d destruction requests, requeue %s: want the instance kept and a wake at the deadline in 20s", cloud.deleteCalls, res.RequeueAfter)
 	}
 
 	r.now = func() time.Time { return deadline }
-	for range 2 {
-		if res, err = r.Reconcile(context.Background(), req); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if got := getPod(t, r, pod); got.Status.Phase != corev1.PodFailed || got.Status.Reason != verificationTimeoutReason {
-		t.Fatalf("Pod is %s/%s at its verification deadline, want Failed/%s", got.Status.Phase, got.Status.Reason, verificationTimeoutReason)
-	}
-	if cloud.deleteCalls != 0 || res.RequeueAfter != 10*time.Second {
-		t.Fatalf("%d destruction requests, requeue %s: want the instance kept for the 10s left of the grace period", cloud.deleteCalls, res.RequeueAfter)
-	}
-
-	r.now = func() time.Time { return end }
 	if err := reconcile(t, r, pod); err != nil {
 		t.Fatal(err)
 	}
 	if cloud.deleteCalls != 1 {
-		t.Fatalf("%d destruction requests once the grace period passed, want 1", cloud.deleteCalls)
+		t.Fatalf("%d destruction requests at the verification deadline, want 1", cloud.deleteCalls)
+	}
+	got := getPod(t, r, pod)
+	if got.Status.Phase != corev1.PodFailed || got.Status.Reason != verificationTimeoutReason {
+		t.Fatalf("Pod is %s/%s at its verification deadline, want Failed/%s", got.Status.Phase, got.Status.Reason, verificationTimeoutReason)
+	}
+	if !controllerutil.ContainsFinalizer(got, finalizer) {
+		t.Fatal("Pod released before its instance's destruction was confirmed")
+	}
+
+	cloud.in.Status = "terminated"
+	if err := reconcile(t, r, pod); err != nil {
+		t.Fatal(err)
+	}
+	if got := getPod(t, r, pod); controllerutil.ContainsFinalizer(got, finalizer) || got.Status.Reason != verificationTimeoutReason {
+		t.Fatalf("after destruction: finalizer held=%t, reason %q", controllerutil.ContainsFinalizer(got, finalizer), got.Status.Reason)
 	}
 }
 
