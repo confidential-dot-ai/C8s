@@ -10,6 +10,10 @@ func EntityTag(digest string) string {
 	return `"` + digest + `"`
 }
 
+// CertificateLifetimeHeader names the response header in which GET /allowlist
+// carries, in seconds, the longest lifetime CDS issues a leaf for.
+const CertificateLifetimeHeader = "X-C8s-Certificate-Lifetime"
+
 // NodeQuery is the query with which a node asks GET /allowlist for the
 // allowlist in effect.
 const NodeQuery = "requester=node"

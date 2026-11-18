@@ -616,6 +616,11 @@ func TestInjectedImageWithoutARoleIsNotDropped(t *testing.T) {
 func TestMeshEndpointIsDropped(t *testing.T) {
 	hn := newHarness(t)
 	hn.seed(t, "/api/db", []byte("stored-secret"))
+	al, err := hn.h.Policy.Allowlist()
+	if err != nil {
+		t.Fatal(err)
+	}
+	al.Workloads["c8s-mesh"] = anyEntry(t, testMeshImg, "ghcr.io/confidential-dot-ai/armtls-mesh@"+testMeshImg)
 	hn.inv.containers = append(hn.inv.containers, workloadclaims.SandboxContainer{
 		Digest: testMeshImg,
 		Argv:   []string{"/app/c8s", "armtls-mesh", "--cert-path=/etc/c8s/certs/tls.crt"},

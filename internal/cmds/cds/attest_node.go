@@ -54,7 +54,7 @@ func (n nodeIssuance) admitImage(w http.ResponseWriter, verified remote.VerifyRe
 	return true
 }
 
-func (n nodeIssuance) resolveWorkload(ctx context.Context, sandbox workloadclaims.VerifiedSandbox) (*armtls.MatchedWorkload, bool, error) {
+func (n nodeIssuance) resolveWorkload(ctx context.Context, sandbox workloadclaims.VerifiedSandbox) (workloadDecision, error) {
 	return n.h.resolveSandboxWorkload(ctx, sandbox)
 }
 

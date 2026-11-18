@@ -239,9 +239,10 @@ func run(ctx context.Context, cfg config) error {
 			SandboxBindings:   haLedger(cfg.measured.HA, sandboxBindings),
 		},
 		AllowlistHandler: allowlist.Handler{
-			Store:             &allowlistStore,
-			WriteAuthorizer:   operatorAuthorizer,
-			MaxWriteBodyBytes: allowlistWriteBodyCap,
+			Store:               &allowlistStore,
+			WriteAuthorizer:     operatorAuthorizer,
+			MaxWriteBodyBytes:   allowlistWriteBodyCap,
+			CertificateLifetime: issuer.CapTTL(cfg.certTTL, issuer.MaxLeafTTL),
 		},
 		Routes: routeHandler{
 			Store:     &allowlistStore,

@@ -749,3 +749,23 @@ func TestAllowlistHandlersReturn500OnStoreFailure(t *testing.T) {
 		})
 	}
 }
+
+// A poller learns how long the leaves CDS issues live, on the document and on
+// a 304: it bounds how stale the policy behind a live certificate can be.
+func TestAllowlistListReportsTheCertificateLifetime(t *testing.T) {
+	store := openInMemory(t)
+	seedEntry(t, store, "web", digestA)
+	h := allowlist.Handler{Store: store, CertificateLifetime: 90 * time.Minute}
+
+	rec := list(h, "")
+	if got := rec.Header().Get(pkgallowlist.CertificateLifetimeHeader); got != "5400" {
+		t.Fatalf("%s = %q, want 5400", pkgallowlist.CertificateLifetimeHeader, got)
+	}
+	notModified := list(h, rec.Header().Get("ETag"))
+	if notModified.Code != http.StatusNotModified {
+		t.Fatalf("status = %d, want 304", notModified.Code)
+	}
+	if got := notModified.Header().Get(pkgallowlist.CertificateLifetimeHeader); got != "5400" {
+		t.Fatalf("304 %s = %q, want 5400", pkgallowlist.CertificateLifetimeHeader, got)
+	}
+}

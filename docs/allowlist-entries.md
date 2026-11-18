@@ -242,6 +242,9 @@ Every set is checked:
 - a `nodeService` entry has one container and no init container, and its
   `command`, `args`, `env` and `mounts` are all `exact`.
 
+Sets are operator-written: the measured CDS configuration seeds the workloads
+section only, and a seed document naming a `components` section fails startup.
+
 A write is refused whole when one of its sets fails a check, names an
 unsupported major version, or carries a field this release does not know. A
 node parses what it is served leniently: it drops that set alone with a

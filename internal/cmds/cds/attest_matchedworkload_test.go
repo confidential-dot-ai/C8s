@@ -6,6 +6,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/hex"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"regexp"
 	"testing"
@@ -54,6 +55,17 @@ func issueWithInventory(t *testing.T, store policyStore, digests []string, conta
 
 func leafFromInventory(t *testing.T, store policyStore, digests []string, containers []workloadclaims.SandboxContainer, tune func(*AttestHandler)) *x509.Certificate {
 	t.Helper()
+	w := attestWithInventory(t, store, digests, containers, tune)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	return leafFromAttestResponse(t, w)
+}
+
+// attestWithInventory drives a full token-bearing /attest against the given
+// store and inventory answer.
+func attestWithInventory(t *testing.T, store policyStore, digests []string, containers []workloadclaims.SandboxContainer, tune func(*AttestHandler)) *httptest.ResponseRecorder {
+	t.Helper()
 	stub := newStubAttestationApi(t, testLaunchDigest)
 	h, signer := newSandboxTestEnv(t, stub.URL())
 	h.AllowlistStore = store
@@ -67,11 +79,7 @@ func leafFromInventory(t *testing.T, store policyStore, digests []string, contai
 	}
 	csrPEM := sandboxCSR(t)
 	challenge := issueChallenge(t, h)
-	w := postAttestSandbox(t, h, challenge, csrPEM, signedSandboxToken(t, signer, csrPEM, challenge, testSandboxID))
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
-	}
-	return leafFromAttestResponse(t, w)
+	return postAttestSandbox(t, h, challenge, csrPEM, signedSandboxToken(t, signer, csrPEM, challenge, testSandboxID))
 }
 
 // completeAPIStore is a store whose "api" entry is exactly the one workload
