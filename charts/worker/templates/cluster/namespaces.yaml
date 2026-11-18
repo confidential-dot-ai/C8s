@@ -1,8 +1,13 @@
-{{- /* Holds the operator's leader lease. */ -}}
+{{- /* Holds the operator's leader lease and the volumed DaemonSet.
+       Privileged: volumed opens devices and mounts into a pod's directory. */}}
 apiVersion: v1
 kind: Namespace
 metadata:
   name: {{ .Release.Namespace }}
+  labels:
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/warn: privileged
+    pod-security.kubernetes.io/audit: privileged
 ---
 {{- /* The namespace the mesh policy names for the router role. Privileged:
        the router pod mounts the node's inventory and attestation-api

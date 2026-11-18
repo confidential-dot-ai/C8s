@@ -106,7 +106,9 @@ func TestNodeImageRender(t *testing.T) {
 			}
 			var labelled []string
 			for name, workload := range allowlist.Workloads {
-				if !strings.HasPrefix(name, "c8s-router-") {
+				// The router's and volumed's entries declare whole pods, which
+				// carry no one image label.
+				if !strings.HasPrefix(name, "c8s-router-") && !strings.HasPrefix(name, "c8s-volumed-") {
 					labelled = append(labelled, workload.Label)
 				}
 			}
@@ -126,15 +128,15 @@ func TestNodeImageRender(t *testing.T) {
 			}
 			assertRouterDeclaresItsHostPorts(t, allowlist.Workloads[routerEntryName(t, cluster)], deployment)
 			assertLocalPathDenied(t, allowlist)
-			assertComponentSet(t, got["component-set.json"], routerEntryName(t, cluster), allowlist.Workloads[routerEntryName(t, cluster)])
+			assertComponentSet(t, got["component-set.json"], routerEntryName(t, cluster), allowlist)
 		})
 	}
 }
 
 // assertComponentSet checks the set the render publishes: the release's
-// version, the sidecars' images as this render pinned them, and the router
-// entry named name as the seed carries it.
-func assertComponentSet(t *testing.T, file []byte, name string, router pkgallowlist.Workload) {
+// version, the sidecars' images as this render pinned them, the router entry
+// named name as the seed carries it, and volumed's as the node service.
+func assertComponentSet(t *testing.T, file []byte, name string, seed *pkgallowlist.Allowlist) {
 	t.Helper()
 	doc, err := pkgallowlist.ParseJSON(file)
 	if err != nil {
@@ -159,8 +161,14 @@ func assertComponentSet(t *testing.T, file []byte, name string, router pkgallowl
 			t.Errorf("the set labels %s %q, want %q", digest, images[digest], want)
 		}
 	}
-	if !reflect.DeepEqual(set.Entries[name], router) {
+	if router := seed.Workloads[name]; !reflect.DeepEqual(set.Entries[name], router) {
 		t.Errorf("the set's %s entry =\n%+v\nwant the seed's\n%+v", name, set.Entries[name], router)
+	}
+	volumedName, volumed := seededEntry(t, seed, "c8s-volumed-")
+	volumed.NodeService = true
+	if !reflect.DeepEqual(set.Entries[volumedName], volumed) {
+		t.Errorf("the set's %s entry =\n%+v\nwant the seed's as a node service\n%+v",
+			volumedName, set.Entries[volumedName], volumed)
 	}
 }
 
