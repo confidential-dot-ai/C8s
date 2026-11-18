@@ -42,6 +42,8 @@ type policyStore struct {
 	snap   atomic.Pointer[policySnapshot]
 	// clock is the CDS time component-set deadlines are judged by.
 	clock *cdsClock
+	// freshness is how far behind the CDS the served snapshot may be.
+	freshness *freshness
 }
 
 // newPolicyStore seeds the store with an empty snapshot (version 0) so admission
@@ -52,12 +54,19 @@ func newPolicyStore(base *allowlist.Allowlist, clock *cdsClock) *policyStore {
 		base = &allowlist.Allowlist{}
 	}
 	s := &policyStore{
-		base:   base.BuildIndex(),
-		grants: withoutStaticPods(base).BuildIndex(),
-		clock:  clock,
+		base:      base.BuildIndex(),
+		grants:    withoutStaticPods(base).BuildIndex(),
+		clock:     clock,
+		freshness: newFreshness(clock.local),
 	}
-	s.snap.Store(&policySnapshot{index: (&allowlist.Allowlist{}).BuildIndex()})
+	s.snap.Store(&policySnapshot{index: emptyIndex()})
 	return s
+}
+
+// emptyIndex admits nothing: the served view of a node with no document of
+// the CDS's in force.
+func emptyIndex() *allowlist.Index {
+	return (&allowlist.Allowlist{}).BuildIndex()
 }
 
 // withoutStaticPods is a without its allowlist.Workload.StaticPod entries.
@@ -242,6 +251,25 @@ func (s *policyStore) rebuildEndedSets() bool {
 			return false
 		}
 		if s.snap.CompareAndSwap(cur, s.snapshot(cur.pulled, cur.version)) {
+			return true
+		}
+	}
+}
+
+// dropServed drops the served document, keeping its version so a rolled-back
+// one cannot take its place, and reports whether one was in force. The base
+// allowlist alone judges until a pull lands again.
+func (s *policyStore) dropServed() bool {
+	for {
+		cur := s.snap.Load()
+		if cur == nil || cur.pulled == nil {
+			return false
+		}
+		empty := &policySnapshot{
+			index:   emptyIndex(),
+			version: cur.version,
+		}
+		if s.snap.CompareAndSwap(cur, empty) {
 			return true
 		}
 	}

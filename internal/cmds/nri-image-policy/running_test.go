@@ -2,6 +2,8 @@ package nriimagepolicy
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
@@ -10,6 +12,7 @@ import (
 	"github.com/containerd/nri/pkg/api"
 
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
 )
 
 // revocationPlugin enforces on running containers, with pushDigestA in a
@@ -432,5 +435,155 @@ func TestRemovingASetEndsItsPodsOnTheNextPull(t *testing.T) {
 	}
 	if ended := <-deleted; ended != pod {
 		t.Fatalf("deleted %s/%s, want the pod on the removed set", ended.GetNamespace(), ended.GetName())
+	}
+}
+
+// --- the fallback to the base allowlist ---
+
+// fallbackPlugin is a node enforcer with pushDigestA served and pushDigestC in
+// its base, recording what it stops and the Pods it deletes.
+func fallbackPlugin(t *testing.T) (*plugin, *[]string, chan *api.PodSandbox) {
+	t.Helper()
+	p, _, killed := revocationPlugin(enforcing)
+	deleted := make(chan *api.PodSandbox, 2)
+	p.deletePod = func(_ context.Context, pod *api.PodSandbox) error {
+		deleted <- pod
+		return nil
+	}
+	return p, killed, deleted
+}
+
+// A node that falls back to its base allowlist ends every pod the served
+// allowlist admitted: whole, and the Pod deleted so its controller replaces
+// it. A pod the base admits runs on. A later poll re-admits.
+func TestFallingBackEndsTheServedPodsWholeAndKeepsTheBaseOnes(t *testing.T) {
+	p, killed, deleted := fallbackPlugin(t)
+	served := makePod("tenant", "inference-0")
+	sidecar, app := runningCtr(served, "c8s-mesh", pushDigestA), runningCtr(served, "app", pushDigestC)
+	onBase := makePod("tenant", "node-local")
+	baseOnly := runningCtr(onBase, "tool", pushDigestC)
+	for _, c := range []struct {
+		pod *api.PodSandbox
+		ctr *api.Container
+	}{{served, sidecar}, {served, app}, {onBase, baseOnly}} {
+		p.running.add(c.pod, c.ctr)
+	}
+
+	target := nodeTarget{store: p.policy, recheckRunning: p.recheckRunning}
+	p.policy.freshness.noteFallback()
+	if !target.fallBack(t.Context()) {
+		t.Fatal("the fallback reports no served document, though one was applied")
+	}
+
+	ended := slices.Clone(*killed)
+	slices.Sort(ended)
+	want := []string{sidecar.Id, app.Id}
+	slices.Sort(want)
+	if !slices.Equal(ended, want) {
+		t.Fatalf("killed %v, want every container of the pod the served allowlist admitted %v", ended, want)
+	}
+	if pod := <-deleted; pod != served {
+		t.Fatalf("deleted %s/%s, want the pod the served allowlist admitted", pod.GetNamespace(), pod.GetName())
+	}
+	select {
+	case pod := <-deleted:
+		t.Fatalf("deleted %s/%s, a pod the base allowlist admits", pod.GetNamespace(), pod.GetName())
+	default:
+	}
+	if !p.running.contains(baseOnly.Id) {
+		t.Fatal("a pod the base allowlist admits lost a container")
+	}
+
+	// A poll that lands puts the served allowlist back in force.
+	if err := target.replace(t.Context(), anyAllowlist(map[string]string{pushDigestA: "image-a"}), 2); err != nil {
+		t.Fatal(err)
+	}
+	p.policy.freshness.replied(time.Hour, true)
+	if !admitsDigest(p.policy, pushDigestA) {
+		t.Fatal("the node did not admit the served allowlist again")
+	}
+	if !p.running.contains(baseOnly.Id) {
+		t.Fatal("the applied pull ended a pod the base allowlist admits")
+	}
+}
+
+// After a restart a node is behind until its first poll lands. With the CDS
+// unreachable the startup fetch gives up and the first tick ends the pods it
+// recovered that its base allowlist alone does not admit; with the CDS
+// answering, those pods run on.
+func TestRestartEndsTheRecoveredServedPodsOnlyWithoutTheCDS(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		reachable bool
+		wantEnded bool
+	}{
+		{name: "the CDS answers", reachable: true},
+		{name: "the CDS is unreachable", reachable: false, wantEnded: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, killed, deleted := fallbackPlugin(t)
+			// A restart: the served document is gone and the recovered
+			// containers are back on the running set.
+			p.policy = newPolicyStore(p.cfg.Allowlist.Base, localClock())
+			recovered := makePod("tenant", "inference-0")
+			sidecar := runningCtr(recovered, "c8s-mesh", pushDigestA)
+			p.running.add(recovered, sidecar)
+
+			handler := &flippingHandler{
+				versions: []string{"1"},
+				bodyByV:  map[string][]byte{"1": canonicalBody(t, anyAllowlist(map[string]string{pushDigestA: "image-a"}))},
+			}
+			handler.down.Store(!tc.reachable)
+			srv := httptest.NewServer(handler)
+			defer srv.Close()
+			target := nodeTarget{store: p.policy, recheckRunning: p.recheckRunning}
+			client := allowlistclient.NewClientWithHTTP(srv.URL, &http.Client{Timeout: time.Second})
+			etag := ""
+			if tc.reachable {
+				var err error
+				etag, err = pullInitial(t.Context(), pullArgs{
+					client: client,
+					target: target,
+					pull:   quietPull(),
+					logger: discardLogger(),
+
+					timeout: time.Second,
+				})
+				if err != nil {
+					t.Fatalf("the startup fetch failed: %v", err)
+				}
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			go runPullLoop(ctx, pullLoopArgs{
+				pull:     quietPull(),
+				client:   client,
+				interval: 5 * time.Millisecond,
+				timeout:  time.Second,
+				etag:     etag,
+				logger:   discardLogger(),
+
+				target: target,
+			})
+
+			if tc.wantEnded {
+				if pod := <-deleted; pod != recovered {
+					t.Fatalf("deleted %s/%s, want the recovered pod", pod.GetNamespace(), pod.GetName())
+				}
+				if !slices.Equal(*killed, []string{sidecar.Id}) {
+					t.Fatalf("killed %v, want the recovered container the base does not admit", *killed)
+				}
+				return
+			}
+			waitFor(t, func() bool { fresh, _ := p.policy.freshness.report(); return fresh }, "the first poll to land")
+			select {
+			case pod := <-deleted:
+				t.Fatalf("deleted %s/%s while the CDS answers", pod.GetNamespace(), pod.GetName())
+			case <-time.After(50 * time.Millisecond):
+			}
+			if len(*killed) != 0 {
+				t.Fatalf("killed %v while the CDS answers", *killed)
+			}
+		})
 	}
 }
