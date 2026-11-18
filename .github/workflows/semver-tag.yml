@@ -493,10 +493,11 @@ jobs:
           }
           operator="$(digest c8s-operator)"
           mesh="$(digest armtls-mesh)"
+          volumed="$(digest volumed)"
           c8s="$RUNNER_TEMP/cli/c8s-linux-amd64"
           chmod +x "$c8s"
           # shellcheck disable=SC2086 # one argument per platform
-          .github/scripts/release-seeds.sh "$c8s" dist "$operator" "$mesh" $RELEASE_SEED_PLATFORMS
+          .github/scripts/release-seeds.sh "$c8s" dist "$operator" "$mesh" "$volumed" $RELEASE_SEED_PLATFORMS
           (cd dist && sha256sum allowlist-seed-*.json component-set-*.json)
 
       - name: Upload allowlist seeds

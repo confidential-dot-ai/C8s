@@ -234,8 +234,10 @@ stage_c8s_binary() {
 
 OPERATOR_REPO="$C8S_REGISTRY/c8s-operator"
 MESH_REPO="$C8S_REGISTRY/armtls-mesh"
+VOLUMED_REPO="$C8S_REGISTRY/volumed"
 OPERATOR_DIGEST=$(digest "$OPERATOR_REPO")
 MESH_DIGEST=$(digest "$MESH_REPO")
+VOLUMED_DIGEST=$(digest "$VOLUMED_REPO")
 # Before the long fetches below, so an unpublished ref fails early.
 if [ "$C8S_SOURCE" = plugin ]; then
     NRI_REPO="$C8S_REGISTRY/nri-image-policy"
@@ -283,6 +285,8 @@ PATH="$TMP/linux-amd64:$PATH" "$C8S" node-image render \
     --image-digest "$OPERATOR_DIGEST" \
     --armtls-mesh-image-repository "$MESH_REPO" \
     --armtls-mesh-image-digest "$MESH_DIGEST" \
+    --volumed-image-repository "$VOLUMED_REPO" \
+    --volumed-image-digest "$VOLUMED_DIGEST" \
     --output-dir "$RENDER"
 STATIC_PODS="$RENDER/static-pods"
 [ -d "$STATIC_PODS" ] || fail "the render wrote no static pod templates at $STATIC_PODS"

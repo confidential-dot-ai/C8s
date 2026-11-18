@@ -253,6 +253,7 @@ func renderWorkerRouterDeployment(t *testing.T) appsv1.Deployment {
 		"-f", testutil.RepoPath("charts", "worker", "values-sev-snp.yaml"),
 		"--set-string", "image.digest="+operatorImageDigest,
 		"--set-string", "armtlsMesh.image.digest="+meshImageDigest,
+		"--set-string", "volumed.image.digest="+volumedImageDigest,
 	)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr

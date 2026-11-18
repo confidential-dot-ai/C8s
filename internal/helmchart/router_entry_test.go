@@ -63,8 +63,11 @@ func running(t *testing.T, seed *pkgallowlist.Allowlist, pod corev1.PodSpec) []w
 	for _, c := range slices.Concat(pod.InitContainers, pod.Containers) {
 		_, digest, _ := strings.Cut(c.Image, "@")
 		imageEnv := envs["image"]
-		if strings.Contains(c.Image, "nginx-unprivileged@") {
+		switch {
+		case strings.Contains(c.Image, "nginx-unprivileged@"):
 			imageEnv = envs["routerNginx"]
+		case strings.Contains(c.Image, "/volumed@"):
+			imageEnv = envs["volumed.image"]
 		}
 		command, args := c.Command, c.Args
 		switch {

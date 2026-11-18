@@ -31,6 +31,7 @@ var workerRenderArgs = []string{
 	"--set-string", "armtlsMesh.image.digest=sha256:" + strings.Repeat("2", 64),
 	"--set-string", "clusterDNS=10.53.0.10",
 	"--set-string", "image.digest=" + c8sDigest,
+	"--set-string", "volumed.image.digest=sha256:" + strings.Repeat("3", 64),
 }
 
 // helmTemplateWorker renders the worker chart with the SEV-SNP stock file, as
@@ -103,6 +104,7 @@ func TestWorkerChartRendersItsObjects(t *testing.T) {
 		"ClusterRoleBinding//c8s-worker-kube-proxy",
 		"ConfigMap/c8s-system/c8s-allowlist-seed",
 		"CustomResourceDefinition//confidentialworkloads.confidential.ai",
+		"DaemonSet/c8s-system/c8s-volumed",
 		"Deployment/c8s-router/c8s-router",
 		"MutatingWebhookConfiguration//c8s-pod-injector",
 		"Namespace//c8s-router",
@@ -114,6 +116,7 @@ func TestWorkerChartRendersItsObjects(t *testing.T) {
 		"Service/kube-system/dcgm-exporter",
 		"Service/kube-system/kube-dns",
 		"ServiceAccount/c8s-router/c8s-router",
+		"ServiceAccount/c8s-system/c8s-volumed",
 		"ValidatingWebhookConfiguration//c8s-pod-validator",
 	}
 	for _, stockFile := range workerStockFiles {
@@ -151,6 +154,7 @@ func TestWorkerValuesSchemaCoversValuesYAML(t *testing.T) {
 		"controlPlane",
 		"image",
 		"router",
+		"volumed",
 	})
 }
 
@@ -166,8 +170,8 @@ func TestWorkerChartRouterLaunchContract(t *testing.T) {
 	// the one component argv naming a policy reads it from the staged copy.
 	wantPolicies := map[string]string{"c8s-router/cds-attest": "cds.json"}
 	workloads := renderedPodSpecs(t, out)
-	if len(workloads) != 1 {
-		t.Fatalf("the worker chart should contain the router alone; got %d workloads", len(workloads))
+	if len(workloads) != 2 {
+		t.Fatalf("the worker chart should contain the router and volumed; got %d workloads", len(workloads))
 	}
 	for _, workload := range workloads {
 		for _, volume := range workload.spec.Volumes {

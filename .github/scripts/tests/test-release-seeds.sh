@@ -39,7 +39,8 @@ export FAKE_C8S_LOG="$work/c8s.log"
 
 operator=sha256:1111111111111111111111111111111111111111111111111111111111111111
 mesh=sha256:2222222222222222222222222222222222222222222222222222222222222222
-bash "$script" "$work/bin/c8s" "$work/out" "$operator" "$mesh" tdx sev-snp
+volumed=sha256:3333333333333333333333333333333333333333333333333333333333333333
+bash "$script" "$work/bin/c8s" "$work/out" "$operator" "$mesh" "$volumed" tdx sev-snp
 for platform in tdx sev-snp; do
   [ -f "$work/out/allowlist-seed-$platform.json" ] || fail "the $platform seed is missing"
   [ -f "$work/out/component-set-$platform.json" ] || fail "the $platform component set is missing"
@@ -47,7 +48,7 @@ done
 pass
 
 for platform in tdx sev-snp; do
-  args="--hardware-platform $platform --kube-version $kube --image-digest $operator --armtls-mesh-image-digest $mesh --output-dir "
+  args="--hardware-platform $platform --kube-version $kube --image-digest $operator --armtls-mesh-image-digest $mesh --volumed-image-digest $volumed --output-dir "
   grep -Fq "args $args" "$work/c8s.log" ||
     fail "$platform did not render with the worker image's inputs: $(cat "$work/c8s.log")"
   grep -Fq "seed of $args" "$work/out/allowlist-seed-$platform.json" ||
@@ -57,7 +58,7 @@ for platform in tdx sev-snp; do
 done
 pass
 
-if bash "$script" "$work/bin/c8s" "$work/out" "$operator" "$mesh" 2>"$work/stderr"; then
+if bash "$script" "$work/bin/c8s" "$work/out" "$operator" "$mesh" "$volumed" 2>"$work/stderr"; then
   fail "a call without a platform was not refused"
 fi
 grep -q '^usage:' "$work/stderr" || fail "a call without a platform printed no usage: $(cat "$work/stderr")"
