@@ -9,21 +9,22 @@ import (
 	"strings"
 	"testing"
 
-	"gopkg.in/yaml.v3"
 	corev1 "k8s.io/api/core/v1"
 
+	"github.com/confidential-dot-ai/c8s/internal/cmds/worker"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
-// A baked node grants a platform role from its own measured base allowlist,
-// which pins the argv the role is granted for. mkosi.sync renders that
-// template by placeholder substitution, so nothing type-checks its pins
-// against the containers this package builds: a drift fails here instead of
-// leaving an injected container role-less on a confidential node.
+// A pod's injected containers take their platform role from the component set
+// of the release that injected them, whose entries are the floor template's.
+// The image build renders that template by placeholder substitution, so
+// nothing type-checks its pins against the containers this package builds: a
+// drift fails here instead of leaving an injected container role-less on a
+// confidential node.
 const (
-	measuredPolicyTemplate = "../../images/node-guest/worker/image-policy.yaml.in"
-	meshDockerfile         = "../../cmd/armtls-mesh/Dockerfile"
-	operatorDockerfile     = "../../cmd/c8s/Dockerfile"
+	componentPolicyTemplate = "../../images/node-guest/worker/image-policy.yaml.in"
+	meshDockerfile          = "../../cmd/armtls-mesh/Dockerfile"
+	operatorDockerfile      = "../../cmd/c8s/Dockerfile"
 )
 
 // The digests mkosi.sync substitutes, distinct so the two images' entries stay
@@ -41,8 +42,8 @@ const (
 	credentialRole = "credentials"
 )
 
-func TestMeasuredBaseAdmitsTheInjectedArgv(t *testing.T) {
-	base := measuredBase(t)
+func TestComponentEntriesAdmitTheInjectedArgv(t *testing.T) {
+	entries := componentEntries(t)
 	pod := injectedPod(t)
 	meshEntrypoint := imageEntrypoint(t, meshDockerfile)
 	operatorEntrypoint := imageEntrypoint(t, operatorDockerfile)
@@ -60,16 +61,16 @@ func TestMeasuredBaseAdmitsTheInjectedArgv(t *testing.T) {
 		{"c8s-get-volume", credentialRole, operatorImageDigest, operatorEntrypoint, reservedVolumeContainerName},
 	} {
 		t.Run(tc.entry, func(t *testing.T) {
-			entry, ok := base.Workloads[tc.entry]
+			entry, ok := entries[tc.entry]
 			if !ok {
-				t.Fatalf("the measured base carries no %q entry, so %s holds no role", tc.entry, tc.container)
+				t.Fatalf("the component set carries no %q entry, so %s holds no role", tc.entry, tc.container)
 			}
 			if got := entry.Containers[0].Role; got != tc.role {
 				t.Errorf("entry %q grants the role %q, want %q", tc.entry, got, tc.role)
 			}
 			argv := processArgv(tc.entrypoint, containerNamed(pod, tc.container))
 			only := &allowlist.Allowlist{
-				Schema:    base.Schema,
+				Schema:    allowlist.Schema,
 				Workloads: map[string]allowlist.Workload{tc.entry: entry},
 			}
 			launch := allowlist.RunningContainer{
@@ -85,8 +86,8 @@ func TestMeasuredBaseAdmitsTheInjectedArgv(t *testing.T) {
 
 // The endpoint holds the UID the pod ruleset lets out unwrapped, so its entry
 // pins the mounts it takes the role with, not only its argv.
-func TestMeasuredMeshEntryPinsTheInjectedMounts(t *testing.T) {
-	entry := measuredBase(t).Workloads["c8s-mesh-endpoint"].Containers[0]
+func TestMeshEntryPinsTheInjectedMounts(t *testing.T) {
+	entry := componentEntries(t)["c8s-mesh-endpoint"].Containers[0]
 	mesh := containerNamed(injectedPod(t), reservedMeshContainerName)
 	want := make([]allowlist.MountRule, 0, len(mesh.VolumeMounts))
 	for _, mount := range mesh.VolumeMounts {
@@ -109,8 +110,8 @@ func TestMeasuredMeshEntryPinsTheInjectedMounts(t *testing.T) {
 // invocation: the one the injected container runs with holds the role, and the
 // same invocation with a mount of the pod's choosing holds none, with or
 // without the pod's discovery volume.
-func TestMeasuredCredentialEntriesPinTheInjectedMounts(t *testing.T) {
-	base := measuredBase(t)
+func TestCredentialEntriesPinTheInjectedMounts(t *testing.T) {
+	entries := componentEntries(t)
 	operatorEntrypoint := imageEntrypoint(t, operatorDockerfile)
 	for _, discovery := range []string{"", "disco"} {
 		pod := podWithApp()
@@ -127,13 +128,13 @@ func TestMeasuredCredentialEntriesPinTheInjectedMounts(t *testing.T) {
 			{"c8s-get-volume", reservedVolumeContainerName},
 		} {
 			t.Run(tc.entry+"/discovery="+discovery, func(t *testing.T) {
-				entry := base.Workloads[tc.entry]
+				entry := entries[tc.entry]
 				for i, c := range entry.Containers {
 					if c.Role == credentialRole && c.Mounts.Policy != allowlist.PolicyExact {
 						t.Errorf("container %d of %q grants the role with mounts %q, want exact", i, tc.entry, c.Mounts.Policy)
 					}
 				}
-				index := (&allowlist.Allowlist{Schema: base.Schema, Workloads: map[string]allowlist.Workload{tc.entry: entry}}).BuildIndex()
+				index := (&allowlist.Allowlist{Schema: allowlist.Schema, Workloads: map[string]allowlist.Workload{tc.entry: entry}}).BuildIndex()
 				ctr := containerNamed(pod, tc.container)
 				launch := allowlist.RunningContainer{
 					Digest: operatorImageDigest,
@@ -182,10 +183,11 @@ func injectedPod(t *testing.T) *corev1.Pod {
 	return pod
 }
 
-// measuredBase parses the node image's policy template.
-func measuredBase(t *testing.T) *allowlist.Allowlist {
+// componentEntries are the entries of the release's component set, read from
+// the floor template as `c8s node-image render` reads them.
+func componentEntries(t *testing.T) map[string]allowlist.Workload {
 	t.Helper()
-	body, err := os.ReadFile(filepath.Clean(measuredPolicyTemplate))
+	body, err := os.ReadFile(filepath.Clean(componentPolicyTemplate))
 	if err != nil {
 		t.Fatalf("read the node-image policy template: %v", err)
 	}
@@ -194,15 +196,11 @@ func measuredBase(t *testing.T) *allowlist.Allowlist {
 		"@OPERATOR_DIGEST@", operatorImageDigest,
 		"@ROUTER_DIGEST@", routerImageDigest,
 	).Replace(string(body))
-	var doc struct {
-		Allowlist struct {
-			Base allowlist.Allowlist `yaml:"base"`
-		} `yaml:"allowlist"`
+	entries, err := worker.RoleEntries([]byte(rendered))
+	if err != nil {
+		t.Fatalf("read the release's component entries: %v", err)
 	}
-	if err := yaml.Unmarshal([]byte(rendered), &doc); err != nil {
-		t.Fatalf("parse the node-image policy template: %v", err)
-	}
-	return &doc.Allowlist.Base
+	return entries
 }
 
 // processArgv is the argv the node observes: a container's own command, or the

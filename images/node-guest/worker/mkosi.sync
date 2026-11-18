@@ -282,6 +282,7 @@ PATH="$TMP/linux-amd64:$PATH" "$C8S" node-image render \
     --image-digest "$OPERATOR_DIGEST" \
     --armtls-mesh-image-repository "$MESH_REPO" \
     --armtls-mesh-image-digest "$MESH_DIGEST" \
+    --floor-template "$FLOOR_TEMPLATE" \
     --output-dir "$RENDER"
 STATIC_PODS="$RENDER/static-pods"
 [ -d "$STATIC_PODS" ] || fail "the render wrote no static pod templates at $STATIC_PODS"
@@ -297,9 +298,10 @@ sed \
     -e "s|@ROUTER_DIGEST@|${ROUTER_IMAGE##*@}|g" \
     "$FLOOR_TEMPLATE" > "$TMP/floor-template.yaml"
 ! grep -o '@[A-Z_]*@' "$TMP/floor-template.yaml" || fail "the floor template names a placeholder this sync does not fill"
+# The pod profile's sync builds the Pod CVM image's floor from these bytes.
+install -m 0644 "$TMP/floor-template.yaml" "$CACHE_DIR/floor-template.yaml"
 "$C8S" worker floor \
     --floor-template "$TMP/floor-template.yaml" \
-    --render-dir "$RENDER" \
     --static-pods "$STATIC_PODS" \
     --out "$STAGE_DIR/usr/lib/c8s/image-policy.yaml"
 printf '{"schema":"c8s.allowlist/v1","workloads":{}}\n' > "$STAGE_DIR/usr/lib/c8s/allowlist-seed.json"

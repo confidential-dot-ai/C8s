@@ -6,18 +6,23 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strings"
 
 	"github.com/distribution/reference"
 	"github.com/spf13/cobra"
+	"golang.org/x/mod/semver"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/util/version"
+	k8sversion "k8s.io/apimachinery/pkg/util/version"
 	"sigs.k8s.io/yaml"
 
+	"github.com/confidential-dot-ai/c8s/internal/cmds/worker"
 	"github.com/confidential-dot-ai/c8s/internal/helmchart"
+	"github.com/confidential-dot-ai/c8s/internal/version"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
@@ -35,6 +40,7 @@ type nodeImageRenderConfig struct {
 	imageRepository           string
 	armtlsMeshImageDigest     string
 	armtlsMeshImageRepository string
+	floorTemplate             string
 	chartDir                  string
 	outputDir                 string
 }
@@ -49,10 +55,10 @@ func newNodeImageCmd() *cobra.Command {
 	render := &cobra.Command{
 		Use:   "render",
 		Short: "Render the worker image's files from the c8s-worker chart at image build time",
-		Long:  "Render the c8s-worker chart's allowlist seed, and copy its static pods and the router's nginx files, for the measured worker image. Requires Helm at build time; no Helm is installed or run in the guest. Authenticated launch settings are mounted read-only from /run/c8s-node at boot.",
+		Long:  "Render the c8s-worker chart's allowlist seed and this release's component set, and copy its static pods and the router's nginx files, for the measured worker image. Requires Helm at build time; no Helm is installed or run in the guest. Authenticated launch settings are mounted read-only from /run/c8s-node at boot.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return renderNodeImage(cmd.Context(), cfg)
+			return renderNodeImage(cmd.Context(), cfg, cmd.ErrOrStderr())
 		},
 	}
 	f := render.Flags()
@@ -62,8 +68,9 @@ func newNodeImageCmd() *cobra.Command {
 	f.StringVar(&cfg.imageRepository, "image-repository", "", "operator/get-cert container repository; empty uses the chart default")
 	f.StringVar(&cfg.armtlsMeshImageDigest, "armtls-mesh-image-digest", "", "digest of the armTLS mesh container image (sha256:..., required)")
 	f.StringVar(&cfg.armtlsMeshImageRepository, "armtls-mesh-image-repository", "", "armTLS mesh container repository; empty uses the chart default")
+	f.StringVar(&cfg.floorTemplate, "floor-template", "", "the worker image's NRI floor template, placeholders unfilled (required)")
 	f.StringVar(&cfg.chartDir, "chart-dir", "", "c8s-worker chart directory; empty uses the chart bundled in this binary")
-	f.StringVar(&cfg.outputDir, "output-dir", "", "directory for allowlist-seed.json, router-image.txt, router-nginx/ and static-pods/ (required)")
+	f.StringVar(&cfg.outputDir, "output-dir", "", "directory for allowlist-seed.json, component-set.json, router-image.txt, router-nginx/ and static-pods/ (required)")
 	cmd.AddCommand(render)
 	return cmd
 }
@@ -74,7 +81,7 @@ func (cfg nodeImageRenderConfig) validate() error {
 	if err := validateHardwarePlatform(cfg.platform); err != nil {
 		return err
 	}
-	if _, err := version.ParseSemantic(cfg.kubeVersion); err != nil {
+	if _, err := k8sversion.ParseSemantic(cfg.kubeVersion); err != nil {
 		return fmt.Errorf("--kube-version must specify the baked Kubernetes semantic version: %w", err)
 	}
 	for _, input := range cfg.images() {
@@ -92,30 +99,35 @@ func (cfg nodeImageRenderConfig) validate() error {
 			return fmt.Errorf("--%s-repository must not contain a tag or digest; use --%s-digest", input.flag, input.flag)
 		}
 	}
+	if cfg.floorTemplate == "" {
+		return fmt.Errorf("--floor-template is required")
+	}
 	if cfg.outputDir == "" {
 		return fmt.Errorf("--output-dir is required")
 	}
 	return nil
 }
 
-// nodeImageInput ties one image build flag to the chart value it pins.
+// nodeImageInput ties one image build flag to the chart value it pins and to
+// the floor template's placeholders for that image.
 type nodeImageInput struct {
-	flag       string // build flag prefix, e.g. "armtls-mesh-image"
-	valuePath  string // chart value the repository and digest are set under
-	repository string
-	digest     string
-	required   bool // the image must be pinned for the render to succeed
+	flag        string // build flag prefix, e.g. "armtls-mesh-image"
+	valuePath   string // chart value the repository and digest are set under
+	placeholder string // floor template placeholder prefix, e.g. "MESH"
+	repository  string
+	digest      string
+	required    bool // the image must be pinned for the render to succeed
 }
 
 // images maps the chart's image values to the build flags that pin them.
 func (cfg nodeImageRenderConfig) images() []nodeImageInput {
 	return []nodeImageInput{
-		{flag: "image", valuePath: "image", repository: cfg.imageRepository, digest: cfg.imageDigest, required: true},
-		{flag: "armtls-mesh-image", valuePath: "armtlsMesh.image", repository: cfg.armtlsMeshImageRepository, digest: cfg.armtlsMeshImageDigest, required: true},
+		{flag: "image", valuePath: "image", placeholder: "OPERATOR", repository: cfg.imageRepository, digest: cfg.imageDigest, required: true},
+		{flag: "armtls-mesh-image", valuePath: "armtlsMesh.image", placeholder: "MESH", repository: cfg.armtlsMeshImageRepository, digest: cfg.armtlsMeshImageDigest, required: true},
 	}
 }
 
-func renderNodeImage(ctx context.Context, cfg nodeImageRenderConfig) error {
+func renderNodeImage(ctx context.Context, cfg nodeImageRenderConfig, log io.Writer) error {
 	if err := cfg.validate(); err != nil {
 		return err
 	}
@@ -132,7 +144,63 @@ func renderNodeImage(ctx context.Context, cfg nodeImageRenderConfig) error {
 	if err != nil {
 		return err
 	}
-	return writeNodeImageFiles(cfg.outputDir, cfg.chartDir, seed, routerImage)
+	if err := writeNodeImageFiles(cfg.outputDir, cfg.chartDir, seed, routerImage); err != nil {
+		return err
+	}
+	version, err := componentSetVersion()
+	if err != nil {
+		fmt.Fprintf(log, "no component-set.json: %v\n", err)
+		return nil
+	}
+	template, err := cfg.fillFloorTemplate(ctx, routerImage)
+	if err != nil {
+		return err
+	}
+	set, err := worker.ComponentSetFile(template, seed, version)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(cfg.outputDir, "component-set.json"), set, 0o644)
+}
+
+// componentSetVersion is the set version this build publishes under: its
+// release tag without the v, which a set is keyed by.
+func componentSetVersion() (string, error) {
+	tag := version.Version
+	if !semver.IsValid(tag) || semver.Canonical(tag) != tag {
+		return "", fmt.Errorf("this build's version %q is no release tag (vMAJOR.MINOR.PATCH, optionally with a pre-release), and a component set is keyed by the release that built it", tag)
+	}
+	return strings.TrimPrefix(tag, "v"), nil
+}
+
+// fillFloorTemplate is the worker image's floor template with the image
+// placeholders of this render substituted, as the image build substitutes them
+// before `c8s worker floor` reads it.
+func (cfg nodeImageRenderConfig) fillFloorTemplate(ctx context.Context, routerImage string) ([]byte, error) {
+	body, err := os.ReadFile(cfg.floorTemplate)
+	if err != nil {
+		return nil, fmt.Errorf("--floor-template: %w", err)
+	}
+	values, err := chartValues(ctx, cfg.chartDir)
+	if err != nil {
+		return nil, err
+	}
+	routerRepository, routerDigest, _ := strings.Cut(routerImage, "@")
+	filled := []string{"@ROUTER_REPO@", routerRepository, "@ROUTER_DIGEST@", routerDigest}
+	for _, input := range cfg.images() {
+		repository := input.repository
+		if repository == "" {
+			repository, err = stringAtPath(values, input.valuePath+".repository")
+			if err != nil {
+				return nil, fmt.Errorf("--%s-repository: %w", input.flag, err)
+			}
+		}
+		filled = append(filled,
+			"@"+input.placeholder+"_REPO@", repository,
+			"@"+input.placeholder+"_DIGEST@", input.digest,
+		)
+	}
+	return []byte(strings.NewReplacer(filled...).Replace(string(body))), nil
 }
 
 // resolveWorkerChart is cfg with chartDir naming a chart directory on disk:
