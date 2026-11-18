@@ -1,0 +1,34 @@
+# Exceptions assessed for one router nginx image. The router scan applies them
+# only while charts/lib/files/components.yaml pins this digest; a new digest is
+# scanned without them until it is assessed here.
+digest: "sha256:5d8bb9437d74a600ec5dbf90c035451c724dc33eac8d3a71078f6f8612c345f6"
+ignore:
+  # OpenSSL 3.5.10 fixes the four advisories below; Alpine 3.24 still ships
+  # 3.5.9-r0. Nothing in the image that links OpenSSL (nginx, nginx-debug,
+  # ssl_client, libapk) imports a CMS function, looks a cipher up by name or
+  # uses OpenSSL's QUIC client. nginx has its own QUIC code, takes only the TLS
+  # handshake from OpenSSL, and the router configuration listens on no QUIC port.
+  - vulnerability: CVE-2026-88823
+    reason: AES-GCM-SIV is not a TLS cipher and nothing in the image selects it.
+    package:
+      upstream-name: openssl
+      version: 3.5.9-r0
+      type: apk
+  - vulnerability: CVE-2026-95692
+    reason: AES-GCM-SIV is not a TLS cipher and nothing in the image selects it.
+    package:
+      upstream-name: openssl
+      version: 3.5.9-r0
+      type: apk
+  - vulnerability: CVE-2026-95691
+    reason: Affects OpenSSL's QUIC client only, which nothing in the image uses.
+    package:
+      upstream-name: openssl
+      version: 3.5.9-r0
+      type: apk
+  - vulnerability: CVE-2026-107496
+    reason: Affects CMS encryption only, which TLS does not use and nothing in the image calls.
+    package:
+      upstream-name: openssl
+      version: 3.5.9-r0
+      type: apk

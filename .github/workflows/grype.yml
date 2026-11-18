@@ -48,6 +48,7 @@ jobs:
               - "charts/lib/files/components.yaml"
               - ".github/workflows/grype.yml"
               - ".grype.yaml"
+              - ".grype-router.yaml"
 
   linux:
     runs-on: ubuntu-latest
@@ -100,6 +101,10 @@ jobs:
           echo "::error file=charts/lib/files/components.yaml::routerNginx.image.digest must be a sha256 pin, got '$digest'"; exit 1
         fi
         echo "ref=${repo}@${digest}" >> "$GITHUB_OUTPUT"
+        # Exceptions assessed for another digest do not carry over to this one.
+        if [[ "$(yq -r .digest .grype-router.yaml)" == "$digest" ]]; then
+          yq -i '.ignore += load(".grype-router.yaml").ignore' .grype.yaml
+        fi
 
     - uses: ./.github/actions/setup-grype
 
