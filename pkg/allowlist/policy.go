@@ -2,6 +2,7 @@ package allowlist
 
 import (
 	"slices"
+	"time"
 
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
 )
@@ -16,21 +17,37 @@ type Index struct {
 	published []hostPortGrant
 }
 
-// BuildIndex projects an Allowlist into an admission index.
+// BuildIndex projects the workloads section into an admission index.
 func (a *Allowlist) BuildIndex() *Index {
 	idx := &Index{byDigest: map[string][]Container{}}
 	for _, w := range a.Workloads {
-		for _, c := range w.InitContainers {
-			idx.byDigest[c.Digest.String()] = append(idx.byDigest[c.Digest.String()], c)
-		}
-		for _, c := range w.Containers {
-			idx.byDigest[c.Digest.String()] = append(idx.byDigest[c.Digest.String()], c)
-		}
-		if len(w.HostPorts) > 0 {
-			idx.published = append(idx.published, hostPortGrant{ports: w.HostPorts, containers: w.containers()})
+		idx.add(w)
+	}
+	return idx
+}
+
+// BuildIndexAt projects the workloads section and the entries of every
+// component set in force at now into one admission index, so a set's roles,
+// host binds and host ports are in force exactly as the workloads section's
+// are.
+func (a *Allowlist) BuildIndexAt(now time.Time) *Index {
+	idx := a.BuildIndex()
+	for _, ref := range a.SetsInForce(now) {
+		for _, entry := range a.Components[ref.Version].Entries {
+			idx.add(entry)
 		}
 	}
 	return idx
+}
+
+// add lists one entry's containers by digest, and its host-port grant.
+func (i *Index) add(w Workload) {
+	for _, c := range w.containers() {
+		i.byDigest[c.Digest.String()] = append(i.byDigest[c.Digest.String()], c)
+	}
+	if len(w.HostPorts) > 0 {
+		i.published = append(i.published, hostPortGrant{ports: w.HostPorts, containers: w.containers()})
+	}
 }
 
 // Size reports how many distinct digests the index lists. Enforcers log it to
