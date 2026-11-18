@@ -161,7 +161,7 @@ func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health
 
 	auditLogger := audit.NewLogger()
 
-	store := newPolicyStore(cfg.Allowlist.Base)
+	store := newPolicyStore(cfg.Allowlist.Base, newCDSClock(time.Now))
 
 	var (
 		wlClient      allowlistclient.Client

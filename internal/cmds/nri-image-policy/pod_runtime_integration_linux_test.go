@@ -319,7 +319,7 @@ func startRuntimeHook(t *testing.T, fixture runtimeFixture, resolver *imageverif
 	}
 	p.measurer = measure
 	if mode == "deny" {
-		p.policy = newPolicyStore(nil)
+		p.policy = newPolicyStore(nil, localClock())
 	}
 	listener, err := podstart.Listen(podstart.SocketPath)
 	if err != nil {

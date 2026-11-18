@@ -252,7 +252,7 @@ func TestRecoveredExitsReconstructsTheGrant(t *testing.T) {
 		})
 	}
 
-	p := &plugin{policy: newPolicyStore(nil), mesh: newMeshGate(*meshRoles(), discardLogger())}
+	p := &plugin{policy: newPolicyStore(nil, localClock()), mesh: newMeshGate(*meshRoles(), discardLogger())}
 	if got := p.recoveredExits(recovered(collectorDigest)); got.cause == nil || got.exits != nil || got.entry != "" {
 		t.Fatalf("recoveredExits with no served allowlist = %+v, want an empty grant with a cause", got)
 	}

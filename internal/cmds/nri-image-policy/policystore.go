@@ -3,6 +3,7 @@ package nriimagepolicy
 import (
 	"maps"
 	"sync/atomic"
+	"time"
 
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
@@ -16,6 +17,16 @@ type policySnapshot struct {
 	// workload match, and so its exits, are read from its entries.
 	pulled  *allowlist.Allowlist
 	version uint64
+	// deadline is the earliest deadline among the component sets this index
+	// holds in force; zero when it holds no retiring set. Past it the index
+	// no longer stands for the document it was built from.
+	deadline time.Time
+}
+
+// setEnded reports whether a component set this index holds in force has
+// reached its deadline at now.
+func (s *policySnapshot) setEnded(now time.Time) bool {
+	return !s.deadline.IsZero() && !now.Before(s.deadline)
 }
 
 // policyStore holds the current admission snapshot. A single writer (the pull
@@ -29,16 +40,22 @@ type policyStore struct {
 	// (nodeTCBExempt).
 	grants *allowlist.Index
 	snap   atomic.Pointer[policySnapshot]
+	// clock is the CDS time component-set deadlines are judged by.
+	clock *cdsClock
 }
 
 // newPolicyStore seeds the store with an empty snapshot (version 0) so admission
 // enforces the base allowlist alone before the first pull lands and after any
 // pull failure. A nil base admits nothing.
-func newPolicyStore(base *allowlist.Allowlist) *policyStore {
+func newPolicyStore(base *allowlist.Allowlist, clock *cdsClock) *policyStore {
 	if base == nil {
 		base = &allowlist.Allowlist{}
 	}
-	s := &policyStore{base: base.BuildIndex(), grants: withoutStaticPods(base).BuildIndex()}
+	s := &policyStore{
+		base:   base.BuildIndex(),
+		grants: withoutStaticPods(base).BuildIndex(),
+		clock:  clock,
+	}
 	s.snap.Store(&policySnapshot{index: (&allowlist.Allowlist{}).BuildIndex()})
 	return s
 }
@@ -197,8 +214,78 @@ func (s *policyStore) apply(pulled *allowlist.Allowlist, version uint64) bool {
 	if s.rolledBack(version) {
 		return false
 	}
-	s.snap.Store(&policySnapshot{index: pulled.BuildIndex(), pulled: pulled, version: version})
+	s.snap.Store(s.snapshot(pulled, version))
 	return true
+}
+
+// snapshot is pulled as an admission view at the current CDS time: its
+// workloads and the entries of every component set in force.
+func (s *policyStore) snapshot(pulled *allowlist.Allowlist, version uint64) *policySnapshot {
+	now := s.clock.now()
+	deadline, _ := pulled.EarliestDeadline(now)
+	return &policySnapshot{
+		index:    pulled.BuildIndexAt(now),
+		pulled:   pulled,
+		version:  version,
+		deadline: deadline,
+	}
+}
+
+// rebuildEndedSets rebuilds the snapshot from the document it was built from
+// once a component set it held in force has reached its deadline, and reports
+// whether it did. The served bytes and their version are unchanged: the set
+// ends because CDS time passed its deadline, not because policy was rewritten.
+func (s *policyStore) rebuildEndedSets() bool {
+	for {
+		cur := s.snap.Load()
+		if cur == nil || cur.pulled == nil || !cur.setEnded(s.clock.now()) {
+			return false
+		}
+		if s.snap.CompareAndSwap(cur, s.snapshot(cur.pulled, cur.version)) {
+			return true
+		}
+	}
+}
+
+// roleOf is the platform role the base allowlist, or a component set the
+// applied document holds in force, binds to this launch. Two of them binding
+// different roles bind none, as two declarations within one index do.
+func (s *policyStore) roleOf(r allowlist.RunningContainer) string {
+	if s == nil {
+		return ""
+	}
+	served := ""
+	if snap := s.current(); snap != nil {
+		served = snap.index.RoleOf(r)
+	}
+	return agreedRole(s.base.RoleOf(r), served)
+}
+
+// agreedRole is the role two indexes agree on: the one either binds alone, or
+// none when they name different roles.
+func agreedRole(base, served string) string {
+	switch {
+	case base == served || served == "":
+		return base
+	case base == "":
+		return served
+	default:
+		return ""
+	}
+}
+
+// bindsRoleMounts reports whether a declaration of the base or of a component
+// set in force grants r the role and pins its mount set
+// (allowlist.Index.BindsRoleMounts).
+func (s *policyStore) bindsRoleMounts(r allowlist.RunningContainer, role string) bool {
+	if s == nil {
+		return false
+	}
+	if s.base.BindsRoleMounts(r, role) {
+		return true
+	}
+	snap := s.current()
+	return snap != nil && snap.index.BindsRoleMounts(r, role)
 }
 
 // raiseAppliedVersion raises the applied version to version, at which CDS

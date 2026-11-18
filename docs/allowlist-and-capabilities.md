@@ -259,12 +259,14 @@ adjustment asks for instead is resolved by the runtime after the plugin has
 answered, so its device nodes, hooks and binds reach the container with nothing
 to attribute them to, and the container is refused.
 
-A measured base can also tag a container with a platform role, the identity
-C8s's own node-side invocations run under. It grants the role only with the
-argv and the exact mount table that invocation is given, so a pod's own
-container running the same invocation with mounts of its choosing holds no role
-([secrets.md](secrets.md)). What this policy cannot see, the runtime wrapper
-reads from the container's bundle ([node-exec-mode.md](node-exec-mode.md)).
+A measured base, or a component set the node holds in force, can also tag a
+container with a platform role, the identity C8s's own node-side invocations
+run under. It grants the role only with the argv and the exact mount table that
+invocation is given, so a pod's own container running the same invocation with
+mounts of its choosing holds no role ([secrets.md](secrets.md)). When the base
+and a set in force bind one launch to different roles, it holds none. What this
+policy cannot see, the runtime wrapper reads from the container's bundle
+([node-exec-mode.md](node-exec-mode.md)).
 A base entry may also list `execs`, the exact commands the wrapper lets
 through into a running container of its bytes, YAML-only for the same reason
 ([node-exec-mode.md](node-exec-mode.md#granted-execs)).
@@ -376,6 +378,13 @@ same boot config carries for them (Corner 8 of
 [getcert-workload-binding.md](getcert-workload-binding.md)). So removing or
 narrowing an entry stops its containers on every node within
 `--allowlist-node-delay` plus one refresh interval.
+
+A node judges a component set's deadline by the CDS's time: every poll reply, a
+304 included, carries the `Date` the node reads it from, and that time never
+goes backwards. On each poll a node whose deadline has passed rebuilds its
+index from the document it already holds — the set ends within one refresh
+interval of its deadline, under the same bytes at the same version — and
+rechecks its running containers as an applied document does.
 
 ## Bootstrap
 

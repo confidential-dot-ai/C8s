@@ -23,7 +23,7 @@ import (
 // The two policy mounts are what make the CDS a client reaches trusted: it
 // reads compiled paths, so a pod cannot name another source and the control
 // plane cannot pass one as an argument. A container running as the credentials
-// identity that this node's measured base grants no such role is refused.
+// identity that this node's policy grants no such role is refused.
 func (c nodeCVM) containerMounts(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) (*api.ContainerAdjustment, error) {
 	p := c.p
 	if fetchesRouteManifest(pod, ctr) {
@@ -34,7 +34,7 @@ func (c nodeCVM) containerMounts(ctx context.Context, pod *api.PodSandbox, ctr *
 		return nil, nil
 	}
 	if holdsCredentialsIdentity(ctr) && p.measuredRole(ctx, pod, ctr) != allowlist.RoleCredentials {
-		return nil, fmt.Errorf("container %q runs as the credentials identity (uid %d) but this node's measured base grants it no %s role, so it would reach CDS unpinned",
+		return nil, fmt.Errorf("container %q runs as the credentials identity (uid %d) but this node's policy grants it no %s role, so it would reach CDS unpinned",
 			ctr.GetName(), workloadclaims.CredentialsUID, allowlist.RoleCredentials)
 	}
 	socketDir := ""
@@ -110,7 +110,7 @@ func injectedCredentialSidecar(pod *api.PodSandbox, ctr *api.Container) bool {
 		workloadclaims.IsSocketConsumer(ctr.GetName())
 }
 
-// measuredRole is the role the node's measured base grants this launch, from
+// measuredRole is the role the node's measured policy grants this launch, from
 // the evidence the runtime reports at CreateContainer: digest, argv,
 // environment and the mounts requested so far, classified as the final check
 // classifies them, so a declaration that pins a mount set is matched here too.

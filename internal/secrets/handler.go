@@ -461,7 +461,7 @@ func (h Handler) sandboxContainers(ctx context.Context, host, sandboxID string) 
 
 // WorkloadContainers converts an inventory's reported container set to the
 // candidate set workload matching runs on, dropping every container the
-// reporting node's measured base binds a platform client role to
+// reporting node binds a platform client role to
 // (pkgallowlist.RoleMesh, pkgallowlist.RoleCredentials), so a workload
 // entry never has to enumerate the containers C8s adds to every member pod. A
 // role a pod runs for a purpose of its own, like the router's, stays and is

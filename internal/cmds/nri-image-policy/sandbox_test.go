@@ -518,7 +518,7 @@ func TestCheckSandboxModes(t *testing.T) {
 				Policy:    policyConfig{Mode: ModeFailClosed, Sandbox: tt.sandbox},
 			}
 			p := newTestPlugin(cfg)
-			p.policy = newPolicyStore(floor)
+			p.policy = newPolicyStore(floor, localClock())
 
 			pod, ctr := sandboxedPod(), privilegedContainer()
 			ctr.Args = tt.argv
@@ -602,7 +602,7 @@ func TestNodeTCBExemptsOnlyPinnedStaticLaunches(t *testing.T) {
 				Policy:    policyConfig{Mode: ModeFailClosed, Sandbox: SandboxEnforce},
 			}
 			p := newTestPlugin(cfg)
-			p.policy = newPolicyStore(base)
+			p.policy = newPolicyStore(base, localClock())
 
 			pod, ctr := sandboxedPod(), sandboxedContainer()
 			// Without kubelet state the mount observer cannot place the pod's

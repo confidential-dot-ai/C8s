@@ -33,7 +33,7 @@ type record struct {
 
 // Record adds an admission; only a resolved record for the same ID clears an
 // unresolved container. History owns its copy of argv. role is the platform
-// role the node's measured base binds to the launch, empty for a container
+// role the node's policy binds to the launch, empty for a container
 // outside every role. A container counts as running from Record until Exited.
 // Nil mounts means unavailable evidence; a non-nil empty slice means no mounts.
 func (h *History) Record(id, digest, role string, argv []string, env *allowlist.EnvObservation, mounts ...allowlist.ObservedMount) {

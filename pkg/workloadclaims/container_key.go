@@ -12,8 +12,8 @@ import (
 // The framing must be injective: a collision erases historical evidence and can
 // allow a sandbox to match a workload it did not actually run.
 //
-// Role is outside the key: the node's measured base is fixed for its life, so
-// the role is a function of the fields above.
+// Role is outside the key: it is a function of the fields above under the
+// policy that admitted the launch.
 func (c SandboxContainer) Key() string {
 	var key strings.Builder
 	fmt.Fprintf(&key, "digest=%q argv=%q env=", c.Digest, c.Argv)

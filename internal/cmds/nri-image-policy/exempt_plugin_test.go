@@ -28,7 +28,7 @@ func exemptPlugin(t *testing.T, repositories ExemptRepositories, namespaces ...s
 	}
 	p := &plugin{
 		cfg:        cfg,
-		policy:     newPolicyStore(cfg.Allowlist.Base),
+		policy:     newPolicyStore(cfg.Allowlist.Base, localClock()),
 		audit:      audit.NewLogger(),
 		logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 		containerd: &fakeContainerd{},
