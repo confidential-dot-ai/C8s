@@ -78,6 +78,12 @@ grep -qF 'kernel.modules_disabled=1' "$latch" \
 grep -qx 'enable c8s-modules-latch.service' "$preset" \
     || fail modules-latch "${preset##*/} must enable c8s-modules-latch.service; an unenabled latch never runs"
 
+# gpu-cc-enforce.sh builds and reads attestation-api's JSON with jq. The
+# confos base does not carry it, and without it every GPU worker powers
+# itself off at boot while CPU workers, which skip the gate, still join.
+grep -qx '    jq' "$IMAGE_DIR/worker/mkosi.conf" \
+    || fail gate-tools "worker/mkosi.conf must install jq: gpu-cc-enforce.sh needs it and the base image does not carry it"
+
 # The apparmor package's own 10-apparmor.conf turns the unconfined
 # restriction on, which stacks every RuntimeDefault container's profile with
 # unconfined. The image's drop-in turns it off and the boot gate refuses to

@@ -110,7 +110,7 @@ func TestWriteEscrowRefusesToOverwrite(t *testing.T) {
 	if err := os.WriteFile(dest, []byte("existing"), 0o600); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	blob, err := NewBlob(testKey(), validVerity())
+	blob, err := NewBlob("weights", testKey(), validVerity())
 	if err != nil {
 		t.Fatalf("blob: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestWriteEscrowRefusesToOverwrite(t *testing.T) {
 func TestWriteEscrowIsOwnerOnlyAndReloadable(t *testing.T) {
 	dir := t.TempDir()
 	dest := filepath.Join(dir, "escrow.json")
-	blob, err := NewBlob(testKey(), validVerity())
+	blob, err := NewBlob("weights", testKey(), validVerity())
 	if err != nil {
 		t.Fatalf("blob: %v", err)
 	}
@@ -213,7 +213,7 @@ func containsStr(hay []string, needle string) bool {
 }
 
 func TestWriteEscrowReportsAnUnwritableDestination(t *testing.T) {
-	blob, err := NewBlob(testKey(), validVerity())
+	blob, err := NewBlob("weights", testKey(), validVerity())
 	if err != nil {
 		t.Fatalf("blob: %v", err)
 	}

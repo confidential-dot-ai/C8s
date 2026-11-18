@@ -12,6 +12,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: pin-hygiene-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   changes:
     name: Relevant changes

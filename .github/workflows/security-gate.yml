@@ -1,0 +1,51 @@
+name: security-gate
+
+on:
+  pull_request:
+  merge_group:
+    types: [checks_requested]
+
+permissions: {}
+
+concurrency:
+  group: security-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  security-gate:
+    name: security-gate
+    # A required check must report on the pull request too, or the pull
+    # request cannot enter the queue; only the merge group reaches the
+    # self-hosted runner.
+    runs-on: ${{ github.event_name == 'merge_group' && fromJSON('{"group":"secreview","labels":"secreview-gate"}') || 'ubuntu-latest' }}
+    timeout-minutes: 90
+    steps:
+      - name: Pass on the pull request
+        if: github.event_name != 'merge_group'
+        run: echo "The security gate runs when the pull request enters the merge queue."
+      - name: Run the security gate
+        if: github.event_name == 'merge_group'
+        shell: bash
+        env:
+          REPO: ${{ github.repository }}
+          HEAD_REF: ${{ github.event.merge_group.head_ref }}
+          HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+          BASE_REF: ${{ github.event.merge_group.base_ref }}
+          BASE_SHA: ${{ github.event.merge_group.base_sha }}
+        # A canceled job signals only this shell, which cannot signal the
+        # gate user's process: forward the signal to sudo, which relays it.
+        # setsid keeps sudo out of this shell's process group, whose
+        # signals sudo would not relay.
+        run: |
+          result=$(mktemp)
+          setsid sudo -n -u secreview-gate /usr/local/bin/secreview-gate --repo "$REPO" --head-ref "$HEAD_REF" --head-sha "$HEAD_SHA" --base-ref "$BASE_REF" --base-sha "$BASE_SHA" >"$result" &
+          pid=$!
+          trap 'kill -TERM "$pid" 2>/dev/null' INT TERM
+          status=0
+          wait "$pid" || status=$?
+          while kill -0 "$pid" 2>/dev/null; do
+            status=0
+            wait "$pid" || status=$?
+          done
+          cat "$result" >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
