@@ -18,13 +18,13 @@ on:
   # The protected beta branch runs the same chain and publishes prereleases.
   push:
     branches: [main, beta]
-  # A pull request run builds nothing: `Docker result` passes and the merge
-  # queue run builds and scans. The per-component filter in `changes` below
-  # decides what a queue or push run builds.
+  # A pull request into main builds nothing: `Docker result` passes and the
+  # merge queue run builds and scans. A pull request into beta, which has no
+  # queue, builds and scans. The per-component filter in `changes` below
+  # decides what a run builds.
   pull_request:
     branches: [main, beta]
-  # The build and scan run in the merge queue only, which blocks the merge on
-  # them; a pull request run reports only the result. Publication stays on push.
+  # Publication stays on push.
   merge_group:
     types: [checks_requested]
     branches: [main, beta]
@@ -164,7 +164,7 @@ jobs:
     name: Cache Go Modules
     runs-on: ubuntu-latest
     needs: changes
-    if: needs.changes.outputs.has_images == 'true' && github.event_name != 'pull_request'
+    if: needs.changes.outputs.has_images == 'true' && (github.event_name != 'pull_request' || github.base_ref != 'main')
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -180,7 +180,7 @@ jobs:
     # must not hold the job for hours.
     timeout-minutes: 30
     needs: [changes, go-modules]
-    if: needs.changes.outputs.has_images == 'true' && github.event_name != 'pull_request'
+    if: needs.changes.outputs.has_images == 'true' && (github.event_name != 'pull_request' || github.base_ref != 'main')
     strategy:
       matrix: ${{ fromJSON(needs.changes.outputs.matrix) }}
     steps:

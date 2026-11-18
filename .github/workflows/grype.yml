@@ -8,8 +8,8 @@ on:
     - cron: "17 6 * * 1"
   # No push trigger: a fresh advisory against an unchanged pin would paint
   # main red without any commit to blame; the merge queue and the weekly run
-  # cover it. Scans run in the merge queue only and block it on a High or
-  # Critical finding; a pull request run reports only the result.
+  # cover it. A High or Critical finding fails the scan. Pull requests into
+  # main skip it: main's merge queue runs it instead.
   pull_request:
     branches: [main, beta]
   merge_group:
@@ -54,7 +54,7 @@ jobs:
   linux:
     runs-on: ubuntu-latest
     needs: changes
-    if: needs.changes.outputs.relevant == 'true' && github.event_name != 'pull_request'
+    if: needs.changes.outputs.relevant == 'true' && (github.event_name != 'pull_request' || github.base_ref != 'main')
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -88,7 +88,7 @@ jobs:
   router-image:
     runs-on: ubuntu-latest
     needs: changes
-    if: needs.changes.outputs.relevant == 'true' && github.event_name != 'pull_request'
+    if: needs.changes.outputs.relevant == 'true' && (github.event_name != 'pull_request' || github.base_ref != 'main')
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 

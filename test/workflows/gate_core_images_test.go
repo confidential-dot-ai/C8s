@@ -13,17 +13,20 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func TestGateImageRefUsesCheckout(t *testing.T) {
-	doc := readWorkflow(t, "image-repro-gate.yml")
-	var run string
-	for _, step := range doc.Jobs["changes"].Steps {
+// gateSourceScript returns the repro gate's source-selection step.
+func gateSourceScript(t *testing.T) string {
+	t.Helper()
+	for _, step := range readWorkflow(t, "image-repro-gate.yml").Jobs["changes"].Steps {
 		if step.ID == "diff" {
-			run = step.Run
+			return step.Run
 		}
 	}
-	if run == "" {
-		t.Fatal("missing gate source-selection step")
-	}
+	t.Fatal("missing gate source-selection step")
+	return ""
+}
+
+func TestGateImageRefUsesCheckout(t *testing.T) {
+	run := gateSourceScript(t)
 	for key, value := range map[string]string{
 		"GIT_CONFIG_GLOBAL": os.DevNull, "GIT_CONFIG_SYSTEM": os.DevNull,
 		"GIT_ALLOW_PROTOCOL": "file", "GIT_TERMINAL_PROMPT": "0",
@@ -49,7 +52,8 @@ func TestGateImageRefUsesCheckout(t *testing.T) {
 	git("-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "gated checkout")
 	head := git("rev-parse", "HEAD")
 	output := filepath.Join(repo, "output")
-	// A dispatch: no merge group base, so the gate builds the checkout.
+	// A dispatch: no pull request or merge group, so the gate builds the checkout.
+	t.Setenv("PR", "")
 	t.Setenv("BASE_SHA", "")
 	t.Setenv("GITHUB_SHA", base)
 	t.Setenv("GITHUB_OUTPUT", output)
@@ -64,6 +68,62 @@ func TestGateImageRefUsesCheckout(t *testing.T) {
 	got, err := os.ReadFile(output)
 	if err != nil || !strings.Contains(string(got), "\nc8s_ref="+head+"\n") {
 		t.Fatalf("gate ref must equal full checkout SHA %s: %q (%v)", head, got, err)
+	}
+}
+
+func TestGateMergeGroupForkCheck(t *testing.T) {
+	run := gateSourceScript(t)
+	tests := []struct {
+		name    string
+		entries string
+		wantErr bool
+		want    string
+	}{
+		{
+			name:    "fork entry ahead",
+			entries: `[{"position":1,"pullRequest":{"number":7,"isCrossRepository":true}},{"position":2,"pullRequest":{"number":9,"isCrossRepository":false}}]`,
+			want:    "image=false",
+		},
+		{
+			name:    "fork entry itself",
+			entries: `[{"position":1,"pullRequest":{"number":9,"isCrossRepository":true}}]`,
+			want:    "image=false",
+		},
+		{
+			name:    "entry missing from the queue",
+			entries: `[{"position":1,"pullRequest":{"number":7,"isCrossRepository":false}}]`,
+			wantErr: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			// The stub prints the queue entries the way `gh api graphql --jq` would.
+			stub := "#!/bin/sh\ncat <<'EOF'\n" + tc.entries + "\nEOF\n"
+			if err := os.WriteFile(filepath.Join(dir, "gh"), []byte(stub), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			output := filepath.Join(dir, "output")
+			cmd := exec.CommandContext(t.Context(), "bash", "-c", run)
+			cmd.Dir = dir
+			cmd.Env = append(os.Environ(),
+				"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"),
+				"PR=", "BASE_SHA=0123456789abcdef", "BASE_REF=refs/heads/main",
+				"GITHUB_REF=refs/heads/gh-readonly-queue/main/pr-9-0123456789abcdef",
+				"GITHUB_REPOSITORY=owner/repo",
+				"GITHUB_OUTPUT="+output, "GITHUB_STEP_SUMMARY="+filepath.Join(dir, "summary"))
+			log, err := cmd.CombinedOutput()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("fork check passed, want failure:\n%s", log)
+				}
+				return
+			}
+			got, _ := os.ReadFile(output)
+			if !strings.Contains(string(got), tc.want+"\n") {
+				t.Fatalf("fork check output = %q, want %q (%v)\n%s", got, tc.want, err, log)
+			}
+		})
 	}
 }
 
