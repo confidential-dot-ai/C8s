@@ -94,6 +94,18 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "deployment": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "webhookHost": {
+              "type": "string"
+            }
+          }
+        },
         "podCVMProvider": {
           "type": "object",
           "additionalProperties": false,
