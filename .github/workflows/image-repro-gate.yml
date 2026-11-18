@@ -1,9 +1,10 @@
 # Reproducibility gates for measured images. A change to the worker image's
 # inputs builds it TWICE and requires every measured value to match (c8s#264).
-# This runs on every PR and decides relevance itself — a paths filter would
-# leave the required `compare` check pending on unrelated PRs. Fork PRs are
-# exempt (security-over-coverage); the post-merge builds remain the publication
-# gates.
+# The builds run in the merge queue only, which blocks the merge on them; a
+# pull request run reports `compare` as passing without building. The queue run
+# decides relevance itself — a paths filter would leave the required `compare`
+# check pending. Merge groups carrying fork code are exempt
+# (security-over-coverage); the post-merge builds remain the publication gates.
 name: image repro gate
 on:
   pull_request:
@@ -21,31 +22,43 @@ concurrency:
 
 jobs:
   changes:
-    # The gate build legs run on the-machine (self-hosted); never fork-trigger.
-    # A merge group can carry fork code, so `compare` passes it as not applicable.
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
     outputs:
       image: ${{ steps.diff.outputs.image }}
       c8s_ref: ${{ steps.diff.outputs.c8s_ref }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          # The diff step reads only the PR merge commit and its parents.
-          fetch-depth: 2
       - id: diff
         env:
-          PR: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if [ -z "$PR" ]; then
-            image=true
-          else
-            # HEAD is GitHub's PR merge commit; diff against its first parent.
-            # The event's base sha can move past it (base force-pushed after
-            # the merge was cached) and would charge the PR with the base's gains.
-            git rev-parse --verify -q HEAD^2 >/dev/null
-            base=$(git rev-parse HEAD^1)
+          image=true
+          if [ -n "$BASE_SHA" ]; then
+            # The gate build legs run on the-machine (self-hosted): never on
+            # fork code. Each queued PR lands as one squash commit "... (#N)".
+            prs=$(gh api "repos/$GITHUB_REPOSITORY/compare/$BASE_SHA...$GITHUB_SHA" \
+              --jq '.commits[].commit.message | split("\n")[0] | capture("\\(#(?<n>[0-9]+)\\)$").n')
+            if [ -z "$prs" ]; then
+              echo "::error::no PR number in the merge group's commits" >&2
+              exit 1
+            fi
+            for pr in $prs; do
+              head=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr" --jq '.head.repo.full_name // ""')
+              if [ "$head" != "$GITHUB_REPOSITORY" ]; then
+                image=fork
+                echo "merge group carries fork PR #$pr: gate not applicable" >> "$GITHUB_STEP_SUMMARY"
+              fi
+            done
+          fi
+          if [ -n "$BASE_SHA" ] && [ "$image" = true ]; then
+            git fetch --no-tags --depth=1 origin "$BASE_SHA"
+            base=$BASE_SHA
             base_manifest="$RUNNER_TEMP/base-build-pins.json"
             changed_paths="$RUNNER_TEMP/changed-paths"
             git show "${base}:.github/build-pins.json" >"$base_manifest"
@@ -55,6 +68,7 @@ jobs:
             image=$(sed -n 's/^image=//p' <<<"$result")
             [[ "$image" =~ ^(true|false)$ ]]
           fi
+          if [ "$image" = fork ]; then image=false; fi
           echo "image=$image" >> "$GITHUB_OUTPUT"
           ref=$(git rev-parse HEAD)
           echo "c8s_ref=$ref" >> "$GITHUB_OUTPUT"
@@ -138,9 +152,9 @@ jobs:
       gate_images_artifact: gate-core-images-${{ github.run_id }}
 
   compare:
-    # The required check: green fast when no measured input changed (and on
-    # fork PRs, whose changes job is skipped); otherwise enforce every build
-    # and comparison selected by the classifier.
+    # The required check: green on pull requests and when no measured input
+    # changed; otherwise enforce every build and comparison selected by the
+    # classifier.
     needs: [changes, build-a, build-b]
     # Superseded runs must not leave a failed comparison behind.
     if: always() && !cancelled()
@@ -154,8 +168,11 @@ jobs:
           echo "change-classification result: $RESULT" >&2
           exit 1
 
+      - name: Builds run in the merge queue
+        if: github.event_name == 'pull_request'
+        run: echo "the reproducibility builds run in the merge queue" >> "$GITHUB_STEP_SUMMARY"
       - name: Nothing measurement-gate-relevant changed
-        if: needs.changes.outputs.image != 'true'
+        if: github.event_name != 'pull_request' && needs.changes.outputs.image != 'true'
         run: echo "no gated measurement inputs changed — gate not applicable" >> "$GITHUB_STEP_SUMMARY"
       - name: Legs must have succeeded
         if: needs.changes.outputs.image == 'true'

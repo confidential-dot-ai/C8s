@@ -1,0 +1,99 @@
+# Tells a PR's author when the merge queue removed it over a failed check.
+# Several checks run in the queue only, so the PR page shows them as passed.
+name: merge queue failure
+
+on:
+  workflow_run:
+    workflows:
+      - actionlint
+      - CDS HA suite
+      - CI
+      - Docker
+      - docs install parity
+      - govulncheck
+      - image repro gate
+      - node-guest-image lint
+      - pin hygiene
+      - Scan for vulnerabilities
+      - security-gate
+    types: [completed]
+
+permissions: {}
+
+# One comment per queue attempt, extended as each failed workflow reports.
+concurrency:
+  group: merge-queue-failure-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
+
+jobs:
+  comment:
+    if: github.event.workflow_run.event == 'merge_group' && github.event.workflow_run.conclusion == 'failure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      pull-requests: write
+    steps:
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const run = context.payload.workflow_run;
+            // gh-readonly-queue/<base>/pr-<number>-<base sha>: the entry for that PR.
+            const m = /^gh-readonly-queue\/(.+)\/pr-(\d+)-[0-9a-f]+$/.exec(run.head_branch);
+            if (!m) {
+              core.setFailed(`unexpected merge queue branch: ${run.head_branch}`);
+              return;
+            }
+            const base = m[1], number = Number(m[2]);
+
+            // A failure caused by an entry ahead of this one re-queues this PR instead
+            // of removing it; only a removed PR is to blame. Removal follows the failed
+            // required check within seconds.
+            const query = `query($owner: String!, $repo: String!, $number: Int!) {
+              repository(owner: $owner, name: $repo) {
+                pullRequest(number: $number) { state mergeQueueEntry { id } }
+              }
+            }`;
+            let pr;
+            for (let i = 0; i < 12; i++) {
+              ({repository: {pullRequest: pr}} = await github.graphql(query, {...context.repo, number}));
+              if (!pr.mergeQueueEntry) break;
+              await new Promise(r => setTimeout(r, 15000));
+            }
+            if (pr.mergeQueueEntry || pr.state !== 'OPEN') {
+              core.info(`#${number} is ${pr.state}, queued=${!!pr.mergeQueueEntry}: not commenting`);
+              return;
+            }
+
+            const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+              ...context.repo, run_id: run.id, per_page: 100,
+            });
+            const failed = jobs
+              .filter(j => j.conclusion === 'failure' && !j.name.endsWith(' result'))
+              .map(j => `  - [${j.name}](${j.html_url})`);
+            const section = [
+              `- **[${run.name}](${run.html_url})** failed`,
+              ...failed,
+            ].join('\n');
+
+            const marker = `<!-- merge-queue-failure ${run.head_branch} -->`;
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              ...context.repo, issue_number: number, per_page: 100,
+            });
+            const prev = comments.find(c => c.body && c.body.includes(marker));
+            if (prev) {
+              if (prev.body.includes(run.html_url)) return;
+              await github.rest.issues.updateComment({
+                ...context.repo, comment_id: prev.id, body: `${prev.body}\n${section}`,
+              });
+              return;
+            }
+            const body = [
+              marker,
+              `### Removed from the merge queue`,
+              '',
+              `This PR failed checks in the merge queue, on \`${run.head_sha.slice(0, 7)}\` (this PR on top of \`${base}\` and the PRs queued ahead of it). Fix the failures, then add it to the queue again.`,
+              '',
+              section,
+            ].join('\n');
+            await github.rest.issues.createComment({...context.repo, issue_number: number, body});
