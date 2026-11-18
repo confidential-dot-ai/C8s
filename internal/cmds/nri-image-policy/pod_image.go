@@ -6,6 +6,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/util/validation"
 
+	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
@@ -26,7 +27,7 @@ func (c *config) validatePodImages() error {
 	if c.Allowlist.Base != nil {
 		for _, workload := range c.Allowlist.Base.Workloads {
 			for _, container := range slices.Concat(workload.InitContainers, workload.Containers) {
-				if container.Role != meshRole {
+				if container.Role != allowlist.RoleMesh {
 					continue
 				}
 				if endpoint != "" {

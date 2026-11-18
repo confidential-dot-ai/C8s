@@ -5,6 +5,8 @@ import (
 	"fmt"
 
 	"github.com/containerd/nri/pkg/api"
+
+	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
 // admitWhileInitializing decides a container seen after NRI registration but
@@ -139,7 +141,7 @@ func (p *plugin) noteMeshStarted(ctx context.Context, pod *api.PodSandbox, ctr *
 		return
 	}
 	launch := p.observedLaunch(ctx, p.observeContainer(pod, ctr, imageRef))
-	if p.roleOf(launch) == meshRole {
+	if p.roleOf(launch) == allowlist.RoleMesh {
 		p.mesh.noteMeshStarted(pod.GetId())
 	}
 }

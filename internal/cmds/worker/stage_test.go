@@ -28,7 +28,6 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/nodeservices"
-	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
@@ -262,7 +261,7 @@ func TestStagePublishesTheDocumentsFloor(t *testing.T) {
 		t.Errorf("pull = %+v, want the document's CDS and chain pin %s", pull, doc.CDS.Chain)
 	}
 	roles := floor.Mesh.Roles
-	if i := slices.IndexFunc(roles, func(r stagedRole) bool { return r.Name == nriimagepolicy.CredentialRole }); i < 0 || roles[i].Port != 8443 {
+	if i := slices.IndexFunc(roles, func(r stagedRole) bool { return r.Name == allowlist.RoleCredentials }); i < 0 || roles[i].Port != 8443 {
 		t.Errorf("mesh roles = %+v, want the credential role on the document's CDS port", roles)
 	}
 

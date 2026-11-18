@@ -448,7 +448,7 @@ func (h Handler) workloadContainers(ctx context.Context, host, sandboxID string)
 // WorkloadContainers converts an inventory's reported container set to the
 // candidate set workload matching runs on, dropping every container the
 // reporting node's measured base binds a platform client role to
-// (workloadclaims.MeshRole, workloadclaims.CredentialsRole), so a workload
+// (pkgallowlist.RoleMesh, pkgallowlist.RoleCredentials), so a workload
 // entry never has to enumerate the containers C8s adds to every member pod. A
 // role a pod runs for a purpose of its own, like the router's, stays and is
 // declared. It is a pure function of the report — the one drop-set
@@ -461,7 +461,7 @@ func (h Handler) workloadContainers(ctx context.Context, host, sandboxID string)
 func WorkloadContainers(reported []workloadclaims.SandboxContainer) []pkgallowlist.RunningContainer {
 	out := make([]pkgallowlist.RunningContainer, 0, len(reported))
 	for _, c := range reported {
-		if c.Role == workloadclaims.MeshRole || c.Role == workloadclaims.CredentialsRole {
+		if c.Role == pkgallowlist.RoleMesh || c.Role == pkgallowlist.RoleCredentials {
 			continue
 		}
 		r := pkgallowlist.RunningContainer{Digest: c.Digest, Argv: c.Argv, Env: c.Env, Mounts: c.Mounts}

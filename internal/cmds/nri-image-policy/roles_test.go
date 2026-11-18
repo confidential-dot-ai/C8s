@@ -38,7 +38,7 @@ func meshRoles() *meshPolicy {
 		ClusterRanges: []netip.Prefix{netip.MustParsePrefix("10.52.0.0/16")},
 		Roles: []roleBinding{
 			{
-				Name: meshRole,
+				Name: allowlist.RoleMesh,
 				UID:  testMeshUID,
 			},
 			{
@@ -124,7 +124,7 @@ func TestMeshPolicyValidation(t *testing.T) {
 				m.Roles[1].UID = workloadclaims.CredentialsUID
 			},
 			tcb:   true,
-			wants: "reserved for the " + CredentialRole + " role",
+			wants: "reserved for the " + allowlist.RoleCredentials + " role",
 		},
 		{
 			name: "the router's namespace exempt from the mesh",
@@ -140,7 +140,7 @@ func TestMeshPolicyValidation(t *testing.T) {
 				m.Roles[0].UID = workloadclaims.RouterUID
 			},
 			tcb:   true,
-			wants: "reserved for the " + routerRole + " role",
+			wants: "reserved for the " + allowlist.RoleRouter + " role",
 		},
 		{
 			name: "a dialing role on the egress identity",
@@ -148,12 +148,12 @@ func TestMeshPolicyValidation(t *testing.T) {
 				m.Roles[0].UID = workloadclaims.AcmeUID
 			},
 			tcb:   true,
-			wants: "reserved for the " + acmeRole + " role",
+			wants: "reserved for the " + allowlist.RoleACME + " role",
 		},
 		{
 			name: "a dialing role named for the router",
 			mesh: func(m *meshPolicy) {
-				m.Roles[1].Name = routerRole
+				m.Roles[1].Name = allowlist.RoleRouter
 			},
 			tcb:   true,
 			wants: "is a compiled role of the router's namespace",
@@ -161,7 +161,7 @@ func TestMeshPolicyValidation(t *testing.T) {
 		{
 			name: "a dialing role named for routing",
 			mesh: func(m *meshPolicy) {
-				m.Roles[1].Name = upstreamRole
+				m.Roles[1].Name = allowlist.RoleUpstream
 			},
 			tcb:   true,
 			wants: "is a compiled role of the router's namespace",
@@ -169,7 +169,7 @@ func TestMeshPolicyValidation(t *testing.T) {
 		{
 			name: "a dialing role named for egress",
 			mesh: func(m *meshPolicy) {
-				m.Roles[1].Name = acmeRole
+				m.Roles[1].Name = allowlist.RoleACME
 			},
 			tcb:   true,
 			wants: "is a compiled role of the router's namespace",
@@ -332,7 +332,7 @@ mesh:
 // A role the mesh policy binds nowhere holds no reserved identity, so the gate
 // refuses its container rather than running it unconfined.
 func TestUnboundRoleRefusesItsContainer(t *testing.T) {
-	policy := meshPolicy{Roles: []roleBinding{{Name: meshRole, UID: testMeshUID}}}
+	policy := meshPolicy{Roles: []roleBinding{{Name: allowlist.RoleMesh, UID: testMeshUID}}}
 	ctr := &api.Container{Name: "c8s-cert", User: &api.User{Uid: testCertUID}}
 	err := policy.requireRoleIdentity(ctr, testCertRole)
 	if err == nil || !strings.Contains(err.Error(), "no reserved uid is bound") {
@@ -382,16 +382,16 @@ func TestRoleOfBindsOnlyTheMeasuredIdentity(t *testing.T) {
 
 }
 
-// The role field never travels on the wire, so nothing a CDS serves can claim
-// one.
+// A workloads entry binds no role, however it reaches this node, so nothing a
+// CDS serves can claim one.
 func TestRoleIsNotServed(t *testing.T) {
 	base := roleBase(t, pushDigestB, testCertRole, []string{"/usr/local/bin/c8s"})
 	wire, err := base.Canonical()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(wire), testCertRole) {
-		t.Fatalf("the canonical document carries a role: %s", wire)
+	if _, err := allowlist.ParseJSON(wire); err == nil || !strings.Contains(err.Error(), "role") {
+		t.Fatalf("a written workloads entry bound a role: %v", err)
 	}
 	served, err := allowlist.ParseServedJSON(wire)
 	if err != nil {
@@ -451,10 +451,10 @@ func TestRequireRoleIdentity(t *testing.T) {
 // alone.
 func TestTheRoutersCompiledPortsAndIdentitiesCollideWithNothing(t *testing.T) {
 	roles := map[uint32]string{
-		workloadclaims.MeshUID:        meshRole,
-		workloadclaims.CredentialsUID: CredentialRole,
-		workloadclaims.RouterUID:      routerRole,
-		workloadclaims.AcmeUID:        acmeRole,
+		workloadclaims.MeshUID:        allowlist.RoleMesh,
+		workloadclaims.CredentialsUID: allowlist.RoleCredentials,
+		workloadclaims.RouterUID:      allowlist.RoleRouter,
+		workloadclaims.AcmeUID:        allowlist.RoleACME,
 	}
 	if len(roles) != 4 {
 		t.Errorf("the platform roles share a reserved identity: %v", roles)

@@ -18,7 +18,6 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/podmesh"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 // Pod-role outputs. Kubelet and containerd configs stay baked; preparation
@@ -271,12 +270,12 @@ func podMeshPolicy(declared any) (map[string]any, error) {
 		if !ok {
 			return nil, fmt.Errorf("baked NRI mesh role is %T, not a mapping", declared)
 		}
-		if role["name"] == workloadclaims.MeshRole {
+		if role["name"] == allowlist.RoleMesh {
 			mesh = append(mesh, role)
 		}
 	}
 	if len(mesh) != 1 {
-		return nil, fmt.Errorf("baked NRI mesh policy must bind exactly one %s role", workloadclaims.MeshRole)
+		return nil, fmt.Errorf("baked NRI mesh policy must bind exactly one %s role", allowlist.RoleMesh)
 	}
 	policy["roles"] = mesh
 	policy["exempt_namespaces"] = []any{}
@@ -294,7 +293,7 @@ func podMeshBase(declared any) (*allowlist.Allowlist, string, error) {
 	image := ""
 	for name, workload := range baked.Workloads {
 		for _, container := range slices.Concat(workload.InitContainers, workload.Containers) {
-			if container.Role != workloadclaims.MeshRole {
+			if container.Role != allowlist.RoleMesh {
 				continue
 			}
 			if image != "" {

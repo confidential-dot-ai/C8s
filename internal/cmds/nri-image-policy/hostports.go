@@ -87,7 +87,7 @@ func (p *plugin) hostPortRefusal(ctx context.Context, cfg *config, observed obse
 // platformClientRole reports whether role is one the node injects into a member
 // pod (internal/secrets.WorkloadContainers).
 func platformClientRole(role string) bool {
-	return role == meshRole || role == CredentialRole
+	return role == allowlist.RoleMesh || role == allowlist.RoleCredentials
 }
 
 // sandboxHostPorts is what containerd recorded of the pod's port mappings, as an

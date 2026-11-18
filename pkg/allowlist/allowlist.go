@@ -56,6 +56,9 @@ const (
 type Allowlist struct {
 	Schema    string              `json:"schema" yaml:"schema"`
 	Workloads map[string]Workload `json:"workloads" yaml:"workloads"`
+	// Components are the component sets the cluster admits, keyed by the
+	// release that built each one.
+	Components map[string]ComponentSet `json:"components,omitempty" yaml:"components,omitempty"`
 }
 
 // Workload is a named policy entry. Label is an informational image reference.
@@ -73,9 +76,13 @@ type Workload struct {
 	// HostPorts are the ports a pod this entry matches publishes on the node's
 	// own address; like a secrets grant they belong to the whole entry.
 	HostPorts HostPortList `json:"hostPorts,omitempty" yaml:"hostPorts,omitempty"`
-	// StaticPod marks a kubelet static pod's entry. YAML-only, like
-	// Container.Role: only a measured boot config sets it.
+	// StaticPod marks a kubelet static pod's entry. YAML-only: only a measured
+	// boot config sets it.
 	StaticPod bool `json:"-" yaml:"staticPod,omitempty"`
+	// NodeService marks the entry of a node service: a pod of one container
+	// serving the whole node. A component set entry alone carries it
+	// (docs/allowlist-entries.md).
+	NodeService bool `json:"nodeService,omitempty" yaml:"nodeService,omitempty"`
 }
 
 // minEgressBits4 and minEgressBits6 are the broadest range an exit may name.
@@ -152,16 +159,15 @@ func (l *HostPortList) UnmarshalJSON(data []byte) error {
 // Container binds a digest to the process policy permitted for it.
 //
 // Role names the platform role an enforcer grants to these bytes under this
-// policy. It is YAML-only: a document on the wire carries no role, so a role
-// comes from a measured boot config and nothing a CDS serves can claim one.
+// policy. A measured boot config and a component set entry bind one; an entry
+// under workloads never does, so nothing the control plane writes claims one.
 type Container struct {
 	Digest types.Digest `json:"digest" yaml:"digest"`
 	Image  string       `json:"image,omitempty" yaml:"image,omitempty"`
-	Role   string       `json:"-" yaml:"role,omitempty"`
+	Role   string       `json:"role,omitempty" yaml:"role,omitempty"`
 	// Execs are the exact commands a runtime wrapper may start in a running
-	// container of these bytes, beside the one it was created with. YAML-only,
-	// like Role: only a measured boot config grants one, and the JSON ingest
-	// rejects it.
+	// container of these bytes, beside the one it was created with. YAML-only:
+	// only a measured boot config grants one, and the JSON ingest rejects it.
 	Execs   [][]string  `json:"-" yaml:"execs,omitempty"`
 	Command ArgvPolicy  `json:"command" yaml:"command"`
 	Args    ArgvPolicy  `json:"args" yaml:"args"`
@@ -170,6 +176,30 @@ type Container struct {
 	// Capabilities are what these bytes may hold beyond the node's default set.
 	Capabilities CapabilityList `json:"capabilities,omitempty" yaml:"capabilities,omitempty"`
 }
+
+// The platform roles trusted policy binds a launch to. The node image defines
+// what each one grants and the identity it reserves (pkg/workloadclaims);
+// a declaration names one, and the enforcer grants it to a container whose
+// verified identity matches that declaration.
+const (
+	// RoleMesh is a pod's own endpoint, whose start opens the gate for the
+	// rest of the pod.
+	RoleMesh = "mesh"
+	// RoleCredentials is the role of the injected credential clients, which a
+	// node's boot preparation binds to that cluster's CDS address.
+	RoleCredentials = "credentials"
+	// RoleRouter answers the cluster's external traffic on ports of its own.
+	RoleRouter = "router"
+	// RoleACME is the one role of the router's namespace whose sockets leave
+	// the cluster in the clear.
+	RoleACME = "acme"
+	// RoleUpstream is that namespace's route authority: it holds the signed
+	// route manifest and reaches the cluster uncaptured.
+	RoleUpstream = "upstream"
+)
+
+// KnownRoles are the roles a declaration may name.
+var KnownRoles = []string{RoleMesh, RoleCredentials, RoleRouter, RoleACME, RoleUpstream}
 
 // CapabilityList decodes each name strictly; an undecodable value becomes the
 // empty name normalizeCapabilities refuses.
@@ -207,7 +237,7 @@ type MountRule struct {
 	Source      string     `json:"source,omitempty" yaml:"source,omitempty"`
 	ReadOnly    bool       `json:"readOnly,omitempty" yaml:"readOnly,omitempty"`
 	// Node marks a data rule of a node component's own volume, which may sit
-	// outside DataMountPrefix. YAML-only, like Container.Role: only a measured
+	// outside DataMountPrefix. YAML-only: only a measured
 	// boot config sets it, and the JSON ingest rejects it.
 	Node bool `json:"-" yaml:"node,omitempty"`
 	// VerityDigest is reserved for fs-verity and rejected for now.
@@ -254,7 +284,7 @@ type EnvPolicy struct {
 	// kubelet derives from the Services of the pod's namespace
 	// (ServiceLinkName). Which of them a container gets depends on which
 	// Services existed when it started, so a node component's entry cannot
-	// list them. YAML-only, like Container.Role: only a measured boot config
+	// list them. YAML-only: only a measured boot config
 	// sets it, and the JSON ingest rejects it.
 	ServiceLinks bool `json:"-" yaml:"serviceLinks,omitempty"`
 }
@@ -309,6 +339,9 @@ func parseJSON(data []byte, p ingestPosture) (*Allowlist, error) {
 	if err := a.refuseVolumeBindings(); err != nil {
 		return nil, err
 	}
+	if err := a.refuseComponentFields(p); err != nil {
+		return nil, err
+	}
 	if err := a.normalize(p); err != nil {
 		return nil, err
 	}
@@ -325,6 +358,9 @@ type ingestPosture interface {
 	refuseOverLongName(name string) error
 	refuseOrDrop(f failedField) error
 	refuseAuthored(workload string, err error) error
+	// refuseSet refuses the document over a component set that failed a
+	// check, or warns that its caller drops that set.
+	refuseSet(version string, err error) error
 }
 
 // failedField is a check an entry's field failed. An empty field names the
@@ -397,11 +433,28 @@ func (servedDocument) refuseAuthored(string, error) error {
 	return nil
 }
 
+func (authoredDocument) refuseSet(version string, err error) error {
+	return fmt.Errorf("component set %q: %w", version, err)
+}
+
+// Dropping one set leaves the rest of the document in force, and a set this
+// consumer cannot judge admits nothing of its own.
+func (servedDocument) refuseSet(version string, err error) error {
+	slog.Warn("allowlist: dropping a served component set this consumer cannot judge",
+		"version", version, "error", err)
+	return nil
+}
+
+// Under workloads a document on the wire carries none of the fields a
+// component set entry carries: a role bound to a launch, the node-service
+// mark, and a mount rule naming one of the pod's own volumes. So nothing the
+// control plane writes claims a platform role or privilege on the node. A
+// measured boot config is YAML and binds roles under workloads
+// (Container.Role).
+//
 // refuseVolumeBindings refuses a document that names a pod volume on an
-// emptyDir or data rule. The binding belongs to a measured boot config, which
-// is YAML: nothing that arrives as JSON names a volume, so a served or
-// authored document carrying one is refused rather than read as a narrower
-// policy than the format defines.
+// emptyDir or data rule, rather than read it as a narrower policy than the
+// format defines.
 func (a *Allowlist) refuseVolumeBindings() error {
 	for name, w := range a.Workloads {
 		if err := w.refuseVolumeBindings(); err != nil {
@@ -423,6 +476,33 @@ func (w Workload) refuseVolumeBindings() error {
 	return nil
 }
 
+// refuseComponentFields refuses a role or a node-service mark under workloads,
+// which an authored document may not carry there and a served one loses.
+func (a *Allowlist) refuseComponentFields(p ingestPosture) error {
+	for name, w := range a.Workloads {
+		if err := p.refuseOrDrop(failedField{
+			workload: name,
+			field:    "role",
+			err:      w.refuseRoles(),
+			warn:     "allowlist: dropping a served workload entry's role, which only a component set entry binds",
+			drop:     w.dropRoles,
+		}); err != nil {
+			return err
+		}
+		if err := p.refuseOrDrop(failedField{
+			workload: name,
+			field:    "nodeService",
+			err:      w.refuseNodeService(),
+			warn:     "allowlist: dropping a served workload entry's node-service mark, which only a component set entry carries",
+			drop:     w.dropNodeService,
+		}); err != nil {
+			return err
+		}
+		a.Workloads[name] = w
+	}
+	return nil
+}
+
 // Normalize validates and canonicalizes a document decoded outside ParseJSON
 // (the NRI plugin's YAML boot config), under the same authored ingest posture.
 func (a *Allowlist) Normalize() error {
@@ -438,6 +518,12 @@ func ParseWorkloadJSON(data []byte) (*Workload, error) {
 		return nil, fmt.Errorf("decode workload: %w", err)
 	}
 	if err := w.refuseVolumeBindings(); err != nil {
+		return nil, fmt.Errorf("entry: %w", err)
+	}
+	if err := w.refuseRoles(); err != nil {
+		return nil, fmt.Errorf("entry: %w", err)
+	}
+	if err := w.refuseNodeService(); err != nil {
 		return nil, fmt.Errorf("entry: %w", err)
 	}
 	if err := normalizeContainers("entry", "initContainers", w.InitContainers); err != nil {
@@ -718,100 +804,112 @@ func (a *Allowlist) CanonicalDigest() ([]byte, error) {
 	return sum[:], nil
 }
 
-// normalize canonicalizes the document under p, its ingest posture:
-// workloadname.MaxLen keeps an entry the cw selector or the leaf stamp cannot
-// represent out of the store, and a served document loses such an entry instead
-// of failing. See docs/allowlist-entries.md.
+// normalize canonicalizes the document under p, its ingest posture. See
+// docs/allowlist-entries.md.
 func (a *Allowlist) normalize(p ingestPosture) error {
 	if a.Schema != Schema {
 		return fmt.Errorf("allowlist: unknown schema %q (expected %q)", a.Schema, Schema)
 	}
 	for name, w := range a.Workloads {
-		// The grammar is not negotiable on either path: the name is used
-		// verbatim as a URL path segment.
-		if !workloadname.ValidGrammar(name) {
-			return fmt.Errorf("workload name %q must match [A-Za-z0-9][A-Za-z0-9._-]* (it is a URL path segment)", name)
+		keep, err := normalizeEntry(name, &w, p)
+		if err != nil {
+			return err
 		}
-		if len(name) > workloadname.MaxLen {
-			// The whole entry goes, so this skips the store-back below. It
-			// could never have been named on a leaf either
-			// (armtls.MatchedWorkload.Validate applies the same bound).
-			if err := p.refuseOverLongName(name); err != nil {
-				return err
-			}
+		if !keep {
 			delete(a.Workloads, name)
 			continue
 		}
-		if err := normalizeContainers(name, "initContainers", w.InitContainers); err != nil {
-			return err
-		}
-		if err := normalizeContainers(name, "containers", w.Containers); err != nil {
-			return err
-		}
-		if err := normalizeSecrets(&w.Secrets); err != nil {
-			return fmt.Errorf("workload %q secrets: %w", name, err)
-		}
-		if w.Secrets != nil {
-			if err := p.refuseAuthored(name, w.PinnedForGrant()); err != nil {
-				return err
-			}
-		}
-		if err := p.refuseAuthored(name, w.CheckVariableEvidenceBudget()); err != nil {
-			return err
-		}
-		if err := p.refuseOrDrop(failedField{
-			workload: name,
-			field:    "egress",
-			err:      normalizeEgress(&w.Egress),
-			warn:     "allowlist: dropping a served workload entry's egress this consumer cannot validate",
-			drop:     w.dropEgress,
-		}); err != nil {
-			return err
-		}
-		if err := p.refuseAuthored(name, w.PinnedForEgress()); err != nil {
-			return err
-		}
-		if err := p.refuseOrDrop(failedField{
-			workload: name,
-			field:    "hostPorts",
-			err:      normalizeHostPorts(&w.HostPorts),
-			warn:     "allowlist: dropping a served workload entry's host ports this consumer cannot validate",
-			drop:     w.dropHostPorts,
-		}); err != nil {
-			return err
-		}
-		if err := p.refuseOrDrop(failedField{
-			workload: name,
-			err:      w.pinnedForHostPorts(),
-			warn:     "allowlist: dropping a served workload entry's host ports no pinned launch publishes",
-			drop:     w.dropHostPorts,
-		}); err != nil {
-			return err
-		}
-		if err := p.refuseOrDrop(failedField{
-			workload: name,
-			err:      w.normalizeDeclaredCapabilities(),
-			warn:     "allowlist: dropping a served workload entry's capabilities this consumer cannot validate",
-			drop:     w.dropDeclaredCapabilities,
-		}); err != nil {
-			return err
-		}
-		if err := p.refuseOrDrop(failedField{
-			workload: name,
-			err:      w.pinnedForCapabilities(),
-			warn:     "allowlist: dropping a served workload entry's capabilities no pinned launch holds",
-			drop:     w.dropDeclaredCapabilities,
-		}); err != nil {
-			return err
-		}
-		if w.StaticPod && w.declaresHostPortsOrCapabilities() {
-			return fmt.Errorf("workload %q: %w", name, errStaticPodDeclaresGrants)
-		}
-		sortContainers(w.InitContainers)
-		sortContainers(w.Containers)
 		a.Workloads[name] = w
 	}
-	return nil
+	return a.normalizeComponents(p)
+}
+
+// normalizeEntry validates and canonicalizes one entry under p. It keeps no
+// entry whose name the cw selector or the leaf stamp cannot represent
+// (workloadname.MaxLen): a served document loses such an entry instead of
+// failing.
+func normalizeEntry(name string, w *Workload, p ingestPosture) (keep bool, err error) {
+	// The grammar is not negotiable on either path: the name is used
+	// verbatim as a URL path segment.
+	if !workloadname.ValidGrammar(name) {
+		return false, fmt.Errorf("workload name %q must match [A-Za-z0-9][A-Za-z0-9._-]* (it is a URL path segment)", name)
+	}
+	if len(name) > workloadname.MaxLen {
+		// It could never have been named on a leaf either
+		// (armtls.MatchedWorkload.Validate applies the same bound).
+		if err := p.refuseOverLongName(name); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+	if err := normalizeContainers(name, "initContainers", w.InitContainers); err != nil {
+		return false, err
+	}
+	if err := normalizeContainers(name, "containers", w.Containers); err != nil {
+		return false, err
+	}
+	if err := normalizeSecrets(&w.Secrets); err != nil {
+		return false, fmt.Errorf("workload %q secrets: %w", name, err)
+	}
+	if w.Secrets != nil {
+		if err := p.refuseAuthored(name, w.PinnedForGrant()); err != nil {
+			return false, err
+		}
+	}
+	if err := p.refuseAuthored(name, w.CheckVariableEvidenceBudget()); err != nil {
+		return false, err
+	}
+	if err := p.refuseOrDrop(failedField{
+		workload: name,
+		field:    "egress",
+		err:      normalizeEgress(&w.Egress),
+		warn:     "allowlist: dropping a served workload entry's egress this consumer cannot validate",
+		drop:     w.dropEgress,
+	}); err != nil {
+		return false, err
+	}
+	if err := p.refuseAuthored(name, w.PinnedForEgress()); err != nil {
+		return false, err
+	}
+	if err := p.refuseOrDrop(failedField{
+		workload: name,
+		field:    "hostPorts",
+		err:      normalizeHostPorts(&w.HostPorts),
+		warn:     "allowlist: dropping a served workload entry's host ports this consumer cannot validate",
+		drop:     w.dropHostPorts,
+	}); err != nil {
+		return false, err
+	}
+	if err := p.refuseOrDrop(failedField{
+		workload: name,
+		err:      w.pinnedForHostPorts(),
+		warn:     "allowlist: dropping a served workload entry's host ports no pinned launch publishes",
+		drop:     w.dropHostPorts,
+	}); err != nil {
+		return false, err
+	}
+	if err := p.refuseOrDrop(failedField{
+		workload: name,
+		err:      w.normalizeDeclaredCapabilities(),
+		warn:     "allowlist: dropping a served workload entry's capabilities this consumer cannot validate",
+		drop:     w.dropDeclaredCapabilities,
+	}); err != nil {
+		return false, err
+	}
+	if err := p.refuseOrDrop(failedField{
+		workload: name,
+		err:      w.pinnedForCapabilities(),
+		warn:     "allowlist: dropping a served workload entry's capabilities no pinned launch holds",
+		drop:     w.dropDeclaredCapabilities,
+	}); err != nil {
+		return false, err
+	}
+	if w.StaticPod && w.declaresHostPortsOrCapabilities() {
+		return false, fmt.Errorf("workload %q: %w", name, errStaticPodDeclaresGrants)
+	}
+	sortContainers(w.InitContainers)
+	sortContainers(w.Containers)
+	return true, nil
 }
 
 // nonUnicastRanges are what an exit must not overlap: this network, loopback,
@@ -1055,6 +1153,36 @@ func (w *Workload) normalizeDeclaredCapabilities() error {
 		return err
 	}
 	return normalizeContainerCapabilities("containers", w.Containers)
+}
+
+// refuseRoles reports the role an entry under workloads may not bind.
+func (w *Workload) refuseRoles() error {
+	for _, c := range w.containers() {
+		if c.Role != noRole {
+			return fmt.Errorf("container %s names role %q, which only a component set entry binds", c.Digest, c.Role)
+		}
+	}
+	return nil
+}
+
+func (w *Workload) refuseNodeService() error {
+	if w.NodeService {
+		return fmt.Errorf("only a component set entry is a node service")
+	}
+	return nil
+}
+
+func (w *Workload) dropRoles() {
+	for i := range w.InitContainers {
+		w.InitContainers[i].Role = noRole
+	}
+	for i := range w.Containers {
+		w.Containers[i].Role = noRole
+	}
+}
+
+func (w *Workload) dropNodeService() {
+	w.NodeService = false
 }
 
 func (w *Workload) dropEgress() {

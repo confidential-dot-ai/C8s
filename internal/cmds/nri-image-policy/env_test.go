@@ -667,7 +667,7 @@ func TestPodAdjustmentRoleComesFromTheFinalMountSet(t *testing.T) {
 		Mounts:       []*api.Mount{readOnlyBind(source, podmesh.CertDir)},
 	}
 	// The declaration pins the mount set its role is bound to.
-	base := roleBase(t, pushDigestB, meshRole, []string{"/c8s", "mesh"})
+	base := roleBase(t, pushDigestB, allowlist.RoleMesh, []string{"/c8s", "mesh"})
 	entry := base.Workloads["role-entry"].Containers[0]
 	entry.Mounts = allowlist.MountPolicy{Policy: allowlist.PolicyExact, Rules: []allowlist.MountRule{{
 		Destination: podmesh.CertDir,

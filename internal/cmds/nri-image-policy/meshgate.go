@@ -17,6 +17,8 @@ import (
 
 	"github.com/containerd/nri/pkg/api"
 	"golang.org/x/sys/unix"
+
+	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
 // errSandboxOffRecord is the gate's answer for a sandbox it holds no state for.
@@ -302,7 +304,7 @@ func (s *protectedPod) restore(policy meshPolicy, c recoveredContainer) error {
 		return err
 	}
 	s.recordLaunch(c.launch)
-	if c.running && c.launch.role == meshRole {
+	if c.running && c.launch.role == allowlist.RoleMesh {
 		s.meshStarted = true
 	}
 	return nil
@@ -634,7 +636,7 @@ func (s *protectedPod) requireRoleOrder(launch gatedContainer) error {
 	switch {
 	case launch.role != "" && s.workloadCreated && !s.admittedBefore(launch):
 		return fmt.Errorf("the %s role cannot start after a container outside every platform role", launch.role)
-	case launch.role == meshRole:
+	case launch.role == allowlist.RoleMesh:
 		return nil
 	case !s.meshStarted:
 		return errors.New("the pod's mesh endpoint is not running, so no other container may start")
@@ -676,7 +678,7 @@ func (s *protectedPod) requireRoleOnlyPod(launch gatedContainer) error {
 		return nil
 	}
 	if launch.role == "" {
-		return fmt.Errorf("this pod serves the %s role's own ports, so only its platform roles may run here", routerRole)
+		return fmt.Errorf("this pod serves the %s role's own ports, so only its platform roles may run here", allowlist.RoleRouter)
 	}
 	if !launch.mountsPinned {
 		return fmt.Errorf("the %s role runs here only under a declaration that pins its mounts, which this launch has none of", launch.role)

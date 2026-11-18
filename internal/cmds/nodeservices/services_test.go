@@ -12,7 +12,6 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
-	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
@@ -283,8 +282,8 @@ func TestPrepareBindsTheCredentialRoleToTheStagedCDS(t *testing.T) {
 		t.Errorf("staging changed the measured mesh role: %+v", got)
 	}
 	credentials := staged.Roles[1]
-	if credentials.Name != nriimagepolicy.CredentialRole || credentials.UID != workloadclaims.CredentialsUID {
-		t.Errorf("credential role = %+v, want %s on the reserved uid %d", credentials, nriimagepolicy.CredentialRole, workloadclaims.CredentialsUID)
+	if credentials.Name != allowlist.RoleCredentials || credentials.UID != workloadclaims.CredentialsUID {
+		t.Errorf("credential role = %+v, want %s on the reserved uid %d", credentials, allowlist.RoleCredentials, workloadclaims.CredentialsUID)
 	}
 	if credentials.Port != 8443 {
 		t.Errorf("credential role port = %d, want the port this cluster's CDS serves on", credentials.Port)
@@ -308,7 +307,7 @@ func TestPrepareRefusesToRebindTheCredentialRole(t *testing.T) {
 		name string
 		role string
 	}{
-		{"the role bound twice", "    - name: " + nriimagepolicy.CredentialRole + "\n      uid: 1400\n      destinations: [\"192.0.2.9:8443\"]\n"},
+		{"the role bound twice", "    - name: " + allowlist.RoleCredentials + "\n      uid: 1400\n      destinations: [\"192.0.2.9:8443\"]\n"},
 		{"its uid held by another role", "    - name: router\n      uid: 1338\n      destinations: [\"192.0.2.9:8443\"]\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

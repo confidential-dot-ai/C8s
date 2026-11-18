@@ -329,7 +329,7 @@ func (p *plugin) podCredentialSource(pod *api.PodSandbox, ctr *api.Container, ro
 		if !reserved {
 			continue
 		}
-		if role != meshRole || source != "" || mount.GetSource() != base || mount.GetDestination() != podmesh.CertDir || !fileBind(mount) || !endsReadOnly(mount) {
+		if role != allowlist.RoleMesh || source != "" || mount.GetSource() != base || mount.GetDestination() != podmesh.CertDir || !fileBind(mount) || !endsReadOnly(mount) {
 			return "", errors.New("only the measured mesh endpoint may read the exact private credential volume")
 		}
 		source = base
@@ -339,12 +339,12 @@ func (p *plugin) podCredentialSource(pod *api.PodSandbox, ctr *api.Container, ro
 		if mount.Volume != podmesh.CertVolumeName {
 			continue
 		}
-		if role != meshRole || mount.Destination != podmesh.CertDir || mount.Class != allowlist.MountEmptyDir || mount.Storage != allowlist.MountMemory || !mount.ReadOnly {
+		if role != allowlist.RoleMesh || mount.Destination != podmesh.CertDir || mount.Class != allowlist.MountEmptyDir || mount.Storage != allowlist.MountMemory || !mount.ReadOnly {
 			return "", errors.New("the mesh credential mount must be a read-only memory emptyDir")
 		}
 		verified = true
 	}
-	if role == meshRole && source == "" {
+	if role == allowlist.RoleMesh && source == "" {
 		return "", errors.New("the measured mesh endpoint has no private credential volume")
 	}
 	if source != "" && !verified {
