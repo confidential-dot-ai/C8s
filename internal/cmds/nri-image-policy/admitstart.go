@@ -96,6 +96,9 @@ func (p *plugin) admitStart(ctx context.Context, pod *api.PodSandbox, ctr *api.C
 	if err := p.admitContainer(ctx, cfg, pod, ctr, imageRef); err != nil {
 		return err
 	}
+	if err := p.joinComponentSet(ctx, pod, ctr, imageRef); err != nil {
+		return p.denyContainer(pod.GetId(), err)
+	}
 	if err := p.measureStarted(ctx, imageRef); err != nil {
 		p.cvm().endIdentityForRefusal(pod, err)
 		return err

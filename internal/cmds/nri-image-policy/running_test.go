@@ -3,7 +3,9 @@ package nriimagepolicy
 import (
 	"context"
 	"slices"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/containerd/nri/pkg/api"
 
@@ -233,5 +235,202 @@ func TestKillRevokedEndsThePodIdentity(t *testing.T) {
 	}
 	if node.inventory.denial(pod.Id) != nil {
 		t.Fatal("a node recorded a lifetime denial for a revoked running container")
+	}
+}
+
+// --- component sets: membership, mixing and ending ---
+
+var (
+	meshArgv = []string{"/usr/local/bin/c8s", "armtls-mesh"}
+	certArgv = []string{"/usr/local/bin/c8s", "get-cert"}
+)
+
+// baseOnlyDigest is an image no component set declares.
+const baseOnlyDigest = "sha256:0000000000000000000000000000000000000000000000000000000000000004"
+
+// componentBase is a measured base that binds no role, so the component
+// containers of a test's pods are admitted by its sets alone.
+func componentBase() *allowlist.Allowlist {
+	return anyAllowlist(map[string]string{baseOnlyDigest: "base-image"})
+}
+
+// componentSetPlugin is a node enforcer serving document over base, whose
+// component-set deadlines are judged by now. It records what it stops.
+func componentSetPlugin(t *testing.T, now func() time.Time, base, document *allowlist.Allowlist) (*plugin, *[]string) {
+	t.Helper()
+	p, _ := newCachedPlugin(&config{Policy: enforcing, Allowlist: allowlistConfig{Base: base}}, anyAllowlist(nil))
+	p.policy = newPolicyStore(base, newCDSClock(now))
+	p.policy.apply(document, 1)
+	p.SetReady()
+	p.inventory = newAdmissionInventory(t.TempDir())
+	p.mountStorage = fixedStorage(allowlist.MountMemory)
+	killed := &[]string{}
+	p.containerd = &fakeContainerd{stop: func(_ context.Context, id string) error {
+		*killed = append(*killed, id)
+		return nil
+	}}
+	return p, killed
+}
+
+// componentCtr is the running container componentContainer declares: its
+// pinned argv and the pod volume its pinned mount rule names.
+func componentCtr(pod *api.PodSandbox, name, digest string, argv []string) *api.Container {
+	ctr := makeCtrWithImageArgs(pod.Id, name, "registry/repo@"+digest, argv)
+	ctr.Id = pod.GetName() + "-" + name
+	ctr.State = api.ContainerState_CONTAINER_RUNNING
+	ctr.Mounts = []*api.Mount{{
+		Destination: "/run/c8s",
+		Source:      kubeletRoot + "/pods/" + pod.GetUid() + "/volumes/" + emptyDirPlugin + "/c8s-run",
+		Type:        "bind",
+	}}
+	return ctr
+}
+
+func componentPod(name string) *api.PodSandbox {
+	pod := makePod("tenant", name)
+	pod.Uid = name + "-uid"
+	return pod
+}
+
+func startAll(t *testing.T, p *plugin, pod *api.PodSandbox, ctrs ...*api.Container) {
+	t.Helper()
+	for _, ctr := range ctrs {
+		if err := p.StartContainer(t.Context(), pod, ctr); err != nil {
+			t.Fatalf("start %s: %v", ctr.GetName(), err)
+		}
+	}
+}
+
+// One component set must admit every component container of a pod, so the
+// control plane can neither mix two releases' sidecars nor pair a set's
+// sidecar with one only the measured base admits. The refusal names both.
+func TestComponentSetMixingIsRefused(t *testing.T) {
+	document := componentSetsDocument(t, nil, map[string]allowlist.ComponentSet{
+		"0.43.0": componentSet(nil,
+			componentContainer(t, pushDigestA, allowlist.RoleMesh, meshArgv),
+			componentContainer(t, pushDigestC, allowlist.RoleCredentials, certArgv)),
+		"0.44.0": componentSet(nil, componentContainer(t, pushDigestB, allowlist.RoleCredentials, certArgv)),
+	})
+	for _, tc := range []struct {
+		name    string
+		base    *allowlist.Allowlist
+		digest  string
+		admitby string
+	}{
+		{name: "a sidecar of another set", base: componentBase(), digest: pushDigestB, admitby: "0.44.0"},
+		{
+			name:    "a sidecar only the base admits",
+			base:    roleBase(t, pushDigestA, allowlist.RoleCredentials, certArgv),
+			digest:  pushDigestA,
+			admitby: "no component set",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, _ := componentSetPlugin(t, time.Now, tc.base, document)
+			pod := componentPod("inference-0")
+			startAll(t, p, pod, componentCtr(pod, "c8s-mesh", pushDigestA, meshArgv))
+
+			joining := componentCtr(pod, "c8s-get-cert", tc.digest, certArgv)
+			err := p.StartContainer(t.Context(), pod, joining)
+			if err == nil {
+				t.Fatal("a component container of another set joined the pod")
+			}
+			for _, named := range []string{tc.admitby, "0.43.0"} {
+				if !strings.Contains(err.Error(), named) {
+					t.Errorf("refusal %q does not name %s", err, named)
+				}
+			}
+		})
+	}
+}
+
+// At a deadline the whole pod on the retiring set goes — sidecars and the
+// tenant container the document still admits — and the Pod is deleted so its
+// controller replaces it. A pod a current set also admits runs on.
+func TestADeadlineEndsThePodsOnTheRetiringSetAlone(t *testing.T) {
+	cdsTime := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	deadline := cdsTime.Add(time.Hour)
+	retiring := &allowlist.Retirement{Deadline: allowlist.Deadline{Time: deadline}}
+	document := componentSetsDocument(t, map[string]string{pushDigestB: "app"}, map[string]allowlist.ComponentSet{
+		"0.43.0": componentSet(retiring,
+			componentContainer(t, pushDigestA, allowlist.RoleMesh, meshArgv),
+			componentContainer(t, pushDigestC, allowlist.RoleCredentials, certArgv)),
+		"0.44.0": componentSet(nil, componentContainer(t, pushDigestA, allowlist.RoleMesh, meshArgv)),
+	})
+	p, killed := componentSetPlugin(t, func() time.Time { return cdsTime }, componentBase(), document)
+	deleted := make(chan *api.PodSandbox, 2)
+	p.deletePod = func(_ context.Context, pod *api.PodSandbox) error {
+		deleted <- pod
+		return nil
+	}
+
+	retired := componentPod("inference-0")
+	sidecars := []*api.Container{
+		componentCtr(retired, "c8s-mesh", pushDigestA, meshArgv),
+		componentCtr(retired, "c8s-get-cert", pushDigestC, certArgv),
+	}
+	app := runningCtr(retired, "app", pushDigestB)
+	startAll(t, p, retired, append(sidecars, app)...)
+	current := componentPod("inference-1")
+	currentMesh := componentCtr(current, "c8s-mesh", pushDigestA, meshArgv)
+	startAll(t, p, current, currentMesh)
+
+	p.recheckRunning(t.Context())
+	if len(*killed) != 0 {
+		t.Fatalf("killed %v before the deadline", *killed)
+	}
+
+	cdsTime = deadline
+	if !p.policy.rebuildEndedSets() {
+		t.Fatal("the retiring set stayed in force past its deadline")
+	}
+	p.recheckRunning(t.Context())
+
+	want := []string{sidecars[0].Id, sidecars[1].Id, app.Id}
+	slices.Sort(want)
+	ended := slices.Clone(*killed)
+	slices.Sort(ended)
+	if !slices.Equal(ended, want) {
+		t.Fatalf("killed %v, want every container of the ended pod %v", ended, want)
+	}
+	if pod := <-deleted; pod != retired {
+		t.Fatalf("deleted %s/%s, want the ended pod", pod.GetNamespace(), pod.GetName())
+	}
+	select {
+	case pod := <-deleted:
+		t.Fatalf("deleted %s/%s, a pod a current set admits", pod.GetNamespace(), pod.GetName())
+	default:
+	}
+	if p.running.contains(currentMesh.Id) != true {
+		t.Fatal("a pod a current set admits lost its sidecar")
+	}
+}
+
+// A write that removes a set ends its pods within one applied pull.
+func TestRemovingASetEndsItsPodsOnTheNextPull(t *testing.T) {
+	document := componentDocument(t, nil, componentContainer(t, pushDigestA, allowlist.RoleMesh, meshArgv))
+	p, killed := componentSetPlugin(t, time.Now, componentBase(), document)
+	deleted := make(chan *api.PodSandbox, 2)
+	p.deletePod = func(_ context.Context, pod *api.PodSandbox) error {
+		deleted <- pod
+		return nil
+	}
+	pod := componentPod("inference-0")
+	mesh := componentCtr(pod, "c8s-mesh", pushDigestA, meshArgv)
+	startAll(t, p, pod, mesh)
+
+	without := componentSetsDocument(t, nil, map[string]allowlist.ComponentSet{
+		"0.44.0": componentSet(nil, componentContainer(t, pushDigestB, allowlist.RoleMesh, meshArgv)),
+	})
+	target := nodeTarget{store: p.policy, recheckRunning: p.recheckRunning}
+	if err := target.replace(t.Context(), without, 2); err != nil {
+		t.Fatal(err)
+	}
+
+	if !slices.Equal(*killed, []string{mesh.Id}) {
+		t.Fatalf("killed %v, want the pod on the removed set", *killed)
+	}
+	if ended := <-deleted; ended != pod {
+		t.Fatalf("deleted %s/%s, want the pod on the removed set", ended.GetNamespace(), ended.GetName())
 	}
 }

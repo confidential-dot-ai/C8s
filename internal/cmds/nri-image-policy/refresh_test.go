@@ -200,15 +200,28 @@ func componentContainer(t *testing.T, digest, role string, argv []string) allowl
 }
 
 // componentDocument is a document whose one component set, version 0.43.0,
-// declares containers and retires at retire when that is not nil. It is
-// round-tripped through the wire form, so a test judges what a node is served.
+// declares containers and retires at retire when that is not nil.
 func componentDocument(t *testing.T, retire *allowlist.Retirement, containers ...allowlist.Container) *allowlist.Allowlist {
 	t.Helper()
-	document := anyAllowlist(map[string]string{})
-	document.Components = map[string]allowlist.ComponentSet{"0.43.0": {
+	return componentSetsDocument(t, nil, map[string]allowlist.ComponentSet{"0.43.0": componentSet(retire, containers...)})
+}
+
+// componentSet is one release's set: its containers under one entry, retiring
+// at retire when that is not nil.
+func componentSet(retire *allowlist.Retirement, containers ...allowlist.Container) allowlist.ComponentSet {
+	return allowlist.ComponentSet{
 		Retire:  retire,
 		Entries: map[string]allowlist.Workload{"c8s-component": {Containers: containers}},
-	}}
+	}
+}
+
+// componentSetsDocument is a document carrying sets by version beside an
+// any-argv workload entry per digest in workloads. It is round-tripped through
+// the wire form, so a test judges what a node is served.
+func componentSetsDocument(t *testing.T, workloads map[string]string, sets map[string]allowlist.ComponentSet) *allowlist.Allowlist {
+	t.Helper()
+	document := anyAllowlist(workloads)
+	document.Components = sets
 	parsed, err := allowlist.ParseJSON(canonicalBody(t, document))
 	if err != nil {
 		t.Fatalf("component document: %v", err)
@@ -379,8 +392,8 @@ func TestPullLoopOnly200UpdatesIndexAndETag(t *testing.T) {
 			logger:   discardLogger(),
 
 			target: nodeTarget{
-				store:       store,
-				killRevoked: func(context.Context) { sweeps++ },
+				store:          store,
+				recheckRunning: func(context.Context) { sweeps++ },
 			},
 		})
 		close(done)
@@ -475,8 +488,8 @@ func TestPullLoopEndsARetiredSetOnA304(t *testing.T) {
 		logger:   discardLogger(),
 
 		target: nodeTarget{
-			store:       store,
-			killRevoked: func(context.Context) { rechecks.Add(1) },
+			store:          store,
+			recheckRunning: func(context.Context) { rechecks.Add(1) },
 		},
 	})
 
@@ -509,7 +522,7 @@ func TestPullLoopInstallsBeforeRecheckingContainers(t *testing.T) {
 
 		target: nodeTarget{
 			store: store,
-			killRevoked: func(context.Context) {
+			recheckRunning: func(context.Context) {
 				rechecks++
 				if version := store.current().version; version != 7 || !admitsDigest(store, pushDigestB) {
 					t.Errorf("recheck ran at version %d, want the pulled version 7 installed", version)
@@ -603,8 +616,8 @@ func TestPullLoop304LeavesIndexUntouched(t *testing.T) {
 			logger:   discardLogger(),
 
 			target: nodeTarget{
-				store:       store,
-				killRevoked: func(context.Context) {},
+				store:          store,
+				recheckRunning: func(context.Context) {},
 			},
 		})
 		close(done)
@@ -650,8 +663,8 @@ func TestPullLoop304RaisesAppliedVersion(t *testing.T) {
 			logger:   discardLogger(),
 
 			target: nodeTarget{
-				store:       store,
-				killRevoked: func(context.Context) { t.Error("a 304 rechecked the running containers") },
+				store:          store,
+				recheckRunning: func(context.Context) { t.Error("a 304 rechecked the running containers") },
 			},
 		})
 		close(done)
@@ -705,8 +718,8 @@ func TestPullLoop304CountsAsReachingCDS(t *testing.T) {
 			logger:   discardLogger(),
 
 			target: nodeTarget{
-				store:       newPolicyStore(anyAllowlist(map[string]string{}), localClock()),
-				killRevoked: func(context.Context) { t.Error("a 304 rechecked the running containers") },
+				store:          newPolicyStore(anyAllowlist(map[string]string{}), localClock()),
+				recheckRunning: func(context.Context) { t.Error("a 304 rechecked the running containers") },
 			},
 		})
 		close(done)
@@ -751,8 +764,8 @@ func TestPullLoop5xxLeavesIndexUntouched(t *testing.T) {
 			logger:   discardLogger(),
 
 			target: nodeTarget{
-				store:       store,
-				killRevoked: func(context.Context) {},
+				store:          store,
+				recheckRunning: func(context.Context) {},
 			},
 		})
 		close(done)
@@ -791,8 +804,8 @@ func TestPullLoopKeepsTheBaseBesidePulled(t *testing.T) {
 			logger:   discardLogger(),
 
 			target: nodeTarget{
-				store:       store,
-				killRevoked: func(context.Context) {},
+				store:          store,
+				recheckRunning: func(context.Context) {},
 			},
 		})
 		close(done)
@@ -844,8 +857,8 @@ func TestPullLoopIgnoresRolledBackFetch(t *testing.T) {
 			logger:   discardLogger(),
 
 			target: nodeTarget{
-				store:       store,
-				killRevoked: func(context.Context) { sweeps++ },
+				store:          store,
+				recheckRunning: func(context.Context) { sweeps++ },
 			},
 		})
 		close(done)
@@ -1160,8 +1173,8 @@ func TestPullLoopAppliesOnlyMeasuredPolicies(t *testing.T) {
 		logger:   discardLogger(),
 
 		target: nodeTarget{
-			store:       store,
-			killRevoked: func(context.Context) {},
+			store:          store,
+			recheckRunning: func(context.Context) {},
 		},
 	})
 
@@ -1383,8 +1396,8 @@ func TestPullLoopRefusedVersionNotRefetched(t *testing.T) {
 		logger:   slog.New(slog.NewTextHandler(&logs, nil)),
 
 		target: nodeTarget{
-			store:       store,
-			killRevoked: func(context.Context) {},
+			store:          store,
+			recheckRunning: func(context.Context) {},
 		},
 	})
 
@@ -1422,8 +1435,8 @@ func TestPullLoopLogsMeasureFailureOnce(t *testing.T) {
 		logger:   slog.New(slog.NewTextHandler(&logs, nil)),
 
 		target: nodeTarget{
-			store:       newPolicyStore(anyAllowlist(map[string]string{pushDigestA: "image-1"}), localClock()),
-			killRevoked: func(context.Context) {},
+			store:          newPolicyStore(anyAllowlist(map[string]string{pushDigestA: "image-1"}), localClock()),
+			recheckRunning: func(context.Context) {},
 		},
 	})
 
@@ -1547,8 +1560,8 @@ func TestPullLoopLogsMeasureFailureAfterRefusal(t *testing.T) {
 		logger:   slog.New(slog.NewTextHandler(&logs, nil)),
 
 		target: nodeTarget{
-			store:       newPolicyStore(anyAllowlist(map[string]string{pushDigestC: "image-3"}), localClock()),
-			killRevoked: func(context.Context) {},
+			store:          newPolicyStore(anyAllowlist(map[string]string{pushDigestC: "image-3"}), localClock()),
+			recheckRunning: func(context.Context) {},
 		},
 	})
 

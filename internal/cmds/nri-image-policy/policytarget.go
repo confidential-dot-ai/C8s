@@ -25,14 +25,16 @@ func policyTargetFor(cfg *config, plugin *plugin) policyTarget {
 	if cfg.podRole() {
 		return podTarget{plugin: plugin}
 	}
-	return nodeTarget{store: plugin.policy, killRevoked: plugin.KillRevoked}
+	return nodeTarget{store: plugin.policy, recheckRunning: plugin.recheckRunning}
 }
 
 // nodeTarget is the node's admission index. Its startup install leaves the
 // running containers to the plugin's deferred startup check.
 type nodeTarget struct {
-	store       *policyStore
-	killRevoked func(context.Context)
+	store *policyStore
+	// recheckRunning ends the pods whose component sets have ended and kills
+	// the single containers the policy no longer admits.
+	recheckRunning func(context.Context)
 }
 
 func (n nodeTarget) policy() *policyStore {
@@ -54,13 +56,13 @@ func (n nodeTarget) replace(
 	version uint64,
 ) error {
 	n.store.apply(pulled, version)
-	n.killRevoked(ctx)
+	n.recheckRunning(ctx)
 	return nil
 }
 
 func (n nodeTarget) endSets(ctx context.Context) {
 	if n.store.rebuildEndedSets() {
-		n.killRevoked(ctx)
+		n.recheckRunning(ctx)
 	}
 }
 
@@ -92,6 +94,6 @@ func (p podTarget) replace(
 
 func (p podTarget) endSets(ctx context.Context) {
 	if p.plugin.policy.rebuildEndedSets() {
-		p.plugin.KillRevoked(ctx)
+		p.plugin.recheckRunning(ctx)
 	}
 }
