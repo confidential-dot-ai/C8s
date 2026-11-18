@@ -27,6 +27,8 @@ func (LocalVerifier) Verify(ctx context.Context, platform string, evidence json.
 
 // ImagePinVerifier requires a complete image tuple on the verified claims,
 // preserving the launch digest, runtime registers, and launch-anchor binding.
+// Before matching, it refuses pins that cannot identify a guest on the
+// verified platform: a TDX launch digest covers the firmware alone.
 type ImagePinVerifier struct {
 	Verifier PinVerifier
 	Images   []remote.ImagePin
@@ -40,8 +42,23 @@ func (v ImagePinVerifier) Verify(ctx context.Context, platform string, evidence 
 	if result == nil {
 		return nil, fmt.Errorf("endpoint verifier returned no result")
 	}
+	if err := requireGuestIdentity(result.Platform.Family(), v.Images); err != nil {
+		return nil, fmt.Errorf("endpoint identity: %w", err)
+	}
 	if err := armtls.EnforceImages(remote.VerifyResponse{Result: *result}, v.Images, teetypes.NormalizePlatform(platform), params.RuntimeExtensions); err != nil {
 		return nil, fmt.Errorf("endpoint identity: %w", err)
 	}
 	return result, nil
+}
+
+// requireGuestIdentity refuses pins that leave a guest of the verified family
+// unidentified, before any of them is matched.
+func requireGuestIdentity(family teetypes.Family, images []remote.ImagePin) error {
+	if len(images) == 0 {
+		return fmt.Errorf("no image is pinned, so any attested guest would be accepted")
+	}
+	if err := armtls.RequireImageRegisters(family, images); err != nil {
+		return fmt.Errorf("%w: pin it in --image-policy-file", err)
+	}
+	return nil
 }

@@ -66,6 +66,11 @@ func (r *Reconciler) loadRecord(ctx context.Context, key string) (*record, *core
 	if rec.Key != key || identityKey(rec.ProviderID, string(rec.UID)) != key {
 		return nil, nil, errors.New("provider record identity differs from its key")
 	}
+	// The assignment and its serving key are saved together; status is read
+	// from the key, so a record holding one without the other is refused.
+	if (len(rec.Assignment) == 0) != (len(rec.ServingKey) == 0) {
+		return nil, nil, errors.New("provider record holds an assignment or a serving key without the other")
+	}
 	return &rec, secret, nil
 }
 

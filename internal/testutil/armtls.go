@@ -32,13 +32,13 @@ import (
 const TestMeasurement = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 // ApproveAll is a verifier that accepts any evidence as this cluster's CDS VM:
-// an SNP report at TestMeasurement, launched with CDSLaunchFile, which is what
-// CDSPinDocument pins. A test then exercises what a command does with a
-// verified endpoint.
+// a report at TestMeasurement on the platform the evidence names, launched
+// with CDSLaunchFile, which is what CDSPinDocument pins. A test then exercises
+// what a command does with a verified endpoint.
 func ApproveAll() VerifierStub {
-	return func(context.Context, string, json.RawMessage, localverify.Params) (*teetypes.VerificationResult, error) {
+	return func(_ context.Context, platform string, _ json.RawMessage, _ localverify.Params) (*teetypes.VerificationResult, error) {
 		match := true
-		result := &teetypes.VerificationResult{Platform: teetypes.PlatformSNP, SignatureValid: true, ReportDataMatch: &match}
+		result := &teetypes.VerificationResult{Platform: teetypes.NormalizePlatform(platform), SignatureValid: true, ReportDataMatch: &match}
 		result.Claims.LaunchDigest = TestMeasurement
 		binding := runtimemeasure.HostData([]byte(CDSLaunchFile))
 		result.Claims.InitData = binding[:]
