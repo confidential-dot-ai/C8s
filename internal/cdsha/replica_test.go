@@ -342,8 +342,8 @@ func TestEvictedBuildStillHandsOff(t *testing.T) {
 	s := newSet(t, 3)
 	s.bootstrap()
 	s.write(0)
-	if _, _, err := s.node(0).Submit(context.Background(), s.accepted(s.node(0).State().Head, buildC)); err != nil {
-		t.Fatal(err)
+	if _, done, err := s.node(0).Submit(context.Background(), s.accepted(s.node(0).State().Head, buildC)); err != nil || !done {
+		t.Fatalf("self-retirement was not confirmed: done=%v, err=%v", done, err)
 	}
 	s.waitFor("the evicted build to stop", func() bool { _, err := s.serves(1); return err != nil })
 	s.boot(0, buildC)
