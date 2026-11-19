@@ -94,7 +94,7 @@ func newTestAttestHandler(t *testing.T, stubURL string, pinned []remote.ImagePin
 		AttestationClient: remote.NewClient(stubURL),
 		MeshCA:            mesh,
 		CertTTL:           time.Hour,
-		Images:            pinned,
+		Images:            fixedImages(pinned),
 	}
 }
 
@@ -270,7 +270,7 @@ func TestAttest_UnpinnedLaunchDigestDenied(t *testing.T) {
 func TestAttest_NoPinnedNodeImageDenied(t *testing.T) {
 	stub := newStubAttestationApi(t, testLaunchDigest)
 	h := newTestAttestHandler(t, stub.URL(), nil)
-	h.Images = nil
+	h.Images = fixedImages(nil)
 	challenge := issueChallenge(t, h)
 	csrPEM, _ := generateCSR(t)
 

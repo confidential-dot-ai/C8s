@@ -1035,6 +1035,29 @@ func TestDigestsClientCertificateListsMeasuredPolicies(t *testing.T) {
 	}
 }
 
+// With CurrentPins, CDS holds an inventory to the set in force at each
+// handshake, not the set it started with.
+func TestDigestsClientFollowsCurrentPins(t *testing.T) {
+	current := testPins()
+	cfg := DigestsClientConfig{
+		Platform:          "sev-snp",
+		AttestationAPIURL: "http://127.0.0.1:1",
+		Pins:              armtls.Pins{Measurements: [][]byte{bytes.Repeat([]byte{0x22}, armtls.SNPMeasurementSize)}},
+		CurrentPins:       func() armtls.Pins { return current },
+	}.tlsConfig()
+	if cfg.Current == nil {
+		t.Fatal("the client reads no current pins")
+	}
+	current = armtls.Pins{Measurements: [][]byte{bytes.Repeat([]byte{0x33}, armtls.SNPMeasurementSize)}}
+	policy, err := cfg.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := policy.Policy.Measurements; len(got) != 1 || !bytes.Equal(got[0], current.Measurements[0]) {
+		t.Fatalf("handshake pins = %x, want the set in force %x", got, current.Measurements)
+	}
+}
+
 // The injector renders a probe target and the endpoint recovers it, so one
 // encoding carries the pod's probe shape between them.
 func TestMeshProbePathRoundTrip(t *testing.T) {

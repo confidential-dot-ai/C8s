@@ -50,7 +50,7 @@ type haConfig struct {
 
 // startHA builds this replica of the configured set over the CDS's mesh CA,
 // allowlist store and serving certificate, and starts its gossip.
-func startHA(ctx context.Context, cfg config, mesh *issuer.MeshCA, store *allowlist.Store, serving *tls.Config, meshPeers *armtls.CertManager) (*cdsha.Replica, error) {
+func startHA(ctx context.Context, cfg config, mesh *issuer.MeshCA, store *allowlist.Store, serving *tls.Config, meshPeers *armtls.CertManager, nodes *chainNodes) (*cdsha.Replica, error) {
 	endpoints := cfg.measured.HA.Endpoints
 	self := cfg.ha.self
 	slot := slices.Index(endpoints, self)
@@ -79,6 +79,9 @@ func startHA(ctx context.Context, cfg config, mesh *issuer.MeshCA, store *allowl
 			meshPeers.UpdateClientCA(mesh.Current().CA.Cert)
 			if err := policy(s); err != nil {
 				return fmt.Errorf("serving the chain's allowlist (version %s): %w", s.CurrentPolicyVersion(), err)
+			}
+			if err := nodes.serve(s.Nodes); err != nil {
+				return fmt.Errorf("certifying the chain's node images: %w", err)
 			}
 			if err := serveRoutes(store, s); err != nil {
 				return fmt.Errorf("serving the chain's route manifest: %w", err)
@@ -188,6 +191,38 @@ func servePolicy(store *allowlist.Store, s *cdschain.State, seed *pkgallowlist.A
 	if first {
 		return store.FloorNodesAtHead()
 	}
+	return nil
+}
+
+// chainNodes certifies the node images of the chain's nodes entry, the
+// launch file's while the chain holds none, and on a change retires the
+// inventory connections made under the images it certified before.
+type chainNodes struct {
+	set    *nodeSet
+	launch refvalues.ReferenceValues
+	retire func()
+	served string
+}
+
+// serve makes measurements, a state's nodes entry ("" for none), the set
+// this CDS certifies, when it changed.
+func (c *chainNodes) serve(measurements string) error {
+	if measurements == c.served {
+		return nil
+	}
+	values := c.launch
+	if measurements != "" {
+		var err error
+		if values, err = refvalues.Parse([]byte(measurements)); err != nil {
+			return err
+		}
+		slog.Info("CDS certifies the chain's node images", "images", len(values.Images))
+	}
+	if err := c.set.set(values); err != nil {
+		return err
+	}
+	c.served = measurements
+	c.retire()
 	return nil
 }
 

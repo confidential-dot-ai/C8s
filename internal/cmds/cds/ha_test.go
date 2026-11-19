@@ -20,6 +20,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
+	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/cdschain"
@@ -315,6 +317,48 @@ func TestReplicaServesEveryChainPolicyByDigest(t *testing.T) {
 	}
 	if w := get([]byte("no document")); w.Code != http.StatusNotFound {
 		t.Errorf("a digest outside the chain and history = %d, want 404", w.Code)
+	}
+}
+
+// A replica certifies the node images its chain's newest nodes entry names,
+// from the next request on, and the launch file's again once the chain holds
+// none (a resolve dropped it).
+func TestReplicaCertifiesTheChainsNodeImages(t *testing.T) {
+	stub := newStubAttestationApi(t, testLaunchDigest)
+	h := newTestAttestHandler(t, stub.URL(), nil)
+	launch := refvalues.ReferenceValues{Family: teetypes.FamilySNP, Images: []remote.ImagePin{imagePin(t, "node-next", otherLaunchDigest)}}
+	nodes, err := newNodeSet(launch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.Images = nodes.images
+	attest := func() int {
+		csrPEM, _ := generateCSR(t)
+		return postAttest(t, h, issueChallenge(t, h), csrPEM).Code
+	}
+	if code := attest(); code == http.StatusOK {
+		t.Fatal("a node outside the launch file's set was certified")
+	}
+	worker, err := refvalues.Format(refvalues.ReferenceValues{Family: teetypes.FamilySNP, Images: []remote.ImagePin{imagePin(t, "worker", testLaunchDigest)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	retired := 0
+	served := &chainNodes{set: nodes, launch: launch, retire: func() { retired++ }}
+	if err := served.serve(string(worker)); err != nil {
+		t.Fatal(err)
+	}
+	if code := attest(); code != http.StatusOK {
+		t.Fatalf("a node the chain's nodes entry names: status %d", code)
+	}
+	if err := served.serve(string(worker)); err != nil || retired != 1 {
+		t.Fatalf("the same nodes entry again: %v, inventory connections retired %d times, want once", err, retired)
+	}
+	if err := served.serve(""); err != nil {
+		t.Fatal(err)
+	}
+	if code := attest(); code == http.StatusOK {
+		t.Fatal("a node certified after the chain dropped its nodes entry")
 	}
 }
 

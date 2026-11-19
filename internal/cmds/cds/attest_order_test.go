@@ -210,7 +210,7 @@ func TestAttest_SandboxToken_InventoryOutsideNodeRangesIsNotDialed(t *testing.T)
 func TestPodAttestIsNotAdmittedByANodePin(t *testing.T) {
 	p := podTestClaims(t, wlDigestA)
 	h, _ := podTestHandler(t, p)
-	h.Images = []remote.ImagePin{tdxImagePin(t, "node", testMRTD, testRTMR1, testRTMR2)}
+	h.Images = fixedImages([]remote.ImagePin{tdxImagePin(t, "node", testMRTD, testRTMR1, testRTMR2)})
 	h.PodImages[0].Anchor = []byte("another launch key")
 
 	wantRefusal(t, postPodRequest(t, h, podRequest(t, h, p)), http.StatusForbidden, types.ErrorCodeMeasurementDenied)

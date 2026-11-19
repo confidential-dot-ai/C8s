@@ -18,6 +18,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
+	"github.com/confidential-dot-ai/c8s/internal/cdschain"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
@@ -129,6 +130,7 @@ func TestAdmitPrintsTheFactsTheDocumentCarries(t *testing.T) {
 		"Service range     10.53.0.0/16\n",
 		"cluster DNS       10.53.0.10\n",
 		"CDS address       cds.acme.example:8443\n",
+		"CDS chain         none\n",
 		"router TLS SAN    c8s.acme.example\n",
 		"router hostnames  api.acme.example\n",
 		"Signing certifies these node images:\n  server\n",
@@ -285,6 +287,27 @@ func TestAdmitWritesTheSchemaThatReadsLaunchFileDigests(t *testing.T) {
 	}
 	if got := schema(admitted(t, f, f.document).Nodes); got != "2" {
 		t.Fatalf("the admitted set declares schema %q, want 2", got)
+	}
+}
+
+// A nodes entry carries the set Admit returned byte for byte, and the chain
+// takes it.
+func TestANodesEntryCarriesTheAdmittedSetByteForByte(t *testing.T) {
+	f := newAdmitFixture(t, teetypes.FamilyTDX)
+	a := admitted(t, f, f.document)
+	if err := cdschain.CheckNodes(a.Nodes); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(cdschain.Nodes{Nodes: string(a.Nodes)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var read cdschain.Nodes
+	if err := cdschain.DecodeStrict(payload, &read); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal([]byte(read.Nodes), a.Nodes) {
+		t.Fatalf("the entry carries\n%s\nnot what Admit returned\n%s", read.Nodes, a.Nodes)
 	}
 }
 

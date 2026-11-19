@@ -20,16 +20,24 @@ ha:
 `c8s cds config new --ha-endpoint <host:port> ...` writes it.
 The order is the slot order. All replicas boot the same launch file, so they share one measurement.
 
+Every entry of the launch file's `nodes` must bind a launch (`approver_key`, `launch_file` or `launch_file_digest`), as every `nodes` entry of the chain must: the launch file's set is the first one the chain certifies.
+A replica refuses to start on a launch file with an unbound entry, and `accept-node` refuses to extend such a set.
+
 Replica flags (none of them is measured; a wrong value costs availability, not safety):
 
 | flag | meaning |
 |---|---|
 | `--ha-self` | this replica's endpoint. Without it, the replica asks every endpoint for its status and takes the one that names its own member key |
-| `--ha-store-etcd` / `--ha-runtime-dir` | an etcd client file, given directly or as `etcd.yaml` of the runtime disk. Without it, the store is the Kubernetes API, reached with the credential `c8s cds ha store-credential` posts |
+| `--ha-store-etcd` / `--ha-runtime-dir` | an etcd client file, given directly or as `etcd.yaml` of the runtime disk. Without it, the store is the Kubernetes API of the cluster's control plane, reached with the credential `c8s cds ha store-credential` posts |
 | `--ha-store-memory` | a single replica keeps the chain in its own memory |
 | `--ha-gossip-interval` | T (default 2s) |
 | `--ha-peer-timeout`, `--ha-store-timeout` | per-exchange and per-store-call timeouts |
 | `--ha-chain-warn-entries`, `--ha-chain-warn-bytes` | the chain-size warning thresholds (an ERROR is logged at each multiple; v1 never prunes) |
+
+The Kubernetes store is the control plane the workers join, outside every TEE, and it is trusted for nothing.
+`c8s worker control-plane render` creates its account, `c8s-cds/cds-store`, which may get, create and update the ConfigMaps of `c8s-cds`.
+`c8s worker control-plane credentials` also writes `c8s-cds-store.kubeconfig`, a token of that account, which `c8s cds ha store-credential --file` posts to the replicas.
+Each replica must reach the API server it names.
 
 ## The chain
 
@@ -47,12 +55,14 @@ Entry types:
 | `accepted` | the whole set of accepted CDS builds (pin + version); every pin binds the one launch file | an operator key |
 | `operator-keys` | the new writer keys | a current operator key |
 | `member` | slot → member key | a current member key (written by a giver at handoff) or an operator key |
+| `nodes` | the whole set of node images the CDS certifies (a measurements document); every entry binds a launch | an operator key |
 
 Notes on the rules:
 - All accepted builds use the same TEE family and CDS launch file. Each pin
   includes that family's required guest registers; TDX pins need RTMR[1] and
   RTMR[2] ([image pins](measurements.md)).
 - Raising the build floor means writing an `accepted` set without the old builds. `c8s cds ha raise-floor` does that.
+- Until the first `nodes` entry, a replica certifies the launch file's `nodes`. After one, `/attest`, the sandbox-digests callback and `/measurements` all follow the newest entry.
 - There is no log key. A head is vouched for by the replica that serves it over attested TLS.
 - Gossip is signed with member keys.
 
@@ -128,7 +138,7 @@ Every done write prints `committed head N (hash)`.
 
 ## What nodes pin
 
-A node launch document names `cds.chain: "<seq>:<hash>"`: the genesis, or a later entry as a reboot floor. nri-image-policy then:
+A worker document names `cds.chain: "<seq>:<hash>"` ([launch-configuration.md](launch-configuration.md)): the genesis, or a later entry as a reboot floor. nri-image-policy then:
 1. reads the chain (the entries verify by signature);
 2. requires the pinned entry and a chain that extends what it verified before;
 3. confirms the head over attested TLS with a replica of a build accepted at that head;
@@ -147,6 +157,7 @@ The clients that do this: get-cert, the sidecars, allowlist-proxy, cds-attest an
 | `genesis --cluster --version` | signs entry 0 (`--image-policy-file` pins the replicas and is the first accepted build) |
 | `accept-image --new-pin --version [--floor] [--force]` | accepts a build, optionally evicting builds below a version |
 | `raise-floor --to [--force]` | evicts builds below a version |
+| `accept-node --worker-document --worker-image` | admits a worker document: writes a `nodes` entry adding the worker image bound to the document's digest, after you confirm the facts it prints |
 | `store-credential --file` | posts the store kubeconfig (one https server, inline CA, a token, a namespace) to every replica |
 | `resolve --seq --keep [--assume-lost --lost-head] [--settle-timeout]` | settles a fork |
 
@@ -157,6 +168,21 @@ Notes:
 - `c8s allowlist` and `c8s routes` write to a replica set as chain entries. A replica answers the old `PUT /allowlist` and `PUT /routes` with 409; a single replica still takes `PUT /secrets`.
 - The CLI records, per cluster (`--state-dir`, default `c8s/cds-ha` in the user config directory), the genesis and the last head a write was answered done for. It refuses a replica serving a chain without that head, or of another genesis. Without a record, it takes only a genesis signed by `--operator-key`; an operator who did not sign it passes `--genesis <hash>` to a `c8s cds ha` write once, which records it.
 - A write that may have been applied exits 3, as does a `c8s allowlist` write to a single CDS that no answer confirmed. A genesis no answer confirmed exits 3 too and names its hash: once `c8s cds ha status` shows the replicas hold it, pass that hash as `--genesis`.
+
+## Deployment and upgrades
+
+- Replicas must reach the node network: at issuance a replica dials the requesting node's sandbox-digests endpoint on port 1019.
+- Routers and nodes reach the set through one endpoint name. Put the replicas behind DNS with a short TTL (for example 60 s) or a health-checked load balancer, and take a dead replica out of the name.
+- A set of more than one replica serves no secrets and keeps no sandbox ledger (see Secrets).
+
+Upgrade the CDS build in this order:
+1. `accept-image` the new build.
+2. Roll the replicas to it, one at a time.
+3. Render the operator and system objects again: the operator first, the system objects only once a node with the new image exists.
+4. Replace the nodes.
+5. `raise-floor` to evict the old build.
+
+After a `raise-floor`, a new worker needs a fresh worker document: an old one pins the evicted CDS build, and `accept-node` refuses it.
 
 ## Failures
 
