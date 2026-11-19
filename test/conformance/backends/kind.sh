@@ -44,6 +44,8 @@ scratch_encrypted() { echo no; }
 pod_cvm_node() { echo "$POD_CVM_NODE"; }
 pod_cvm_max_pods() { echo "$POD_CVM_MAX_PODS"; }
 pod_cvm_deadline() { echo "$POD_CVM_VERIFICATION_SECONDS"; }
+# test/mock-cloud starts no VM.
+pod_cvm_no_guest() { echo yes; }
 pod_cvm_oversize_memory() { echo "$((POD_CVM_MEMORY_MIB - 1024 + 1))Mi"; }
 pod_cvm_allocation() { echo "podcvm-$(printf '%s\0%s' "$POD_CVM_PROVIDER" "$1" | sha256sum | cut -c1-40)"; }
 pod_cvm_labels() { jq -nc --arg p "$POD_CVM_PROVIDER" --arg a "${1#podcvm-}" '{"podcvm-provider": $p, "podcvm-uid": $a}'; }

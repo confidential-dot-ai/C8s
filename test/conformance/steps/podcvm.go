@@ -39,6 +39,7 @@ func registerPodCVM(sc *godog.ScenarioContext) {
 	})
 	sc.Step(`^"([^"]*)" is pending$`, podPending)
 	sc.Step(`^"([^"]*)" is running in its pod CVM$`, podRunsInCVM)
+	sc.Step(`^"([^"]*)" has not been sent to its pod CVM$`, podNotSentToCVM)
 	sc.Step(`^the provider holds (a|no) record for "([^"]*)"$`, providerHoldsRecord)
 
 	sc.Step(`^the virtual node is labelled and tainted with the opt-in key$`, virtualNodeCarriesOptIn)
@@ -72,7 +73,8 @@ type podCVMState struct {
 
 // cvmSpec is how a pod of these scenarios differs from the plain one: its
 // opt-in value and the fields admission or the provider judges. uid is set
-// once the API server holds the pod.
+// once the API server holds the pod, and created is no later than the moment
+// the provider can have written its record.
 type cvmSpec struct {
 	optIn        string
 	namesNode    bool
@@ -83,6 +85,7 @@ type cvmSpec struct {
 	execProbe    bool
 	oversize     bool
 	uid          string
+	created      time.Time
 }
 
 func (w *world) cvm(name string) (*pod, *cvmSpec, error) {
@@ -225,12 +228,17 @@ func podCreated(ctx context.Context, name string) error {
 		return err
 	}
 	w.tidy()
+	started := time.Now()
 	_, err = kubectl(manifest, "create", "-f", "-")
 	if err := w.admitted(err); err != nil || w.podCVM.refusal != "" {
 		return err
 	}
-	s.uid, err = kubectl(nil, "-n", p.namespace, "get", "pod", p.name, "-o", "jsonpath={.metadata.uid}")
-	return err
+	uid, err := kubectl(nil, "-n", p.namespace, "get", "pod", p.name, "-o", "jsonpath={.metadata.uid}")
+	if err != nil {
+		return err
+	}
+	s.uid, s.created = uid, started
+	return nil
 }
 
 func optInRemoved(ctx context.Context, name string) error {
@@ -374,6 +382,22 @@ func podPending(ctx context.Context, name string) error {
 		return fmt.Errorf("%q is %s", name, obj.Status.Phase)
 	}
 	return nil
+}
+
+// podNotSentToCVM holds where the backend's cloud API starts no guest the
+// provider could send the pod to (pod_cvm_no_guest). It skips anywhere else:
+// the harness cannot hold a provider back from a guest it verified.
+func podNotSentToCVM(ctx context.Context, name string) error {
+	w := getWorld(ctx)
+	_, s, err := w.cvm(name)
+	if err != nil {
+		return err
+	}
+	if s.uid == "" {
+		return fmt.Errorf("%q was never created", name)
+	}
+	_, err = w.be.call("pod_cvm_no_guest")
+	return err
 }
 
 // podRunsInCVM waits for the provider to report the pod running, which it
