@@ -425,6 +425,9 @@ func (r *Reconciler) publish(ctx context.Context, pod *corev1.Pod, status corev1
 	before := pod.DeepCopy()
 	pod.Status = status
 	if err := r.client.Status().Patch(ctx, pod, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
+		// The caller's Pod keeps the status the API server holds, so that a
+		// later publish of the same status is sent and not taken as done.
+		pod.Status = before.Status
 		return err
 	}
 	r.recordTransition(pod, before.Status.Reason, verified)

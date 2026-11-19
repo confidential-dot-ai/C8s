@@ -253,6 +253,9 @@ func TestDeletionResumedLateReportsWhatEndedTheWait(t *testing.T) {
 func TestDeletionPublishesTheMissedDeadlineAfterARefusedAttempt(t *testing.T) {
 	pod := fixturePod()
 	pod.Finalizers = []string{"example.invalid/hold"}
+	// No application port, so no endpoints annotation whose withdrawal would
+	// reread the Pod between the two attempts.
+	pod.Spec.Containers[0].Ports = nil
 	r, cloud := fixtureReconciler(t, pod)
 	runToRunning(t, r, pod)
 	end := deleteWithGraceLeft(t, r, pod, 30*time.Second)
