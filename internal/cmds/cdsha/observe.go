@@ -114,12 +114,19 @@ func (w *writer) observePolicy(ctx context.Context, out io.Writer, target policy
 	})
 }
 
-func (h *policyHistory) confirmation(s haapi.Status) (cdschain.Head, error) {
+func (h *policyHistory) checkServingHead(s haapi.Status) error {
 	if s.Serving != "" || !s.Fresh || !s.IsMember || s.Pending || s.Halted != "" || s.Fork != nil || s.Evicted != "" {
-		return cdschain.Head{}, fmt.Errorf("the replica is not serving: %w", errPolicyUnconfirmed)
+		return errors.New("the replica is not serving")
 	}
 	if s.Held == nil || *s.Held != h.state.Head {
-		return cdschain.Head{}, fmt.Errorf("status and the verified log have different heads: %w", errPolicyUnconfirmed)
+		return errors.New("status and the verified log have different heads")
+	}
+	return nil
+}
+
+func (h *policyHistory) confirmation(s haapi.Status) (cdschain.Head, error) {
+	if err := h.checkServingHead(s); err != nil {
+		return cdschain.Head{}, fmt.Errorf("%v: %w", err, errPolicyUnconfirmed)
 	}
 	var confirmed cdschain.Head
 	for _, head := range s.Confirmed {
