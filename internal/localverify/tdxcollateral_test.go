@@ -124,6 +124,54 @@ func TestVerifyTDXTCBStatus(t *testing.T) {
 		}
 	})
 
+	t.Run("a response with members beyond the signed object is refused", func(t *testing.T) {
+		for _, tc := range []struct{ name, url, member string }{
+			{"extra member in TCB info", "/tcb?", `"unsigned":{}`},
+			{"repeated member in TCB info", "/tcb?", `"signature":""`},
+			{"extra member in QE identity", "/qe/identity", `"unsigned":{}`},
+			{"data after the object", "/tcb?", ""},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				pcs := loadRecordedPCS(t)
+				pcs.tamper = func(url string, body []byte) []byte {
+					if !strings.Contains(url, tc.url) {
+						return body
+					}
+					if tc.member == "" {
+						return append(body, "{}"...)
+					}
+					end := bytes.LastIndexByte(body, '}')
+					return append(append(body[:end:end], ","+tc.member...), body[end:]...)
+				}
+				useRecordedPCS(t, pcs)
+				_, _, err := VerifyWithCollateralExpiry(context.Background(), platform, evidence, Params{
+					TDXTCBStatuses: []teetypes.TdxTcbStatus{teetypes.TdxUpToDate, teetypes.TdxOutOfDate},
+				})
+				if err == nil || !strings.Contains(err.Error(), "Intel PCS") {
+					t.Fatalf("want the response refused for its shape, got %v", err)
+				}
+				if _, ok := errors.AsType[*CollateralError](err); ok {
+					t.Fatalf("a malformed response is a verdict, not unavailable collateral: %v", err)
+				}
+			})
+		}
+	})
+
+	t.Run("evidence that fails on its own is rejected without a fetch", func(t *testing.T) {
+		pcs := loadRecordedPCS(t)
+		useRecordedPCS(t, pcs)
+		_, _, err := VerifyWithCollateralExpiry(context.Background(), platform, evidence, Params{
+			TDXTCBStatuses: upToDate,
+			VerifyParams:   teetypes.VerifyParams{ExpectedReportData: []byte("another challenge")},
+		})
+		if err == nil {
+			t.Fatal("evidence bound to other report data must be refused")
+		}
+		if _, ok := errors.AsType[*CollateralError](err); ok || pcs.requests != 0 {
+			t.Fatalf("want a verdict with no PCS request, got %d requests and %v", pcs.requests, err)
+		}
+	})
+
 	t.Run("expired collateral is refused", func(t *testing.T) {
 		useRecordedPCS(t, loadRecordedPCS(t))
 		tdxCollateralTime = recordedPCSTime.AddDate(0, 2, 0)

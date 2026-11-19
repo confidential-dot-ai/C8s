@@ -161,7 +161,12 @@ status. The TDX module must also match when the quote carries a nonzero module
 version (`TEE_TCB_SVN[1]`).
 
 Supplying `--tdx-tcb-status` replaces the default set. Repeat the flag to
-accept multiple statuses. The CLI reports the last matched status in this list.
+accept multiple statuses. Every component must have a status in the set, so
+keep `UpToDate` when you add a weaker one: an out-of-date platform usually has
+an up-to-date QE. The CLI reports the status Intel's signed collateral assigns,
+not the values of the flag. When the platform, QE and TDX module differ, it
+reports the least favourable of them. Statuses run from most to least
+favourable:
 
 1. `UpToDate`
 2. `SWHardeningNeeded`
@@ -184,7 +189,8 @@ An online verdict reports Intel's advisories and the earliest signed
 
 `-o json` carries these as `tdx_tcb_status`, `tdx_advisory_ids` and
 `tdx_collateral_expires_at`. A status outside the set fails the verdict
-(exit 2). Collateral that cannot be fetched exits 3, so a gate can retry.
+(exit 2), as does a response Intel did not sign or that cannot be parsed.
+Collateral that cannot be fetched exits 3, so a gate can retry.
 
 ## Read the verdict
 

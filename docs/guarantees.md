@@ -192,8 +192,8 @@ allowlist policies it applies ([measurements.md](measurements.md)).
 - **Measurement pin**: the launch measurement, or the whole guest image, a
   verifier requires, and the measurements config `c8s measurements` derives
   from a published node image build — [measurements.md](measurements.md).
-- **Intel TCB status**: TDX verification requires Intel's current collateral
-  to rate the platform `UpToDate` by default. `--tdx-offline` skips this check
+- **Intel TCB status**: `c8s verify` requires Intel's current collateral to
+  rate a TDX platform `UpToDate` by default. `--tdx-offline` skips this check
   and says nothing about known platform vulnerabilities —
   [verify.md](verify.md#require-a-current-intel-tcb-on-tdx).
 - **Mesh CA**: the anchor that turns a stamped sandbox ID, workload name, or

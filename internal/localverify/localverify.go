@@ -90,7 +90,8 @@ type Params struct {
 // so tests can stub it.
 type VerifyFunc func(ctx context.Context, platform string, evidence json.RawMessage, p Params) (*teetypes.VerificationResult, error)
 
-// CollateralError means verification could not obtain required vendor collateral.
+// CollateralError means verification could not obtain required vendor
+// collateral, so no verdict was reached. Every other Verify error is a verdict.
 type CollateralError struct{ Err error }
 
 func (e *CollateralError) Error() string { return e.Err.Error() }
