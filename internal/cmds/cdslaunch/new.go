@@ -13,6 +13,9 @@ import (
 // write renders both outputs before it creates anything, so a refused input
 // leaves no half-built directory to launch a CDS VM from.
 func write(opts options) error {
+	if opts.haInputConfigMap != "" && len(opts.haEndpoints) == 0 {
+		return fmt.Errorf("--ha-input-configmap requires --ha-endpoint")
+	}
 	family, err := cdsconfig.ParsePlatform(opts.platform)
 	if err != nil {
 		return fmt.Errorf("--platform: %w", err)
@@ -65,7 +68,7 @@ func write(opts options) error {
 		ManifestPath:    opts.manifest,
 		Family:          family,
 		VCPUs:           opts.vcpus,
-		HA:              haOf(opts.haEndpoints),
+		HA:              haOf(opts.haEndpoints, opts.haInputConfigMap),
 	})
 	if err != nil {
 		return err
@@ -77,11 +80,11 @@ func write(opts options) error {
 	})
 }
 
-func haOf(endpoints []string) *cdsconfig.HA {
+func haOf(endpoints []string, inputConfigMap string) *cdsconfig.HA {
 	if len(endpoints) == 0 {
 		return nil
 	}
-	return &cdsconfig.HA{Endpoints: endpoints}
+	return &cdsconfig.HA{Endpoints: endpoints, InputConfigMap: inputConfigMap}
 }
 
 func readOperatorKeys(path string) (operatorauth.KeyBundle, error) {

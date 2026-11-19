@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"regexp"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/util/validation"
 
@@ -49,15 +50,19 @@ type Config struct {
 
 // HA is a fixed replica set: 1, 3 or 5 distinct <host>:<port> endpoints.
 type HA struct {
-	Endpoints []string `yaml:"endpoints"`
+	Endpoints      []string `yaml:"endpoints"`
+	InputConfigMap string   `yaml:"inputConfigMap,omitempty"`
 }
 
-func (h *HA) validate() error {
+func (h *HA) validate(cluster string) error {
 	if h == nil {
 		return nil
 	}
 	if err := cmdsutil.ValidateCDSEndpoints(h.Endpoints); err != nil {
 		return fmt.Errorf("ha.endpoints: %w", err)
+	}
+	if h.InputConfigMap != "" && (len(validation.IsDNS1123Subdomain(h.InputConfigMap)) != 0 || strings.HasPrefix(h.InputConfigMap, "cds-"+cluster+"-")) {
+		return errors.New("ha.inputConfigMap must name a ConfigMap outside the chain store's reserved names")
 	}
 	return nil
 }
@@ -137,7 +142,7 @@ func (w wire) parse() (*Config, error) {
 	if kms != nil && len(podImages) == 0 {
 		return nil, errors.New("kms: pod secret release needs a podImagePolicy")
 	}
-	if err := w.HA.validate(); err != nil {
+	if err := w.HA.validate(w.ClusterID); err != nil {
 		return nil, err
 	}
 	// Every initial node must satisfy the chain's launch-binding rule.
