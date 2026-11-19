@@ -89,3 +89,27 @@ func TestConfigurationBoundsAndDefaults(t *testing.T) {
 		}
 	}
 }
+
+// The provider pins every pod CVM to the CDS replica set's chain it names,
+// and refuses a pin that is not one.
+func TestTheProviderPinsPodsToTheCDSChain(t *testing.T) {
+	for chain, valid := range map[string]bool{"0:" + strings.Repeat("ab", 32): true, "not-a-pin": false} {
+		cfg := fixtureConfig(t)
+		cfg.CDSChain = chain
+		path := filepath.Join(filepath.Dir(cfg.CloudTokenFile), "config.json")
+		body, err := json.Marshal(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, body, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		loaded, err := LoadConfig(path)
+		if (err == nil) != valid {
+			t.Fatalf("chain %q: %v", chain, err)
+		}
+		if valid && loaded.cds.Chain != chain {
+			t.Fatalf("pod documents pin chain %q, want %q", loaded.cds.Chain, chain)
+		}
+	}
+}

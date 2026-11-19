@@ -52,6 +52,7 @@ launch-file-bound --cds-image-policy-file.`,
 	f.StringVar(&opts.LaunchKeyPath, "launch-key", "", "existing pod launch key PEM (default: generate <out>/pod.key)")
 	f.StringVar(&opts.CDSAddress, "cds-address", "", "external CDS host:port")
 	f.StringVar(&opts.CDSImagePolicyPath, "cds-image-policy-file", "", "measurements document binding the external CDS image to its exact launch file")
+	f.StringVar(&opts.CDSChain, "cds-chain", "", "<seq>:<hash> of one entry of the CDS replica set's chain the pod CVM pins (docs/cds-ha.md)")
 	cmdsutil.RequireFlags(cmd, "out", "cluster-id", "image-manifest", "name", "cds-address", "cds-image-policy-file")
 	return cmd
 }

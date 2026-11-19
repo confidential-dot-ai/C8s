@@ -91,13 +91,6 @@ configuration's `nodes` must bind a launch (`approver_key`, `launch_file` or
 `launch_file_digest`), as every `nodes` entry of the chain does
 ([cds-ha.md](cds-ha.md#configuration)).
 
-A cluster whose nodes are all workers has no set in force before its first
-worker: its launch file names no nodes (`c8s cds config new` without
-`--node-pins`). Its Genesis admits the first document instead.
-`c8s cds ha decree genesis` takes `--worker-document` and `--worker-image`
-as above, checks the document against its `--cds-pin`, and starts the cluster
-certifying that worker image alone. The document needs nothing from a running
-cluster, so it can be written before Genesis.
 
 ## Launch binding
 

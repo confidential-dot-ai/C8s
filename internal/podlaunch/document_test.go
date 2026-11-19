@@ -28,6 +28,7 @@ func TestValidateDocumentFields(t *testing.T) {
 		{"RTMR[3] for RTMR[2]", func(d *Document) { d.Image.RTMRs[3] = d.Image.RTMRs[2]; delete(d.Image.RTMRs, 2) }, "image.rtmrs[2] must be 96 lowercase hex characters"},
 		{"SNP registers", func(d *Document) { d.Image.Platform = "snp" }, "a sev-snp image pins no RTMRs"},
 		{"oversized key", func(d *Document) { d.PodOperatorPublicKey = strings.Repeat("k", maxLaunchKeySize+1) }, "launch public key is too large"},
+		{"CDS chain pin", func(d *Document) { d.CDS.Chain = "not-a-pin" }, "cds.chain"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			doc, _, _ := testPodDocument(t, "tdx")

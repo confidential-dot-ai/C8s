@@ -133,6 +133,20 @@ func (c *chainPins) refresh(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
+// pinsPath is the pins document a CDS client of this node loads: the chain's
+// once it has been followed, else launch.
+func (c *chainPins) pinsPath(launch string) string {
+	if c == nil {
+		return launch
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.known == nil {
+		return launch
+	}
+	return c.path
+}
+
 // attachDigests makes the sandbox-digests listener admit the CDS builds the
 // chain accepts, now and after every change.
 func (c *chainPins) attachDigests(m *armtls.CertManager) {
@@ -183,10 +197,10 @@ func followChainAtStart(cfg *config, logger *slog.Logger) (*chainPins, error) {
 	return chain, nil
 }
 
-// refresher is the pull loop's hook: it follows the chain once per pull. The
+// createRefreshFn is the pull loop's hook: it follows the chain once per pull. The
 // timeout is per request, not on the whole follow: a node with no chain yet
 // reads it from genesis, which on a long chain takes longer than one pull.
-func (c *chainPins) refresher() func(context.Context) {
+func (c *chainPins) createRefreshFn() func(context.Context) {
 	if c == nil {
 		return nil
 	}
