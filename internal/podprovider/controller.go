@@ -309,15 +309,19 @@ func (r *Reconciler) deletePod(ctx context.Context, pod *corev1.Pod) (ctrl.Resul
 		// The verification deadline ends the grace period: deleting a Pod
 		// must not keep an unverified guest longer than leaving it would.
 		// It is reported even when the grace period has since passed too.
-		timedOut := r.verificationExpired(rec) && rec.VerificationDeadline.Before(end)
-		if wait := end.Sub(r.now()); wait > 0 && !timedOut {
-			if rec.VerificationDeadline != nil {
-				wait = min(wait, rec.VerificationDeadline.Sub(r.now()))
+		// One reading of the clock decides both, so that time passing between
+		// two readings cannot hide which came first.
+		now := r.now()
+		deadline := rec.VerificationDeadline
+		timedOut := deadline != nil && !now.Before(*deadline) && deadline.Before(end)
+		if wait := end.Sub(now); wait > 0 && !timedOut {
+			if deadline != nil {
+				wait = min(wait, deadline.Sub(now))
 			}
 			return ctrl.Result{RequeueAfter: wait}, nil
 		}
 		if timedOut {
-			status := failedStatus(pod, verificationTimeoutReason, r.now())
+			status := failedStatus(pod, verificationTimeoutReason, now)
 			rec.TerminalStatus = &status
 			if err := r.save(ctx, rec, secret); err != nil {
 				return ctrl.Result{}, err

@@ -138,7 +138,10 @@ func (r *Reconciler) assign(ctx context.Context, rec *record, secret *corev1.Sec
 			return err
 		}
 		if _, err := r.livePod(ctx, rec); err != nil {
-			return err
+			// Nothing was sent. If the mark cannot be restored, the Pod is
+			// held on deletion as one the guest may have received.
+			rec.AssignmentUnsent = true
+			return errors.Join(err, r.save(ctx, rec, secret))
 		}
 	}
 	uid, err := target.Send(ctx, rec.Assignment)

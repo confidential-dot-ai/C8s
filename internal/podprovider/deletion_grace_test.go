@@ -2,6 +2,7 @@ package podprovider
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -9,6 +10,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
@@ -130,6 +132,42 @@ func TestDeletionDoesNotWaitForAnAssignmentThatWasNeverSent(t *testing.T) {
 	}
 }
 
+// The mark is cleared before the send. A Pod deleted while it is being
+// cleared is caught by the check that follows, and nothing was sent.
+func TestDeletionDoesNotWaitWhenTheLastCheckStoppedTheSend(t *testing.T) {
+	pod := fixturePod()
+	r, cloud, guest := fixture(t, pod)
+	inner := r.client.(client.WithWatch)
+	deleted := false
+	r.client = interceptor.NewClient(inner, interceptor.Funcs{Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+		var rec record
+		if secret, ok := obj.(*corev1.Secret); ok && !deleted && decode(secret.Data["state.json"], &rec) == nil && len(rec.Assignment) != 0 && !rec.AssignmentUnsent {
+			deleted = true
+			if err := c.Delete(ctx, getPod(t, r, pod)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return c.Update(ctx, obj, opts...)
+	}})
+	for range 8 {
+		if deleted {
+			break
+		}
+		_ = reconcile(t, r, pod)
+	}
+	if !deleted || guest.sends != 0 {
+		t.Fatalf("fixture: want the Pod deleted before any send, got deleted=%t and %d sends", deleted, guest.sends)
+	}
+	end := getPod(t, r, pod).DeletionTimestamp.Time
+	r.now = func() time.Time { return end.Add(-30 * time.Second) }
+	if err := reconcile(t, r, pod); err != nil {
+		t.Fatal(err)
+	}
+	if guest.sends != 0 || cloud.deleteCalls != 1 {
+		t.Fatalf("%d sends, %d destruction requests for a Pod whose send the last check stopped, want 0 and 1", guest.sends, cloud.deleteCalls)
+	}
+}
+
 // A send whose answer was lost may have reached the guest, so the Pod is
 // held like one the guest acknowledged.
 func TestDeletionWaitsForAnAssignmentWhoseSendWasNotAnswered(t *testing.T) {
@@ -207,6 +245,45 @@ func TestDeletionResumedLateReportsWhatEndedTheWait(t *testing.T) {
 				t.Fatalf("Pod is %s/%q, want verification timeout reported: %t", got.Status.Phase, got.Status.Reason, tc.timedOut)
 			}
 		})
+	}
+}
+
+// A status the API server refused is published again before the Pod is
+// released, so a missed deadline is not lost with the first attempt.
+func TestDeletionPublishesTheMissedDeadlineAfterARefusedAttempt(t *testing.T) {
+	pod := fixturePod()
+	pod.Finalizers = []string{"example.invalid/hold"}
+	r, cloud := fixtureReconciler(t, pod)
+	runToRunning(t, r, pod)
+	end := deleteWithGraceLeft(t, r, pod, 30*time.Second)
+	rec, secret, err := r.loadRecord(context.Background(), identityKey(r.cfg.ProviderID, string(pod.UID)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := end.Add(-10 * time.Second)
+	rec.VerificationDeadline = &deadline
+	if err := r.save(context.Background(), rec, secret); err != nil {
+		t.Fatal(err)
+	}
+	r.now = func() time.Time { return end.Add(time.Hour) }
+	cloud.in.Status = "terminated"
+	refused := false
+	r.client = interceptor.NewClient(r.client.(client.WithWatch), interceptor.Funcs{SubResourcePatch: func(ctx context.Context, c client.Client, sub string, obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
+		if !refused {
+			refused = true
+			return errors.New("status patch refused")
+		}
+		return c.SubResource(sub).Patch(ctx, obj, patch, opts...)
+	}})
+	for range 3 {
+		_ = reconcile(t, r, pod)
+	}
+	got := getPod(t, r, pod)
+	if !refused || controllerutil.ContainsFinalizer(got, finalizer) {
+		t.Fatalf("fixture: refused=%t, finalizer held=%t", refused, controllerutil.ContainsFinalizer(got, finalizer))
+	}
+	if got.Status.Phase != corev1.PodFailed || got.Status.Reason != verificationTimeoutReason {
+		t.Fatalf("Pod released as %s/%q, want Failed/%s", got.Status.Phase, got.Status.Reason, verificationTimeoutReason)
 	}
 }
 
