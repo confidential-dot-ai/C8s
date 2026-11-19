@@ -42,6 +42,7 @@ var constant = map[string]bool{
 	"pod_cvm_node":                    true,
 	"pod_cvm_max_pods":                true,
 	"pod_cvm_deadline":                true,
+	"pod_cvm_guest":                   true,
 	"requester_source_is_own_address": true,
 }
 
