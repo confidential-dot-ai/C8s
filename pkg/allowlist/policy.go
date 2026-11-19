@@ -397,21 +397,34 @@ func (i *Index) GrantsHostPorts(r RunningContainer, ports []HostPort) bool {
 	})
 }
 
-// DeclaresNodeRoot reports whether some entry for digest has a nodeRootFile
-// mount rule.
-func (i *Index) DeclaresNodeRoot(digest string) bool {
+// NodeRootBinds returns the mounts whose source a nodeRootFile rule of some
+// entry for digest names.
+func (i *Index) NodeRootBinds(digest string, mounts []ObservedMount) []ObservedMount {
 	if i == nil {
-		return false
+		return nil
 	}
 	d, err := types.ParseDigest(digest)
 	if err != nil {
-		return false
+		return nil
 	}
-	return slices.ContainsFunc(i.byDigest[d.String()], func(c Container) bool {
-		return slices.ContainsFunc(c.Mounts.Rules, func(rule MountRule) bool {
-			return rule.Kind == MountNodeRootFile
-		})
-	})
+	var sources []string
+	for _, c := range i.byDigest[d.String()] {
+		for _, rule := range c.Mounts.Rules {
+			if rule.Kind != MountNodeRootFile {
+				continue
+			}
+			if source, err := HostSourceDigest(rule.Source); err == nil {
+				sources = append(sources, source)
+			}
+		}
+	}
+	var named []ObservedMount
+	for _, m := range mounts {
+		if slices.Contains(sources, m.HostSourceDigest) {
+			named = append(named, m)
+		}
+	}
+	return named
 }
 
 // LaunchPinned reports whether the container fixes everything the pod could

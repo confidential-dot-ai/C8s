@@ -2,15 +2,21 @@
 # Disposable kernel integration test; pass a build-host-compiled NRI test binary.
 # Requires root, loop devices, mkfs.ext4 and veritysetup.
 set -euo pipefail
+in_namespace=false
+if [[ ${1:-} == --private-mount-namespace ]]; then
+  in_namespace=true
+  shift
+fi
 if [[ $# -lt 1 || $# -gt 2 || $(id -u) != 0 ]]; then
   echo "usage: sudo bash $0 /absolute/path/to/nri-verity.test [coverage-directory]" >&2
   exit 1
 fi
 binary=$(realpath "$1")
 # Comparing with PID 1's namespace misses a namespace shared with other
-# processes, so always enter a fresh one.
-if [[ -z ${C8S_VERITY_NS:-} ]]; then
-  C8S_VERITY_NS=1 exec unshare --mount bash "$0" "$@"
+# processes, so always enter a fresh one. The sentinel is an argument, not an
+# environment variable a caller's environment could carry in.
+if ! $in_namespace; then
+  exec unshare --mount bash "$0" --private-mount-namespace "$@"
 fi
 dm_coverage=()
 if [[ $# == 2 ]]; then
