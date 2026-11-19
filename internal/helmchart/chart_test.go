@@ -3622,7 +3622,7 @@ func TestChartAllowlistsRouterNginxSelfEntry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed JSON does not parse: %v", err)
 	}
-	if got, want := seedLabel(seed, nxDigest), "nginxinc/nginx-unprivileged@"+nxDigest; got != want {
+	if got, want := seedLabel(seed, nxDigest), "nginx/nginx-unprivileged@"+nxDigest; got != want {
 		t.Errorf("router nginx self-entry = %q, want %q\nseed: %v", got, want, seed.Workloads)
 	}
 }
