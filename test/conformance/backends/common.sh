@@ -185,6 +185,9 @@
 #                                    unsupported where the cluster runs no provider
 #   pod_cvm_max_pods                 the provider's pod budget
 #   pod_cvm_deadline                 the provider's verification deadline, in seconds
+#   pod_cvm_guest                    yes where the cloud API starts a guest the provider
+#                                    can verify and send a pod to, or unsupported where
+#                                    it starts none
 #   pod_cvm_oversize_memory          a memory quantity one pod CVM cannot hold
 #                                    and the provider's node can
 #   pod_cvm_allocation <uid>         the allocation identity the provider derives
@@ -200,7 +203,7 @@
 #   cloud_instances                  every instance it holds, as JSON
 # node_name, image_ref, image_digest, pull_interval, allowlist_node_delay,
 # cds_pod_url, cert_paths, pod_exec, exempt_namespace, api_service_name,
-# pod_cvm_node, pod_cvm_max_pods and pod_cvm_deadline answer the same for a
+# pod_cvm_node, pod_cvm_max_pods, pod_cvm_deadline and pod_cvm_guest answer the same for a
 # whole run; callers may cache them. The
 # allowlist is state: served_allowlist answers for the moment of the call.
 #
@@ -736,6 +739,7 @@ cert_paths() { printf '%s/tls.crt\n%s/tls.key\n' "$CERT_VOLUME_PATH" "$CERT_VOLU
 pod_cvm_node() { return "$UNSUPPORTED"; }
 pod_cvm_max_pods() { return "$UNSUPPORTED"; }
 pod_cvm_deadline() { return "$UNSUPPORTED"; }
+pod_cvm_guest() { return "$UNSUPPORTED"; }
 pod_cvm_oversize_memory() { return "$UNSUPPORTED"; }
 pod_cvm_allocation() { return "$UNSUPPORTED"; }
 pod_cvm_labels() { return "$UNSUPPORTED"; }
