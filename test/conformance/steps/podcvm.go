@@ -73,7 +73,8 @@ type podCVMState struct {
 
 // cvmSpec is how a pod of these scenarios differs from the plain one: its
 // opt-in value and the fields admission or the provider judges. uid is set
-// once the API server holds the pod.
+// once the API server holds the pod, and created is no later than the moment
+// the provider can have written its record.
 type cvmSpec struct {
 	optIn        string
 	namesNode    bool
@@ -84,6 +85,7 @@ type cvmSpec struct {
 	execProbe    bool
 	oversize     bool
 	uid          string
+	created      time.Time
 }
 
 func (w *world) cvm(name string) (*pod, *cvmSpec, error) {
@@ -226,6 +228,7 @@ func podCreated(ctx context.Context, name string) error {
 		return err
 	}
 	w.tidy()
+	s.created = time.Now()
 	_, err = kubectl(manifest, "create", "-f", "-")
 	if err := w.admitted(err); err != nil || w.podCVM.refusal != "" {
 		return err
@@ -382,10 +385,14 @@ func podPending(ctx context.Context, name string) error {
 // the harness cannot hold a provider back from a guest it verified.
 func podNotSentToCVM(ctx context.Context, name string) error {
 	w := getWorld(ctx)
-	if _, _, err := w.cvm(name); err != nil {
+	_, s, err := w.cvm(name)
+	if err != nil {
 		return err
 	}
-	_, err := w.be.call("pod_cvm_no_guest")
+	if s.uid == "" {
+		return fmt.Errorf("%q was never created", name)
+	}
+	_, err = w.be.call("pod_cvm_no_guest")
 	return err
 }
 

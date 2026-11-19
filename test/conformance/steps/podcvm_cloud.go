@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"strconv"
 	"strings"
 	"time"
 
@@ -406,14 +407,31 @@ func cloudReceivedDelete(ctx context.Context, name string) error {
 // cloudReceivesDeleteWithin bounds the wait by the scenario's own figure,
 // for a delete that a later cause would also bring about: the provider
 // destroys an unverified instance at its verification deadline whatever
-// else it decided.
+// else it decided. The window must therefore close before that deadline, and
+// a delete seen only after the window does not count.
 func cloudReceivesDeleteWithin(ctx context.Context, name string, seconds int) error {
 	w := getWorld(ctx)
-	deleted, err := poll(time.Duration(seconds)*time.Second, func() (bool, error) {
+	_, s, err := w.cvm(name)
+	if err != nil {
+		return err
+	}
+	out, err := w.be.call("pod_cvm_deadline")
+	if err != nil {
+		return err
+	}
+	deadline, err := strconv.Atoi(out)
+	if err != nil {
+		return fmt.Errorf("the verification deadline %q: %w", out, err)
+	}
+	window, start := time.Duration(seconds)*time.Second, time.Now()
+	if left := s.created.Add(time.Duration(deadline) * time.Second).Sub(start); s.uid == "" || left <= window {
+		return fmt.Errorf("%s of the verification deadline of %q is left, which a wait of %s would outlast", left.Round(time.Second), name, window)
+	}
+	deleted, err := poll(window, func() (bool, error) {
 		n, err := w.deletesFor(name)
 		return n > 0, err
 	})
-	if err == nil && !deleted {
+	if err == nil && (!deleted || time.Since(start) > window) {
 		err = fmt.Errorf("the cloud API received no delete for the instance of %q within %d seconds", name, seconds)
 	}
 	return err
