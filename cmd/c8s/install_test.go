@@ -834,7 +834,7 @@ func TestCheckAdoptedEntries(t *testing.T) {
 			workloads = map[string]any{}
 		}
 		v := map[string]any{
-			"router":         map[string]any{"enabled": true, "nginx": map[string]any{"image": map[string]any{"repository": "nginxinc/nginx-unprivileged", "digest": dN}}},
+			"router":         map[string]any{"enabled": true, "nginx": map[string]any{"image": map[string]any{"repository": "nginx/nginx-unprivileged", "digest": dN}}},
 			"nriImagePolicy": map[string]any{"bootstrapAllowlist": map[string]any{"workloads": workloads}},
 		}
 		return helmchart.MergeValues(v, extra)
