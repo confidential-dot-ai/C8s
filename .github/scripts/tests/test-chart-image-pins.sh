@@ -31,7 +31,7 @@ expect_failure_naming() {
 rows=$(bash "$script" list)
 digest_lines=$(grep -cE '^[[:space:]]*digest:[[:space:]]*"?sha256:' "$pins")
 [[ $(wc -l <<<"$rows") -eq "$digest_lines" ]] || fail "listed $(wc -l <<<"$rows") rows for $digest_lines digest lines"
-grep -qE "^nginxinc/nginx-unprivileged [A-Za-z0-9._-]+ sha256:[0-9a-f]{64}$" <<<"$rows" || fail "nginx is not listed with a tag and digest"
+grep -qE "^nginx/nginx-unprivileged [A-Za-z0-9._-]+ sha256:[0-9a-f]{64}$" <<<"$rows" || fail "nginx is not listed with a tag and digest"
 tests=$((tests + 1))
 
 # A fixture: two annotated images, an empty component digest, the
