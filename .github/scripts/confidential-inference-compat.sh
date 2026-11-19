@@ -13,7 +13,7 @@
 # Two judges, in order: a hashed source file that the change deletes or renames
 # is INCOMPATIBLE on its own (the lock needs an edit); otherwise a model reads
 # the commits, the diff without tests and docs, and the contract files. Needs
-# ANTHROPIC_API_KEY for the model, git, jq and curl.
+# CONFIDENTIAL_INFERENCE_API_KEY for the model, git, jq and curl.
 #
 # Prints the report; its first line is COMPATIBLE or INCOMPATIBLE. Exits 0 for
 # COMPATIBLE, 1 for INCOMPATIBLE and 2 when the check itself failed.
@@ -22,8 +22,7 @@ set -euo pipefail
 
 usage="usage: confidential-inference-compat.sh --c8s DIR --confidential-inference DIR --before SHA --after SHA"
 
-model=claude-sonnet-5
-api=https://api.anthropic.com/v1/messages
+api=https://api.confidential.ai
 
 # The confidential-inference files that read c8s: its pins, the scripts that
 # run the c8s CLI and read c8s source and artifacts, the chart values that name
@@ -101,7 +100,7 @@ if [ "${#gone[@]}" -gt 0 ]; then
   exit 1
 fi
 
-[ -n "${ANTHROPIC_API_KEY:-}" ] || fail "ANTHROPIC_API_KEY is not set"
+[ -n "${CONFIDENTIAL_INFERENCE_API_KEY:-}" ] || fail "CONFIDENTIAL_INFERENCE_API_KEY is not set"
 
 {
   cat <<EOF
@@ -141,22 +140,34 @@ EOF
   cat "$work/diff"
 } >"$work/user"
 
+# The API serves the one model its deployment pins; the name moves with it.
+model=$(curl -sS --fail-with-body --max-time 60 "$api/v1/models" | jq -er '.data[0].id') ||
+  fail "cannot list the models of $api"
 jq -n --arg model "$model" --rawfile system "$work/system" --rawfile user "$work/user" '{
   model: $model,
   max_tokens: 2000,
-  system: $system,
-  messages: [{role: "user", content: $user}]
+  messages: [{role: "system", content: $system}, {role: "user", content: $user}]
 }' >"$work/request"
 
-if ! curl -sS --fail-with-body --max-time 600 "$api" \
-    -H "x-api-key: $ANTHROPIC_API_KEY" -H 'anthropic-version: 2023-06-01' \
+if ! curl -sS --fail-with-body --max-time 600 "$api/v1/chat/completions" \
+    -H "Authorization: Bearer $CONFIDENTIAL_INFERENCE_API_KEY" \
     -H 'content-type: application/json' --data-binary "@$work/request" >"$work/reply"; then
   fail "the model API refused the request: $(head -c 400 "$work/reply")"
 fi
-report=$(jq -r '[.content[] | select(.type == "text") | .text] | join("\n")' "$work/reply")
-read -r verdict <<<"$report"
-case "$verdict" in
-  COMPATIBLE) printf '%s\n' "$report"; exit 0 ;;
-  INCOMPATIBLE) printf '%s\n' "$report"; exit 1 ;;
-  *) fail "the model gave no verdict on its first line: $(head -c 300 <<<"$report")" ;;
-esac
+report=$(jq -r '.choices[0].message.content' "$work/reply")
+
+# The verdict is the reply's first word. Models put emphasis around it or run
+# the reason onto its line; the report still opens with the bare verdict.
+report=${report#"${report%%[![:space:]]*}"}
+first=${report%%$'\n'*}
+verdict_line='^[*_#[:space:]]*(INCOMPATIBLE|COMPATIBLE)([^[:alnum:]].*)?$'
+[[ $first =~ $verdict_line ]] ||
+  fail "the model gave no verdict on its first line: $(head -c 300 <<<"$report")"
+verdict=${BASH_REMATCH[1]}
+[[ ${BASH_REMATCH[2]} =~ ^[*_]*[[:space:]]*[:.,-]?[[:space:]]*(.*)$ ]]
+reason=${BASH_REMATCH[1]}
+
+printf '%s\n' "$verdict"
+[ -z "$reason" ] || printf '\n%s\n' "$reason"
+[ "$first" = "$report" ] || printf '%s\n' "${report#*$'\n'}"
+[ "$verdict" = COMPATIBLE ] || exit 1
