@@ -46,12 +46,13 @@ Writes are signed with an operator EC private key you supply via --operator-key
 
 Values live in the CDS process and nowhere else, so a CDS restart clears the
 store and every workload holding a secret has to be rolled (see
-docs/secrets.md).`,
+docs/secrets.md). A CDS replica set keeps them sealed in its store, each named
+by a secret entry this command writes (see docs/cds-ha.md).`,
 		SilenceUsage: true,
 	}
 
 	cdsconn.BindFlags(cmd.PersistentFlags(), &o.Options)
-	cmd.AddCommand(newPutCmd(o), newExplainCmd(o))
+	cmd.AddCommand(newPutCmd(o), newDeleteCmd(o), newExplainCmd(o))
 	return cmd
 }
 

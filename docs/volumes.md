@@ -68,7 +68,10 @@ for blobs sharing a name.
 ### Keep the escrow file
 
 `--escrow-out` is required, written `0600`, and refuses to overwrite. It is the
-only copy of the key outside CDS, which holds secrets in process memory, so a
+only copy of the key outside CDS. A CDS replica set keeps it in its store
+([cds-ha.md](cds-ha.md#secrets)): there, store it with `c8s secrets put` after
+`volume create`, and only the loss of every replica loses it. A single CDS holds
+secrets in process memory, so a
 CDS restart makes every volume unopenable until its key is written back with
 `c8s secrets put <PATH> --from-file <ESCROW>` and that command's write flags —
 `--url`, a measurement pin, `--operator-key`, and the `--mesh-ca` bundle CDS

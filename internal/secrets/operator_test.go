@@ -359,3 +359,21 @@ func TestOperatorPutAgainstRealOperatorAuth(t *testing.T) {
 		t.Fatalf("value = %q, want the one write that was authorized", got)
 	}
 }
+
+// With Seal (a replica set), a put seals the value and answers its hash with
+// 202, storing nothing itself: the value is released once an entry names it.
+func TestOperatorPutWithSealAnswersTheSealedHash(t *testing.T) {
+	oh := newOperatorHarness(t)
+	var sealed []byte
+	oh.h.Seal = func(_ context.Context, path string, value []byte) (string, error) {
+		sealed = append([]byte(path+"="), value...)
+		return "abc", nil
+	}
+	w, resp := doPut(oh.h, putRequest(t, "/tenant-a/db", []byte("hunter2"), false))
+	if w.Code != http.StatusAccepted || resp.Sealed != "abc" || resp.Created || string(sealed) != "/tenant-a/db=hunter2" {
+		t.Fatalf("put = %d %+v, sealed %q", w.Code, resp, sealed)
+	}
+	if _, err := oh.store.Get(context.Background(), "/tenant-a/db"); err == nil {
+		t.Fatal("the store holds the value")
+	}
+}

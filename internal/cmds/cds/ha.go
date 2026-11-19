@@ -31,7 +31,6 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/cdspin"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 	"github.com/confidential-dot-ai/c8s/pkg/routes"
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 // haConfig is a replica's flags: none of it is measured, and a wrong value
@@ -399,21 +398,14 @@ func haServing(replica *cdsha.Replica) func(context.Context) error {
 	}
 }
 
+// haSet reports a replica set of more than one replica.
+func haSet(ha *cdsconfig.HA) bool { return ha != nil && len(ha.Endpoints) > 1 }
+
 // haLedger is the sandbox ledger issuance records into: none for a replica
-// set of more than one replica, whose replicas could not share it.
+// set, whose replicas could not share it.
 func haLedger(ha *cdsconfig.HA, ledger *sandboxledger.Ledger) sandboxBinder {
-	if ha != nil && len(ha.Endpoints) > 1 {
+	if haSet(ha) {
 		return nil
 	}
 	return ledger
-}
-
-// haSecrets is secretsEnabled, refused for a replica set of more than one
-// replica: secrets and the sandbox ledger wait for a broker a set can
-// share.
-func haSecrets(ha *cdsconfig.HA, images []remote.ImagePin, hosts workloadclaims.CIDRHosts) (bool, string) {
-	if ha != nil && len(ha.Endpoints) > 1 {
-		return false, "a CDS replica set of more than one replica holds no secrets"
-	}
-	return secretsEnabled(images, hosts)
 }
