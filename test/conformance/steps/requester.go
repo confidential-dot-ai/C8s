@@ -20,9 +20,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cucumber/godog"
+
 	"github.com/confidential-dot-ai/attestation-go/armtls"
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-	"github.com/cucumber/godog"
 )
 
 // Sentences about a requester the scenario drives through the issuance
