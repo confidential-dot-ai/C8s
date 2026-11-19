@@ -195,8 +195,8 @@ these pods themselves, without `pod_manifest`, which pins a pod to a node. On
 kind the cloud API is [`test/mock-cloud`](../mock-cloud), which starts no VM,
 so every scenario ends before a guest is verified: `pod_cvm_guest` is
 unsupported there, and a scenario that needs a pod running in its pod CVM is
-skipped. A scenario that needs a pod its guest was never sent runs only
-there.
+skipped. A scenario that needs a pod its guest was never sent asks
+`pod_cvm_no_guest`, which only such a backend answers.
 
 [`backends/common.sh`](backends/common.sh) states the interface: every
 function, its arguments, what it prints, and when it answers *unsupported*:

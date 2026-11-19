@@ -378,17 +378,15 @@ func podPending(ctx context.Context, name string) error {
 }
 
 // podNotSentToCVM holds where the backend's cloud API starts no guest the
-// provider can send a pod to. It skips where one starts (pod_cvm_guest): the
-// harness cannot hold a provider back from a guest it verified.
+// provider could send the pod to (pod_cvm_no_guest). It skips anywhere else:
+// the harness cannot hold a provider back from a guest it verified.
 func podNotSentToCVM(ctx context.Context, name string) error {
-	_, err := getWorld(ctx).be.call("pod_cvm_guest")
-	switch {
-	case errors.Is(err, godog.ErrSkip):
-		return nil
-	case err != nil:
+	w := getWorld(ctx)
+	if _, _, err := w.cvm(name); err != nil {
 		return err
 	}
-	return skipf("the provider sends %q to the guest this backend's cloud API starts", name)
+	_, err := w.be.call("pod_cvm_no_guest")
+	return err
 }
 
 // podRunsInCVM waits for the provider to report the pod running, which it

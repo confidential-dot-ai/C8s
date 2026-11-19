@@ -49,6 +49,7 @@ func registerPodCVMCloud(sc *godog.ScenarioContext) {
 		return err
 	})
 	sc.Step(`^the cloud API received a delete for the instance of "([^"]*)"$`, cloudReceivedDelete)
+	sc.Step(`^the cloud API receives a delete for the instance of "([^"]*)" within (\d+) seconds$`, cloudReceivesDeleteWithin)
 	sc.Step(`^the cloud API receives no delete for the instance of "([^"]*)" within (\d+) seconds$`, cloudReceivesNoDelete)
 	sc.Step(`^the provider stops renewing the heartbeat of the virtual node$`, heartbeatStopped)
 }
@@ -398,6 +399,22 @@ func cloudReceivedDelete(ctx context.Context, name string) error {
 	})
 	if err == nil && !ok {
 		err = fmt.Errorf("the cloud API received no delete for the instance of %q", name)
+	}
+	return err
+}
+
+// cloudReceivesDeleteWithin bounds the wait by the scenario's own figure,
+// for a delete that a later cause would also bring about: the provider
+// destroys an unverified instance at its verification deadline whatever
+// else it decided.
+func cloudReceivesDeleteWithin(ctx context.Context, name string, seconds int) error {
+	w := getWorld(ctx)
+	deleted, err := poll(time.Duration(seconds)*time.Second, func() (bool, error) {
+		n, err := w.deletesFor(name)
+		return n > 0, err
+	})
+	if err == nil && !deleted {
+		err = fmt.Errorf("the cloud API received no delete for the instance of %q within %d seconds", name, seconds)
 	}
 	return err
 }
