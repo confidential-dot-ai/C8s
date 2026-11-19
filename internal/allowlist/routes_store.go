@@ -94,3 +94,42 @@ WHERE id = 1 AND ?1 > revision AND digest = ?5`
 		return ErrDigestMismatch
 	}
 }
+
+// SetRoutes stores env as the signed route manifest whatever the stored one,
+// and removes the stored one when env is nil: a CDS replica serves the route
+// manifest of its chain, which a resolve can move back.
+func (s *Store) SetRoutes(env *routes.Envelope) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if env == nil {
+		if _, err := s.db.Exec("DELETE FROM route_manifest WHERE id = 1"); err != nil {
+			return fmt.Errorf("remove route manifest: %w", err)
+		}
+		return nil
+	}
+	m, err := routes.Parse(env.Manifest)
+	if err != nil {
+		return err
+	}
+	d := routes.Digest(env.Manifest)
+	_, err = s.db.Exec(`
+INSERT INTO route_manifest (id, revision, digest, manifest, token) VALUES (1, ?1, ?2, ?3, ?4)
+ON CONFLICT (id) DO UPDATE SET
+	revision = excluded.revision, digest = excluded.digest, manifest = excluded.manifest, token = excluded.token`,
+		int64(m.Revision), hex.EncodeToString(d[:]), env.Manifest, env.Token)
+	if err != nil {
+		return fmt.Errorf("store route manifest: %w", err)
+	}
+	s.routesFloor = max(s.routesFloor, m.Revision)
+	return nil
+}
+
+// RoutesFloor is the highest route manifest revision SetRoutes stored in
+// this process. A resolve can move the stored manifest back, but a router
+// keeps the highest revision it accepted, so a new manifest must go above
+// this one to reach it.
+func (s *Store) RoutesFloor() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.routesFloor
+}

@@ -18,7 +18,9 @@ import (
 
 	"github.com/spf13/cobra"
 	certificatesv1 "k8s.io/api/certificates/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
@@ -36,6 +38,14 @@ const operatorUser = "c8s-operator"
 // ciliumOperatorUser is the user the Cilium operator authenticates as, beside
 // the workers' control plane.
 const ciliumOperatorUser = "c8s-cilium-operator"
+
+// The account a CDS replica set's store credential carries a token of, which
+// the control-plane render creates.
+const (
+	cdsStoreNamespace   = "c8s-cds"
+	cdsStoreAccount     = "cds-store"
+	cdsStoreTokenSecret = "cds-store-token"
+)
 
 // controllerUsers are the users of the controllers beside a workers' control
 // plane, each with a kubeconfig of its own.
@@ -57,7 +67,9 @@ c8s-cilium-operator through the cluster's CertificateSigningRequest API, approve
 it with --kubeconfig's credentials, and write <user>.kubeconfig (mode 0600) to
 --output-dir. Each key is generated here and stays in its file; the cluster's
 kube-apiserver-client signer issues the certificate, capped at its signing
-duration.`,
+duration. Also write c8s-cds-store.kubeconfig, the non-expiring token of the
+c8s-cds/cds-store account, for a CDS replica set's store ('c8s cds ha
+store-credential').`,
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -91,7 +103,53 @@ func writeWorkerCredentials(ctx context.Context, cfg workerCredentialsConfig, ou
 	if err != nil {
 		return err
 	}
-	return issueControllerKubeconfigs(ctx, client, cluster, cfg, out)
+	if err := issueControllerKubeconfigs(ctx, client, cluster, cfg, out); err != nil {
+		return err
+	}
+	return issueStoreKubeconfig(ctx, client, cluster, cfg, out)
+}
+
+// issueStoreKubeconfig writes the store credential of a CDS replica set to
+// cfg.outputDir: the store account's token, at cluster, in its namespace. The
+// token is the account's token Secret, which the render creates and which
+// never expires: every replica holds the same one, so an expiry would stop
+// them all at once.
+func issueStoreKubeconfig(ctx context.Context, client kubernetes.Interface, cluster *clientcmdapi.Cluster, cfg workerCredentialsConfig, out io.Writer) error {
+	var token []byte
+	// The token controller fills a new Secret shortly after the render applies it.
+	err := wait.PollUntilContextTimeout(ctx, 500*time.Millisecond, 30*time.Second, true, func(ctx context.Context) (bool, error) {
+		secret, err := client.CoreV1().Secrets(cdsStoreNamespace).Get(ctx, cdsStoreTokenSecret, metav1.GetOptions{})
+		if err != nil {
+			return false, err
+		}
+		if secret.Type != corev1.SecretTypeServiceAccountToken || secret.Annotations[corev1.ServiceAccountNameKey] != cdsStoreAccount {
+			return false, fmt.Errorf("%s/%s is not the token Secret of %s", cdsStoreNamespace, cdsStoreTokenSecret, cdsStoreAccount)
+		}
+		token = secret.Data[corev1.ServiceAccountTokenKey]
+		return len(token) > 0, nil
+	})
+	if err != nil {
+		return fmt.Errorf("%s/%s token: %w", cdsStoreNamespace, cdsStoreTokenSecret, err)
+	}
+	data, err := clientcmd.Write(clientcmdapi.Config{
+		Clusters:  map[string]*clientcmdapi.Cluster{"cluster": cluster},
+		AuthInfos: map[string]*clientcmdapi.AuthInfo{cdsStoreAccount: {Token: string(token)}},
+		Contexts: map[string]*clientcmdapi.Context{cdsStoreAccount: {
+			Cluster:   "cluster",
+			AuthInfo:  cdsStoreAccount,
+			Namespace: cdsStoreNamespace,
+		}},
+		CurrentContext: cdsStoreAccount,
+	})
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(cfg.outputDir, "c8s-cds-store.kubeconfig")
+	if err := fileutil.WriteAtomic(path, data, 0o600); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "%s\n", path)
+	return nil
 }
 
 // issueControllerKubeconfigs writes a kubeconfig for each controller user to

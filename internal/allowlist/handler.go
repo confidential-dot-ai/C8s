@@ -23,7 +23,11 @@ const DefaultMaxWriteBodyBytes int64 = 64 * 1024
 
 // Handler holds the dependencies for allowlist HTTP handlers.
 type Handler struct {
-	Store           *Store
+	Store *Store
+	// Objects, when set, answers GET /allowlist/objects for a digest the
+	// history lacks: a CDS replica serves every policy of its chain, not only
+	// those it served since it started.
+	Objects         func(digest string) ([]byte, bool)
 	WriteAuthorizer WriteAuthorizer
 	// MaxWriteBodyBytes caps mutation request bodies. Zero means
 	// DefaultMaxWriteBodyBytes; a non-positive value clamps to the default.
@@ -48,6 +52,11 @@ func (h Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 		body, version, err = h.Store.InEffect(time.Now())
 	} else {
 		body, version, err = h.Store.Served()
+	}
+	if errors.Is(err, ErrNotYetInEffect) {
+		w.Header().Set("Retry-After", "5")
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
 	}
 	if err != nil {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -195,7 +204,11 @@ var objectHex = regexp.MustCompile(`^[0-9a-f]{64}$`)
 // of a document in the history.
 func (h Handler) HandleObject(w http.ResponseWriter, r *http.Request) {
 	h.serveByDigest(w, r, "application/json", func(digest string) ([]byte, bool, error) {
-		return h.Store.Object(digest)
+		body, ok, err := h.Store.Object(digest)
+		if !ok && err == nil && h.Objects != nil {
+			body, ok = h.Objects(digest)
+		}
+		return body, ok, err
 	})
 }
 

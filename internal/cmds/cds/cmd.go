@@ -81,6 +81,16 @@ func NewCmd() *cobra.Command {
 
 	flags.DurationVar(&cfg.armtlsCertTTL, "armtls-cert-ttl", 24*time.Hour, "lifetime of CDS's self-attested armTLS serving certificate")
 
+	flags.StringVar(&cfg.ha.self, "ha-self", "", "replica set: this replica's endpoint among the configuration's ha.endpoints (its slot); without it the replica finds its own endpoint")
+	flags.StringVar(&cfg.ha.runtimeDir, "ha-runtime-dir", "", "replica set: the unmeasured runtime disk: an 'etcd.yaml' there is --ha-store-etcd")
+	flags.StringVar(&cfg.ha.storeEtcd, "ha-store-etcd", "", "replica set: etcd client configuration (YAML) of the chain store; without it the store is the Kubernetes API, from the credential 'c8s cds ha store-credential' posts")
+	flags.BoolVar(&cfg.ha.storeMemory, "ha-store-memory", false, "single replica: keep the chain in this process")
+	flags.DurationVar(&cfg.ha.gossip, "ha-gossip-interval", 2*time.Second, "replica set: T, the gossip interval; a replica refuses without answers from a majority within it")
+	flags.DurationVar(&cfg.ha.peerTimeout, "ha-peer-timeout", 2*time.Second, "replica set: timeout of one gossip exchange (at most T)")
+	flags.DurationVar(&cfg.ha.storeTimeout, "ha-store-timeout", 5*time.Second, "replica set: timeout of one chain store call")
+	flags.IntVar(&cfg.ha.warnEntries, "ha-chain-warn-entries", 10000, "replica set: log an error each time the chain passes a multiple of this many entries")
+	flags.Int64Var(&cfg.ha.warnBytes, "ha-chain-warn-bytes", 64<<20, "replica set: log an error each time the chain passes a multiple of this many bytes")
+
 	cmdsutil.RequireFlags(cmd, "config", "attestation-api-url", "allowlist-db")
 
 	// `c8s cds verify` — a shorthand for `c8s verify --kind cds`, sharing the
@@ -144,6 +154,8 @@ type config struct {
 	secretsMaxPathsPerWorkload int
 	secretsMaxValueBytes       int
 	sandboxLedgerMax           int
+
+	ha haConfig
 
 	// measured is the configuration document this VM was launched with: every
 	// per-cluster setting CDS serves.

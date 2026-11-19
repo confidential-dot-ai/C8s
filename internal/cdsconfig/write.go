@@ -42,6 +42,8 @@ type Document struct {
 	LeafDNSPatterns []string
 	// KMS is where pod secret release is brokered to; nil serves no pod secrets.
 	KMS *KMS
+	// HA is the replica set, nil for a single CDS.
+	HA *HA
 }
 
 // Format renders doc as a CDS launch file under the schema version this
@@ -77,6 +79,7 @@ func (d Document) wire() (wire, error) {
 		LeafDNSNames:       d.LeafDNSNames,
 		LeafDNSPatterns:    d.LeafDNSPatterns,
 		KMS:                d.KMS.wire(),
+		HA:                 d.HA,
 	}, nil
 }
 

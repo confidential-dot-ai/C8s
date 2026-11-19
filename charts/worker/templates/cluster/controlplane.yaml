@@ -6,7 +6,8 @@
 # which runs beside the control plane as the user c8s-cilium-operator, since
 # NodeRestriction keeps node credentials from its leader lease; and the
 # kube-dns Service in front of the workers' CoreDNS, at clusterDNS. Every
-# worker runs CoreDNS, so a lookup stays on its node.
+# worker runs CoreDNS, so a lookup stays on its node. Last, the store account
+# of a CDS replica set.
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -456,3 +457,63 @@ spec:
     port: 53
     protocol: TCP
     targetPort: 53
+---
+# The CDS replica set's store (docs/cds-ha.md, "The store"): the chain lives in
+# ConfigMaps of c8s-cds, written by the ServiceAccount cds-store, whose token
+# `c8s worker control-plane credentials` writes into c8s-cds-store.kubeconfig.
+# The store is trusted for nothing; the chain authenticates itself. The token
+# never expires (cds-store-token): every replica shares it, so an expiry would
+# stop them all at once; the account can do nothing the host cannot.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: c8s-cds
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cds-store
+  namespace: c8s-cds
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: cds-store
+  namespace: c8s-cds
+rules:
+# DEVIATION: RBAC cannot scope create by name, so the account may read, create
+# and update every ConfigMap of the namespace (not list, watch or delete). No
+# ResourceQuota bounds the count: admission charges refused creates too, and a
+# stale quota bricks the store after a re-seed; the replicas' chain-size
+# warning watches growth instead.
+- apiGroups:
+  - ''
+  resources:
+  - configmaps
+  verbs:
+  - get
+  - create
+  - update
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: cds-store
+  namespace: c8s-cds
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: cds-store
+subjects:
+- kind: ServiceAccount
+  name: cds-store
+  namespace: c8s-cds
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cds-store-token
+  namespace: c8s-cds
+  annotations:
+    kubernetes.io/service-account.name: cds-store
+type: kubernetes.io/service-account-token
