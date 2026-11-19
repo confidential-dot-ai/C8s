@@ -74,13 +74,12 @@ func (o *options) record(cluster string) (*record, error) {
 }
 
 // ErrRecordConflict marks a head the record refuses: it names another
-// genesis, or another hash at the acknowledged seq. The write it follows
-// was applied.
+// genesis, or another hash at the acknowledged seq.
 var ErrRecordConflict = errors.New("the local record disagrees")
 
 // errStateDir is a state directory that cannot hold a record, found before
-// anything was sent.
-var errStateDir = errors.New("the state directory cannot hold the record, so nothing was sent")
+// a mutation was submitted.
+var errStateDir = errors.New("the state directory cannot hold the record, so no mutation was submitted")
 
 // prepareStateDir makes the state directory, creates and removes a file in
 // it, and syncs it as a save does. A write runs it before anything else
