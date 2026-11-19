@@ -59,7 +59,7 @@ entry at this position, but does not commit it or reserve the position.`,
 	return cmd
 }
 
-// policyTarget is the independently trusted position the flags of command name.
+// policyTarget is the independently trusted position the flags name.
 func (o *options) policyTarget(command, cluster, expected string) (policyTarget, error) {
 	if o.Insecure {
 		return policyTarget{}, fmt.Errorf("%s requires attested HTTPS; --insecure is not allowed", command)
