@@ -2,8 +2,11 @@ package armtls
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/hex"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/confidential-dot-ai/attestation-go/remote"
@@ -68,5 +71,97 @@ func TestEvidencePathsRefuseAnUnpinnedPolicy(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestDynamicClientStartsEmptyAndChecksCurrentPolicy(t *testing.T) {
+	stub := pinnedStub(t)
+	key, _, cert := testAttestedCert(t, nil)
+	empty := &VerifyPolicy{AttestationApiURL: stub.URL()}
+	current := empty
+	var currentErr error
+	cfg := &ClientConfig{
+		Policy:  empty,
+		Current: func() (*VerifyPolicy, error) { return current, currentErr },
+	}
+	tlsConfig, _, err := NewClientTLSConfig(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	server.TLS = &tls.Config{Certificates: []tls.Certificate{{
+		Certificate: [][]byte{cert.Raw},
+		PrivateKey:  key,
+	}}}
+	server.StartTLS()
+	defer server.Close()
+	client := HTTPClient(tlsConfig)
+	defer client.CloseIdleConnections()
+	check := func() error {
+		client.CloseIdleConnections()
+		response, err := client.Get(server.URL)
+		if err == nil {
+			response.Body.Close()
+		}
+		return err
+	}
+	if err := check(); !errors.Is(err, ErrUnpinned) || len(stub.VerifyRequests()) != 0 {
+		t.Fatalf("empty current policy = %v, verification requests = %d", err, len(stub.VerifyRequests()))
+	}
+	launch := bytes.Repeat([]byte{0x22}, 32)
+	current = Pins{Images: []remote.ImagePin{{
+		Name:             "worker",
+		Digest:           testMeasurement,
+		LaunchFileDigest: launch,
+	}}}.VerifyPolicy(stub.URL())
+	for _, tc := range []struct {
+		name          string
+		image, launch []byte
+		accept        bool
+	}{
+		{
+			name:   "admitted",
+			image:  testMeasurement,
+			launch: launch,
+			accept: true,
+		},
+		{
+			name:   "wrong image",
+			image:  bytes.Repeat([]byte{0x33}, SNPMeasurementSize),
+			launch: launch,
+		},
+		{
+			name:   "wrong launch",
+			image:  testMeasurement,
+			launch: bytes.Repeat([]byte{0x44}, 32),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			verdict := mockapi.PassingVerdict(hex.EncodeToString(tc.image))
+			verdict.Claims.InitData = tc.launch
+			stub.SetVerdict(verdict)
+			err := check()
+			if (err == nil) != tc.accept {
+				t.Fatalf("handshake = %v, want accepted %v", err, tc.accept)
+			}
+		})
+	}
+	requests := len(stub.VerifyRequests())
+	for _, policy := range []*VerifyPolicy{empty, nil} {
+		current = policy
+		if err := check(); err == nil {
+			t.Fatal("empty or nil replacement policy admitted a peer")
+		}
+	}
+	current = pinnedPolicy(stub.URL())
+	currentErr = errors.New("state unavailable")
+	if err := check(); !errors.Is(err, currentErr) || len(stub.VerifyRequests()) != requests {
+		t.Fatalf("failed policy = %v, verification requests = %d", err, len(stub.VerifyRequests()))
+	}
+	cfg.Policy = nil
+	if _, _, err := NewClientTLSConfig(cfg); err == nil {
+		t.Fatal("dynamic client accepted nil initial Policy")
 	}
 }

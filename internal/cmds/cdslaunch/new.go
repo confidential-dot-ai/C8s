@@ -31,11 +31,9 @@ func write(opts options) error {
 			return err
 		}
 	}
-	var nodes []byte
-	if opts.nodePins != "" {
-		if nodes, err = readInput("node-pins", opts.nodePins); err != nil {
-			return err
-		}
+	nodes, err := readInput("node-pins", opts.nodePins)
+	if err != nil {
+		return err
 	}
 	var podImagePolicy []byte
 	if opts.podImagePolicy != "" {

@@ -104,9 +104,15 @@ func (w wire) parse() (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("workloads: %w", err)
 	}
-	nodes, err := parseNodes(w.Nodes)
+	// A standalone CDS pins at least one node. A replica set's launch file
+	// publishes the chain's first set, which may be typed and empty.
+	parseNodes := refvalues.Parse
+	if w.HA != nil {
+		parseNodes = refvalues.ParseRendered
+	}
+	nodes, err := parseNodes([]byte(w.Nodes))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("nodes: %w", err)
 	}
 	var podImages []remote.ImagePin
 	if w.PodImagePolicy != "" {
@@ -124,9 +130,6 @@ func (w wire) parse() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	if nodes.Empty() {
-		return nil, errors.New("nodes: CDS certifies only the nodes its launch file names, and this one names none")
-	}
 	kms, err := w.KMS.parse()
 	if err != nil {
 		return nil, err
@@ -137,10 +140,8 @@ func (w wire) parse() (*Config, error) {
 	if err := w.HA.validate(); err != nil {
 		return nil, err
 	}
-	// A replica set serves its node set from the chain, whose nodes entries
-	// carry only images that bind their launch: the launch file's set is the
-	// first of them.
-	if w.HA != nil {
+	// Every initial node must satisfy the chain's launch-binding rule.
+	if w.HA != nil && !nodes.Empty() {
 		if err := cdschain.CheckNodes([]byte(w.Nodes)); err != nil {
 			return nil, err
 		}
@@ -160,18 +161,6 @@ func (w wire) parse() (*Config, error) {
 		return nil, fmt.Errorf("podImagePolicy: %w", err)
 	}
 	return cfg, nil
-}
-
-// parseNodes reads the node pins a launch file names, which may be none.
-func parseNodes(document string) (refvalues.ReferenceValues, error) {
-	if document == "" {
-		return refvalues.ReferenceValues{}, nil
-	}
-	nodes, err := refvalues.Parse([]byte(document))
-	if err != nil {
-		return refvalues.ReferenceValues{}, fmt.Errorf("nodes: %w", err)
-	}
-	return nodes, nil
 }
 
 // parseNodeCIDRs builds the inventory bound CDS dials within. Each entry must

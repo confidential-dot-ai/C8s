@@ -408,12 +408,14 @@ func haLedger(ha *cdsconfig.HA, ledger *sandboxledger.Ledger) sandboxBinder {
 	return ledger
 }
 
-// haSecrets is secretsEnabled, refused for a replica set of more than one
-// replica: secrets and the sandbox ledger wait for a broker a set can
-// share.
+// A single replica can acquire its first node pins from the chain; secret
+// release still authorizes each request against the current node set.
 func haSecrets(ha *cdsconfig.HA, images []remote.ImagePin, hosts workloadclaims.CIDRHosts) (bool, string) {
 	if ha != nil && len(ha.Endpoints) > 1 {
 		return false, "a CDS replica set of more than one replica holds no secrets"
+	}
+	if ha != nil && len(ha.Endpoints) == 1 && len(hosts) > 0 {
+		return true, ""
 	}
 	return secretsEnabled(images, hosts)
 }
