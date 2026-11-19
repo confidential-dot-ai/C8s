@@ -193,23 +193,40 @@ func requireAttestationApi(url string) error {
 	return nil
 }
 
+// DigestsEndpointConfig configures [StartDigestsEndpoint].
+type DigestsEndpointConfig struct {
+	Resolver SandboxResolver
+	// Identity is the node's sandbox-token public key, DER-encoded, which the
+	// identity route serves.
+	Identity          []byte
+	Platform          string
+	AttestFunc        func(ctx context.Context, customData string) (string, error)
+	AttestationAPIURL string
+	// CDSPins are what a calling CDS must satisfy ([DigestsServerTLSConfig]).
+	CDSPins armtls.Pins
+	// MeasuredPoliciesFile is the journal a TDX certificate lists the
+	// policies of. Empty lists none.
+	MeasuredPoliciesFile string
+}
+
 // StartDigestsEndpoint binds DigestsPort and serves the identity and digests
-// routes for the node's NRI inventory.
+// routes for the node's NRI inventory. The returned manager follows a
+// change of the CDS pins (CertManager.UpdateClientPolicy).
 //
 // The listener is bound before the certificate warm-up so a token never names a
 // port nothing is listening on, and so a port conflict surfaces immediately
 // rather than after the warm-up window. Warm-up failure is logged, not fatal:
 // the endpoint provisions on the first handshake instead, and taking the
 // inventory down would cost far more than a slow first callback.
-func StartDigestsEndpoint(ctx context.Context, logger *slog.Logger, resolver SandboxResolver, identity []byte, platform string, attestFunc func(ctx context.Context, customData string) (string, error), attestationApiURL string, cdsPins armtls.Pins, measuredPolicies string) error {
-	tlsCfg, certMgr, err := DigestsServerTLSConfig(platform, attestFunc, attestationApiURL, cdsPins, 0, measuredPolicies)
+func StartDigestsEndpoint(ctx context.Context, logger *slog.Logger, cfg DigestsEndpointConfig) (*armtls.CertManager, error) {
+	tlsCfg, certMgr, err := DigestsServerTLSConfig(cfg.Platform, cfg.AttestFunc, cfg.AttestationAPIURL, cfg.CDSPins, 0, cfg.MeasuredPoliciesFile)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	addr := net.JoinHostPort("", strconv.Itoa(listenPort))
 	l, err := tls.Listen("tcp", addr, tlsCfg)
 	if err != nil {
-		return fmt.Errorf("listen on %s: %w", addr, err)
+		return nil, fmt.Errorf("listen on %s: %w", addr, err)
 	}
 	go func() {
 		warmupCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -220,11 +237,11 @@ func StartDigestsEndpoint(ctx context.Context, logger *slog.Logger, resolver San
 		}
 		go certMgr.RunRotation(ctx)
 		logger.Info("starting sandbox-digests endpoint", "addr", addr)
-		if err := ServeDigests(ctx, l, resolver, identity); err != nil {
+		if err := ServeDigests(ctx, l, cfg.Resolver, cfg.Identity); err != nil {
 			logger.Error("sandbox-digests endpoint error", "error", err)
 		}
 	}()
-	return nil
+	return certMgr, nil
 }
 
 // DigestsClient is CDS's side of the callback: an armTLS client that verifies

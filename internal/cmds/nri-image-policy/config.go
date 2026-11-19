@@ -19,6 +19,7 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
+	"github.com/confidential-dot-ai/c8s/internal/cdschain"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/podassign"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
@@ -161,6 +162,9 @@ type pullConfig struct {
 	Timeout               time.Duration `yaml:"timeout"`                 // per-request timeout; > 0 required when a CDS is named
 	AttestationApiURL     string        `yaml:"attestation_api_url"`     // required for https pull
 	CDSMeasurementsConfig string        `yaml:"cds_measurements_config"` // the CDS pin document, every entry bound to the launch file CDS runs on
+	// CDSChain, "<seq>:<hash>", pins a CDS replica set by one entry of its
+	// chain: the pins then follow the builds the chain accepts.
+	CDSChain string `yaml:"cds_chain"`
 	// MeasurePolicies extends RTMR[3] (TDX) with each pulled policy before
 	// applying it. Off by default: verifiers on attestation-go predating
 	// runtime extensions, and flat RTMR[3] pins, still require the bare
@@ -559,6 +563,14 @@ func (c *config) validatePull() error {
 	source, err := c.Allowlist.Pull.cdsSource()
 	if err != nil {
 		return err
+	}
+	if chain := c.Allowlist.Pull.CDSChain; chain != "" {
+		if !source.located() {
+			return errors.New("allowlist.pull.cds_chain requires allowlist.pull.url or cds_address_file: the chain is read from the CDS")
+		}
+		if _, err := cdschain.ParsePin(chain); err != nil {
+			return fmt.Errorf("allowlist.pull.cds_chain: %w", err)
+		}
 	}
 	if !source.located() {
 		return nil

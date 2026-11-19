@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/netip"
 
+	"github.com/confidential-dot-ai/c8s/internal/cdschain"
 	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/nodeservices"
@@ -70,6 +71,11 @@ func (d Document) validate() error {
 	cds, err := d.CDS.Parse()
 	if err != nil {
 		return err
+	}
+	if d.CDS.Chain != "" {
+		if _, err := cdschain.ParsePin(d.CDS.Chain); err != nil {
+			return fmt.Errorf("cds.chain: %w", err)
+		}
 	}
 	config, err := cdsconfig.Parse(cds.LaunchFile)
 	if err != nil {

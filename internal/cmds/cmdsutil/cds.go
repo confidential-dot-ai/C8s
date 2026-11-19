@@ -17,6 +17,11 @@ type CDS struct {
 	// Measurements is a measurements document binding the CDS image to its
 	// launch file.
 	Measurements string `yaml:"measurements" json:"measurements"`
+	// Chain, "<seq>:<hash>", pins a CDS replica set by one entry of its chain
+	// (the genesis, or a later one as a floor): the node's CDS pins then
+	// follow the builds the chain accepts, and Measurements is only the
+	// first CDS a node meets.
+	Chain string `yaml:"chain,omitempty" json:"chain,omitempty"`
 }
 
 // CDSEndpoint is an accepted CDS block.

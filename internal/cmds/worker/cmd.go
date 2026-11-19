@@ -64,6 +64,7 @@ parses it with, then written to --out, or to stdout without one.`,
 	f := cmd.Flags()
 	f.StringVar(&d.out, "out", "", "file to write the document to, which must not exist (default stdout)")
 	f.StringVar(&d.cds.Address, "cds-address", "", "<host>:<port> the cluster's CDS serves on, the host a DNS name its clients resolve or an IPv4 address")
+	f.StringVar(&d.cds.Chain, "cds-chain", "", "<seq>:<hash> of one entry of the CDS replica set's chain the worker pins (docs/cds-ha.md)")
 	f.StringVar(&d.cdsPinPath, "cds-pin", "", "measurements document pinning the cluster's CDS VM to its configuration, as 'c8s cds config new' writes it")
 	f.StringVar(&d.tlsSAN, "tls-san", "", "DNS name of the router's front-door certificate, one the pinned CDS configuration lets a leaf carry")
 	nodeservices.BindRouterFlags(f, &d.router)

@@ -232,26 +232,31 @@ func TestCDSAddressIsMountedIntoCredentialSidecars(t *testing.T) {
 	}
 }
 
-// The upstream identity reads the endpoint at the same path, and that
-// endpoint alone: it polls the signed route manifest from the one CDS its
-// node admits for it, and takes its pins from the measured base.
-func TestCDSAddressIsMountedIntoTheRoutingRole(t *testing.T) {
+// The upstream identity reads the endpoint and the node's CDS pins at the
+// paths credential clients read: it polls the signed route manifest from the
+// one CDS its node admits for it, under the pins the node rewrites as the
+// replica set accepts other builds.
+func TestCDSAddressAndPinsAreMountedIntoTheRoutingRole(t *testing.T) {
 	p := &plugin{
 		cfg:        &config{},
+		cdsPins:    "/var/run/nri-image-policy/cds.json",
 		cdsAddress: "/var/run/nri-image-policy/cds-address",
 	}
 	pod := &api.PodSandbox{Namespace: routerNamespace}
 	routing := &api.Container{Name: workloadclaims.AttestContainerName, User: &api.User{Uid: workloadclaims.UpstreamUID}}
 	adjustment := mustCredentialMounts(t, p, pod, routing)
-	mount := addressMount(t, adjustment)
-	if mount.GetSource() != p.cdsAddress {
-		t.Fatalf("source = %q, want the plugin's own file", mount.GetSource())
+	want := map[string]string{workloadclaims.CDSAddressPath: p.cdsAddress, workloadclaims.CDSPinsPath: p.cdsPins}
+	if got := len(adjustment.GetMounts()); got != len(want) {
+		t.Fatalf("the upstream role takes %d mounts, want the endpoint and the pins: %+v", got, adjustment.GetMounts())
 	}
-	if !slices.Contains(mount.GetOptions(), "ro") {
-		t.Fatalf("options = %v, want a read-only mount", mount.GetOptions())
-	}
-	if got := len(adjustment.GetMounts()); got != 1 {
-		t.Fatalf("the upstream role takes %d mounts, want the endpoint alone: %+v", got, adjustment.GetMounts())
+	for _, m := range adjustment.GetMounts() {
+		if m.GetSource() != want[m.GetDestination()] || !slices.Contains(m.GetOptions(), "ro") {
+			t.Fatalf("mount %+v, want the plugin's own file at %s, read-only", m, m.GetDestination())
+		}
+		ctr := &api.Container{Name: routing.Name, User: routing.User, Mounts: []*api.Mount{m}}
+		if !isInjectedNodeMount(pod, ctr, m, enforcerMounts{cdsPins: p.cdsPins, cdsAddress: p.cdsAddress}) {
+			t.Fatalf("the sandbox check refuses the router's own mount at %s", m.GetDestination())
+		}
 	}
 	// That identity outside the router's namespace, and another identity of
 	// the router's pod, take none.

@@ -1878,3 +1878,34 @@ func TestCheckImage_ExactMountPolicyRequiresFinalObservation(t *testing.T) {
 		t.Error("the entry admitted a reported bind mount; the exact-empty policy is not live")
 	}
 }
+
+// A node following a replica set's chain kills no running container on its
+// base allowlist alone: after an upgrade the CDS admits what the base does
+// not, and a restart before the first pull must not stop it. Once a CDS
+// allowlist is applied, the check enforces it.
+func TestCheckExisting_ChainNodeKillsOnlyUnderAnAppliedAllowlist(t *testing.T) {
+	p := basePlugin(t)
+	p.cfg.Allowlist.Pull.CDSChain = "0:" + strings.Repeat("ab", 32)
+	p.SetReady()
+	pod := makePod("default", "pod1")
+	running := makeCtrWithImage(pod.Id, "ctr1", "registry/repo@"+pushDigestB)
+	var killed []string
+	p.containerd = &fakeContainerd{stop: func(_ context.Context, id string) error {
+		killed = append(killed, id)
+		return nil
+	}}
+
+	p.checkExisting(context.Background(), p.cfg, []*api.PodSandbox{pod}, []*api.Container{running})
+	if len(killed) != 0 {
+		t.Fatalf("killed %v on the base allowlist before any CDS allowlist", killed)
+	}
+	if _, ok := p.inventory.containers[running.Id]; !ok {
+		t.Fatal("the running container was not recorded")
+	}
+
+	p.policy.apply(anyAllowlist(map[string]string{pushDigestA: "image-a"}), 2)
+	p.checkExisting(context.Background(), p.cfg, []*api.PodSandbox{pod}, []*api.Container{running})
+	if len(killed) != 1 || killed[0] != running.Id {
+		t.Fatalf("under an applied allowlist without its image: killed %v", killed)
+	}
+}

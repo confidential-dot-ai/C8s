@@ -24,7 +24,7 @@ func (p *plugin) prepareCDSAddress() error {
 	if p.cfg.cdsAddress == "" {
 		return fmt.Errorf("nothing names the CDS this node reaches: a measured config names it in allowlist.pull.url, and an install in allowlist.pull.cds_address_file")
 	}
-	path, err := renderNodeDocument(renderedCDSAddressName, cmdsutil.FormatCDSAddress(p.cfg.cdsAddress))
+	path, err := renderNodeDocument(renderedCDSAddressName, cmdsutil.FormatCDSAddress(p.cfg.cdsAddress, p.cfg.Allowlist.Pull.CDSChain))
 	if err != nil {
 		return err
 	}

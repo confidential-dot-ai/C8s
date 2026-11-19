@@ -2,6 +2,7 @@ package cmdsutil
 
 import (
 	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,12 +25,12 @@ func TestResolveCDSAddress(t *testing.T) {
 		},
 		{
 			name:    "the node's endpoint",
-			mounted: string(FormatCDSAddress("10.1.2.3:30808")),
+			mounted: string(FormatCDSAddress("10.1.2.3:30808", "")),
 			want:    "https://10.1.2.3:30808",
 		},
 		{
 			name:    "the node's endpoint as a name",
-			mounted: string(FormatCDSAddress("cds.example.org:8443")),
+			mounted: string(FormatCDSAddress("cds.example.org:8443", "")),
 			want:    "https://cds.example.org:8443",
 		},
 		{
@@ -259,5 +260,26 @@ func TestValidateRoutableIPv4PublishesReachableAddressesOnly(t *testing.T) {
 		if err := ValidateRoutableIPv4(raw); !errors.Is(err, ErrNotIPv4) {
 			t.Errorf("ValidateRoutableIPv4(%q) = %v, want %v", raw, err, ErrNotIPv4)
 		}
+	}
+}
+
+// C-ID: the endpoint document carries the node's chain pin after the
+// address, and NodeCDSChain holds a client to it.
+func TestCDSAddressCarriesTheChainPin(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cds-address")
+	if err := os.WriteFile(path, FormatCDSAddress("cds.example:8443", "3:abc"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(path)
+	if address, err := ParseCDSAddress(data); err != nil || address != "cds.example:8443" {
+		t.Fatalf("address %q, %v", address, err)
+	}
+	plain := &http.Client{}
+	held, err := NodeCDSChain(plain, path)
+	if err != nil || held == plain {
+		t.Fatalf("the client is not held to the pin: %v", err)
+	}
+	if c, err := NodeCDSChain(plain, filepath.Join(t.TempDir(), "absent")); err != nil || c != plain {
+		t.Fatalf("no document: %v", err)
 	}
 }

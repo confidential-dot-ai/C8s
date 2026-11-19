@@ -255,8 +255,12 @@ func (p *plugin) checkExisting(ctx context.Context, cfg *config, pods []*api.Pod
 				"namespace", pod.GetNamespace(), "container", ctr.GetName())
 			continue
 		}
-		// enforce_existing off: the check only feeds the inventory.
-		if !cfg.allowlistRevokesRunning() {
+		// enforce_existing off: the check only feeds the inventory. A node
+		// following a replica set's chain that has applied no CDS allowlist
+		// yet holds only its base allowlist, which lacks what the CDS admitted
+		// after an upgrade to a build its launch pins do not name: the first
+		// applied allowlist rechecks the running containers (KillRevoked).
+		if !cfg.allowlistRevokesRunning() || (cfg.Allowlist.Pull.CDSChain != "" && p.AppliedAllowlistVersion() == 0) {
 			continue
 		}
 		// A restart of the gated plugin found a running container the current

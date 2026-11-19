@@ -366,9 +366,7 @@ func takesNodeMount(pod *api.PodSandbox, ctr *api.Container, destination string)
 	switch destination {
 	case workloadclaims.SidecarSocketDir:
 		return injected
-	case workloadclaims.CDSPinsPath:
-		return injected || holdsCredentialsIdentity(ctr)
-	case workloadclaims.CDSAddressPath:
+	case workloadclaims.CDSPinsPath, workloadclaims.CDSAddressPath:
 		return injected || holdsCredentialsIdentity(ctr) || fetchesRouteManifest(pod, ctr)
 	case workloadclaims.ClientDocumentPath:
 		// Only a Pod CVM with a client document has a source for it.

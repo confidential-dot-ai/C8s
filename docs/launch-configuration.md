@@ -30,6 +30,7 @@ that admits it names the worker image it is bound to
 | `schemaVersion` | yes | `c8s-worker/v1`. |
 | `cds.address` | yes | The CDS endpoint, `<host>:<port>`, the host a DNS name or an IPv4 address. A name is resolved by the clients that dial it, through the resolvers the worker image is built with, so it must resolve there. |
 | `cds.measurements` | yes | One measurements JSON document ([measurements.md](measurements.md)), pinning the CDS image to the launch file that VM boots with. Every entry must bind that file. |
+| `cds.chain` | no | `<seq>:<hash>` of one entry of the CDS replica set's chain ([cds-ha.md](cds-ha.md#what-nodes-pin)): the worker's CDS pins then follow the builds the chain accepts, and every CDS answer must name this entry. |
 | `tlsSAN` | yes | The DNS name of the router's front-door certificate. The CDS configuration `cds.measurements` binds must let a leaf carry it. |
 | `router.hostnames` | no | Up to 100 lowercase DNS names the router serves. A non-empty list puts the baked front door in ACME mode at boot. |
 | `router.acmeEmail` | no | Bare email address for the ACME account. Requires `hostnames`. |

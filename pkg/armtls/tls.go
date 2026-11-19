@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"errors"
 	"fmt"
 	"slices"
 	"sync"
@@ -98,6 +99,11 @@ type ClientConfig struct {
 	// Policy defines acceptable attestation claims for the server. Required:
 	// the client verifies the server against it on every handshake.
 	Policy *VerifyPolicy
+
+	// Current, when set, replaces Policy on every handshake: for pins that
+	// change while the client runs (a CDS replica set's accepted builds). An
+	// error fails that handshake.
+	Current func() (*VerifyPolicy, error)
 
 	// Platform and AttestFunc, when both set, enable mTLS: the client
 	// presents its own armTLS certificate to the server. Both must be
@@ -591,8 +597,9 @@ func (s *certState) SwapProvider(ctx context.Context, provider CertProvider) err
 // Use WarmUp to eagerly provision the certificate at startup and CertReady
 // to gate readiness probes.
 type CertManager struct {
-	state     *certState
-	clientCAs *atomic.Pointer[x509.CertPool]
+	state        *certState
+	clientCAs    *atomic.Pointer[x509.CertPool]
+	clientPolicy *atomic.Pointer[VerifyPolicy]
 }
 
 // WarmUp eagerly provisions the certificate. Call this at startup (after
@@ -639,6 +646,20 @@ func (m *CertManager) UpdateClientCA(ca *x509.Certificate) {
 	if m.clientCAs != nil {
 		m.clientCAs.Store(certPoolOf(ca))
 	}
+}
+
+// UpdateClientPolicy replaces the policy a ClientPolicy listener verifies
+// client certificates against, from the next handshake on: for a peer set
+// that changes at run time (a CDS replica set's accepted builds).
+func (m *CertManager) UpdateClientPolicy(policy *VerifyPolicy) error {
+	if m.clientPolicy == nil {
+		return errors.New("armtls: the listener has no ClientPolicy")
+	}
+	if err := requirePins(policy.Policy); err != nil {
+		return err
+	}
+	m.clientPolicy.Store(policy)
+	return nil
 }
 
 // NewServerTLSConfig creates a tls.Config for an armTLS server. The private
@@ -691,6 +712,7 @@ func NewServerTLSConfig(cfg *ServerConfig) (*tls.Config, *CertManager, error) {
 	// mTLS: require and verify client certificates. A listener authenticates
 	// its peers one way.
 	var clientCAs *atomic.Pointer[x509.CertPool]
+	var clientPolicy *atomic.Pointer[VerifyPolicy]
 	if cfg.ClientCA != nil && cfg.ClientPolicy != nil {
 		return nil, nil, fmt.Errorf("armtls: ClientCA and ClientPolicy are mutually exclusive (ClientPolicy admits a self-issued armTLS peer, which ClientCA exists to refuse)")
 	}
@@ -708,11 +730,16 @@ func NewServerTLSConfig(cfg *ServerConfig) (*tls.Config, *CertManager, error) {
 		if err := requirePins(cfg.ClientPolicy.Policy); err != nil {
 			return nil, nil, err
 		}
+		clientPolicy = new(atomic.Pointer[VerifyPolicy])
+		clientPolicy.Store(cfg.ClientPolicy)
 		tlsCfg.ClientAuth = tls.RequireAnyClientCert
-		tlsCfg.VerifyPeerCertificate = verifyPeerCallback(cfg.ClientPolicy, x509.ExtKeyUsageClientAuth)
+		// Read per handshake: UpdateClientPolicy replaces it.
+		tlsCfg.VerifyPeerCertificate = func(raw [][]byte, chains [][]*x509.Certificate) error {
+			return verifyPeerCallback(clientPolicy.Load(), x509.ExtKeyUsageClientAuth)(raw, chains)
+		}
 	}
 
-	return tlsCfg, &CertManager{state: state, clientCAs: clientCAs}, nil
+	return tlsCfg, &CertManager{state: state, clientCAs: clientCAs, clientPolicy: clientPolicy}, nil
 }
 
 // clientCAsPerHandshake reads the client CA pool once per connection, so a
@@ -781,6 +808,18 @@ func NewClientTLSConfig(cfg *ClientConfig) (*tls.Config, *CertManager, error) {
 	refuseResumption(tlsCfg)
 
 	tlsCfg.VerifyPeerCertificate = verifyPeerCallback(cfg.Policy, x509.ExtKeyUsageServerAuth)
+	if current := cfg.Current; current != nil {
+		tlsCfg.VerifyPeerCertificate = func(raw [][]byte, chains [][]*x509.Certificate) error {
+			policy, err := current()
+			if err == nil {
+				err = requirePins(policy.Policy)
+			}
+			if err != nil {
+				return fmt.Errorf("armtls: the current pins: %w", err)
+			}
+			return verifyPeerCallback(policy, x509.ExtKeyUsageServerAuth)(raw, chains)
+		}
+	}
 
 	var mgr *CertManager
 
