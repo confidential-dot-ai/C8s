@@ -142,7 +142,9 @@ cds_start() {
 
 # cds_serve [extra `c8s cds` flags...] replaces the CDS container on that
 # address: the flags the chart renders today, plus any given here, which a
-# later flag of the same name overrides.
+# later flag of the same name overrides. The three limits are the CDS's own
+# defaults, stated so that the conformance backend can name them (kind.sh,
+# cds_arg).
 cds_serve() {
     docker rm -f "$CDS_CONTAINER" >/dev/null 2>&1 || true
     docker run -d \
@@ -157,6 +159,9 @@ cds_serve() {
         --san-validation=true \
         --router-cert-ttl="$ROUTER_CERT_TTL" \
         --allowlist-node-delay="$ALLOWLIST_NODE_DELAY" \
+        --challenge-ttl=60s \
+        --jwt-clock-skew=30 \
+        --secrets-max-paths-per-workload=64 \
         --port="$CDS_PORT" \
         --log-level=debug \
         "$@" >/dev/null \
