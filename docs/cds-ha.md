@@ -253,7 +253,7 @@ Notes:
 - A set that a majority of the members' running builds are not in is refused without `--force` (U2).
 - `accept-image` and `raise-floor` re-read the chain and retry a write another write beat (409) for up to `--retry-for` (default 1m).
 - `c8s allowlist` and `c8s routes` write to a replica set as chain entries. A replica answers the old `PUT /allowlist` and `PUT /routes` with 409; a single replica still takes `PUT /secrets`.
-- The CLI records, per cluster (`--state-dir`, default `c8s/cds-ha` in the user config directory), the genesis and the last head a write was answered done for. It refuses a replica serving a chain without that head, or of another genesis. Without a record, it takes only a genesis signed by `--operator-key`; an operator who did not sign it passes `--genesis <hash>` to a `c8s cds ha` write once, which records it.
+- The CLI records, per cluster (`--state-dir`, default `c8s/cds-ha` in the user config directory), the genesis and its highest acknowledged confirmed head. It refuses a replica serving a chain without that head, or of another genesis. Without a record, writes require a genesis signed by `--operator-key` or explicitly pinned with `--genesis <hash>`.
 - A write that may have been applied exits 3, as does a `c8s allowlist` write to a single CDS that no answer confirmed. A genesis no answer confirmed exits 3 too and names its hash: once `c8s cds ha status` shows the replicas hold it, pass that hash as `--genesis`. One applied write exits 1 instead: CDS confirmed it, but the local record names another genesis, or another hash at the same seq. The error says so; check `c8s cds ha status` for a fork.
 - A successful CLI write syncs its acknowledged-head record, the state directory and that directory's parent before printing success. Before it reads or sends anything, it creates the state directory if needed, creates and removes a file in it, and syncs it, so an unusable `--state-dir` refuses with nothing sent. `genesis` also reads the cluster's record first and refuses one of another genesis. Concurrent commands retain the highest acknowledged head; retrying an equal or older head persists that record again. If CDS accepts a write but the local record is not saved, the command exits 3 and names the accepted head. The new record may already be visible despite that error.
 - Keep `--state-dir` on persistent, trusted local storage that supports file and directory sync. Its path must remain stable during use. The CLI needs read and write access to the state directory and read access to its parent. When it creates directories on the path, it also syncs each directory it added one to. Directories that already exist above the parent, and symlinks on the path, must already be durable: the CLI does not sync them, including one an earlier run created and failed to sync. The `.chain` cache remains best effort; it does not replace the acknowledged-head record.
@@ -322,6 +322,34 @@ After exit 3, retain the artifact and rerun the same submission to establish
 confirmation. A refused retry does not undo an earlier acceptance. If another
 entry occupies the position, an operator must review and prepare a replacement
 against the new head; submission never rebases the artifact.
+
+### Observe a policy delivered by another writer
+
+After ConfigMap consumption or manual delivery, check the unchanged artifact:
+
+```sh
+c8s cds ha observe-policy \
+  --url https://CDS_HOST:PORT --image-policy-file cds-pin.json \
+  --state-dir durable-state --cluster CLUSTER --genesis GENESIS_HASH \
+  --expect-head SEQ:HEAD_HASH --file policy.entry.json
+```
+
+The independent pins and predecessor have the same meaning as for submission.
+Observation sends only reads and needs no operator key. It verifies exact body
+and signature membership, then requires a fresh, serving replica to report a
+matching held head and recorded confirmation of the entry or a descendant.
+It saves that confirmation before printing JSON. `entry` identifies the artifact,
+`confirmed` its confirming head, and `held` the observed head. `current` says
+whether the artifact still supplies policy; `policy` identifies the policy entry
+at `held`, and `policy_sha256` hashes its canonical allowlist bytes.
+A newer held head need not be confirmed. These results
+prove neither Git publication nor application readiness.
+
+Missing confirmation, a changed head or a failed local save exits 3 without
+success output. Retry observation. Replica restart can lose confirmation records;
+the consumer or explicit manual submission must confirm again. Observation never
+submits automatically. Keep `--state-dir` on durable storage: an absent record is
+treated as first use, so callers must detect and recover lost established state.
 
 ## Deployment and upgrades
 
