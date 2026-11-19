@@ -39,6 +39,7 @@ func registerPodCVM(sc *godog.ScenarioContext) {
 	})
 	sc.Step(`^"([^"]*)" is pending$`, podPending)
 	sc.Step(`^"([^"]*)" is running in its pod CVM$`, podRunsInCVM)
+	sc.Step(`^"([^"]*)" has not been sent to its pod CVM$`, podNotSentToCVM)
 	sc.Step(`^the provider holds (a|no) record for "([^"]*)"$`, providerHoldsRecord)
 
 	sc.Step(`^the virtual node is labelled and tainted with the opt-in key$`, virtualNodeCarriesOptIn)
@@ -374,6 +375,20 @@ func podPending(ctx context.Context, name string) error {
 		return fmt.Errorf("%q is %s", name, obj.Status.Phase)
 	}
 	return nil
+}
+
+// podNotSentToCVM holds where the backend's cloud API starts no guest the
+// provider can send a pod to. It skips where one starts (pod_cvm_guest): the
+// harness cannot hold a provider back from a guest it verified.
+func podNotSentToCVM(ctx context.Context, name string) error {
+	_, err := getWorld(ctx).be.call("pod_cvm_guest")
+	switch {
+	case errors.Is(err, godog.ErrSkip):
+		return nil
+	case err != nil:
+		return err
+	}
+	return skipf("the provider sends %q to the guest this backend's cloud API starts", name)
 }
 
 // podRunsInCVM waits for the provider to report the pod running, which it
