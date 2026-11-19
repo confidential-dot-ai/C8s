@@ -58,9 +58,9 @@ components:
 ## The router's nginx image, versioned apart from C8s.
 routerNginx:
   image:
-    repository: nginxinc/nginx-unprivileged
-    # Resolve nginxinc/nginx-unprivileged:1.30.6-alpine-slim to bump this digest.
-    digest: "sha256:5d8bb9437d74a600ec5dbf90c035451c724dc33eac8d3a71078f6f8612c345f6"
+    repository: nginx/nginx-unprivileged
+    # Resolve nginx/nginx-unprivileged:1.30.7-alpine-slim to bump this digest.
+    digest: "sha256:8432c57ac86f178741af2b89948bd9087cb9df1c415bc1ab4d23735c4f0e3e61"
   # The argv prefix the seeded allowlist entry pins this image to: its
   # ENTRYPOINT and the first CMD token, which the entrypoint script requires
   # before it execs anything. Bump with the image if either changes, along
@@ -70,6 +70,6 @@ routerNginx:
   # with the image.
   imageEnv:
     PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-    NGINX_VERSION: "1.30.6"
+    NGINX_VERSION: "1.30.7"
     PKG_RELEASE: "1"
     DYNPKG_RELEASE: "1"

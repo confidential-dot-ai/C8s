@@ -1,27 +1,31 @@
 name: confidential-inference compatibility
 
-# Judges each change on main against confidential-inference's main: would it
-# have to change to move its c8s pin onto this commit? An INCOMPATIBLE verdict
-# is a red run; it blocks nothing. The judge is
+# Judges each pull request against confidential-inference's main: would it
+# have to change to move its c8s pin onto the merged change? An INCOMPATIBLE
+# verdict is a failed job; it blocks nothing. The judge is
 # .github/scripts/confidential-inference-compat.sh.
 
 on:
-  push:
-    branches: [main]
-  workflow_dispatch:
-    inputs:
-      before:
-        description: Judge the dispatched ref's head against this commit
-        required: true
+  pull_request:
 
 permissions:
   contents: read
 
+concurrency:
+  group: confidential-inference-compat-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   judge:
-    name: Judge the change
+    name: Judge the change (advisory)
+    # Dependabot and fork PRs run without secrets.
+    if: >-
+      github.actor != 'dependabot[bot]'
+      && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # Advisory: never blocks the PR, even if the judge itself breaks.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -37,9 +41,11 @@ jobs:
       - name: Judge the change
         shell: bash
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          BEFORE: ${{ github.event.before || inputs.before }}
+          CONFIDENTIAL_INFERENCE_API_KEY: ${{ secrets.CONFIDENTIAL_INFERENCE_API_KEY }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
+          before=$(git merge-base "$BASE" "$HEAD")
           bash .github/scripts/confidential-inference-compat.sh \
             --c8s . --confidential-inference confidential-inference \
-            --before "$BEFORE" --after "$GITHUB_SHA" | tee "$GITHUB_STEP_SUMMARY"
+            --before "$before" --after "$HEAD" | tee "$GITHUB_STEP_SUMMARY"
