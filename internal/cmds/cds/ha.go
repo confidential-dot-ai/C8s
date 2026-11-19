@@ -37,15 +37,16 @@ import (
 // haConfig is a replica's flags: none of it is measured, and a wrong value
 // costs availability, not safety.
 type haConfig struct {
-	self         string
-	runtimeDir   string
-	storeEtcd    string
-	storeMemory  bool
-	gossip       time.Duration
-	peerTimeout  time.Duration
-	storeTimeout time.Duration
-	warnEntries  int
-	warnBytes    int64
+	self           string
+	runtimeDir     string
+	storeEtcd      string
+	storeMemory    bool
+	inputConfigMap string
+	gossip         time.Duration
+	peerTimeout    time.Duration
+	storeTimeout   time.Duration
+	warnEntries    int
+	warnBytes      int64
 }
 
 // startHA builds this replica of the configured set over the CDS's mesh CA,
@@ -96,10 +97,11 @@ func startHA(ctx context.Context, cfg config, mesh *issuer.MeshCA, store *allowl
 		SelfCheck: func(_ context.Context, measurements string) (bool, error) {
 			return ownBuildPasses(serving, measurements, cfg.attestationApiURL)
 		},
-		StoreTimeout: cfg.ha.storeTimeout,
-		Validate:     func(b cdschain.Body) error { return validateEntry(b, cfg.measured.PodImages, mesh, store) },
-		WarnBytes:    cfg.ha.warnBytes,
-		WarnEntries:  cfg.ha.warnEntries,
+		StoreTimeout:   cfg.ha.storeTimeout,
+		InputConfigMap: cfg.ha.inputConfigMap,
+		Validate:       func(b cdschain.Body) error { return validateEntry(b, cfg.measured.PodImages, mesh, store) },
+		WarnBytes:      cfg.ha.warnBytes,
+		WarnEntries:    cfg.ha.warnEntries,
 	}, chainStore)
 	if err != nil {
 		return nil, err
@@ -113,8 +115,8 @@ func startHA(ctx context.Context, cfg config, mesh *issuer.MeshCA, store *allowl
 func validateHAConfig(cfg config) error {
 	ha := cfg.ha
 	if cfg.measured.HA == nil {
-		if ha.self != "" || ha.storeEtcd != "" || ha.storeMemory {
-			return errors.New("--ha-self, --ha-store-etcd and --ha-store-memory serve a replica set, and the configuration has no ha block")
+		if ha.self != "" || ha.storeEtcd != "" || ha.storeMemory || ha.inputConfigMap != "" {
+			return errors.New("--ha-self, --ha-store-etcd, --ha-store-memory and --ha-input-configmap require a configuration with an ha block")
 		}
 		return nil
 	}
