@@ -312,7 +312,11 @@ c8s cds ha verify-policy \
 The command verifies the native signature, canonical policy bytes and saved
 acknowledged floor, then requires fresh, serving status at exactly that
 predecessor. It returns the full artifact hash, the candidate allowlist hash,
-the predecessor and the proposed entry head. An already-held entry is refused;
+the predecessor and the proposed entry head.
+`current_entries` contains the latest held `policy` and `routes` entries, with
+their exact bodies and signatures. A missing type has no entry in the verified
+log; `{}` identifies a bootstrap log without either type. These entries describe
+the held predecessor and do not establish confirmation. An already-held candidate is refused;
 use observation for accepted history. Validation sends only GETs, loads no
 operator key and leaves the artifact, records and cache unchanged.
 

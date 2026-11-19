@@ -16,10 +16,11 @@ import (
 )
 
 type verifiedPolicy struct {
-	ArtifactSHA256 cdschain.Hash `json:"artifact_sha256"`
-	PolicySHA256   cdschain.Hash `json:"policy_sha256"`
-	Predecessor    cdschain.Head `json:"predecessor"`
-	Entry          cdschain.Head `json:"entry"`
+	ArtifactSHA256 cdschain.Hash                    `json:"artifact_sha256"`
+	PolicySHA256   cdschain.Hash                    `json:"policy_sha256"`
+	Predecessor    cdschain.Head                    `json:"predecessor"`
+	Entry          cdschain.Head                    `json:"entry"`
+	CurrentEntries map[cdschain.Type]cdschain.Entry `json:"current_entries"`
 }
 
 func newVerifyPolicyCmd(o *options) *cobra.Command {
@@ -32,6 +33,8 @@ func newVerifyPolicyCmd(o *options) *cobra.Command {
 bytes to match the reviewed --policy-sha256. Replay the log under its historical
 authority and saved acknowledged floor, and require the expected predecessor to
 remain the head reported by a fresh, serving replica.
+current_entries contains the latest held policy and routes bodies and signatures;
+an absent type has no entry in the verified log. This is not confirmation.
 
 This check sends only GETs and changes no local record, cache or input file.
 It loads no operator key and never signs or submits the candidate. --insecure
@@ -112,10 +115,21 @@ func (w *writer) verifyPolicy(
 	if err := history.checkServingHead(status); err != nil {
 		return err
 	}
+	current := make(map[cdschain.Type]cdschain.Entry)
+	for _, held := range history.entries {
+		body, err := held.Decode()
+		if err != nil {
+			return err
+		}
+		if body.Type == cdschain.TypePolicy || body.Type == cdschain.TypeRoutes {
+			current[body.Type] = held
+		}
+	}
 	return printJSON(out, verifiedPolicy{
 		ArtifactSHA256: cdschain.Hash(sha256.Sum256(encoded)),
 		PolicySHA256:   approved,
 		Predecessor:    history.state.Head,
 		Entry:          history.entry,
+		CurrentEntries: current,
 	})
 }

@@ -82,11 +82,26 @@ func candidateDigest(t *testing.T, f *observationTest) string {
 }
 
 func TestVerifyPolicySuccessorWithoutConfirmation(t *testing.T) {
-	for _, kind := range []string{"ordinary", "genesis", "outer whitespace", "existing state", "absent directory", "rotated key"} {
+	for _, kind := range []string{"ordinary", "genesis", "outer whitespace", "existing state", "absent directory", "rotated key", "held policy and routes"} {
 		t.Run(kind, func(t *testing.T) {
 			f := verificationFixture(t)
 			body, _ := f.entry.Decode()
+			current := make(map[cdschain.Type]cdschain.Entry)
 			switch kind {
+			case "held policy and routes":
+				for _, typ := range []cdschain.Type{cdschain.TypePolicy, cdschain.TypeRoutes, cdschain.TypePolicy} {
+					held := body
+					held.Type, held.Seq, held.Prev = typ, uint64(len(f.entries)), f.entries[len(f.entries)-1].Hash()
+					if typ == cdschain.TypeRoutes {
+						held.Payload, _ = json.Marshal(cdschain.Routes{Manifest: []byte(`{"revision":1}`), Token: "router-token"})
+					}
+					entry, err := cdschain.Sign(f.key, held)
+					if err != nil {
+						t.Fatal(err)
+					}
+					f.entries = append(f.entries, entry)
+					current[typ] = entry
+				}
 			case "genesis":
 				f.entries = f.entries[:1]
 			case "rotated key":
@@ -136,6 +151,9 @@ func TestVerifyPolicySuccessorWithoutConfirmation(t *testing.T) {
 			}
 			if result.Entry != f.head() || result.Predecessor != f.target.head || result.PolicySHA256.String() != digest || result.ArtifactSHA256 != cdschain.Hash(sha256.Sum256(f.encoded)) {
 				t.Fatalf("incorrect validated identities: %+v", result)
+			}
+			if !reflect.DeepEqual(result.CurrentEntries, current) {
+				t.Fatalf("current entries must identify the latest held body and signature per type: %+v", result.CurrentEntries)
 			}
 		})
 	}
