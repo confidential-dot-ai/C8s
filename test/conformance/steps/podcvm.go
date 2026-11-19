@@ -228,13 +228,17 @@ func podCreated(ctx context.Context, name string) error {
 		return err
 	}
 	w.tidy()
-	s.created = time.Now()
+	started := time.Now()
 	_, err = kubectl(manifest, "create", "-f", "-")
 	if err := w.admitted(err); err != nil || w.podCVM.refusal != "" {
 		return err
 	}
-	s.uid, err = kubectl(nil, "-n", p.namespace, "get", "pod", p.name, "-o", "jsonpath={.metadata.uid}")
-	return err
+	uid, err := kubectl(nil, "-n", p.namespace, "get", "pod", p.name, "-o", "jsonpath={.metadata.uid}")
+	if err != nil {
+		return err
+	}
+	s.uid, s.created = uid, started
+	return nil
 }
 
 func optInRemoved(ctx context.Context, name string) error {
