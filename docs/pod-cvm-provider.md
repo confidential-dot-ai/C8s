@@ -5,7 +5,14 @@ Pod on a virtual node. The operator then launches one Cloud CVM for that Pod
 UID from a generic launch document that names no pod, verifies that the guest
 has run no containers, delivers the pod through one authenticated assignment,
 and projects verified guest status back to Kubernetes. Deleting the Pod
-terminates its CVM before releasing the provider finalizer.
+terminates its CVM before releasing the provider finalizer. A running Pod's CVM
+is terminated once the deletion's grace period has passed, or after
+`maxDeletionGraceSeconds` if that is shorter, so a delete with the default
+grace period keeps the CVM for 30 seconds; `--grace-period=0 --force`
+terminates it at once, and so does deleting a Pod its CVM has not received
+yet. The guest is not told to stop its containers earlier. A verification
+deadline that passes during the grace period ends it: the Pod reports
+`GuestVerificationTimedOut` and its CVM is terminated then.
 
 Every pod CVM boots generic and receives exactly one pod. An assigned, rebooted
 or terminal VM is never reused for another Pod. Kubernetes workload controllers
@@ -55,6 +62,7 @@ and size placeholders with compatible Cloud values:
   "reservedMemoryMiB": 1024,
   "maxPods": 10,
   "verificationTimeoutSeconds": 600,
+  "maxDeletionGraceSeconds": 300,
   "publicIP": "shared",
   "meshPeers": []
 }
@@ -290,6 +298,12 @@ attested guest status, verifies its Pod identity and maps the application's
 container states back to the original Pod. It preserves the scheduler's
 `PodScheduled` condition and hides the guest-injected mesh endpoint. Failed
 verification withdraws readiness and advertised endpoints.
+
+`maxDeletionGraceSeconds` defaults to 300 (5 minutes), with a permitted range of
+1 to 3600 seconds. A Pod's author sets its `terminationGracePeriodSeconds`, and
+the CVM keeps running and holds its place in `maxPods` throughout the grace
+period of a delete; this maximum bounds that time whatever grace period the
+Pod or the delete carries.
 
 `verificationTimeoutSeconds` defaults to 600 (10 minutes), with a permitted range
 of 30 to 86400 seconds. The initial window begins when the provider persists the

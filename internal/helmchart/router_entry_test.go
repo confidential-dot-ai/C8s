@@ -33,7 +33,7 @@ func TestChartRouterNginxImageIsNotAValue(t *testing.T) {
 	t.Parallel()
 	for _, pin := range []string{
 		"router.nginx.image.digest=sha256:" + strings.Repeat("4", 64),
-		"router.nginx.image.tag=1.30.6-alpine-slim",
+		"router.nginx.image.tag=1.30.7-alpine-slim",
 	} {
 		out, err := helmTemplate(t, "--set-string", pin)
 		if err == nil {

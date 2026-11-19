@@ -10,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/cucumber/godog"
 )
@@ -26,7 +27,8 @@ func registerCDSAPI(sc *godog.ScenarioContext) {
 	sc.Step(`^a caller holds no write token$`, callerHoldsNoToken)
 	sc.Step(`^a caller holds a write token signed with a key that is not an operator key$`, callerHoldsForeignToken)
 	sc.Step(`^that caller sends the CDS a write of a workload entry "([^"]*)" admitting image "([^"]*)" under any argv$`, callerWrites)
-	sc.Step(`^the operator (?:writes|has written) a workload entry "([^"]*)" admitting image "([^"]*)" under any argv$`, operatorWritesAnyArgv)
+	sc.Step(`^the operator writes a workload entry "([^"]*)" admitting image "([^"]*)" under any argv$`, operatorWritesAnyArgv)
+	sc.Step(`^the operator has written a workload entry "([^"]*)" admitting image "([^"]*)" under any argv$`, operatorHasWrittenAnyArgv)
 	sc.Step(`^the operator writes a workload entry "([^"]*)" admitting image "([^"]*)" under any argv and carrying an unknown member$`, operatorWritesUnknownMember)
 	sc.Step(`^the operator has written "([^"]*)"$`, operatorWritesDescribed)
 	sc.Step(`^the operator (?:removes|has removed) the workload entry "([^"]*)"$`, operatorRemoves)
@@ -315,6 +317,27 @@ func operatorWritesAnyArgv(ctx context.Context, name, image string) error {
 		return err
 	}
 	return w.operatorWrite(wr)
+}
+
+// operatorHasWrittenAnyArgv is the write as a precondition, so it must take
+// effect. A CDS without persistence refuses operator tokens issued too soon
+// after it started (allowlist_replace in backends/common.sh), so after a
+// restart the write is sent again, with a new token, while the CDS answers 401.
+func operatorHasWrittenAnyArgv(ctx context.Context, name, image string) error {
+	w := getWorld(ctx)
+	for attempt := 0; ; attempt++ {
+		if err := operatorWritesAnyArgv(ctx, name, image); err != nil {
+			return err
+		}
+		if w.api.lastStatus != http.StatusUnauthorized || !w.cdsRestarted || attempt == 30 {
+			break
+		}
+		time.Sleep(2 * time.Second)
+	}
+	if w.api.lastStatus != http.StatusNoContent {
+		return fmt.Errorf("harness precondition: the CDS answered the write of %q with %d", name, w.api.lastStatus)
+	}
+	return nil
 }
 
 // operatorWritesUnknownMember adds a member no rule of the document names.
