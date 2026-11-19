@@ -15,6 +15,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	hacli "github.com/confidential-dot-ai/c8s/internal/cmds/cdsha"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
@@ -356,11 +357,11 @@ func conditionalWrite(cmd *cobra.Command, c allowlistclient.Client, doc *pkgallo
 	return &newer, nil
 }
 
-// writeFailure names a write that did not land: an unconfirmed one under its
-// own heading, since it may still land, anything else under what the command
-// did not do.
+// writeFailure names a write that failed: one that may have landed, or did
+// and met a conflicting record, under its own heading; anything else under
+// what the command did not do.
 func writeFailure(unconfirmedHeading, refusedHeading string, err error) error {
-	if cmdsutil.ExitStatus(err) == cmdsutil.ExitNotConfirmed {
+	if cmdsutil.ExitStatus(err) == cmdsutil.ExitNotConfirmed || errors.Is(err, hacli.ErrRecordConflict) {
 		return fmt.Errorf("%s: %w", unconfirmedHeading, err)
 	}
 	return fmt.Errorf("%s: %w", refusedHeading, err)
