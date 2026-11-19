@@ -305,21 +305,29 @@ func (r *Reconciler) deletePod(ctx context.Context, pod *corev1.Pod) (ctrl.Resul
 		return ctrl.Result{}, err
 	}
 	var publicationErr error
-	if wait := r.graceRemaining(pod, rec); wait > 0 {
-		if !r.verificationExpired(rec) {
-			if rec.VerificationDeadline != nil {
-				wait = min(wait, rec.VerificationDeadline.Sub(r.now()))
+	if end, held := r.graceEnd(pod, rec); held {
+		// The verification deadline ends the grace period: deleting a Pod
+		// must not keep an unverified guest longer than leaving it would.
+		// It is reported even when the grace period has since passed too.
+		// One reading of the clock decides both, so that time passing between
+		// two readings cannot hide which came first.
+		now := r.now()
+		deadline := rec.VerificationDeadline
+		timedOut := deadline != nil && !now.Before(*deadline) && deadline.Before(end)
+		if wait := end.Sub(now); wait > 0 && !timedOut {
+			if deadline != nil {
+				wait = min(wait, deadline.Sub(now))
 			}
 			return ctrl.Result{RequeueAfter: wait}, nil
 		}
-		// The verification deadline ends the grace period: deleting a Pod
-		// must not keep an unverified guest longer than leaving it would.
-		status := failedStatus(pod, verificationTimeoutReason, r.now())
-		rec.TerminalStatus = &status
-		if err := r.save(ctx, rec, secret); err != nil {
-			return ctrl.Result{}, err
+		if timedOut {
+			status := failedStatus(pod, verificationTimeoutReason, now)
+			rec.TerminalStatus = &status
+			if err := r.save(ctx, rec, secret); err != nil {
+				return ctrl.Result{}, err
+			}
+			publicationErr = errors.Join(r.publishStatus(ctx, pod, status), r.publishEndpoints(ctx, pod, nil))
 		}
-		publicationErr = errors.Join(r.publishStatus(ctx, pod, status), r.publishEndpoints(ctx, pod, nil))
 	}
 	done, err := r.removeInstance(ctx, rec, secret)
 	if err != nil || !done {
@@ -337,22 +345,22 @@ func (r *Reconciler) deletePod(ctx context.Context, pod *corev1.Pod) (ctrl.Resul
 // configuration sets none.
 const defaultMaxDeletionGraceSeconds = 300
 
-// graceRemaining is how long a deleted Pod's instance must still be left
-// running. The API server sets DeletionTimestamp to the end of the grace
-// period and moves it earlier when a later delete shortens it. The Pod's
-// author chooses the grace period, so the configured maximum bounds it.
-// Nothing is left to wait for when the guest was never sent the Pod, so runs
-// no containers, or when the instance's destruction was already decided. The
-// caller ends the wait at the verification deadline.
-func (r *Reconciler) graceRemaining(pod *corev1.Pod, rec *record) time.Duration {
-	if len(rec.Assignment) == 0 || rec.DeleteRequested || rec.Deleted || rec.TerminalStatus != nil {
-		return 0
+// graceEnd is when a deleted Pod's instance need no longer be left running,
+// and whether it is left at all. The API server sets DeletionTimestamp to the
+// end of the grace period and moves it earlier when a later delete shortens
+// it. The Pod's author chooses the grace period, so the configured maximum
+// bounds it. Nothing is left to wait for when the assignment was never sent,
+// so the guest runs no containers, or when the instance's destruction was
+// already decided. The caller ends the wait at the verification deadline.
+func (r *Reconciler) graceEnd(pod *corev1.Pod, rec *record) (time.Time, bool) {
+	if len(rec.Assignment) == 0 || rec.AssignmentUnsent || rec.DeleteRequested || rec.Deleted || rec.TerminalStatus != nil {
+		return time.Time{}, false
 	}
 	end := pod.DeletionTimestamp.Time
 	if grace := pod.DeletionGracePeriodSeconds; grace != nil && *grace > r.cfg.MaxDeletionGraceSeconds {
 		end = end.Add(-time.Duration(*grace-r.cfg.MaxDeletionGraceSeconds) * time.Second)
 	}
-	return end.Sub(r.now())
+	return end, true
 }
 
 // terminalStatus is the phase a deleted pod leaves with: the terminal status
@@ -417,6 +425,9 @@ func (r *Reconciler) publish(ctx context.Context, pod *corev1.Pod, status corev1
 	before := pod.DeepCopy()
 	pod.Status = status
 	if err := r.client.Status().Patch(ctx, pod, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
+		// The caller's Pod keeps the status the API server holds, so that a
+		// later publish of the same status is sent and not taken as done.
+		pod.Status = before.Status
 		return err
 	}
 	r.recordTransition(pod, before.Status.Reason, verified)

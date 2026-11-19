@@ -43,8 +43,12 @@ type record struct {
 	ClientDocument []byte `json:"clientDocument,omitempty"`
 	// Assignment and ServingKey are written together before the assignment
 	// is first sent, and never changed afterwards.
-	Assignment                 []byte            `json:"assignment,omitempty"`
-	ServingKey                 []byte            `json:"servingKey,omitempty"`
+	Assignment []byte `json:"assignment,omitempty"`
+	ServingKey []byte `json:"servingKey,omitempty"`
+	// AssignmentUnsent is set with the assignment and cleared before the
+	// first send, so a record without it holds an assignment the guest may
+	// have received.
+	AssignmentUnsent           bool              `json:"assignmentUnsent,omitempty"`
 	TerminalStatus             *corev1.PodStatus `json:"terminalStatus,omitempty"`
 	VerificationTimeoutSeconds int64             `json:"verificationTimeoutSeconds,omitempty"`
 	VerificationDeadline       *time.Time        `json:"verificationDeadline,omitempty"`
