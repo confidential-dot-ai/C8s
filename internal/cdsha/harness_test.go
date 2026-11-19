@@ -59,13 +59,14 @@ type node struct {
 // set is an in-process replica set: its nodes answer at r<slot>:8443 through
 // a transport that applies faults and, for attested calls, the pins.
 type set struct {
-	t        *testing.T
-	mu       sync.Mutex
-	nodes    []*node // by slot; a replaced slot points at the new instance
-	store    *Memory
-	operator *ecdsa.PrivateKey
-	opPEM    string
-	genesis  cdschain.Entry
+	t            *testing.T
+	mu           sync.Mutex
+	nodes        []*node // by slot; a replaced slot points at the new instance
+	store        *Memory
+	storeTimeout time.Duration
+	operator     *ecdsa.PrivateKey
+	opPEM        string
+	genesis      cdschain.Entry
 	// onAttested runs before each attested request.
 	onAttested func(*http.Request)
 	// replay answers every gossip call to a slot it names with the first
@@ -88,7 +89,12 @@ func endpoints(n int) []string {
 
 func newSet(t *testing.T, n int, builds ...string) *set {
 	t.Helper()
-	s := &set{t: t, store: NewMemory()}
+	return newSetWithStoreTimeout(t, n, time.Second, builds...)
+}
+
+func newSetWithStoreTimeout(t *testing.T, n int, timeout time.Duration, builds ...string) *set {
+	t.Helper()
+	s := &set{t: t, store: NewMemory(), storeTimeout: timeout}
 	s.operator = newKey(t)
 	s.opPEM, _ = cdschain.PublicKeyPEM(&s.operator.PublicKey)
 	s.nodes = make([]*node, n)
@@ -125,7 +131,7 @@ func (s *set) boot(slot int, b string) *node {
 	n.Replica, err = New(Config{
 		Cluster: "lane", Endpoints: endpoints(len(s.nodes)), Self: self,
 		OperatorKeys: []*ecdsa.PublicKey{&s.operator.PublicKey},
-		Gossip:       T, PeerTimeout: T, StoreTimeout: time.Second, WarnEntries: 3,
+		Gossip:       T, PeerTimeout: T, StoreTimeout: s.storeTimeout, WarnEntries: 3,
 		Mesh: mesh,
 		Peer: &http.Client{Transport: s.transport(n, nil)},
 		Attested: func(pins armtls.Pins) (*http.Client, error) {
