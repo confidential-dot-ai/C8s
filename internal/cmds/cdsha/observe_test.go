@@ -14,11 +14,14 @@ import (
 	"os"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/confidential-dot-ai/c8s/internal/cdschain"
 	haapi "github.com/confidential-dot-ai/c8s/internal/cdsha"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 )
 
 type observationTest struct {
@@ -77,7 +80,11 @@ func (f *observationTest) observe(t *testing.T) error {
 	}
 	data, entry, err := readSubmittedPolicy(f.path, f.target)
 	if err == nil {
-		err = f.w.observePolicy(context.Background(), &f.output, f.target, data, entry)
+		var observed observedPolicy
+		observed, err = f.w.readObservedPolicy(context.Background(), f.target, data, entry)
+		if err == nil {
+			err = f.w.o.reportObservedPolicy(&f.output, f.target.genesis, observed)
+		}
 	}
 	after, readErr := os.ReadFile(f.path)
 	if readErr != nil || !bytes.Equal(after, f.encoded) || f.posts != 0 || f.w.key != nil || f.w.chain != nil {
@@ -289,5 +296,89 @@ func TestObservePolicyRequiresPins(t *testing.T) {
 		if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), name) {
 			t.Fatalf("expected %s refusal: %v", name, err)
 		}
+	}
+}
+
+func TestObservePolicyChecksReplicaEndpoints(t *testing.T) {
+	for _, kind := range []string{"second confirms", "neither confirms", "invalid first chain", "invalid confirmation", "record failure", "cancelled"} {
+		t.Run(kind, func(t *testing.T) {
+			f := newObservationTest(t)
+			o := f.w.o
+			o.URL, o.endpoints = "", nil
+			o.genesisPin = f.target.genesis.String()
+			o.MeasurementsConfig = testutil.CDSPinFile(t)
+			o.Verifier, o.Timeout, o.DirectCDS = testutil.ApproveAll(), time.Second, true
+			var reads [2]atomic.Int32
+			for slot := range 2 {
+				status := f.status
+				entries := append([]cdschain.Entry(nil), f.entries...)
+				if slot == 0 || kind == "neither confirms" {
+					status.Confirmed = nil
+				}
+				if slot == 0 && kind == "invalid first chain" {
+					entries[0].Sig = "invalid"
+				}
+				if slot == 1 && kind == "invalid confirmation" {
+					head := f.head()
+					head.Hash = cdschain.Hash{9}
+					status.Confirmed = []cdschain.Head{head}
+				}
+				if kind == "record failure" {
+					status.Confirmed = []cdschain.Head{f.head()}
+					o.persist = failedPersist
+				}
+				mux := http.NewServeMux()
+				mux.HandleFunc(haapi.ChainPath, func(w http.ResponseWriter, r *http.Request) {
+					reads[slot].Add(1)
+					if r.Method != http.MethodGet {
+						t.Error("observation sent a mutation")
+					}
+					_ = json.NewEncoder(w).Encode(haapi.Chain{Entries: entries})
+				})
+				mux.HandleFunc(haapi.StatusPath, func(w http.ResponseWriter, r *http.Request) {
+					if r.Method != http.MethodGet {
+						t.Error("observation sent a mutation")
+					}
+					_ = json.NewEncoder(w).Encode(status)
+				})
+				server := testutil.NewARMTLSServer(t, mux)
+				o.endpoints = append(o.endpoints, strings.TrimPrefix(server.URL, "https://"))
+			}
+			encoded, err := f.entry.Encode()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(f.path, encoded, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cmd := newObservePolicyCmd(o)
+			cmd.SilenceUsage = true
+			cmd.SetArgs([]string{"--cluster", f.target.cluster, "--expect-head", fmt.Sprintf("%d:%s", f.target.head.Seq, f.target.head.Hash), "--file", f.path})
+			cmd.SetOut(&f.output)
+			cmd.SetErr(io.Discard)
+			if kind == "cancelled" {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				cmd.SetContext(ctx)
+			}
+			err = cmd.Execute()
+			success := kind == "second confirms" || kind == "invalid first chain"
+			if (err == nil) != success || (f.output.Len() > 0) != success {
+				t.Fatalf("observation: %v, output %q", err, &f.output)
+			}
+			if kind == "neither confirms" && cmdsutil.ExitStatus(err) != cmdsutil.ExitNotConfirmed {
+				t.Fatalf("missing confirmation lost uncertainty: %v", err)
+			}
+			if kind == "invalid confirmation" && cmdsutil.ExitStatus(err) != 1 {
+				t.Fatalf("invalid confirmation was reported as uncertainty: %v", err)
+			}
+			if (kind == "record failure" || kind == "cancelled") && reads[1].Load() != 0 {
+				t.Fatal("local failure or cancellation tried another endpoint")
+			}
+			record, readErr := o.record(f.target.cluster)
+			if readErr != nil || (record != nil) != success || (success && record.Acknowledged != f.head()) {
+				t.Fatalf("saved floor: %+v, %v", record, readErr)
+			}
+		})
 	}
 }
