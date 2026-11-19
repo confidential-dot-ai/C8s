@@ -225,7 +225,7 @@ func TestRun_ErrorPaths(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if err := store.Local().StartJournal(); err != nil {
+				if err := store.StartJournal(); err != nil {
 					t.Fatal(err)
 				}
 				store.Close()

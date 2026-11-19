@@ -17,7 +17,7 @@ func TestParsePinsAnnouncesTheResolvedSet(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
 	t.Cleanup(func() { slog.SetDefault(previous) })
 	cfg := Config{MeasurementsConfigJSON: testutil.CDSPinDocument(testutil.TestMeasurement, testutil.CDSLaunchFile)}
-	if _, err := cfg.ParsePins(t.Context()); err != nil {
+	if _, err := cfg.ParsePins(); err != nil {
 		t.Fatalf("ParsePins: %v", err)
 	}
 	line := logged.String()
@@ -29,19 +29,19 @@ func TestParsePinsAnnouncesTheResolvedSet(t *testing.T) {
 // Where no node pins CDS and nothing names a pin, the sidecar reaches no CDS
 // it can hold to anything.
 func TestParsePinsRefusesAnUnpinnedCDS(t *testing.T) {
-	if _, err := (&Config{}).ParsePins(t.Context()); err == nil || !strings.Contains(err.Error(), "pins no image") {
+	if _, err := (&Config{}).ParsePins(); err == nil || !strings.Contains(err.Error(), "pins no image") {
 		t.Fatalf("error = %v, want an unpinned-CDS refusal", err)
 	}
 }
 
 func TestParsePinsAcceptsAPinnedCDS(t *testing.T) {
 	cfg := Config{MeasurementsConfigJSON: testutil.CDSPinDocument(testutil.TestMeasurement, testutil.CDSLaunchFile)}
-	got, err := cfg.ParsePins(t.Context())
+	got, err := cfg.ParsePins()
 	if err != nil {
 		t.Fatalf("ParsePins: %v", err)
 	}
-	if images := got.Current().Images; len(images) != 1 || len(images[0].LaunchFile) == 0 {
-		t.Fatalf("pins = %+v, want the launch-bound image", images)
+	if len(got.Images) != 1 || len(got.Images[0].LaunchFile) == 0 {
+		t.Fatalf("pins = %+v, want the launch-bound image", got.Images)
 	}
 }
 
@@ -50,7 +50,7 @@ func TestParsePinsAcceptsAPinnedCDS(t *testing.T) {
 func TestParsePinsRejectsAPinWithoutALaunchBinding(t *testing.T) {
 	unbound := `{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"cds","measurement":"` + testutil.TestMeasurement + `"}]}`
 	cfg := Config{MeasurementsConfigJSON: unbound}
-	if _, err := cfg.ParsePins(t.Context()); err == nil || !strings.Contains(err.Error(), "launch file") {
+	if _, err := cfg.ParsePins(); err == nil || !strings.Contains(err.Error(), "launch file") {
 		t.Fatalf("error = %v, want a launch-binding refusal", err)
 	}
 }
@@ -63,7 +63,7 @@ func TestParsePinsRejectsAnUnusablePinSource(t *testing.T) {
 		"not a pin":    {MeasurementsConfigJSON: `{}`},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := cfg.ParsePins(t.Context()); err == nil {
+			if _, err := cfg.ParsePins(); err == nil {
 				t.Fatal("an unusable pin source was accepted")
 			}
 		})

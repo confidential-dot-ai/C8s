@@ -180,8 +180,8 @@ func setupLogging(verbose bool) {
 
 // newCDSClient builds the attest and allowlist clients over one armTLS-pinned
 // HTTP client, so the policy watch trusts CDS exactly as issuance does.
-func newCDSClient(ctx context.Context, cfg config) (attestclient.Client, allowlistclient.Client, error) {
-	httpClient, err := cdsHTTPClient(ctx, cfg)
+func newCDSClient(cfg config) (attestclient.Client, allowlistclient.Client, error) {
+	httpClient, err := cdsHTTPClient(cfg)
 	if err != nil {
 		return attestclient.Client{}, allowlistclient.Client{}, err
 	}
@@ -190,7 +190,7 @@ func newCDSClient(ctx context.Context, cfg config) (attestclient.Client, allowli
 	return client, allowlistclient.NewClientWithHTTP(cfg.CDSURL, httpClient), nil
 }
 
-func cdsHTTPClient(ctx context.Context, cfg config) (*http.Client, error) {
+func cdsHTTPClient(cfg config) (*http.Client, error) {
 	parsed, err := url.Parse(cfg.CDSURL)
 	if err != nil {
 		return nil, fmt.Errorf("--cds-url: %w", err)
@@ -204,19 +204,19 @@ func cdsHTTPClient(ctx context.Context, cfg config) (*http.Client, error) {
 		return nil, fmt.Errorf("--cds-url must use https (armTLS); got scheme %q", parsed.Scheme)
 	}
 
-	pins, err := cdsPins(ctx, cfg)
+	pins, err := cdsPins(cfg)
 	if err != nil {
 		return nil, err
 	}
-	client, err := armtls.NewRefreshingHTTPClient(pins, cfg.AttestationApiURL)
+	client, err := armtls.NewVerifyingHTTPClient(pins, cfg.AttestationApiURL)
 	if err != nil {
 		return nil, fmt.Errorf("cds armTLS client: %w", err)
 	}
 	return client, nil
 }
 
-func cdsPins(ctx context.Context, cfg config) (armtls.PinSource, error) {
-	return cmdsutil.ClientCDSPins(ctx, workloadclaims.CDSPinsPath,
+func cdsPins(cfg config) (armtls.Pins, error) {
+	return cmdsutil.ClientCDSPins(workloadclaims.CDSPinsPath,
 		cmdsutil.ImagePolicySource{
 			File: cfg.MeasurementsConfig,
 			JSON: cfg.MeasurementsConfigJSON,
@@ -275,7 +275,7 @@ func run(ctx context.Context, cfg config) error {
 
 	ctx = cmdsutil.WatchNodeIP(ctx, rawAttestationURL, attestationURL)
 
-	client, policyClient, err := newCDSClient(ctx, cfg)
+	client, policyClient, err := newCDSClient(cfg)
 	if err != nil {
 		return err
 	}

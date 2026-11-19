@@ -10,8 +10,8 @@ import (
 )
 
 // SignDetached signs sha256(data) with key: ASN.1 DER, base64-encoded. It
-// signs the operator-signed objects a cluster carries rather than requests
-// (internal/cdsdecree) — a smaller counterpart to the JWT-based Authorization
+// signs the operator-signed objects a cluster carries rather than requests —
+// a smaller counterpart to the JWT-based Authorization
 // scheme this package otherwise implements, over whole bytes rather than one
 // request.
 func SignDetached(key *ecdsa.PrivateKey, data []byte) (string, error) {

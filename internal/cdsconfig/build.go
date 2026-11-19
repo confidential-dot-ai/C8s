@@ -29,8 +29,6 @@ type Inputs struct {
 	// LeafDNSNames and LeafDNSPatterns are the DNS SAN rules CDS issues under.
 	LeafDNSNames    []string
 	LeafDNSPatterns []string
-	// HA is the replica set the cluster's CDS runs as; a zero one the singleton.
-	HA HA
 	// KMS is where pod secret release is brokered to; nil serves no pod secrets.
 	KMS *KMS
 	// ManifestPath, Family and VCPUs select the CDS guest image the VM boots
@@ -59,7 +57,6 @@ func Build(in Inputs) (config, pin []byte, err error) {
 		NodeCIDRs:       in.NodeCIDRs,
 		LeafDNSNames:    in.LeafDNSNames,
 		LeafDNSPatterns: in.LeafDNSPatterns,
-		HA:              in.HA,
 		KMS:             in.KMS,
 	})
 	if err != nil {

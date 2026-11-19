@@ -18,13 +18,12 @@ import (
 )
 
 // testCDS is the CDS block a staged document carries: the cluster's CDS on
-// another TEE family than this node's, at the pin floor its launch named.
+// another TEE family than this node's.
 func testCDS(t *testing.T) cmdsutil.CDS {
 	t.Helper()
 	return cmdsutil.CDS{
 		Address:      "cds.example.org:8443",
 		Measurements: string(externalCDSPin(t)),
-		PinFloor:     9,
 	}
 }
 
@@ -99,10 +98,6 @@ func TestPreparePreservesTheMeasuredFloor(t *testing.T) {
 	pull := ga["pull"].(map[string]any)
 	if pull["url"] != cmdsutil.CDSURL(cds.Address) || pull["cds_measurements_config"] != PublicDir+"/cds.json" || pull["timeout"] != "30s" {
 		t.Fatalf("bad pull config: %v", pull)
-	}
-	// The floor must arrive as the number the enforcer reads.
-	if floor := publishedPinFloor(t, pull); floor != cds.PinFloor {
-		t.Fatalf("pull cds_pin_floor = %d, want the document's %d", floor, cds.PinFloor)
 	}
 }
 
@@ -425,19 +420,3 @@ const meshPolicy = `mesh:
 
 // meshFloor is the baked config of a node, as the image always writes one.
 const meshFloor = floor + meshPolicy
-
-// publishedPinFloor is the floor the enforcer reads out of the pull section.
-func publishedPinFloor(t *testing.T, pull map[string]any) cmdsutil.ClusterVersion {
-	t.Helper()
-	data, err := yaml.Marshal(pull)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var read struct {
-		PinFloor cmdsutil.ClusterVersion `yaml:"cds_pin_floor"`
-	}
-	if err := yaml.Unmarshal(data, &read); err != nil {
-		t.Fatal(err)
-	}
-	return read.PinFloor
-}

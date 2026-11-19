@@ -9,12 +9,28 @@ import (
 	"sync"
 	"time"
 
+	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/pkg/secretbroker"
 )
 
 // brokerCertTTL is the lifetime of a broker certificate. One is reissued when
 // half of it has passed or the mesh CA certificate changed.
 const brokerCertTTL = time.Hour
+
+// meshCA is the CA a CDS issues under; the second answer reports whether it
+// may issue now.
+type meshCA interface {
+	Current() (issuer.CurrentCA, bool)
+}
+
+// ownCA is the mesh CA a CDS mints at its start, which it always issues under.
+type ownCA struct {
+	*issuer.MeshCA
+}
+
+func (o ownCA) Current() (issuer.CurrentCA, bool) {
+	return o.MeshCA.Current(), true
+}
 
 // secretBroker holds this replica's broker key, generated in memory at start
 // and never shared with another replica, and the certificate the mesh CA

@@ -53,7 +53,6 @@ func TestNewWritesTheDocumentItsFlagsName(t *testing.T) {
 		"--out", out,
 		"--cds-address", "cds.acme.example:8443",
 		"--cds-pin", pinPath,
-		"--cds-pin-floor", "3",
 		"--tls-san", "c8s.acme.example",
 		"--router-hostname", "api.acme.example",
 		"--acme-email", "ops@acme.example",
@@ -71,8 +70,8 @@ func TestNewWritesTheDocumentItsFlagsName(t *testing.T) {
 	}
 	pin, _ := os.ReadFile(pinPath)
 	ca, _ := os.ReadFile(caPath)
-	if doc.CDS.Address != "cds.acme.example:8443" || doc.CDS.Measurements != string(pin) || doc.CDS.PinFloor != 3 {
-		t.Fatalf("cds = %+v, want the flags' address, floor and the pin file's bytes", doc.CDS)
+	if doc.CDS.Address != "cds.acme.example:8443" || doc.CDS.Measurements != string(pin) {
+		t.Fatalf("cds = %+v, want the flags' address and the pin file's bytes", doc.CDS)
 	}
 	if doc.TLSSAN != "c8s.acme.example" {
 		t.Fatalf("tlsSAN = %q, want the flag's", doc.TLSSAN)

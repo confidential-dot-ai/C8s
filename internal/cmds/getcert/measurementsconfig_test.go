@@ -10,15 +10,14 @@ import (
 // CDS VM: a document pinning its image alone admits any of them.
 func TestCDSPinsRequireALaunchBinding(t *testing.T) {
 	bound := testutil.CDSPinDocument(testutil.TestMeasurement, testutil.CDSLaunchFile)
-	pins, err := cdsPins(t.Context(), config{MeasurementsConfigJSON: bound})
+	pins, err := cdsPins(config{MeasurementsConfigJSON: bound})
 	if err != nil {
 		t.Fatal(err)
 	}
-	policy := pins.Current().Policy()
-	if len(policy.Images) != 1 || len(policy.Images[0].LaunchFile) == 0 {
-		t.Fatalf("pins = %+v, want the launch-bound image", policy.Images)
+	if len(pins.Images) != 1 || len(pins.Images[0].LaunchFile) == 0 {
+		t.Fatalf("pins = %+v, want the launch-bound image", pins.Images)
 	}
-	if len(policy.Measurements) != 0 || len(policy.Registers) != 0 {
+	if len(pins.Measurements) != 0 || len(pins.Registers) != 0 {
 		t.Fatal("complete policy produced a second flat fallback")
 	}
 
@@ -31,7 +30,7 @@ func TestCDSPinsRequireALaunchBinding(t *testing.T) {
 		"not a pin at all": {MeasurementsConfigJSON: `{}`},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := cdsPins(t.Context(), cfg); err == nil {
+			if _, err := cdsPins(cfg); err == nil {
 				t.Fatal("a pin that is not one CDS VM's identity was accepted")
 			}
 		})

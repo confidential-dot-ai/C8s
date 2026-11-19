@@ -14,7 +14,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/confidential-dot-ai/c8s/internal/issuer"
+	"github.com/confidential-dot-ai/attestation-go/remote"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
@@ -210,7 +210,7 @@ func TestAttest_SandboxToken_InventoryOutsideNodeRangesIsNotDialed(t *testing.T)
 func TestPodAttestIsNotAdmittedByANodePin(t *testing.T) {
 	p := podTestClaims(t, wlDigestA)
 	h, _ := podTestHandler(t, p)
-	h.NodeImages = certifying(tdxImagePin(t, "node", testMRTD, testRTMR1, testRTMR2))
+	h.Images = []remote.ImagePin{tdxImagePin(t, "node", testMRTD, testRTMR1, testRTMR2)}
 	h.PodImages[0].Anchor = []byte("another launch key")
 
 	wantRefusal(t, postPodRequest(t, h, podRequest(t, h, p)), http.StatusForbidden, types.ErrorCodeMeasurementDenied)
@@ -251,27 +251,10 @@ func TestPodAttestStampsTheSnapshotItsGateUsed(t *testing.T) {
 	}
 }
 
-// changingMeshCA answers every read with a CA no earlier read answered, as a
-// replica whose mesh CA changes between any two reads would.
-type changingMeshCA struct {
-	t *testing.T
-}
-
-func (m changingMeshCA) Current() (issuer.CurrentCA, bool) {
-	m.t.Helper()
-	mesh, err := issuer.NewMeshCA("test ca", 2*issuer.MaxLeafTTL)
-	if err != nil {
-		m.t.Fatalf("new mesh ca: %v", err)
-	}
-	return mesh.Current(), true
-}
-
-// The CA returned with a leaf is the CA that signed it, however often the mesh
-// CA changes while the request is in flight.
+// The CA returned with a leaf is the CA that signed it.
 func TestAttest_ReturnsTheCAThatSignedTheLeaf(t *testing.T) {
 	stub := newStubAttestationApi(t, testLaunchDigest)
 	h := newTestAttestHandler(t, stub.URL(), nil)
-	h.MeshCA = changingMeshCA{t: t}
 	csrPEM, _ := generateCSR(t)
 
 	w := postAttest(t, h, issueChallenge(t, h), csrPEM)

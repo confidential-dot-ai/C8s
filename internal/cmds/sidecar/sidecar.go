@@ -113,8 +113,8 @@ func (c *Config) Validate() error {
 
 // ParsePins resolves the pins this sidecar holds its CDS to: the node's policy
 // where the enforcer mounts it, otherwise --image-policy-file.
-func (c *Config) ParsePins(ctx context.Context) (armtls.PinSource, error) {
-	return cmdsutil.ClientCDSPins(ctx, workloadclaims.CDSPinsPath,
+func (c *Config) ParsePins() (armtls.Pins, error) {
+	return cmdsutil.ClientCDSPins(workloadclaims.CDSPinsPath,
 		cmdsutil.ImagePolicySource{
 			File: c.MeasurementsConfig,
 			JSON: c.MeasurementsConfigJSON,

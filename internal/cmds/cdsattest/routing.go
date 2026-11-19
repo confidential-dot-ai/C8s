@@ -119,13 +119,16 @@ type routingEngine struct {
 
 // newRoutingEngine builds the engine; its routing listener refuses requests on
 // connections whose binding in bindings no longer holds.
-func newRoutingEngine(ctx context.Context, cfg config, bindings *Bindings, logger *slog.Logger) (*routingEngine, error) {
+func newRoutingEngine(cfg config, bindings *Bindings, logger *slog.Logger) (*routingEngine, error) {
 	r := cfg.routing
-	pins, err := routeSourcePins(ctx, r, workloadclaims.RouterCDSPinsPath)
+	values, err := (cmdsutil.ImagePolicySource{File: r.imagePolicyFile}).Values()
 	if err != nil {
 		return nil, err
 	}
-	httpClient, err := armtls.NewRefreshingHTTPClient(pins, cfg.attestationAPIURL)
+	if _, err := cmdsutil.CDSLaunchFile(values); err != nil {
+		return nil, fmt.Errorf("--image-policy-file %w", err)
+	}
+	httpClient, err := armtls.NewVerifyingHTTPClient(armtls.Pins(values.Policy()), cfg.attestationAPIURL) // A1
 	if err != nil {
 		return nil, fmt.Errorf("CDS armTLS client: %w", err)
 	}
@@ -171,27 +174,6 @@ func newRoutingEngine(ctx context.Context, cfg config, bindings *Bindings, logge
 			Logger:     logger,
 		}),
 	}, nil
-}
-
-// routeSourcePins is the set the poller holds its CDS to: the pins the node's
-// enforcer mounts at followed, so the router keeps polling across a CDS image
-// roll, and --image-policy-file where the node mounts none.
-func routeSourcePins(ctx context.Context, r routingConfig, followed string) (armtls.PinSource, error) {
-	node, err := cmdsutil.FollowNodePins(ctx, followed)
-	if err != nil {
-		return nil, fmt.Errorf("the node's followed CDS pins: %w", err)
-	}
-	if node != nil {
-		return node, nil
-	}
-	values, err := (cmdsutil.ImagePolicySource{File: r.imagePolicyFile}).Values()
-	if err != nil {
-		return nil, err
-	}
-	if _, err := cmdsutil.CDSLaunchFile(values); err != nil {
-		return nil, fmt.Errorf("--image-policy-file %w", err)
-	}
-	return armtls.FixedPins(values), nil
 }
 
 // checkNodeVerifier binds this router to the verifier its node chose, as
