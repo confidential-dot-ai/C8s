@@ -80,7 +80,7 @@ func BindFlags(pf *pflag.FlagSet, o *Options) {
 	pf.StringVar(&o.URL, "url", "", urlHelp)
 	cmdsutil.BindImagePolicyFlags(pf, &o.MeasurementsConfig, nil, "pins the endpoint; a direct CDS URL needs this and every entry must bind the launch file CDS runs on")
 	pf.DurationVar(&o.Timeout, "timeout", 15*time.Second, "per-request timeout")
-	pf.StringVar(&o.OperatorKey, "operator-key", "", "operator EC private key PEM file, whose public key is pinned on CDS via --operator-keys (env "+EnvOperatorKey+"); required for writes")
+	pf.StringVar(&o.OperatorKey, "operator-key", "", "operator EC private key PEM file, whose public key is pinned on CDS via --operator-keys (env "+EnvOperatorKey+"); required for commands that sign requests or entries")
 	pf.BoolVar(&o.Insecure, "insecure", false, "dev/test only: allow a plaintext http:// CDS URL, skipping armTLS attestation of CDS")
 }
 

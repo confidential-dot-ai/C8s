@@ -62,6 +62,20 @@ type writer struct {
 // writer writes with --operator-key through the replica of --url, or the
 // first replica of --endpoints that serves.
 func (o *options) writer(ctx context.Context) (*writer, error) {
+	key, err := o.OperatorPrivateKey()
+	if err != nil {
+		return nil, err
+	}
+	w, err := o.connection(ctx)
+	if err != nil {
+		return nil, err
+	}
+	w.key = key
+	return w, nil
+}
+
+// connection selects an attested replica without reading an operator key.
+func (o *options) connection(ctx context.Context) (*writer, error) {
 	urls, err := o.urls()
 	if err != nil {
 		return nil, err
@@ -75,12 +89,8 @@ func (o *options) writer(ctx context.Context) (*writer, error) {
 		}
 		url = urls[i]
 	}
-	key, err := o.OperatorPrivateKey()
-	if err != nil {
-		return nil, err
-	}
 	client, err := o.client(ctx, url)
-	return &writer{o: o, url: url, client: client, key: key}, err
+	return &writer{o: o, url: url, client: client}, err
 }
 
 // verified reads the replica's chain, verifies it from its genesis, and
@@ -297,14 +307,15 @@ func (w *writer) append(ctx context.Context, state *cdschain.State, typ cdschain
 	if err != nil {
 		return head, err
 	}
-	if head.Cluster != state.Cluster || head.Seq != state.Head.Seq+1 {
-		return head, fmt.Errorf("the replica answered done for head %d of %q, not %d of %q: %w", head.Seq, head.Cluster, state.Head.Seq+1, state.Cluster, ErrNotConfirmed)
+	return head, w.o.complete(state.Genesis, head)
+}
+
+func (o *options) complete(genesis cdschain.Hash, head cdschain.Head) error {
+	if err := o.acknowledge(genesis, head); err != nil {
+		return recordFailure(fmt.Sprintf("CDS confirmed head %d (%s)", head.Seq, head.Hash), err)
 	}
-	if err := w.o.acknowledge(state.Genesis, head); err != nil {
-		return head, recordFailure(fmt.Sprintf("CDS confirmed head %d (%s)", head.Seq, head.Hash), err)
-	}
-	fmt.Fprintf(os.Stderr, "committed head %d (%s)\n", head.Seq, head.Hash)
-	return head, nil
+	fmt.Fprintf(os.Stderr, "confirmed head %d (%s)\n", head.Seq, head.Hash)
+	return nil
 }
 
 // errHeadMoved is a 409: the replica's head moved past the entry's prev.
@@ -312,7 +323,7 @@ var errHeadMoved = errors.New("the chain's head moved")
 
 // Submit posts e. Only a 200 is done; a 202, a 5xx other than 503, or no
 // answer after the entry left, is ErrNotConfirmed; a 4xx (a 409 is
-// errHeadMoved) or a 503 applied nothing.
+// errHeadMoved) or a 503 refuses this request without undoing earlier acceptance.
 func Submit(ctx context.Context, client *http.Client, url string, e cdschain.Entry) (cdschain.Head, error) {
 	body, err := json.Marshal(e)
 	if err != nil {
@@ -321,6 +332,19 @@ func Submit(ctx context.Context, client *http.Client, url string, e cdschain.Ent
 	if len(body) > cdschain.MaxEntryBytes {
 		return cdschain.Head{}, fmt.Errorf("the entry is %d bytes, above the %d a replica takes", len(body), cdschain.MaxEntryBytes)
 	}
+	b, err := e.Decode()
+	if err != nil {
+		return cdschain.Head{}, err
+	}
+	return submitEncoded(ctx, client, url, body, cdschain.Head{
+		V:       b.V,
+		Cluster: b.Cluster,
+		Seq:     b.Seq,
+		Hash:    e.Hash(),
+	})
+}
+
+func submitEncoded(ctx context.Context, client *http.Client, url string, body []byte, expected cdschain.Head) (cdschain.Head, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url+haapi.EntriesPath, bytes.NewReader(body))
 	if err != nil {
 		return cdschain.Head{}, err
@@ -330,19 +354,19 @@ func Submit(ctx context.Context, client *http.Client, url string, e cdschain.Ent
 		return cdschain.Head{}, fmt.Errorf("no answer to the write (%w): %w", err, ErrNotConfirmed)
 	}
 	defer resp.Body.Close()
-	answer, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	answer, err := io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
 	var head cdschain.Head
 	switch {
 	case err != nil:
 		return head, fmt.Errorf("the answer to the write broke off (%w): %w", err, ErrNotConfirmed)
-	case resp.StatusCode == http.StatusOK && json.Unmarshal(answer, &head) == nil && head.Hash == e.Hash():
+	case resp.StatusCode == http.StatusOK && len(answer) <= 1<<20 && cdschain.DecodeStrict(answer, &head) == nil && head == expected:
 		return head, nil
 	case resp.StatusCode == http.StatusConflict:
-		return head, fmt.Errorf("the replica refused the entry, nothing was applied: %d %s: %w", resp.StatusCode, bytes.TrimSpace(answer), errHeadMoved)
+		return head, fmt.Errorf("the replica refused this request; earlier acceptance is unchanged: %d %s: %w", resp.StatusCode, bytes.TrimSpace(answer), errHeadMoved)
 	// A replica answers 503 only before the swap (see cdsha.Replica.swap),
 	// and a 4xx before it takes the entry.
 	case resp.StatusCode >= 400 && resp.StatusCode < 500, resp.StatusCode == http.StatusServiceUnavailable:
-		return head, fmt.Errorf("the replica refused the entry, nothing was applied: %d %s", resp.StatusCode, bytes.TrimSpace(answer))
+		return head, fmt.Errorf("the replica refused this request; earlier acceptance is unchanged: %d %s", resp.StatusCode, bytes.TrimSpace(answer))
 	}
 	return head, fmt.Errorf("%d %s: %w", resp.StatusCode, bytes.TrimSpace(answer), ErrNotConfirmed)
 }
