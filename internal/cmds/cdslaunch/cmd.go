@@ -14,24 +14,25 @@ import (
 
 // options are one cluster's CDS settings as the operator supplies them.
 type options struct {
-	dir             string
-	clusterID       string
-	operatorKeys    string
-	allowlistSeed   string
-	workloads       string
-	nodePins        string
-	podImagePolicy  string
-	nodeCIDRs       []string
-	podCIDRs        []string
-	serviceCIDRs    []string
-	leafDNSNames    []string
-	leafDNSPatterns []string
-	manifest        string
-	platform        string
-	vcpus           []int
-	kmsURL          string
-	kmsTLSKey       string
-	haEndpoints     []string
+	dir              string
+	clusterID        string
+	operatorKeys     string
+	allowlistSeed    string
+	workloads        string
+	nodePins         string
+	podImagePolicy   string
+	nodeCIDRs        []string
+	podCIDRs         []string
+	serviceCIDRs     []string
+	leafDNSNames     []string
+	leafDNSPatterns  []string
+	manifest         string
+	platform         string
+	vcpus            []int
+	kmsURL           string
+	kmsTLSKey        string
+	haEndpoints      []string
+	haInputConfigMap string
 }
 
 func NewCmd() *cobra.Command {
@@ -89,6 +90,7 @@ per --vcpus count the VM may boot with.`,
 	f.StringVar(&opts.platform, "platform", "", "TEE platform the CDS VM runs on: sev-snp or tdx")
 	f.IntSliceVar(&opts.vcpus, "vcpus", nil, "SEV-SNP only: a vCPU count the CDS VM may boot with, one pin entry each; repeatable")
 	f.StringArrayVar(&opts.haEndpoints, "ha-endpoint", nil, "<host>:<port> one replica of a stateless CDS serves on (1, 3 or 5); repeatable, in slot order")
+	f.StringVar(&opts.haInputConfigMap, "ha-input-configmap", "", "optional signed policy/routes input ConfigMap in the store credential's namespace; requires --ha-endpoint and is bound by the launch pin")
 	cmdsutil.RequireFlags(cmd,
 		"out",
 		"cluster-id",

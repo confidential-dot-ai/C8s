@@ -32,7 +32,6 @@ Replica flags (none of them is measured; a wrong value costs availability, not s
 | `--ha-self` | this replica's endpoint. Without it, the replica asks every endpoint for its status and takes the one that names its own member key |
 | `--ha-store-etcd` / `--ha-runtime-dir` | an etcd client file, given directly or as `etcd.yaml` of the runtime disk. Without it, the store is the Kubernetes API of the cluster's control plane, reached with the credential `c8s cds ha store-credential` posts |
 | `--ha-store-memory` | a single replica keeps the chain in its own memory |
-| `--ha-input-configmap` | optional signed policy/routes input in the Kubernetes store credential's namespace; empty disables consumption |
 | `--ha-gossip-interval` | T (default 2s) |
 | `--ha-peer-timeout`, `--ha-store-timeout` | per-exchange and per-store-call timeouts |
 | `--ha-chain-warn-entries`, `--ha-chain-warn-bytes` | the chain-size warning thresholds (an ERROR is logged at each multiple; v1 never prunes) |
@@ -44,9 +43,14 @@ Each replica must reach the API server it names.
 
 ### Signed policy input from Kubernetes
 
-With the Kubernetes chain store, start each replica with
-`--ha-input-configmap policy-input`. Use a ConfigMap name outside the reserved
-`cds-<cluster>-` prefix. Etcd and memory stores do not support this input.
+With the Kubernetes chain store, generate the CDS launch configuration with
+`c8s cds config new --ha-input-configmap policy-input` alongside its required
+inputs and `--ha-endpoint`. This writes the optional `ha.inputConfigMap` field;
+an absent or empty field disables consumption. The verified launch file selects
+the input, with no runtime override. Changing its name changes the launch-file
+binding: regenerate the configuration and pin before launching the replacement.
+Use a ConfigMap name outside the reserved `cds-<cluster>-` prefix. Etcd and memory
+stores do not support this input.
 Install the usual store credential and establish genesis first. The consumer
 waits until the replica serves; replacing the credential updates its API client
 and namespace for subsequent polls.
