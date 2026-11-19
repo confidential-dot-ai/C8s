@@ -318,7 +318,7 @@ func testNodeImageBootstrap(t *testing.T, seed []byte, platform string) {
 		"@MESH_DIGEST@":     "sha256:" + strings.Repeat("1b", 32),
 		"@OPERATOR_REPO@":   "ghcr.io/confidential-dot-ai/c8s-operator",
 		"@OPERATOR_DIGEST@": "sha256:" + strings.Repeat("2c", 32),
-		"@ROUTER_REPO@":     "docker.io/nginxinc/nginx-unprivileged",
+		"@ROUTER_REPO@":     "docker.io/nginx/nginx-unprivileged",
 		"@ROUTER_DIGEST@":   "sha256:" + strings.Repeat("3d", 32),
 	} {
 		floor = bytes.ReplaceAll(floor, []byte(placeholder), []byte(value))
