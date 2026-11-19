@@ -5,12 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/confidential-dot-ai/attestation-go/attestation/snp"
-	"github.com/confidential-dot-ai/attestation-go/attestation/tdx"
-	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	sevabi "github.com/google/go-sev-guest/abi"
 	tdxabi "github.com/google/go-tdx-guest/abi"
 	tdxpb "github.com/google/go-tdx-guest/proto/tdx"
+
+	"github.com/confidential-dot-ai/attestation-go/attestation/snp"
+	"github.com/confidential-dot-ai/attestation-go/attestation/tdx"
+	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 )
 
 // withMeasurement is the {platform, evidence} envelope with edit applied to

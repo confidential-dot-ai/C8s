@@ -7,11 +7,12 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/cucumber/godog"
+	"github.com/google/go-tdx-guest/testing/testdata"
+
 	"github.com/confidential-dot-ai/attestation-go/attestation/snp"
 	"github.com/confidential-dot-ai/attestation-go/attestation/tdx"
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-	"github.com/cucumber/godog"
-	"github.com/google/go-tdx-guest/testing/testdata"
 )
 
 func envelopeOf(t *testing.T, platform teetypes.PlatformType, evidence any) []byte {
