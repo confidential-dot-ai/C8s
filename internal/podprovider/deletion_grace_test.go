@@ -101,6 +101,115 @@ func TestDeletionDoesNotWaitForAPodItsGuestNeverReceived(t *testing.T) {
 	}
 }
 
+// The assignment is saved before it is sent. A Pod deleted between the two
+// reached no guest, so its grace period has nothing to wait for either.
+func TestDeletionDoesNotWaitForAnAssignmentThatWasNeverSent(t *testing.T) {
+	pod := fixturePod()
+	r, cloud, guest := fixture(t, pod)
+	guest.afterPrepare = func() {
+		if err := r.client.Delete(context.Background(), getPod(t, r, pod)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for range 8 {
+		if guest.prepares != 0 {
+			break
+		}
+		_ = reconcile(t, r, pod)
+	}
+	if rec := getRecord(t, r, pod); len(rec.Assignment) == 0 || guest.sends != 0 {
+		t.Fatalf("fixture: want a saved assignment that was never sent, got %d bytes and %d sends", len(rec.Assignment), guest.sends)
+	}
+	end := getPod(t, r, pod).DeletionTimestamp.Time
+	r.now = func() time.Time { return end.Add(-30 * time.Second) }
+	if err := reconcile(t, r, pod); err != nil {
+		t.Fatal(err)
+	}
+	if guest.sends != 0 || cloud.deleteCalls != 1 {
+		t.Fatalf("%d sends, %d destruction requests for a Pod whose assignment was never sent, want 0 and 1", guest.sends, cloud.deleteCalls)
+	}
+}
+
+// A send whose answer was lost may have reached the guest, so the Pod is
+// held like one the guest acknowledged.
+func TestDeletionWaitsForAnAssignmentWhoseSendWasNotAnswered(t *testing.T) {
+	pod := fixturePod()
+	r, cloud, guest := fixture(t, pod)
+	guest.lostResponse = true
+	for range 8 {
+		if guest.sends != 0 {
+			break
+		}
+		_ = reconcile(t, r, pod)
+	}
+	if guest.sends != 1 {
+		t.Fatalf("fixture: %d sends, want 1", guest.sends)
+	}
+	deleteWithGraceLeft(t, r, pod, 30*time.Second)
+	if err := reconcile(t, r, pod); err != nil {
+		t.Fatal(err)
+	}
+	if cloud.deleteCalls != 0 {
+		t.Fatal("instance destruction requested inside the grace period of a Pod its guest may hold")
+	}
+}
+
+// A provider that was away while both passed still reports the one that
+// ended the wait: the earlier of the verification deadline and the end of the
+// grace period, bounded by the maximum.
+func TestDeletionResumedLateReportsWhatEndedTheWait(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		grace    int64
+		deadline time.Duration // after the deletion
+		timedOut bool
+	}{
+		{"deadline first", 120, 60 * time.Second, true},
+		{"grace period first", 120, 180 * time.Second, false},
+		{"maximum first", 86400, 600 * time.Second, false},
+		{"deadline before the maximum", 86400, 200 * time.Second, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pod := fixturePod()
+			pod.Finalizers = []string{"example.invalid/hold"}
+			r, cloud := fixtureReconciler(t, pod)
+			runToRunning(t, r, pod)
+			if err := r.client.Delete(context.Background(), getPod(t, r, pod)); err != nil {
+				t.Fatal(err)
+			}
+			// The fake client stamps the deletion with the current time, so the
+			// requested grace period is carried by the field alone and the
+			// deletion is taken to have happened that long before the stamp.
+			live := getPod(t, r, pod)
+			live.DeletionGracePeriodSeconds = &tc.grace
+			if err := r.client.Update(context.Background(), live); err != nil {
+				t.Fatal(err)
+			}
+			deleted := live.DeletionTimestamp.Add(-time.Duration(tc.grace) * time.Second)
+			rec, secret, err := r.loadRecord(context.Background(), identityKey(r.cfg.ProviderID, string(pod.UID)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			deadline := deleted.Add(tc.deadline)
+			rec.VerificationDeadline = &deadline
+			if err := r.save(context.Background(), rec, secret); err != nil {
+				t.Fatal(err)
+			}
+			r.now = func() time.Time { return deleted.Add(48 * time.Hour) }
+			if err := reconcile(t, r, pod); err != nil {
+				t.Fatal(err)
+			}
+			if cloud.deleteCalls != 1 {
+				t.Fatalf("%d destruction requests, want 1", cloud.deleteCalls)
+			}
+			got := getPod(t, r, pod)
+			if timedOut := got.Status.Phase == corev1.PodFailed && got.Status.Reason == verificationTimeoutReason; timedOut != tc.timedOut {
+				t.Fatalf("Pod is %s/%q, want verification timeout reported: %t", got.Status.Phase, got.Status.Reason, tc.timedOut)
+			}
+		})
+	}
+}
+
 // Deleting a Pod must not keep an unverified guest longer than leaving it
 // would: a verification deadline inside the grace period ends the wait.
 func TestVerificationDeadlineEndsTheGracePeriod(t *testing.T) {
@@ -161,7 +270,8 @@ func TestDeletionGraceIsBoundedByTheConfiguredMaximum(t *testing.T) {
 		pod := fixturePod()
 		pod.DeletionTimestamp = &metav1.Time{Time: deleted.Add(time.Duration(tc.grace) * time.Second)}
 		pod.DeletionGracePeriodSeconds = &tc.grace
-		if got := r.graceRemaining(pod, rec); got != time.Duration(tc.want)*time.Second {
+		end, held := r.graceEnd(pod, rec)
+		if got := end.Sub(deleted); !held || got != time.Duration(tc.want)*time.Second {
 			t.Fatalf("grace period %ds: instance left for %s, want %ds", tc.grace, got, tc.want)
 		}
 	}

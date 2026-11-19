@@ -112,7 +112,7 @@ func (r *Reconciler) assign(ctx context.Context, rec *record, secret *corev1.Sec
 		if r.verificationExpired(rec) {
 			return context.DeadlineExceeded
 		}
-		rec.Assignment, rec.ServingKey = data, target.ServingKey()
+		rec.Assignment, rec.ServingKey, rec.AssignmentUnsent = data, target.ServingKey(), true
 		// Publication is the only permission to POST. On conflict or lost write,
 		// reconcile reloads this exact intent rather than generating another one.
 		if err := r.save(ctx, rec, secret); err != nil {
@@ -129,6 +129,17 @@ func (r *Reconciler) assign(ctx context.Context, rec *record, secret *corev1.Sec
 	}
 	if _, err := r.livePod(ctx, rec); err != nil {
 		return err
+	}
+	if rec.AssignmentUnsent {
+		// Recorded before the send, so that a send whose answer is lost still
+		// counts as one the guest may have received.
+		rec.AssignmentUnsent = false
+		if err := r.save(ctx, rec, secret); err != nil {
+			return err
+		}
+		if _, err := r.livePod(ctx, rec); err != nil {
+			return err
+		}
 	}
 	uid, err := target.Send(ctx, rec.Assignment)
 	var held *podstatus.AlreadyAssignedError
