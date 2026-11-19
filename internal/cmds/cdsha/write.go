@@ -88,6 +88,10 @@ func (o *options) writer(ctx context.Context) (*writer, error) {
 // and acknowledged head. Without a record, --genesis or a genesis signed by
 // --operator-key starts one.
 func (w *writer) verified(ctx context.Context) (*cdschain.State, error) {
+	return w.verifiedTarget(ctx, nil)
+}
+
+func (w *writer) verifiedTarget(ctx context.Context, target *policyTarget) (*cdschain.State, error) {
 	pinned, err := w.o.pinnedGenesis()
 	if err != nil {
 		return nil, err
@@ -106,6 +110,11 @@ func (w *writer) verified(ctx context.Context) (*cdschain.State, error) {
 	state := c.state
 	if pinned != nil && *pinned != state.Genesis {
 		return nil, fmt.Errorf("the replica's chain starts at genesis %s, not --genesis %s", state.Genesis, pinned)
+	}
+	if target != nil {
+		if err := target.check(state); err != nil {
+			return nil, err
+		}
 	}
 	rec := records[state.Cluster]
 	if rec == nil {
@@ -262,18 +271,27 @@ func (o *options) cache(c *verifiedChain) {
 	}
 }
 
-// append signs payload as the entry after state's head and submits it.
-func (w *writer) append(ctx context.Context, state *cdschain.State, typ cdschain.Type, payload any) (cdschain.Head, error) {
+// sign validates the candidate without advancing the accepted state or cache.
+func (w *writer) sign(state *cdschain.State, typ cdschain.Type, payload any) (cdschain.Entry, error) {
 	data, err := json.Marshal(payload)
 	if err != nil {
-		return cdschain.Head{}, err
+		return cdschain.Entry{}, err
 	}
 	e, err := cdschain.Sign(w.key, cdschain.Body{Cluster: state.Cluster, Seq: state.Head.Seq + 1, Prev: state.Head.Hash, Type: typ, Payload: data})
 	if err != nil {
-		return cdschain.Head{}, err
+		return cdschain.Entry{}, err
 	}
 	if _, err := state.Apply(e); err != nil {
-		return cdschain.Head{}, fmt.Errorf("the entry does not verify against the chain: %w", err)
+		return cdschain.Entry{}, fmt.Errorf("the entry does not verify against the chain: %w", err)
+	}
+	return e, nil
+}
+
+// append signs payload as the entry after state's head and submits it.
+func (w *writer) append(ctx context.Context, state *cdschain.State, typ cdschain.Type, payload any) (cdschain.Head, error) {
+	e, err := w.sign(state, typ, payload)
+	if err != nil {
+		return cdschain.Head{}, err
 	}
 	head, err := Submit(ctx, w.client, w.url, e)
 	if err != nil {
