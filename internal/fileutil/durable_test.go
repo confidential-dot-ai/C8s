@@ -171,31 +171,64 @@ func TestSyncDirWithParent(t *testing.T) {
 	}
 }
 
-func TestMkdirAllDurableSyncsEveryDirectoryItAddsTo(t *testing.T) {
+func TestMkdirAllDurableRetriesPhysicalAncestors(t *testing.T) {
 	base, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
+	dir := filepath.Join(base, "a", "b", "state")
+	failed := errors.New("sync failed")
 	var synced []string
 	record := func(f *os.File) error {
 		synced = append(synced, f.Name())
 		return nil
 	}
-	dir := filepath.Join(base, "a", "b", "c")
-	if err := mkdirAllDurable(dir, 0o700, record); err != nil {
+	want := []string{dir}
+	for parent := filepath.Dir(dir); ; parent = filepath.Dir(parent) {
+		want = append(want, parent)
+		if filepath.Dir(parent) == parent {
+			break
+		}
+	}
+	for attempt := range 2 {
+		synced = nil
+		err := mkdirAllDurable(dir, 0o700, func(f *os.File) error {
+			_ = record(f)
+			if f.Name() == base {
+				return failed
+			}
+			return nil
+		})
+		if !errors.Is(err, failed) || !slices.Equal(synced, want[:4]) {
+			t.Fatalf("attempt %d skipped an unsynced ancestor: %v, %v", attempt, synced, err)
+		}
+	}
+	alias := filepath.Join(base, "alias")
+	if err := os.Symlink(dir, alias); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{filepath.Join(base, "a", "b"), filepath.Join(base, "a"), base}
-	if !slices.Equal(synced, want) {
-		t.Fatalf("synced %v, want %v", synced, want)
+	for _, path := range []string{dir, dir, alias} {
+		synced = nil
+		if err := mkdirAllDurable(path, 0o700, record); err != nil || !slices.Equal(synced, want) {
+			t.Fatalf("retry %s: synced %v, %v", path, synced, err)
+		}
 	}
-	synced = nil
-	if err := mkdirAllDurable(dir, 0o700, record); err != nil || synced != nil {
-		t.Fatalf("existing directory: synced %v, %v", synced, err)
+}
+
+func TestMkdirAllDurableRefusesUnreadableAncestor(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("requires an unreadable directory")
 	}
-	failed := errors.New("sync failed")
-	err = mkdirAllDurable(filepath.Join(dir, "d"), 0o700, func(*os.File) error { return failed })
-	if !errors.Is(err, failed) {
-		t.Fatalf("sync failure: %v", err)
+	ancestor := filepath.Join(t.TempDir(), "ancestor")
+	dir := filepath.Join(ancestor, "parent", "state")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(ancestor, 0o300); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(ancestor, 0o700) })
+	if err := MkdirAllDurable(dir, 0o700); !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("unsyncable ancestor: %v", err)
 	}
 }
