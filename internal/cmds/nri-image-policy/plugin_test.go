@@ -31,7 +31,7 @@ func newTestPlugin(cfg *config) *plugin {
 	}
 	return &plugin{
 		cfg:        cfg,
-		policy:     newPolicyStore(cfg.Allowlist.Base),
+		policy:     newPolicyStore(cfg.Allowlist.Base, localClock()),
 		audit:      audit.NewLogger(),
 		logger:     slog.Default(),
 		containerd: &fakeContainerd{},
@@ -455,7 +455,7 @@ func TestCreateContainer_Ready_PassesThrough(t *testing.T) {
 		},
 		audit:      audit.NewLogger(),
 		logger:     slog.Default(),
-		policy:     newPolicyStore(nil),
+		policy:     newPolicyStore(nil, localClock()),
 		containerd: &fakeContainerd{},
 		mesh:       newMeshGate(*meshRoles(), discardLogger()),
 	}
@@ -500,7 +500,7 @@ func TestCreateContainer_MountsSocketDirIntoInjectedSidecars(t *testing.T) {
 			p.inventory = newAdmissionInventory(t.TempDir())
 			if ready {
 				p.SetReady()
-				p.policy = newPolicyStore(nil)
+				p.policy = newPolicyStore(nil, localClock())
 			}
 			pod := makePod("default", "pod1")
 			pod.Annotations = map[string]string{workloadclaims.AnnotationInjected: "true"}
@@ -561,7 +561,7 @@ func TestCreateContainer_NoSocketDirMountOutsideInjectedSidecars(t *testing.T) {
 				p.inventory = newAdmissionInventory(t.TempDir())
 			}
 			p.SetReady()
-			p.policy = newPolicyStore(nil)
+			p.policy = newPolicyStore(nil, localClock())
 
 			adjust, _, err := createAndStart(p, context.Background(), tc.pod, makeCtr(tc.pod.Id, tc.ctr))
 			if err != nil {
@@ -587,7 +587,7 @@ func TestCreateContainer_DeniedContainerGetsNoAdjustment(t *testing.T) {
 			p.inventory = newAdmissionInventory(t.TempDir())
 			if ready {
 				p.SetReady()
-				p.policy = newPolicyStore(nil)
+				p.policy = newPolicyStore(nil, localClock())
 			}
 			pod := makePod("default", "pod1")
 			pod.Annotations = map[string]string{workloadclaims.AnnotationInjected: "true"}
@@ -859,7 +859,7 @@ func newCachedPlugin(cfg *config, wl *allowlist.Allowlist) (*plugin, *policyStor
 	if cfg.Mesh == nil {
 		cfg.Mesh = meshRoles()
 	}
-	store := newPolicyStore(cfg.Allowlist.Base)
+	store := newPolicyStore(cfg.Allowlist.Base, localClock())
 	store.apply(wl, 1)
 	p := &plugin{
 		cfg:        cfg,
@@ -1459,7 +1459,7 @@ func basePlugin(t *testing.T) *plugin {
 	}
 	p := &plugin{
 		cfg:        cfg,
-		policy:     newPolicyStore(cfg.Allowlist.Base),
+		policy:     newPolicyStore(cfg.Allowlist.Base, localClock()),
 		audit:      audit.NewLogger(),
 		logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 		containerd: &fakeContainerd{},

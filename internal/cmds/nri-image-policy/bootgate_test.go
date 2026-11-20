@@ -65,7 +65,7 @@ func gatedConfig(marker string) *config {
 func unpulledPlugin(cfg *config) *plugin {
 	p := &plugin{
 		cfg:        cfg,
-		policy:     newPolicyStore(cfg.Allowlist.Base),
+		policy:     newPolicyStore(cfg.Allowlist.Base, localClock()),
 		audit:      audit.NewLogger(),
 		logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 		containerd: &fakeContainerd{},

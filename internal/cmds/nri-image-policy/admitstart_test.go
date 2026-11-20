@@ -56,7 +56,7 @@ func TestStartContainerBindsExitsWhileInitializing(t *testing.T) {
 // initializing: the sandbox asserts no identity afterwards.
 func TestPodStartRecordsAPolicyRefusalWhileInitializing(t *testing.T) {
 	p, pod, ctr, _ := podStartFixture(t, false)
-	p.policy = newPolicyStore(nil)
+	p.policy = newPolicyStore(nil, localClock())
 	err := p.StartContainer(t.Context(), pod, ctr)
 	if err == nil || !strings.Contains(err.Error(), "initializing") {
 		t.Fatalf("err = %v, want a refusal naming the initializing plugin", err)

@@ -73,3 +73,37 @@ func TestMeshRoleBindingsIncludeCompiledRoles(t *testing.T) {
 		})
 	}
 }
+
+// A component set in force binds a role exactly as the measured base does: the
+// router namespace, which admits a platform role only under a declaration that
+// pins its mounts, reads either binding, and none once the set has ended.
+func TestComponentSetRoleGatesTheRouterNamespace(t *testing.T) {
+	cdsTime := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	deadline := cdsTime.Add(time.Hour)
+	argv := []string{"/usr/local/bin/c8s", "router"}
+	launch := componentLaunch(pushDigestB, argv)
+	store := newPolicyStore(anyAllowlist(map[string]string{}), newCDSClock(func() time.Time { return cdsTime }))
+	retiring := &allowlist.Retirement{Deadline: allowlist.Deadline{Time: deadline}}
+	store.apply(componentDocument(t, retiring, componentContainer(t, pushDigestB, allowlist.RoleRouter, argv)), 1)
+	p := &plugin{policy: store}
+	gated := func() gatedContainer {
+		role := p.roleOf(launch)
+		return gatedContainer{
+			role:         role,
+			mountsPinned: p.bindsRoleMounts(launch, role),
+			digest:       launch.Digest,
+			argv:         launch.Argv,
+		}
+	}
+	pod := &protectedPod{kubeNamespace: routerNamespace}
+
+	if err := pod.requireRoleOnlyPod(gated()); err != nil {
+		t.Fatalf("the router role the set binds does not run in its own namespace: %v", err)
+	}
+
+	cdsTime = deadline
+	store.rebuildEndedSets()
+	if err := pod.requireRoleOnlyPod(gated()); err == nil {
+		t.Fatal("a launch the ended set alone bound still runs in the router namespace")
+	}
+}

@@ -99,7 +99,7 @@ func TestPodStartFailuresIssueNoPermission(t *testing.T) {
 		{"image mismatch", func(p *plugin, _ *api.Container, _ *fakeRegister) {
 			p.containerd = &fakeContainerd{verify: func(context.Context, string, string, string) error { return errors.New("wrong image") }}
 		}},
-		{"allowlist denial", func(p *plugin, _ *api.Container, _ *fakeRegister) { p.policy = newPolicyStore(nil) }},
+		{"allowlist denial", func(p *plugin, _ *api.Container, _ *fakeRegister) { p.policy = newPolicyStore(nil, localClock()) }},
 		{"failed extend", func(_ *plugin, _ *api.Container, r *fakeRegister) { r.fail = errors.New("extend failed") }},
 		{"missing journal", func(p *plugin, _ *api.Container, _ *fakeRegister) { p.measurer = nil }},
 		{"missing inventory", func(p *plugin, _ *api.Container, _ *fakeRegister) { p.inventory = nil }},

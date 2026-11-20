@@ -216,7 +216,7 @@ func TestWorkerExcusesNoAPIPod(t *testing.T) {
 				Worker:    true,
 			}
 			p := newTestPlugin(cfg)
-			p.policy = newPolicyStore(base)
+			p.policy = newPolicyStore(base, localClock())
 
 			pod, ctr := sandboxedPod(), sandboxedContainer()
 			ctr.Mounts = slices.DeleteFunc(ctr.Mounts, func(m *api.Mount) bool { return m.Type == "bind" })
@@ -349,7 +349,7 @@ func TestStaticPodEntriesGrantNothing(t *testing.T) {
 		if err := base.Normalize(); err != nil {
 			t.Fatal(err)
 		}
-		store := newPolicyStore(base)
+		store := newPolicyStore(base, localClock())
 		launch := allowlist.RunningContainer{Digest: pushDigestA, Argv: []string{"/agent"}, Env: env, Mounts: []allowlist.ObservedMount{bind}}
 		granted := map[string]bool{
 			"bind":       store.grantsHostBind(launch, bind),
