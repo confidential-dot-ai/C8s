@@ -92,35 +92,34 @@ func writeAtomicDurable(path string, data []byte, mode os.FileMode, syncFile fun
 	return syncParent(dir, syncFile)
 }
 
-// MkdirAllDurable is os.MkdirAll, then a sync of each directory it added an
-// entry to. Directories that already existed are left to SyncDirWithParent.
+// MkdirAllDurable creates dir and syncs its physical ancestors through the root,
+// including directories a previous failed attempt may have left behind.
 func MkdirAllDurable(dir string, mode os.FileMode) error {
 	return mkdirAllDurable(dir, mode, (*os.File).Sync)
 }
 
 func mkdirAllDurable(dir string, mode os.FileMode, syncFile func(*os.File) error) error {
-	dir, err := filepath.Abs(dir)
-	if err != nil {
-		return err
-	}
-	existing := dir
-	for {
-		if _, err := os.Stat(existing); err == nil {
-			break
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
-		existing = filepath.Dir(existing)
-	}
 	if err := os.MkdirAll(dir, mode); err != nil {
 		return err
 	}
-	for created := dir; created != existing; created = filepath.Dir(created) {
-		if err := syncParent(created, syncFile); err != nil {
+	dir, err := physicalDir(dir)
+	if err != nil {
+		return err
+	}
+	for {
+		directory, err := os.Open(dir)
+		if err != nil {
 			return err
 		}
+		if err := syncAndClose(directory, syncFile); err != nil {
+			return err
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return nil
+		}
+		dir = parent
 	}
-	return nil
 }
 
 // SyncDirWithParent syncs dir and its parent, as WriteAtomicDurable does

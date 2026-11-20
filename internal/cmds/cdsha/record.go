@@ -74,17 +74,19 @@ func (o *options) record(cluster string) (*record, error) {
 }
 
 // ErrRecordConflict marks a head the record refuses: it names another
-// genesis, or another hash at the acknowledged seq. The write it follows
-// was applied.
+// genesis, or another hash at the acknowledged seq.
 var ErrRecordConflict = errors.New("the local record disagrees")
 
 // errStateDir is a state directory that cannot hold a record, found before
-// anything was sent.
-var errStateDir = errors.New("the state directory cannot hold the record, so nothing was sent")
+// the write it guards was submitted.
+var errStateDir = errors.New("the state directory cannot hold the record, so this write was not submitted")
 
 // prepareStateDir makes the state directory, creates and removes a file in
-// it, and syncs it as a save does. A write runs it before anything else
-// creates the directory, so an unusable one refuses the write unsent.
+// it, and syncs it as a save does. Each write runs it before submitting and
+// before anything else creates the directory, so an unusable one refuses
+// that write unsubmitted. Endpoint selection and genesis discovery may read
+// replica status first, and a resolve's allowlist refresh checks again
+// after the resolution was posted.
 func (o *options) prepareStateDir() error {
 	dir, err := o.recordDir()
 	if err == nil {
@@ -112,7 +114,7 @@ func (o *options) acknowledge(genesis cdschain.Hash, head cdschain.Head) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := fileutil.MkdirAllDurable(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
 	lock, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0o600)

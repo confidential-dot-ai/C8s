@@ -1,6 +1,7 @@
 package fileutil
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -27,5 +28,22 @@ func TestWriteNewDirRefusesAnExistingDirectory(t *testing.T) {
 	files := []NewFile{{Name: "config.yaml", Data: []byte("a"), Mode: 0o644}}
 	if err := WriteNewDir(dir, 0o755, files); err == nil {
 		t.Fatal("WriteNewDir wrote into a directory that already exists")
+	}
+}
+
+func TestWriteNewDurable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "entry")
+	if err := WriteNewDurable(path, []byte("signed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("mode %v, %v", info, err)
+	}
+	if err := WriteNewDurable(path, []byte("again"), 0o600); !errors.Is(err, os.ErrExist) {
+		t.Fatalf("existing path: %v", err)
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != "signed" {
+		t.Fatalf("refusal changed the file: %q, %v", got, err)
 	}
 }

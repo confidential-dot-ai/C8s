@@ -22,6 +22,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"golang.org/x/sync/singleflight"
+
 	"github.com/confidential-dot-ai/c8s/internal/cdschain"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
@@ -99,6 +101,7 @@ type Replica struct {
 	// refusal or a retry, never a wrong state. Methods named *Locked expect
 	// mu held.
 	mu         sync.Mutex
+	confirming singleflight.Group
 	store      Store
 	credential []byte
 	storeErr   string
@@ -709,8 +712,19 @@ func (r *Replica) commit(ctx context.Context, entry func(*cdschain.State) (cdsch
 	if err := r.adopt([]cdschain.Entry{e}, "this replica's write"); err != nil {
 		return next, false, nil
 	}
+	// Only overlapping confirmations of the exact artifact share a round.
+	round := r.confirming.DoChan(e.Hash().String()+":"+e.Sig, func() (any, error) {
+		return r.round(ctx), nil
+	})
+	var heads map[int]cdschain.Head
+	select {
+	case result := <-round:
+		heads = result.Val.(map[int]cdschain.Head)
+	case <-ctx.Done():
+		return next, false, ctx.Err()
+	}
 	holders := 1
-	for _, h := range r.round(ctx) {
+	for _, h := range heads {
 		if h.Seq >= next.Seq {
 			holders++
 		}

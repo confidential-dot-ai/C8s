@@ -17,6 +17,7 @@ import (
 
 	"github.com/confidential-dot-ai/c8s/internal/cdschain"
 	haapi "github.com/confidential-dot-ai/c8s/internal/cdsha"
+	"github.com/confidential-dot-ai/c8s/internal/fileutil"
 )
 
 func newResolveCmd(o *options) *cobra.Command {
@@ -90,7 +91,11 @@ func (o *options) resolve(ctx context.Context, out io.Writer, urls []string, seq
 	case plan != nil && plan.Seq == seq && plan.Keep == kept:
 		// A rerun: the first run may have cleared forks and cut chains, so
 		// the plan, not the statuses now, says what was dropped and held.
-		plan.Held = max(plan.Held, held)
+		// Only an explicit higher lost-head bound can extend that plan;
+		// the current head may already include this resolve's refresh.
+		if lostHeadSet {
+			plan.Held = max(plan.Held, lostHead)
+		}
 	case plan != nil && !haltedAt(statuses, seq):
 		path, _ := o.planPath(cluster)
 		return fmt.Errorf("the resolve of seq %d keeping %s is not finished: run it again first, or remove %s to abandon it", plan.Seq, plan.Keep, path)
@@ -186,7 +191,7 @@ func (o *options) savePlan(cluster string, p *resolvePlan) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := fileutil.MkdirAllDurable(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
 	// A rerun after a crash resumes from this plan, so it must outlive one.
@@ -348,12 +353,34 @@ func (w *writer) refreshPolicy(ctx context.Context, held uint64) error {
 			fmt.Fprintln(os.Stderr, "warning: the kept chain has no policy entry; write the allowlist (c8s allowlist) so nodes that pulled a dropped one fetch it again")
 			return nil
 		case state.PolicySeq > held:
-			return nil
+			return w.acknowledgeRefresh(ctx, state)
 		}
 		if _, err := w.append(ctx, state, cdschain.TypePolicy, cdschain.Policy{Allowlist: state.Policy}); err != nil {
 			return err
 		}
 	}
+}
+
+// acknowledgeRefresh reconfirms the exact policy entry before saving its head.
+func (w *writer) acknowledgeRefresh(ctx context.Context, state *cdschain.State) error {
+	entries, err := haapi.ReadChain(ctx, w.client, w.url, state.PolicySeq)
+	if err != nil {
+		return err
+	}
+	if len(entries) == 0 || entries[0].Hash() != w.chain.Hashes[state.PolicySeq] {
+		return errors.New("the replica no longer serves the verified policy entry")
+	}
+	head, err := Submit(ctx, w.client, w.url, entries[0])
+	if err != nil {
+		return err
+	}
+	if head.Cluster != state.Cluster || head.Seq != state.PolicySeq {
+		return fmt.Errorf("the replica confirmed another policy head: %w", ErrNotConfirmed)
+	}
+	if err := w.o.acknowledge(state.Genesis, head); err != nil {
+		return recordFailure(fmt.Sprintf("CDS confirmed head %d (%s)", head.Seq, head.Hash), err)
+	}
+	return nil
 }
 
 // planResolution is the entry a resolution drops: every replica must
