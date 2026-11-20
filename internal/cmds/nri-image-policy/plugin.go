@@ -454,9 +454,9 @@ func (p *plugin) imageDigest(ctx context.Context, imageRef string) (string, erro
 }
 
 // resolveDigest returns the canonical store digest for imageRef using the same
-// path checkImagePhase admits on: the inline digest if present, else the containerd
+// path checkImageAt admits on: the inline digest if present, else the containerd
 // content store. Empty on an unresolvable or absent reference. Quiet — the
-// callers that need an audit trail (checkImagePhase) do their own logging.
+// callers that need an audit trail (checkImageAt) do their own logging.
 func (p *plugin) resolveDigest(ctx context.Context, imageRef string) string {
 	if d := extractDigest(imageRef); d != "" {
 		return d
@@ -526,7 +526,29 @@ func (p *plugin) bindsRoleMounts(launch allowlist.RunningContainer, role string)
 
 // observedLaunch is the container as a role lookup reads it.
 func (p *plugin) observedLaunch(ctx context.Context, observed observedContainer) allowlist.RunningContainer {
-	return observed.launch(p.resolveDigest(ctx, observed.imageRef))
+	return observed.launch(p.observedDigest(ctx, observed))
+}
+
+// observedDigest is the digest observed.lookup gives, "" when it fails.
+func (p *plugin) observedDigest(ctx context.Context, observed observedContainer) string {
+	if observed.lookup == nil {
+		return p.resolveDigest(ctx, observed.imageRef)
+	}
+	digest, _ := observed.lookup() // a failed lookup is "", which no entry admits
+	return digest
+}
+
+// digestLookup resolves imageRef at most once, so the checks of one container
+// judge one digest, and one needing none costs no containerd round-trip. It
+// returns containerd's error: checkImageAt denies on it as resolve_failed,
+// and every other caller reads a failed lookup as "", which nothing admits.
+func (p *plugin) digestLookup(ctx context.Context, imageRef string) func() (string, error) {
+	return sync.OnceValues(func() (string, error) {
+		if digest := extractDigest(imageRef); digest != "" || imageRef == "" {
+			return digest, nil
+		}
+		return p.resolve(ctx, imageRef)
+	})
 }
 
 // extractDigest returns the canonical "sha256:<64hex>" digest from an image

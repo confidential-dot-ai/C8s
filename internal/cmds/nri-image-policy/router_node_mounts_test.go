@@ -156,7 +156,7 @@ func TestRouterNodeMountEligibilityDoesNotAuthorizeLaunch(t *testing.T) {
 					t.Fatalf("matching node client did not retain platform address classification: %+v", address)
 				}
 				observed := observedContainerOf(pod, ctr, ctr.Annotations[annotationImageName], mounts)
-				verdict, reason := p.checkContainerObserved(t.Context(), p.cfg, observed, launchFinal)
+				verdict, reason := p.checkContainerObserved(t.Context(), p.cfg, p.policy.current(), observed, launchFinal)
 				if verdict != verdictDeny {
 					t.Fatalf("unapproved final launch admission = %v: %s", verdict, reason)
 				}

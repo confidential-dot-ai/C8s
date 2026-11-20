@@ -57,6 +57,7 @@ type Config struct {
 	MeshPeers                  []string `json:"meshPeers,omitempty"`
 	PublicIP                   string   `json:"publicIP,omitempty"`
 	VerificationTimeoutSeconds int64    `json:"verificationTimeoutSeconds,omitempty"`
+	MaxDeletionGraceSeconds    int64    `json:"maxDeletionGraceSeconds,omitempty"`
 
 	token     string
 	key       *ecdsa.PrivateKey
@@ -95,13 +96,19 @@ func LoadConfig(path string) (*Config, error) {
 }
 
 // validate applies the documented defaults and the operator-settable bounds of
-// the verification deadline.
+// the verification deadline and the deletion grace.
 func (c *Config) validate() error {
 	if c.VerificationTimeoutSeconds == 0 {
 		c.VerificationTimeoutSeconds = defaultVerificationTimeoutSeconds
 	}
 	if !validVerificationTimeout(c.VerificationTimeoutSeconds) {
 		return errors.New("verificationTimeoutSeconds must be between 30 and 86400")
+	}
+	if c.MaxDeletionGraceSeconds == 0 {
+		c.MaxDeletionGraceSeconds = defaultMaxDeletionGraceSeconds
+	}
+	if c.MaxDeletionGraceSeconds < 1 || c.MaxDeletionGraceSeconds > 3600 {
+		return errors.New("maxDeletionGraceSeconds must be between 1 and 3600")
 	}
 	c.CloudURL = strings.TrimRight(c.CloudURL, "/")
 	// The ID names this provider's records, Node and Cloud instances; an empty

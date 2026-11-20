@@ -14,12 +14,13 @@ import (
 	"fmt"
 	"time"
 
+	tdxabi "github.com/google/go-tdx-guest/abi"
+	tdxpb "github.com/google/go-tdx-guest/proto/tdx"
+
 	"github.com/confidential-dot-ai/attestation-go/armtls"
 	"github.com/confidential-dot-ai/attestation-go/attestation/snp"
 	"github.com/confidential-dot-ai/attestation-go/attestation/tdx"
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-	tdxabi "github.com/google/go-tdx-guest/abi"
-	tdxpb "github.com/google/go-tdx-guest/proto/tdx"
 )
 
 // The non-critical extensions a leaf carries under the C8s arc

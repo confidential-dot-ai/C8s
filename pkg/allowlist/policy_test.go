@@ -1,6 +1,10 @@
 package allowlist
 
-import "testing"
+import (
+	"slices"
+	"strings"
+	"testing"
+)
 
 func TestIndex_AnyArgvEntryAdmitsAnyArgv(t *testing.T) {
 	idx := mustParse(t, `{"schema":"c8s.allowlist/v1","workloads":{"cds":{"containers":[
@@ -117,5 +121,57 @@ func TestIndex_MismatchNamesTheClosestEntrysFields(t *testing.T) {
 	r.Argv = []string{"/bin/app", "--debug"}
 	if got := idx.Mismatch(r, true); len(got) != 2 || got[0] != "args" || got[1] != "env" {
 		t.Errorf("mismatch = %v, want [args env]", got)
+	}
+}
+
+func TestIndexNodeRootBinds(t *testing.T) {
+	observe := func(source string) ObservedMount {
+		digest, err := HostSourceDigest(source)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ObservedMount{Source: source, Destination: source, Class: MountHost, HostSourceDigest: digest, ReadOnly: true}
+	}
+	rule := func(kind MountClass, source string) MountRule {
+		return MountRule{Destination: source, Kind: kind, Source: source, ReadOnly: true}
+	}
+	entry := func(rules ...MountRule) Container {
+		return Container{Digest: dig(t, digestA), Mounts: MountPolicy{Policy: PolicyExact, Rules: rules}}
+	}
+	// One entry names /usr/bin/tool by nodeRootFile and /etc/host by host; a
+	// second entry for the same digest names /usr/bin/other by nodeRootFile.
+	index := (&Allowlist{Workloads: map[string]Workload{
+		"mixed":  {Containers: []Container{entry(rule(MountNodeRootFile, "/usr/bin/tool"), rule(MountHost, "/etc/host"))}},
+		"second": {Containers: []Container{entry(rule(MountNodeRootFile, "/usr/bin/other"))}},
+	}}).BuildIndex()
+	tool, other, host, unnamed := observe("/usr/bin/tool"), observe("/usr/bin/other"), observe("/etc/host"), observe("/usr/bin/unnamed")
+	undigested := ObservedMount{Destination: "/usr/bin/tool", Class: MountHost, ReadOnly: true}
+	all := []ObservedMount{tool, host, undigested, other, unnamed}
+	for _, tc := range []struct {
+		name   string
+		digest string
+		mounts []ObservedMount
+		want   []ObservedMount
+	}{
+		{"unparseable digest", "not-a-digest", all, nil},
+		{"digest without its algorithm", strings.TrimPrefix(digestA, "sha256:"), all, nil},
+		{"short digest", digestA[:len(digestA)-2], all, nil},
+		{"digest with no entry", digestB, all, nil},
+		{"only nodeRootFile sources across entries", digestA, all, []ObservedMount{tool, other}},
+		{"uppercase digest names the same entries", digestA[:7] + strings.ToUpper(digestA[7:]), all, []ObservedMount{tool, other}},
+		{"host rule source alone", digestA, []ObservedMount{host}, nil},
+		{"mount without a source digest", digestA, []ObservedMount{undigested}, nil},
+		{"no mounts", digestA, nil, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := index.NodeRootBinds(tc.digest, tc.mounts)
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("NodeRootBinds(%q) = %+v, want %+v", tc.digest, got, tc.want)
+			}
+		})
+	}
+	var nilIndex *Index
+	if got := nilIndex.NodeRootBinds(digestA, all); got != nil {
+		t.Fatalf("nil Index NodeRootBinds = %+v, want nil", got)
 	}
 }

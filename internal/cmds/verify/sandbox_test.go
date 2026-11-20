@@ -300,6 +300,31 @@ func TestApplySandboxPolicyMeshCARequiresServerAuth(t *testing.T) {
 	}
 }
 
+// A leaf can chain to the mesh CA and name no sandbox at all. The chain alone
+// accepts it; an expected sandbox ID does not, and the refusal says the ID is
+// missing rather than blaming the chain.
+func TestApplySandboxPolicyPinFailsChainedLeafWithNoSandboxID(t *testing.T) {
+	leaf, caPath := caSignedWorkloadLeaf(t, nil)
+	ev := &evidence{leaf: leaf}
+
+	chainOnly := config{meshCA: caPath}
+	accepted := Outcome{Verified: true}
+	applySandboxPolicy(&accepted, chainOnly, ev, operatorKeysReport{}, mustPlan(t, chainOnly), measurementsReport{})
+	if !accepted.Verified {
+		t.Fatalf("a leaf the mesh CA signed failed the chain check: %s", accepted.Error)
+	}
+
+	pinned := config{meshCA: caPath, sandboxID: "8d9f6c2b1a0e"}
+	refused := Outcome{Verified: true}
+	applySandboxPolicy(&refused, pinned, ev, operatorKeysReport{}, mustPlan(t, pinned), measurementsReport{})
+	if refused.Verified {
+		t.Fatal("--sandbox-id passed on a leaf that carries no sandbox ID")
+	}
+	if !strings.Contains(refused.Error, "carries no sandbox-ID extension") {
+		t.Fatalf("Error = %q, want it to name the missing sandbox ID", refused.Error)
+	}
+}
+
 // --mesh-ca asks a question; with no leaf to ask it of, that is an error rather
 // than a silently skipped check reported as success.
 func TestApplySandboxPolicyMeshCANeedsALeaf(t *testing.T) {

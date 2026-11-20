@@ -1,9 +1,11 @@
 # Reproducibility gates for measured images. A change to the worker image's
 # inputs builds it TWICE and requires every measured value to match (c8s#264).
-# This runs on every PR and decides relevance itself — a paths filter would
-# leave the required `compare` check pending on unrelated PRs. Fork PRs are
-# exempt (security-over-coverage); the post-merge builds remain the publication
-# gates.
+# For main, the builds run in its merge queue, which blocks the merge on them;
+# a pull request into main reports `compare` as passing without building. Pull
+# requests into other branches, which have no queue, build. Each run decides
+# relevance itself — a paths filter would leave the required `compare` check
+# pending. Fork code is exempt (security-over-coverage); the post-merge builds
+# remain the publication gates.
 name: image repro gate
 on:
   pull_request:
@@ -21,31 +23,70 @@ concurrency:
 
 jobs:
   changes:
-    # The gate build legs run on the-machine (self-hosted); never fork-trigger.
-    # A merge group can carry fork code, so `compare` passes it as not applicable.
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    # The gate build legs run on the-machine (self-hosted): never on fork code.
+    # The diff step checks merge groups; fork pull requests skip here.
+    if: >-
+      github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group'
+      || (github.base_ref != 'main' && github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
     outputs:
       image: ${{ steps.diff.outputs.image }}
       c8s_ref: ${{ steps.diff.outputs.c8s_ref }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # The diff step reads only the PR merge commit and its parents.
+          # The pull request diff reads only the merge commit and its parents.
           fetch-depth: 2
       - id: diff
         env:
           PR: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          BASE_REF: ${{ github.event.merge_group.base_ref }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if [ -z "$PR" ]; then
-            image=true
-          else
+          image=true
+          base=
+          if [ -n "$BASE_SHA" ]; then
+            # The group holds this queue entry's PR and every entry ahead of it.
+            # Read them from the queue itself, not from commit messages, and only
+            # while the entry still points at this commit.
+            pr=$(sed -nE 's|^refs/heads/gh-readonly-queue/.+/pr-([0-9]+)-[0-9a-f]+$|\1|p' <<<"$GITHUB_REF")
+            # shellcheck disable=SC2016 # GraphQL variables, not shell.
+            query='query($owner: String!, $name: String!, $branch: String!) {
+              repository(owner: $owner, name: $name) { mergeQueue(branch: $branch) {
+                entries(first: 100) { nodes { position headCommit { oid } pullRequest { number isCrossRepository } } }
+              } }
+            }'
+            entries=$(gh api graphql -f query="$query" -f owner="${GITHUB_REPOSITORY%/*}" \
+              -f name="${GITHUB_REPOSITORY#*/}" -f branch="${BASE_REF#refs/heads/}" \
+              --jq '.data.repository.mergeQueue.entries.nodes')
+            position=$(jq -r --arg pr "$pr" --arg sha "$GITHUB_SHA" \
+              '.[] | select(.pullRequest.number == ($pr | tonumber) and .headCommit.oid == $sha) | .position' <<<"$entries")
+            if [ -z "$pr" ] || [ -z "$position" ]; then
+              echo "::error::no merge queue entry for $GITHUB_REF at $GITHUB_SHA" >&2
+              exit 1
+            fi
+            forks=$(jq -r --argjson pos "$position" \
+              '.[] | select(.position <= $pos and .pullRequest.isCrossRepository) | "#\(.pullRequest.number)"' <<<"$entries")
+            if [ -n "$forks" ]; then
+              image=false
+              echo "merge group carries fork PRs $forks: gate not applicable" >> "$GITHUB_STEP_SUMMARY"
+            else
+              git fetch --no-tags --depth=1 origin "$BASE_SHA"
+              base=$BASE_SHA
+            fi
+          elif [ -n "$PR" ]; then
             # HEAD is GitHub's PR merge commit; diff against its first parent.
             # The event's base sha can move past it (base force-pushed after
             # the merge was cached) and would charge the PR with the base's gains.
             git rev-parse --verify -q HEAD^2 >/dev/null
             base=$(git rev-parse HEAD^1)
+          fi
+          if [ -n "$base" ]; then
             base_manifest="$RUNNER_TEMP/base-build-pins.json"
             changed_paths="$RUNNER_TEMP/changed-paths"
             git show "${base}:.github/build-pins.json" >"$base_manifest"
@@ -138,9 +179,9 @@ jobs:
       gate_images_artifact: gate-core-images-${{ github.run_id }}
 
   compare:
-    # The required check: green fast when no measured input changed (and on
-    # fork PRs, whose changes job is skipped); otherwise enforce every build
-    # and comparison selected by the classifier.
+    # The required check: green on pull requests into main, on fork code and
+    # when no measured input changed; otherwise enforce every build and comparison selected by the
+    # classifier.
     needs: [changes, build-a, build-b]
     # Superseded runs must not leave a failed comparison behind.
     if: always() && !cancelled()
@@ -154,8 +195,11 @@ jobs:
           echo "change-classification result: $RESULT" >&2
           exit 1
 
+      - name: Builds run in the merge queue
+        if: github.event_name == 'pull_request' && github.base_ref == 'main'
+        run: echo "the reproducibility builds run in the merge queue" >> "$GITHUB_STEP_SUMMARY"
       - name: Nothing measurement-gate-relevant changed
-        if: needs.changes.outputs.image != 'true'
+        if: (github.event_name != 'pull_request' || github.base_ref != 'main') && needs.changes.outputs.image != 'true'
         run: echo "no gated measurement inputs changed — gate not applicable" >> "$GITHUB_STEP_SUMMARY"
       - name: Legs must have succeeded
         if: needs.changes.outputs.image == 'true'

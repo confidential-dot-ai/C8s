@@ -87,16 +87,15 @@ func (s *policyStore) baseAdmitsPinned(r allowlist.RunningContainer) bool {
 	return s.base.AdmitsContainerWhere(r, allowlist.Container.LaunchPinned)
 }
 
-// grantsHostBind reports whether the base, less its static-pod entries, or the
-// applied allowlist hands r the host bind m (allowlist.Index.GrantsHostBind).
-func (s *policyStore) grantsHostBind(r allowlist.RunningContainer, m allowlist.ObservedMount) bool {
+// grantsHostBind reports whether the base, less its static-pod entries, or
+// snap's allowlist hands r the host bind m (allowlist.Index.GrantsHostBind).
+func (s *policyStore) grantsHostBind(snap *policySnapshot, r allowlist.RunningContainer, m allowlist.ObservedMount) bool {
 	if s == nil {
 		return false
 	}
 	if s.grants.GrantsHostBind(r, m) {
 		return true
 	}
-	snap := s.current()
 	return snap != nil && snap.index.GrantsHostBind(r, m)
 }
 
@@ -114,58 +113,56 @@ func (s *policyStore) declaresHostPorts(mappings []allowlist.HostPort) bool {
 	return snap != nil && snap.index.DeclaresHostPorts(mappings)
 }
 
-// grantsHostPorts reports whether the base, less its static-pod entries, or the
-// applied allowlist hands r every mapping (allowlist.Index.GrantsHostPorts).
-func (s *policyStore) grantsHostPorts(r allowlist.RunningContainer, mappings []allowlist.HostPort) bool {
+// grantsHostPorts reports whether the base, less its static-pod entries, or
+// snap's allowlist hands r every mapping (allowlist.Index.GrantsHostPorts).
+func (s *policyStore) grantsHostPorts(snap *policySnapshot, r allowlist.RunningContainer, mappings []allowlist.HostPort) bool {
 	if s == nil {
 		return false
 	}
 	if s.grants.GrantsHostPorts(r, mappings) {
 		return true
 	}
-	snap := s.current()
 	return snap != nil && snap.index.GrantsHostPorts(r, mappings)
 }
 
 // grantsCapabilities reports whether the base, less its static-pod entries, or
-// the applied allowlist hands r every capability in caps
+// snap's allowlist hands r every capability in caps
 // (allowlist.Index.GrantsCapabilities).
-func (s *policyStore) grantsCapabilities(r allowlist.RunningContainer, caps []string) bool {
+func (s *policyStore) grantsCapabilities(snap *policySnapshot, r allowlist.RunningContainer, caps []string) bool {
 	if s == nil {
 		return false
 	}
 	if s.grants.GrantsCapabilities(r, caps) {
 		return true
 	}
-	snap := s.current()
 	return snap != nil && snap.index.GrantsCapabilities(r, caps)
 }
 
 // declaredCapabilities is every capability the base, less its static-pod
-// entries, or the applied allowlist declares for this launch
+// entries, or snap's allowlist declares for this launch
 // (allowlist.Index.DeclaredCapabilities).
-func (s *policyStore) declaredCapabilities(r allowlist.RunningContainer) [][]string {
+func (s *policyStore) declaredCapabilities(snap *policySnapshot, r allowlist.RunningContainer) [][]string {
 	if s == nil {
 		return nil
 	}
 	declared := s.grants.DeclaredCapabilities(r)
-	if snap := s.current(); snap != nil {
+	if snap != nil {
 		declared = append(declared, snap.index.DeclaredCapabilities(r)...)
 	}
 	return declared
 }
 
-// declaresNodeRoot reports whether the base or applied allowlist has a
-// nodeRootFile rule for digest.
-func (s *policyStore) declaresNodeRoot(digest string) bool {
+// nodeRootBinds returns the mounts a nodeRootFile rule of the base or snap's
+// allowlist names for digest (allowlist.Index.NodeRootBinds).
+func (s *policyStore) nodeRootBinds(snap *policySnapshot, digest string, mounts []allowlist.ObservedMount) []allowlist.ObservedMount {
 	if s == nil {
-		return false
+		return nil
 	}
-	if s.base.DeclaresNodeRoot(digest) {
-		return true
+	binds := s.base.NodeRootBinds(digest, mounts)
+	if snap != nil {
+		binds = append(binds, snap.index.NodeRootBinds(digest, mounts)...)
 	}
-	snap := s.current()
-	return snap != nil && snap.index.DeclaresNodeRoot(digest)
+	return binds
 }
 
 // needsVariableEvidence reports whether the base or applied allowlist has a

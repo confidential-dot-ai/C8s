@@ -32,6 +32,8 @@ export CONFORMANCE_FEATURES CONFORMANCE_BACKEND
 echo "conformance: $(be subject)" >&2
 be setup
 cd "$here/steps"
-go test -count=1 -timeout 80m . \
+# A full run on kind takes about 76 minutes; a run that reaches the timeout
+# writes no report at all, so the limit leaves room for the suite to grow.
+go test -count=1 -timeout 120m . \
     --godog.format="progress,cucumber:$report" \
     ${GODOG_TAGS:+--godog.tags="$GODOG_TAGS"}

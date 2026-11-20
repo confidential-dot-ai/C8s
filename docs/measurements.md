@@ -47,6 +47,11 @@ commands (`c8s allowlist`, `c8s secrets`, `c8s volume`, `c8s cds ca`,
 `c8s routes`) refuse a TDX endpoint whose pins leave RTMR[1] or RTMR[2]
 unpinned.
 
+The quote also carries the TCB levels of the platform and the TDX module. Only
+Intel's current collateral says whether those levels are up to date, which
+`c8s verify` checks by default (`--tdx-tcb-status` selects accepted statuses)
+([verify.md](verify.md#require-a-current-intel-tcb-on-tdx)).
+
 ### Policy history
 
 RTMR[3] is extended by software inside the guest, so on its own it says nothing

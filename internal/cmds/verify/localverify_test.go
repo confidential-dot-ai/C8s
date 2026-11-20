@@ -47,7 +47,7 @@ func TestVerifyInProcess_KDSFetchBoundedByContext(t *testing.T) {
 	cancel()
 
 	start := time.Now()
-	_, err := verifyInProcess(ctx, bareSnpEvidence(t), &armtls.VerifyPolicy{}, nil, nil)
+	_, _, err := verifyInProcess(ctx, bareSnpEvidence(t), &verifyPlan{policy: &armtls.VerifyPolicy{}}, nil)
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
 		t.Fatalf("expired ctx took %v, want prompt return", elapsed)
 	}
