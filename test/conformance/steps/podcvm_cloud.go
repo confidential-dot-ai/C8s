@@ -66,6 +66,7 @@ type cloudCall struct {
 	Path           string          `json:"path"`
 	IdempotencyKey string          `json:"idempotencyKey"`
 	Body           json.RawMessage `json:"body"`
+	ReceivedAt     time.Time       `json:"receivedAt"`
 }
 
 type cloudInstance struct {
@@ -98,10 +99,11 @@ func refusesCreates(ctx context.Context, code string) error {
 }
 
 func podDeleted(ctx context.Context, name string, grace int) error {
-	p, err := getWorld(ctx).pod(name)
+	p, s, err := getWorld(ctx).cvm(name)
 	if err != nil {
 		return err
 	}
+	s.deleted = time.Now()
 	args := []string{"-n", p.namespace, "delete", "pod", p.name, "--wait=false", fmt.Sprintf("--grace-period=%d", grace)}
 	if grace == 0 {
 		args = append(args, "--force")
@@ -404,16 +406,45 @@ func cloudReceivedDelete(ctx context.Context, name string) error {
 	return err
 }
 
+// firstDeleteFor is the delete the cloud API received first for the pod's
+// instance, or nil while it has received none.
+func (w *world) firstDeleteFor(name string) (*cloudCall, error) {
+	in, err := w.awaitInstance(name, "")
+	if err != nil {
+		return nil, err
+	}
+	calls, err := w.cloudCalls()
+	var first *cloudCall
+	for i, c := range calls {
+		if c.Method == "DELETE" && strings.HasSuffix(c.Path, "/"+in.ID) && (first == nil || c.ReceivedAt.Before(first.ReceivedAt)) {
+			first = &calls[i]
+		}
+	}
+	return first, err
+}
+
+// deleteLag is how far past the window's end the steps still look for a
+// delete: one received in time is listed a poll later.
+const deleteLag = 5 * time.Second
+
 // cloudReceivesDeleteWithin bounds the wait by the scenario's own figure,
 // for a delete that a later cause would also bring about: the provider
 // destroys an unverified instance at its verification deadline whatever
-// else it decided. The window must therefore close before that deadline, and
-// a delete seen only after the window does not count.
+// else it decided. The window therefore closes before that deadline. It
+// opens when the scenario asked for the pod's deletion, which is no later
+// than the deletion itself, so the provider is never given longer than the
+// figure. It is judged by when the cloud API received the delete, not by
+// when this step began or first saw it. That
+// compares this process's clock with the cloud API's; on kind both are one
+// host's.
 func cloudReceivesDeleteWithin(ctx context.Context, name string, seconds int) error {
 	w := getWorld(ctx)
 	_, s, err := w.cvm(name)
 	if err != nil {
 		return err
+	}
+	if s.deleted.IsZero() {
+		return fmt.Errorf("%q was not deleted in this scenario", name)
 	}
 	out, err := w.be.call("pod_cvm_deadline")
 	if err != nil {
@@ -423,18 +454,37 @@ func cloudReceivesDeleteWithin(ctx context.Context, name string, seconds int) er
 	if err != nil {
 		return fmt.Errorf("the verification deadline %q: %w", out, err)
 	}
-	window, start := time.Duration(seconds)*time.Second, time.Now()
-	if left := s.created.Add(time.Duration(deadline) * time.Second).Sub(start); s.uid == "" || left <= window {
-		return fmt.Errorf("%s of the verification deadline of %q is left, which a wait of %s would outlast", left.Round(time.Second), name, window)
+	window := time.Duration(seconds) * time.Second
+	if left := s.created.Add(time.Duration(deadline) * time.Second).Sub(s.deleted); s.uid == "" || left <= window {
+		return fmt.Errorf("%s of the verification deadline of %q was left when it was deleted, which a window of %s would outlast", left.Round(time.Second), name, window)
 	}
-	deleted, err := poll(window, func() (bool, error) {
-		n, err := w.deletesFor(name)
-		return n > 0, err
+	var first *cloudCall
+	_, err = poll(time.Until(s.deleted.Add(window+deleteLag)), func() (bool, error) {
+		var err error
+		first, err = w.firstDeleteFor(name)
+		return first != nil, err
 	})
-	if err == nil && (!deleted || time.Since(start) > window) {
-		err = fmt.Errorf("the cloud API received no delete for the instance of %q within %d seconds", name, seconds)
+	if err != nil {
+		return err
 	}
-	return err
+	return deleteInWindow(name, s.deleted, window, first)
+}
+
+// deleteInWindow judges the first delete the cloud API received for a pod
+// deleted at deleted. A cloud API that does not say when it received a call
+// gives the step nothing to judge by.
+func deleteInWindow(name string, deleted time.Time, window time.Duration, first *cloudCall) error {
+	switch {
+	case first == nil:
+		return fmt.Errorf("the cloud API received no delete for the instance of %q within %s", name, window)
+	case first.ReceivedAt.IsZero():
+		return fmt.Errorf("the cloud API does not say when it received the delete for the instance of %q", name)
+	case first.ReceivedAt.Before(deleted):
+		return fmt.Errorf("the cloud API received a delete for the instance of %q %s before the pod was deleted", name, deleted.Sub(first.ReceivedAt).Round(time.Millisecond))
+	case first.ReceivedAt.Sub(deleted) > window:
+		return fmt.Errorf("the cloud API received the delete for the instance of %q %s after the pod was deleted, later than %s", name, first.ReceivedAt.Sub(deleted).Round(time.Millisecond), window)
+	}
+	return nil
 }
 
 func cloudReceivesNoDelete(ctx context.Context, name string, seconds int) error {

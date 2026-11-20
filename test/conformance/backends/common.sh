@@ -202,7 +202,9 @@
 #                                    (test/mock-cloud, behaviour; {} is the
 #                                    default), or unsupported where the cloud is
 #                                    not the harness's to script
-#   cloud_calls                      every call that cloud API received, as JSON
+#   cloud_calls                      every call that cloud API received, as JSON,
+#                                    each with the time it was received
+#                                    (receivedAt, RFC 3339)
 #   cloud_instances                  every instance it holds, as JSON
 # node_name, image_ref, image_digest, pull_interval, allowlist_node_delay,
 # cds_pod_url, cert_paths, pod_exec, exempt_namespace, api_service_name,

@@ -100,4 +100,9 @@ func TestBehaviourShapesTheAnswers(t *testing.T) {
 	if len(calls) != 5 || calls[0].IdempotencyKey != "key-1" || calls[0].Method != "POST" {
 		t.Fatalf("recorded calls: %+v", calls)
 	}
+	for i, c := range calls {
+		if c.ReceivedAt.IsZero() || (i > 0 && c.ReceivedAt.Before(calls[i-1].ReceivedAt)) {
+			t.Fatalf("call %d was received at %s, want each call stamped in order: %+v", i, c.ReceivedAt, calls)
+		}
+	}
 }

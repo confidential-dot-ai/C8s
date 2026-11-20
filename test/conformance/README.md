@@ -196,7 +196,10 @@ kind the cloud API is [`test/mock-cloud`](../mock-cloud), which starts no VM,
 so every scenario ends before a guest is verified: `pod_cvm_guest` is
 unsupported there, and a scenario that needs a pod running in its pod CVM is
 skipped. A scenario that needs a pod its guest was never sent asks
-`pod_cvm_no_guest`, which only such a backend answers.
+`pod_cvm_no_guest`, which only such a backend answers. A sentence that bounds
+when the cloud API receives a call judges by the time `cloud_calls` gives for
+it, on the assumption that the cloud API and the steps share a clock, as on
+kind.
 
 [`backends/common.sh`](backends/common.sh) states the interface: every
 function, its arguments, what it prints, and when it answers *unsupported*:
