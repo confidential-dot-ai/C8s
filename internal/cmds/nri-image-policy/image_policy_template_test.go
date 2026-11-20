@@ -92,8 +92,8 @@ func TestWorkerImageBaseGrantsTheFrontDoorShape(t *testing.T) {
 			Argv:   slices.Clone(container.Command.Argv),
 			Mounts: entryMounts(container.Mounts),
 		}
-		if got := roles.base.RoleOf(launch); got != routerRole {
-			t.Errorf("a front door mounting %v holds the role %q, want %q", mountDestinations(container.Mounts), got, routerRole)
+		if got := roles.base.RoleOf(launch); got != allowlist.RoleRouter {
+			t.Errorf("a front door mounting %v holds the role %q, want %q", mountDestinations(container.Mounts), got, allowlist.RoleRouter)
 		}
 	}
 }
@@ -192,7 +192,7 @@ func TestWorkerImageBaseRefusesAComposedKeyReader(t *testing.T) {
 		Argv:   append(slices.Clone(declared.Command.Argv), "--san=c8s-router.c8s-router.svc"),
 		Mounts: entryMounts(declared.Mounts),
 	}
-	if !store.base.BindsRoleMounts(launch, CredentialRole) {
+	if !store.base.BindsRoleMounts(launch, allowlist.RoleCredentials) {
 		t.Fatalf("the entry does not admit the launch it describes: %v", mountDestinations(declared.Mounts))
 	}
 	launch.Mounts = append(launch.Mounts, allowlist.ObservedMount{
@@ -202,7 +202,7 @@ func TestWorkerImageBaseRefusesAComposedKeyReader(t *testing.T) {
 		Class:       allowlist.MountEmptyDir,
 		Storage:     allowlist.MountMemory,
 	})
-	if store.base.BindsRoleMounts(launch, CredentialRole) {
+	if store.base.BindsRoleMounts(launch, allowlist.RoleCredentials) {
 		t.Error("a credential client was pinned-mount admitted while mounting the front door's serving key")
 	}
 }
@@ -219,15 +219,15 @@ func mountDestinations(p allowlist.MountPolicy) []string {
 // roleEntries is the role each base entry grants the component it pins.
 func roleEntries() map[string]string {
 	return map[string]string{
-		"c8s-mesh-endpoint":   meshRole,
-		"c8s-get-cert":        CredentialRole,
-		"c8s-probe-file":      CredentialRole,
-		"c8s-get-secret":      CredentialRole,
-		"c8s-get-volume":      CredentialRole,
-		"c8s-allowlist-proxy": CredentialRole,
-		"c8s-router-nginx":    routerRole,
-		"c8s-acme":            acmeRole,
-		"c8s-router-upstream": upstreamRole,
+		"c8s-mesh-endpoint":   allowlist.RoleMesh,
+		"c8s-get-cert":        allowlist.RoleCredentials,
+		"c8s-probe-file":      allowlist.RoleCredentials,
+		"c8s-get-secret":      allowlist.RoleCredentials,
+		"c8s-get-volume":      allowlist.RoleCredentials,
+		"c8s-allowlist-proxy": allowlist.RoleCredentials,
+		"c8s-router-nginx":    allowlist.RoleRouter,
+		"c8s-acme":            allowlist.RoleACME,
+		"c8s-router-upstream": allowlist.RoleUpstream,
 	}
 }
 

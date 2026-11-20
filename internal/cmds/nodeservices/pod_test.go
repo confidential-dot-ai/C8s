@@ -16,6 +16,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/podlaunch"
 	"github.com/confidential-dot-ai/c8s/internal/podmesh"
+	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
@@ -160,10 +161,10 @@ func TestRenderPodRuntimeBindsCDSPullAndKeepsOnlyMeasuredMeshAndSignedBase(t *te
 	}
 	writeInput(t, root, floorConfigPath, runtime.Policy)
 	mesh := stagedMeshPolicy(t, root)
-	if len(mesh.ExemptNamespaces) != 0 || len(mesh.Roles) != 1 || mesh.Roles[0].Name != workloadclaims.MeshRole {
+	if len(mesh.ExemptNamespaces) != 0 || len(mesh.Roles) != 1 || mesh.Roles[0].Name != allowlist.RoleMesh {
 		t.Fatalf("Pod mesh floor = %+v", mesh)
 	}
-	if !reflect.DeepEqual(mesh.Roles, []stagedRole{{Name: workloadclaims.MeshRole, UID: workloadclaims.MeshUID}}) || mesh.Capture != (stagedCapture{Outbound: 15001, Inbound: 15006, Health: 15021}) {
+	if !reflect.DeepEqual(mesh.Roles, []stagedRole{{Name: allowlist.RoleMesh, UID: workloadclaims.MeshUID}}) || mesh.Capture != (stagedCapture{Outbound: 15001, Inbound: 15006, Health: 15021}) {
 		t.Fatalf("baked mesh role or capture settings changed: %+v", mesh)
 	}
 	if resolver := got["mesh"].(map[string]any)["resolver"]; resolver != "1.1.1.1" {
@@ -179,7 +180,7 @@ func TestRenderPodRuntimeBindsCDSPullAndKeepsOnlyMeasuredMeshAndSignedBase(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(base.Workloads) != 2 || len(base.Workloads["app"].Containers) != 1 || base.Workloads["c8s-mesh-endpoint"].Containers[0].Role != workloadclaims.MeshRole {
+	if len(base.Workloads) != 2 || len(base.Workloads["app"].Containers) != 1 || base.Workloads["c8s-mesh-endpoint"].Containers[0].Role != allowlist.RoleMesh {
 		t.Fatalf("base = %v, want signed workloads plus the measured endpoint", base.Workloads)
 	}
 	policy := got["policy"].(map[string]any)

@@ -9,6 +9,7 @@ import (
 
 	"github.com/containerd/nri/pkg/api"
 
+	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
@@ -48,7 +49,7 @@ func installedCDSAddress(t *testing.T, address string) allowlistConfig {
 func measuredCDSPolicy(port uint16) *meshPolicy {
 	policy := meshRoles()
 	policy.Roles = append(policy.Roles, roleBinding{
-		Name: CredentialRole,
+		Name: allowlist.RoleCredentials,
 		UID:  workloadclaims.CredentialsUID,
 		Port: port,
 	})

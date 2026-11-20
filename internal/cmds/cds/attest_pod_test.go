@@ -440,7 +440,7 @@ func TestPodAttestNamesOnlyAUniqueWholeWorkloadMatch(t *testing.T) {
 // membership without a workload name.
 func TestPodAttestMeshOnlyIsMembershipOnly(t *testing.T) {
 	p := podTestClaims(t, wlDigestC)
-	p.Containers[0].Role = workloadclaims.MeshRole
+	p.Containers[0].Role = allowlist.RoleMesh
 	h, _ := podTestHandler(t, p)
 	w := postPodRequest(t, h, podRequest(t, h, p))
 	if w.Code != http.StatusOK {

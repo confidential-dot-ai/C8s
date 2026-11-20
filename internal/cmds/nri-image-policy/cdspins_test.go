@@ -193,7 +193,7 @@ func TestSidecarAdjustmentFollowsTheMeasuredCredentialsRole(t *testing.T) {
 		Workloads: map[string]allowlist.Workload{
 			"c8s-allowlist-proxy": {Containers: []allowlist.Container{{
 				Digest: mustDigestOrPanic(pushDigestA),
-				Role:   CredentialRole,
+				Role:   allowlist.RoleCredentials,
 				Command: allowlist.ArgvPolicy{
 					Policy: allowlist.PolicyExact,
 					Argv:   []string{"/c8s", "allowlist-proxy"},
@@ -320,7 +320,7 @@ func TestCertGateTakesNoSocketDirectory(t *testing.T) {
 		Workloads: map[string]allowlist.Workload{
 			"c8s-probe-file": {Containers: []allowlist.Container{{
 				Digest:  mustDigestOrPanic(pushDigestA),
-				Role:    CredentialRole,
+				Role:    allowlist.RoleCredentials,
 				Command: allowlist.ArgvPolicy{Policy: allowlist.PolicyExact, Argv: []string{"/c8s", "probe-file"}},
 				Args:    allowlist.ArgvPolicy{Policy: allowlist.PolicyAny},
 				Mounts:  allowlist.MountPolicy{Policy: allowlist.PolicyExact, Rules: []allowlist.MountRule{certs}},
@@ -365,8 +365,8 @@ func TestCertGateTakesNoSocketDirectory(t *testing.T) {
 		t.Errorf("the certificate gate was handed the socket directory %s, which it observes as a host mount", m.GetSource())
 	}
 	gate.Mounts = append(gate.Mounts, adjust.GetMounts()...)
-	if got := p.measuredRole(context.Background(), pod, gate); got != CredentialRole {
-		t.Errorf("the gate with the node's own mounts holds the role %q, want %q", got, CredentialRole)
+	if got := p.measuredRole(context.Background(), pod, gate); got != allowlist.RoleCredentials {
+		t.Errorf("the gate with the node's own mounts holds the role %q, want %q", got, allowlist.RoleCredentials)
 	}
 }
 

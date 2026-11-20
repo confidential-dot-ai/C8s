@@ -27,6 +27,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	"github.com/confidential-dot-ai/c8s/internal/strictjson"
+	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
@@ -534,7 +535,7 @@ func (h AttestHandler) resolveSandboxWorkload(ctx context.Context, sandbox workl
 	}
 
 	router = slices.ContainsFunc(resp.Containers, func(c workloadclaims.SandboxContainer) bool {
-		return c.Role == workloadclaims.RouterRole
+		return c.Role == allowlist.RoleRouter
 	})
 	return h.matchWorkload(ctx, snapshot, resp, membership, sandbox), router, nil
 }

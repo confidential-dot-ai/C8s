@@ -30,6 +30,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/podmesh"
 	"github.com/confidential-dot-ai/c8s/internal/podstart"
 	"github.com/confidential-dot-ai/c8s/internal/testutil"
+	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
@@ -244,7 +245,7 @@ func runPodBootstrap(t *testing.T, cfg *config, root string, podKey []byte, base
 	var meshDigest string
 	for _, workload := range cfg.Allowlist.Base.Workloads {
 		for _, container := range workload.Containers {
-			if container.Role != meshRole {
+			if container.Role != allowlist.RoleMesh {
 				continue
 			}
 			meshDigest = container.Digest.String()

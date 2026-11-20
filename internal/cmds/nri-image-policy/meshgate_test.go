@@ -194,7 +194,7 @@ func TestMeshGateAdmitsThePodInOrder(t *testing.T) {
 	pod := meshPod("default", "pod", testNetNS)
 	gate, state := gateWithPod(pod)
 	mesh := gateCtr("c8s-mesh", testMeshUID)
-	if _, _, err := gate.admissible(pod, mesh, gatedContainer{role: meshRole}); err != nil {
+	if _, _, err := gate.admissible(pod, mesh, gatedContainer{role: allowlist.RoleMesh}); err != nil {
 		t.Fatalf("the mesh endpoint was refused before its own start: %v", err)
 	}
 	if _, _, err := gate.memberNamespace(pod.GetId()); err == nil {
@@ -278,7 +278,7 @@ func TestMeshGateAdmitsAnAdmittedRoleLaunchAgain(t *testing.T) {
 		{
 			name: "a role that never ran here",
 			launch: gatedContainer{
-				role:   meshRole,
+				role:   allowlist.RoleMesh,
 				digest: pushDigestA,
 				argv:   launch.argv,
 			},
@@ -309,7 +309,7 @@ func TestMeshGateKeepsARouterNamespacePodRoleOnly(t *testing.T) {
 
 	router := gateCtr("nginx", testRouterUID)
 	launch := gatedContainer{
-		role:         routerRole,
+		role:         allowlist.RoleRouter,
 		mountsPinned: true,
 	}
 	if _, _, err := gate.admissible(pod, router, launch); err != nil {
@@ -343,7 +343,7 @@ func TestMeshGateKeepsARouterNamespacePodRoleOnly(t *testing.T) {
 	// as that identity alone.
 	attest := gateCtr("cds-attest", workloadclaims.UpstreamUID)
 	routing := gatedContainer{
-		role:         upstreamRole,
+		role:         allowlist.RoleUpstream,
 		mountsPinned: true,
 	}
 	if _, _, err := gate.admissible(pod, attest, routing); err != nil {
@@ -395,7 +395,7 @@ func TestMeshGateRefusesASharedPIDNamespace(t *testing.T) {
 			shared := gateCtr("nginx", testRouterUID)
 			shared.Linux = &api.LinuxContainer{Namespaces: namespaces}
 			launch := gatedContainer{
-				role:         routerRole,
+				role:         allowlist.RoleRouter,
 				mountsPinned: true,
 			}
 			_, _, err := gate.admissible(pod, shared, launch)
@@ -596,7 +596,7 @@ func TestAReplacementOfARefusedPodIsDecidedOnItsOwn(t *testing.T) {
 func TestProtectedPodRestoresTheContainersItFinds(t *testing.T) {
 	mesh := recoveredContainer{
 		ctr:     gateCtr("c8s-mesh", testMeshUID),
-		launch:  gatedContainer{role: meshRole, mountsPinned: true, digest: digestOther, argv: []string{"/app/c8s", "armtls-mesh"}},
+		launch:  gatedContainer{role: allowlist.RoleMesh, mountsPinned: true, digest: digestOther, argv: []string{"/app/c8s", "armtls-mesh"}},
 		running: true,
 	}
 	app := recoveredContainer{ctr: gateCtr("app", testWorkloadUID), running: true}
@@ -633,7 +633,7 @@ func TestProtectedPodRestoresTheContainersItFinds(t *testing.T) {
 		},
 		"a role on another identity": {
 			pod:   meshPod("default", "pod", testNetNS),
-			ctr:   recoveredContainer{ctr: gateCtr("c8s-mesh", testWorkloadUID), launch: gatedContainer{role: meshRole}, running: true},
+			ctr:   recoveredContainer{ctr: gateCtr("c8s-mesh", testWorkloadUID), launch: gatedContainer{role: allowlist.RoleMesh}, running: true},
 			wants: "runs as uid",
 		},
 		"a shared pid namespace": {
@@ -1015,7 +1015,7 @@ func TestPodMetadataGrantsNoRole(t *testing.T) {
 // started — not from its name.
 func TestStartContainerOpensTheGateOnTheMeshEndpointAlone(t *testing.T) {
 	argv := []string{"/usr/local/bin/armtls-mesh"}
-	base := roleBase(t, pushDigestB, meshRole, argv)
+	base := roleBase(t, pushDigestB, allowlist.RoleMesh, argv)
 	p, _ := newCachedPlugin(&config{
 		Allowlist: allowlistConfig{
 			Base:    base,
@@ -1064,7 +1064,7 @@ func TestMeshEndpointStartOpensTheGateWhileInitializing(t *testing.T) {
 	p, _ := newCachedPlugin(&config{
 		Policy: policyConfig{Mode: ModeFailClosed},
 		Allowlist: allowlistConfig{
-			Base: roleBase(t, pushDigestB, meshRole, []string{"/app/c8s", "armtls-mesh"}),
+			Base: roleBase(t, pushDigestB, allowlist.RoleMesh, []string{"/app/c8s", "armtls-mesh"}),
 			Pull: pullConfig{URL: "https://cds"},
 		},
 	}, anyAllowlist(map[string]string{pushDigestA: "served"}))

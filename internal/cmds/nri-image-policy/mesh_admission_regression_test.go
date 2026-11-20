@@ -8,6 +8,8 @@ import (
 
 	"github.com/containerd/nri/pkg/api"
 	"gopkg.in/yaml.v3"
+
+	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
 func TestMeshGateRequiresNonrootContainers(t *testing.T) {
@@ -26,7 +28,7 @@ func TestMeshGateRequiresNonrootContainers(t *testing.T) {
 		},
 		{
 			name: "c8s-mesh",
-			role: meshRole,
+			role: allowlist.RoleMesh,
 			uid:  testMeshUID,
 		},
 		{
@@ -78,8 +80,8 @@ func TestPodGateAdmitsRootWorkloads(t *testing.T) {
 		{name: "root app", user: &api.User{Uid: 0}, admitted: true},
 		{name: "root app in the mesh group", user: &api.User{Uid: 0, Gid: testMeshUID}},
 		{name: "app claiming the mesh uid", user: &api.User{Uid: testMeshUID}},
-		{name: "root endpoint", role: meshRole, user: &api.User{Uid: 0}},
-		{name: "endpoint", role: meshRole, user: &api.User{Uid: testMeshUID}, admitted: true},
+		{name: "root endpoint", role: allowlist.RoleMesh, user: &api.User{Uid: 0}},
+		{name: "endpoint", role: allowlist.RoleMesh, user: &api.User{Uid: testMeshUID}, admitted: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctr := &api.Container{
@@ -138,7 +140,7 @@ func TestInitializingDenialDoesNotRefuseSandbox(t *testing.T) {
 }
 
 func TestMeshConfigRejectsUnboundBaseRoles(t *testing.T) {
-	for _, role := range []string{"", meshRole, testCertRole, "unknown-role"} {
+	for _, role := range []string{"", allowlist.RoleMesh, testCertRole, "unknown-role"} {
 		t.Run(role, func(t *testing.T) {
 			cfg := meshConfigForLoad(t)
 			cfg.Allowlist.Base = roleBase(t, pushDigestB, role, []string{"/usr/local/bin/c8s"})
