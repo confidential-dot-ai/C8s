@@ -91,10 +91,14 @@ var errNoServingKey = errors.New("no serving key is saved for the Pod CVM")
 // guestStatus reads status only from the serving key saved with the
 // assignment, whichever reader is installed.
 func (r *Reconciler) guestStatus(ctx context.Context, rec *record, address string) (podstatus.PodProjection, error) {
+	return guestStatus(ctx, r.guest, rec, address)
+}
+
+func guestStatus(ctx context.Context, read guestReader, rec *record, address string) (podstatus.PodProjection, error) {
 	if len(rec.ServingKey) == 0 {
 		return podstatus.PodProjection{}, errNoServingKey
 	}
-	return r.guest(ctx, rec, address)
+	return read(ctx, rec, address)
 }
 
 // guestFailure logs the detail of a failed guest exchange and returns only

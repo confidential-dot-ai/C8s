@@ -1,7 +1,6 @@
 package podprovider
 
 import (
-	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,7 +9,6 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // rateLimitingCloud is an HTTP Cloud that answers every request with 429
@@ -36,7 +34,7 @@ func rateLimitingCloud(t *testing.T, r *Reconciler, retryAfter string) *int {
 
 func reconcileResult(t *testing.T, r *Reconciler, pod *corev1.Pod) ctrl.Result {
 	t.Helper()
-	result, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(pod)})
+	result, err := reconcileLooked(r, pod)
 	if err != nil {
 		t.Fatal(err)
 	}
