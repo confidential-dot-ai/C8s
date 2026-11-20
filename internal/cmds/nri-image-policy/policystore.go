@@ -247,6 +247,32 @@ func (s *policyStore) rebuildEndedSets() bool {
 	}
 }
 
+// setsAdmitting are the component sets the applied document holds in force at
+// the CDS's time with an entry admitting this launch.
+func (s *policyStore) setsAdmitting(r allowlist.RunningContainer) []allowlist.SetRef {
+	if s == nil {
+		return nil
+	}
+	snap := s.current()
+	if snap == nil || snap.pulled == nil {
+		return nil
+	}
+	return snap.pulled.SetsAdmitting(r, s.clock.now())
+}
+
+// setsInForce are the component sets the applied document holds in force at
+// the CDS's time.
+func (s *policyStore) setsInForce() []allowlist.SetRef {
+	if s == nil {
+		return nil
+	}
+	snap := s.current()
+	if snap == nil || snap.pulled == nil {
+		return nil
+	}
+	return snap.pulled.SetsInForce(s.clock.now())
+}
+
 // roleOf is the platform role the base allowlist, or a component set the
 // applied document holds in force, binds to this launch. Two of them binding
 // different roles bind none, as two declarations within one index do.

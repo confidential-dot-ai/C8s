@@ -31,6 +31,6 @@ func (p *plugin) applyPodPolicy(ctx context.Context, pulled *allowlist.Allowlist
 	p.inventory.revision++
 	p.inventory.mu.Unlock()
 	p.podChanged()
-	p.KillRevoked(ctx)
+	p.recheckRunning(ctx)
 	return nil
 }
