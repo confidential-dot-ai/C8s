@@ -2,6 +2,7 @@ package podprovider
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -9,6 +10,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
@@ -101,6 +103,193 @@ func TestDeletionDoesNotWaitForAPodItsGuestNeverReceived(t *testing.T) {
 	}
 }
 
+// The assignment is saved before it is sent. A Pod deleted between the two
+// reached no guest, so its grace period has nothing to wait for either.
+func TestDeletionDoesNotWaitForAnAssignmentThatWasNeverSent(t *testing.T) {
+	pod := fixturePod()
+	r, cloud, guest := fixture(t, pod)
+	guest.afterPrepare = func() {
+		if err := r.client.Delete(context.Background(), getPod(t, r, pod)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for range 8 {
+		if guest.prepares != 0 {
+			break
+		}
+		_ = reconcile(t, r, pod)
+	}
+	if rec := getRecord(t, r, pod); len(rec.Assignment) == 0 || guest.sends != 0 {
+		t.Fatalf("fixture: want a saved assignment that was never sent, got %d bytes and %d sends", len(rec.Assignment), guest.sends)
+	}
+	end := getPod(t, r, pod).DeletionTimestamp.Time
+	r.now = func() time.Time { return end.Add(-30 * time.Second) }
+	if err := reconcile(t, r, pod); err != nil {
+		t.Fatal(err)
+	}
+	if guest.sends != 0 || cloud.deleteCalls != 1 {
+		t.Fatalf("%d sends, %d destruction requests for a Pod whose assignment was never sent, want 0 and 1", guest.sends, cloud.deleteCalls)
+	}
+}
+
+// The mark is cleared before the send. A Pod deleted while it is being
+// cleared is caught by the check that follows, and nothing was sent.
+func TestDeletionDoesNotWaitWhenTheLastCheckStoppedTheSend(t *testing.T) {
+	pod := fixturePod()
+	r, cloud, guest := fixture(t, pod)
+	inner := r.client.(client.WithWatch)
+	deleted := false
+	r.client = interceptor.NewClient(inner, interceptor.Funcs{Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+		var rec record
+		if secret, ok := obj.(*corev1.Secret); ok && !deleted && decode(secret.Data["state.json"], &rec) == nil && len(rec.Assignment) != 0 && !rec.AssignmentUnsent {
+			deleted = true
+			if err := c.Delete(ctx, getPod(t, r, pod)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return c.Update(ctx, obj, opts...)
+	}})
+	for range 8 {
+		if deleted {
+			break
+		}
+		_ = reconcile(t, r, pod)
+	}
+	if !deleted || guest.sends != 0 {
+		t.Fatalf("fixture: want the Pod deleted before any send, got deleted=%t and %d sends", deleted, guest.sends)
+	}
+	end := getPod(t, r, pod).DeletionTimestamp.Time
+	r.now = func() time.Time { return end.Add(-30 * time.Second) }
+	if err := reconcile(t, r, pod); err != nil {
+		t.Fatal(err)
+	}
+	if guest.sends != 0 || cloud.deleteCalls != 1 {
+		t.Fatalf("%d sends, %d destruction requests for a Pod whose send the last check stopped, want 0 and 1", guest.sends, cloud.deleteCalls)
+	}
+}
+
+// A send whose answer was lost may have reached the guest, so the Pod is
+// held like one the guest acknowledged.
+func TestDeletionWaitsForAnAssignmentWhoseSendWasNotAnswered(t *testing.T) {
+	pod := fixturePod()
+	r, cloud, guest := fixture(t, pod)
+	guest.lostResponse = true
+	for range 8 {
+		if guest.sends != 0 {
+			break
+		}
+		_ = reconcile(t, r, pod)
+	}
+	if guest.sends != 1 {
+		t.Fatalf("fixture: %d sends, want 1", guest.sends)
+	}
+	deleteWithGraceLeft(t, r, pod, 30*time.Second)
+	if err := reconcile(t, r, pod); err != nil {
+		t.Fatal(err)
+	}
+	if cloud.deleteCalls != 0 {
+		t.Fatal("instance destruction requested inside the grace period of a Pod its guest may hold")
+	}
+}
+
+// A provider that was away while both passed still reports the one that
+// ended the wait: the earlier of the verification deadline and the end of the
+// grace period, bounded by the maximum.
+func TestDeletionResumedLateReportsWhatEndedTheWait(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		grace    int64
+		deadline time.Duration // after the deletion
+		timedOut bool
+	}{
+		{"deadline first", 120, 60 * time.Second, true},
+		{"grace period first", 120, 180 * time.Second, false},
+		{"maximum first", 86400, 600 * time.Second, false},
+		{"deadline before the maximum", 86400, 200 * time.Second, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pod := fixturePod()
+			pod.Finalizers = []string{"example.invalid/hold"}
+			r, cloud := fixtureReconciler(t, pod)
+			runToRunning(t, r, pod)
+			if err := r.client.Delete(context.Background(), getPod(t, r, pod)); err != nil {
+				t.Fatal(err)
+			}
+			// The fake client stamps the deletion with the current time, so the
+			// requested grace period is carried by the field alone and the
+			// deletion is taken to have happened that long before the stamp.
+			live := getPod(t, r, pod)
+			live.DeletionGracePeriodSeconds = &tc.grace
+			if err := r.client.Update(context.Background(), live); err != nil {
+				t.Fatal(err)
+			}
+			deleted := live.DeletionTimestamp.Add(-time.Duration(tc.grace) * time.Second)
+			rec, secret, err := r.loadRecord(context.Background(), identityKey(r.cfg.ProviderID, string(pod.UID)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			deadline := deleted.Add(tc.deadline)
+			rec.VerificationDeadline = &deadline
+			if err := r.save(context.Background(), rec, secret); err != nil {
+				t.Fatal(err)
+			}
+			r.now = func() time.Time { return deleted.Add(48 * time.Hour) }
+			if err := reconcile(t, r, pod); err != nil {
+				t.Fatal(err)
+			}
+			if cloud.deleteCalls != 1 {
+				t.Fatalf("%d destruction requests, want 1", cloud.deleteCalls)
+			}
+			got := getPod(t, r, pod)
+			if timedOut := got.Status.Phase == corev1.PodFailed && got.Status.Reason == verificationTimeoutReason; timedOut != tc.timedOut {
+				t.Fatalf("Pod is %s/%q, want verification timeout reported: %t", got.Status.Phase, got.Status.Reason, tc.timedOut)
+			}
+		})
+	}
+}
+
+// A status the API server refused is published again before the Pod is
+// released, so a missed deadline is not lost with the first attempt.
+func TestDeletionPublishesTheMissedDeadlineAfterARefusedAttempt(t *testing.T) {
+	pod := fixturePod()
+	pod.Finalizers = []string{"example.invalid/hold"}
+	// No application port, so no endpoints annotation whose withdrawal would
+	// reread the Pod between the two attempts.
+	pod.Spec.Containers[0].Ports = nil
+	r, cloud := fixtureReconciler(t, pod)
+	runToRunning(t, r, pod)
+	end := deleteWithGraceLeft(t, r, pod, 30*time.Second)
+	rec, secret, err := r.loadRecord(context.Background(), identityKey(r.cfg.ProviderID, string(pod.UID)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := end.Add(-10 * time.Second)
+	rec.VerificationDeadline = &deadline
+	if err := r.save(context.Background(), rec, secret); err != nil {
+		t.Fatal(err)
+	}
+	r.now = func() time.Time { return end.Add(time.Hour) }
+	cloud.in.Status = "terminated"
+	refused := false
+	r.client = interceptor.NewClient(r.client.(client.WithWatch), interceptor.Funcs{SubResourcePatch: func(ctx context.Context, c client.Client, sub string, obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
+		if !refused {
+			refused = true
+			return errors.New("status patch refused")
+		}
+		return c.SubResource(sub).Patch(ctx, obj, patch, opts...)
+	}})
+	for range 3 {
+		_ = reconcile(t, r, pod)
+	}
+	got := getPod(t, r, pod)
+	if !refused || controllerutil.ContainsFinalizer(got, finalizer) {
+		t.Fatalf("fixture: refused=%t, finalizer held=%t", refused, controllerutil.ContainsFinalizer(got, finalizer))
+	}
+	if got.Status.Phase != corev1.PodFailed || got.Status.Reason != verificationTimeoutReason {
+		t.Fatalf("Pod released as %s/%q, want Failed/%s", got.Status.Phase, got.Status.Reason, verificationTimeoutReason)
+	}
+}
+
 // Deleting a Pod must not keep an unverified guest longer than leaving it
 // would: a verification deadline inside the grace period ends the wait.
 func TestVerificationDeadlineEndsTheGracePeriod(t *testing.T) {
@@ -161,7 +350,8 @@ func TestDeletionGraceIsBoundedByTheConfiguredMaximum(t *testing.T) {
 		pod := fixturePod()
 		pod.DeletionTimestamp = &metav1.Time{Time: deleted.Add(time.Duration(tc.grace) * time.Second)}
 		pod.DeletionGracePeriodSeconds = &tc.grace
-		if got := r.graceRemaining(pod, rec); got != time.Duration(tc.want)*time.Second {
+		end, held := r.graceEnd(pod, rec)
+		if got := end.Sub(deleted); !held || got != time.Duration(tc.want)*time.Second {
 			t.Fatalf("grace period %ds: instance left for %s, want %ds", tc.grace, got, tc.want)
 		}
 	}

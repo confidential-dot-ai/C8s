@@ -31,6 +31,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
+	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
@@ -440,6 +441,53 @@ func TestRun_ServesNodeImagesWithDifferentRegisters(t *testing.T) {
 		nodes:       upgradingNodesDocument,
 	})
 	startRunServer(t, cfg)
+}
+
+// The node images CDS serves are the ones in the configuration it was started
+// with. A CDS started again under a configuration that pins another image
+// serves that image, and no longer the one the first start served.
+func TestRun_RestartServesTheNewConfigurationsNodeImages(t *testing.T) {
+	replaced := `{"schema_version":"1","tee":"tdx","measurements":[` +
+		tdxNodeEntry("node", strings.Repeat("cd", refvalues.DigestSize), "", "") + `]}`
+
+	pinned := func(document string) refvalues.ReferenceValues {
+		t.Helper()
+		set, err := refvalues.Parse([]byte(document))
+		if err != nil {
+			t.Fatalf("parse node pins: %v", err)
+		}
+		return set
+	}
+	// served starts a CDS under the document and stops it again before
+	// returning, so the next start is a restart rather than a second CDS.
+	served := func(document string) (set refvalues.ReferenceValues) {
+		t.Helper()
+		t.Run("start", func(t *testing.T) {
+			cfg := armTLSRunConfig(t)
+			cfg.measured = measuredConfig(t, cluster{
+				operatorPEM: operatorKeysPEM(t),
+				workloads:   map[string]string{"cds": digestA},
+				nodes:       document,
+			})
+			base, client := startRunServer(t, cfg)
+			var err error
+			if set, err = refvalues.ParseRendered(fetch(t, client, base+"/measurements")); err != nil {
+				t.Fatalf("served node images do not parse: %v", err)
+			}
+		})
+		return set
+	}
+
+	before, after := served(nodesDocument), served(replaced)
+	if missing, extra := refvalues.Diff(pinned(nodesDocument), before); len(missing)+len(extra) != 0 {
+		t.Fatalf("first start: missing %v, extra %v, want exactly the configured image", missing, extra)
+	}
+	if missing, extra := refvalues.Diff(pinned(replaced), after); len(missing)+len(extra) != 0 {
+		t.Fatalf("restart: missing %v, extra %v, want exactly the new configuration's image", missing, extra)
+	}
+	if missing, _ := refvalues.Diff(before, after); len(missing) != len(before.Images) || len(before.Images) == 0 {
+		t.Fatalf("restart still serves %d of the first start's %d images", len(before.Images)-len(missing), len(before.Images))
+	}
 }
 
 // TestRun_AllowlistWriteAcceptsClockSkewedToken: the operator-token verifier
