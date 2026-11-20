@@ -300,16 +300,32 @@ func (p *plugin) checkContainerPhase(ctx context.Context, cfg *config, pod *api.
 	if verdict == verdictDeny || !sandboxPolicyApplies(cfg, phase) {
 		return verdict, reason
 	}
-	if v, r := p.checkSandbox(ctx, cfg, observed); v == verdictDeny {
-		return v, r
-	}
-	if refusal := p.hostPortRefusal(ctx, cfg, observed); refusal != "" {
-		return verdictDeny, refusal
-	}
-	if refusal := p.capabilityRefusal(ctx, cfg, observed); refusal != "" {
+	if refusal := p.privilegeRefusal(ctx, cfg, observed); refusal != "" {
 		return verdictDeny, refusal
 	}
 	return verdict, reason
+}
+
+// privilegeRefusal is why a container may not hold the host privilege its pod
+// asks for, "" when it may. A node service's container is excused the rules a
+// static pod the measured base pins is excused, and host ports, which no
+// exemption excuses, are judged first.
+func (p *plugin) privilegeRefusal(ctx context.Context, cfg *config, observed observedContainer) string {
+	service, refusal := p.nodeServiceOf(ctx, observed)
+	if refusal != nil {
+		p.denyPrivilege(containerSubject(nodeServiceRule, observed.pod, observed.ctr, observed.imageRef), refusal)
+		return refusal.Error()
+	}
+	if port := p.hostPortRefusal(ctx, cfg, observed); port != "" {
+		return port
+	}
+	if service.Entry != "" {
+		return ""
+	}
+	if v, r := p.checkSandbox(ctx, cfg, observed); v == verdictDeny {
+		return r
+	}
+	return p.capabilityRefusal(ctx, cfg, observed)
 }
 
 // sandboxPolicyApplies reports whether the host-privilege rules run: they read

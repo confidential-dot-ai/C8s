@@ -37,7 +37,14 @@ const (
 // with privileges the pod's protection cannot survive. Attachability is
 // refused for every container the wrapper creates, whether or not the floor
 // covers it.
-func requireFloor(spec *specs.Spec, containerID string, stdin *os.File, floor nriimagepolicy.MeshFloor, grantDir string) error {
+func requireFloor(
+	spec *specs.Spec,
+	containerID string,
+	stdin *os.File,
+	floor nriimagepolicy.MeshFloor,
+	capGrantDir string,
+	nodeServiceGrantDir string,
+) error {
 	if floor.PodRole && spec.Hooks != nil {
 		// Include legacy hook stages: none may execute before Pod admission.
 		hooks, err := json.Marshal(spec.Hooks)
@@ -51,7 +58,16 @@ func requireFloor(spec *specs.Spec, containerID string, stdin *os.File, floor nr
 	if !floorApplies(spec, containerID, floor) {
 		return nil
 	}
-	if err := floorChecks(spec, floor, grantDir, containerID); err != nil {
+	grant, err := nriimagepolicy.ReadNodeServiceGrant(nodeServiceGrantDir, containerID)
+	if err != nil {
+		return fmt.Errorf("the container's node-service grant is not one admission wrote: %w", err)
+	}
+	// A granted node service is left as the measured policy found it, as a
+	// static pod is.
+	if grant.Granted() {
+		return nil
+	}
+	if err := floorChecks(spec, floor, capGrantDir, containerID); err != nil {
 		return fmt.Errorf("the measured privilege floor refuses this container: %w", err)
 	}
 	return nil

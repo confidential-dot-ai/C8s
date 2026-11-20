@@ -108,9 +108,11 @@ func (p *plugin) trackRunning(pods []*api.PodSandbox, ctrs []*api.Container) {
 	}
 }
 
-// recoverExisting takes every sandbox running when this enforcer connected
-// back under the mesh gate, or refuses it for its life.
+// recoverExisting rebuilds the node-service count and takes every sandbox
+// running when this enforcer connected back under the mesh gate, or refuses it
+// for its life.
 func (p *plugin) recoverExisting(ctx context.Context, pods []*api.PodSandbox, ctrs []*api.Container) {
+	p.recountNodeServices(ctx, pods, ctrs)
 	podByID := podsByID(pods)
 	bySandbox := map[string][]recoveredContainer{}
 	workloads := map[string][]workloadclaims.SandboxContainer{}

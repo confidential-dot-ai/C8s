@@ -71,7 +71,11 @@ container the measured mesh policy covers holds more than the floor:
 The bundle names a container's image, not the digest admission matched, so the
 plugin records what an entry declares for each launch it clears: the
 capabilities beyond the node's default set, under `/run/nri-image-policy-caps`,
-removed with the container. It writes them at the check whose failure fails the
+and the node-service entry that admitted a container, under
+`/run/nri-image-policy-node-services`, both removed with the container. The
+floor leaves a container with a node-service grant as the measured policy found
+it, as it leaves a static pod
+([allowlist-and-capabilities.md](allowlist-and-capabilities.md#host-privilege)). It writes them at the check whose failure fails the
 create, so a container the plugin's start check never judges — the check the
 runtime skips when the plugin does not answer — holds the default set alone.
 
@@ -79,7 +83,8 @@ A measured policy that cannot be read, or that carries no `mesh` policy, denies
 the create, and denies `start` too, on every node, before the wrapper decides
 whether the pod admission below applies. The floor is independent of the exec
 posture above, and leaves the exempt namespaces, the pod's own sandbox
-container and a worker's static pod as the measured policy found them. Attachability is
+container, a worker's static pod and a granted node service as the measured
+policy found them. Attachability is
 refused for every container the wrapper creates — a terminal, and a create
 carrying the container's standard input — so an attach session has no way in
 even there.
