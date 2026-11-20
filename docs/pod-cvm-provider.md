@@ -10,7 +10,11 @@ is terminated once the deletion's grace period has passed, or after
 `maxDeletionGraceSeconds` if that is shorter, so a delete with the default
 grace period keeps the CVM for 30 seconds; `--grace-period=0 --force`
 terminates it at once, and so does deleting a Pod its CVM has not received
-yet. The guest is not told to stop its containers earlier. A verification
+yet. The guest is not told to stop its containers earlier. During the grace
+period the provider looks at the Pod every 10 seconds and terminates the CVM
+as soon as the guest reports the Pod succeeded or failed, or Cloud reports the
+instance ended, restarted or gone. A look that fails changes nothing: the CVM
+is kept and looked at again, until the grace period passes. A verification
 deadline that passes during the grace period ends it: the Pod reports
 `GuestVerificationTimedOut` and its CVM is terminated then.
 
@@ -301,9 +305,9 @@ verification withdraws readiness and advertised endpoints.
 
 `maxDeletionGraceSeconds` defaults to 300 (5 minutes), with a permitted range of
 1 to 3600 seconds. A Pod's author sets its `terminationGracePeriodSeconds`, and
-the CVM keeps running and holds its place in `maxPods` throughout the grace
-period of a delete; this maximum bounds that time whatever grace period the
-Pod or the delete carries.
+the CVM keeps running and holds its place in `maxPods` during the grace
+period of a delete, until the Pod ends or the period passes; this maximum
+bounds that time whatever grace period the Pod or the delete carries.
 
 `verificationTimeoutSeconds` defaults to 600 (10 minutes), with a permitted range
 of 30 to 86400 seconds. The initial window begins when the provider persists the

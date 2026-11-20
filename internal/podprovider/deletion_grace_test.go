@@ -1,8 +1,11 @@
 package podprovider
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"net/http"
+	"reflect"
 	"testing"
 	"time"
 
@@ -12,6 +15,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+
+	"github.com/confidential-dot-ai/c8s/internal/cmds/podstatus"
 )
 
 // deleteWithGraceLeft deletes the Pod and sets the provider's clock so that
@@ -40,8 +45,8 @@ func TestDeletionLeavesTheInstanceUntilTheGracePeriodHasPassed(t *testing.T) {
 	if cloud.deleteCalls != 0 {
 		t.Fatal("instance destruction requested inside the grace period")
 	}
-	if res.RequeueAfter != 30*time.Second {
-		t.Fatalf("requeued after %s, want the 30s left of the grace period", res.RequeueAfter)
+	if res.RequeueAfter != pollInterval {
+		t.Fatalf("requeued after %s with 30s of the grace period left, want another look in %s", res.RequeueAfter, pollInterval)
 	}
 	if !controllerutil.ContainsFinalizer(getPod(t, r, pod), finalizer) {
 		t.Fatal("Pod released while its instance runs")
@@ -302,7 +307,8 @@ func TestVerificationDeadlineEndsTheGracePeriod(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	deadline := end.Add(-10 * time.Second)
+	// Sooner than the next look, so that the deadline alone sets the wake.
+	deadline := end.Add(-26 * time.Second)
 	rec.VerificationDeadline = &deadline
 	if err := r.save(context.Background(), rec, secret); err != nil {
 		t.Fatal(err)
@@ -312,8 +318,8 @@ func TestVerificationDeadlineEndsTheGracePeriod(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cloud.deleteCalls != 0 || res.RequeueAfter != 20*time.Second {
-		t.Fatalf("%d destruction requests, requeue %s: want the instance kept and a wake at the deadline in 20s", cloud.deleteCalls, res.RequeueAfter)
+	if cloud.deleteCalls != 0 || res.RequeueAfter != 4*time.Second {
+		t.Fatalf("%d destruction requests, requeue %s: want the instance kept and a wake at the deadline in 4s", cloud.deleteCalls, res.RequeueAfter)
 	}
 
 	r.now = func() time.Time { return deadline }
@@ -368,5 +374,345 @@ func TestMaxDeletionGraceBoundsAndDefault(t *testing.T) {
 		if seconds == 0 && cfg.MaxDeletionGraceSeconds != 300 {
 			t.Fatal("missing default")
 		}
+	}
+}
+
+// heldPod is a running Pod deleted with 30s of its grace period left, kept
+// by a second finalizer so that its last status can be read.
+func heldPod(t *testing.T) (*corev1.Pod, *Reconciler, *fakeCloud, *fakeGuest) {
+	t.Helper()
+	pod := fixturePod()
+	pod.Finalizers = []string{"example.invalid/hold"}
+	r, cloud, guest := fixture(t, pod)
+	runToRunning(t, r, pod)
+	deleteWithGraceLeft(t, r, pod, 30*time.Second)
+	return pod, r, cloud, guest
+}
+
+// The grace period is for the Pod's containers to stop. Once the guest
+// reports that they have, nothing is left to wait for.
+func TestDeletionEndsTheWaitWhenTheGuestReportsThePodEnded(t *testing.T) {
+	for _, phase := range []corev1.PodPhase{corev1.PodSucceeded, corev1.PodFailed} {
+		t.Run(string(phase), func(t *testing.T) {
+			pod, r, cloud, guest := heldPod(t)
+			r.guest = func(_ context.Context, rec *record, _ string) (podstatus.PodProjection, error) {
+				p := fixtureProjection(rec)
+				p.Status.Phase = phase
+				p.Status.ContainerStatuses[0].State = &podstatus.ContainerState{Terminated: &podstatus.ContainerTerminated{}}
+				return p, nil
+			}
+			if err := reconcile(t, r, pod); err != nil {
+				t.Fatal(err)
+			}
+			if cloud.deleteCalls != 1 {
+				t.Fatalf("%d destruction requests once the guest reported the Pod %s, want 1", cloud.deleteCalls, phase)
+			}
+			if got := getPod(t, r, pod).Status; got.Phase != phase || got.Reason != "" {
+				t.Fatalf("Pod is %s/%q, want the guest's %s", got.Phase, got.Reason, phase)
+			}
+			if rec := getRecord(t, r, pod); rec.TerminalStatus == nil || rec.TerminalStatus.Phase != phase {
+				t.Fatalf("record keeps %+v as the Pod's last status, want %s", rec.TerminalStatus, phase)
+			}
+			if guest.sends != 1 || cloud.createCalls != 1 {
+				t.Fatalf("%d sends and %d creates, want the 1 of each the launch made", guest.sends, cloud.createCalls)
+			}
+		})
+	}
+}
+
+// An instance that stopped, restarted or is not the Pod's own runs no
+// containers of the Pod to wait for.
+func TestDeletionEndsTheWaitWhenTheInstanceEnded(t *testing.T) {
+	for _, tc := range []struct {
+		name, reason string
+		change       func(*fakeCloud)
+	}{
+		{"failed", "InstanceEnded", func(c *fakeCloud) { c.in.Status = "failed" }},
+		{"stopped", "InstanceEnded", func(c *fakeCloud) { c.in.Status = "stopped" }},
+		{"terminated", "InstanceEnded", func(c *fakeCloud) { c.in.Status = "terminated" }},
+		{"gone", "InstanceGone", func(c *fakeCloud) { c.in = nil }},
+		{"rebooted", "GuestRebooted", func(c *fakeCloud) { c.in.Boot.Count = 2 }},
+		{"another image", "InstanceIdentityMismatch", func(c *fakeCloud) { c.in.Image.Version = "other" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pod, r, cloud, guest := heldPod(t)
+			reads := guest.reads
+			tc.change(cloud)
+			if err := reconcile(t, r, pod); err != nil {
+				t.Fatal(err)
+			}
+			got := getPod(t, r, pod)
+			if got.Status.Phase != corev1.PodFailed || got.Status.Reason != tc.reason {
+				t.Fatalf("Pod is %s/%q inside its grace period, want Failed/%s", got.Status.Phase, got.Status.Reason, tc.reason)
+			}
+			// An instance Cloud already ended needs no request; the Pod is released.
+			if cloud.deleteCalls != 1 && controllerutil.ContainsFinalizer(got, finalizer) {
+				t.Fatal("Pod still held with no destruction requested once its instance had ended")
+			}
+			if guest.reads != reads {
+				t.Fatal("guest read through an instance that had ended")
+			}
+		})
+	}
+}
+
+// A Pod still running is held, and looked at again within the poll interval
+// or when the wait ends, whichever is sooner. Looking changes nothing.
+func TestDeletionLooksAgainWhileThePodRuns(t *testing.T) {
+	for _, tc := range []struct{ left, want time.Duration }{
+		{30 * time.Second, pollInterval},
+		{4 * time.Second, 4 * time.Second},
+	} {
+		t.Run(tc.left.String(), func(t *testing.T) {
+			pod, r, cloud, guest := heldPod(t)
+			end := getPod(t, r, pod).DeletionTimestamp.Time
+			r.now = func() time.Time { return end.Add(-tc.left) }
+			before, reads := getRecord(t, r, pod), guest.reads
+			if got := reconcileResult(t, r, pod).RequeueAfter; got != tc.want {
+				t.Fatalf("requeued after %s with %s left, want %s", got, tc.left, tc.want)
+			}
+			if guest.reads != reads+1 {
+				t.Fatalf("%d guest reads while held, want 1", guest.reads-reads)
+			}
+			if cloud.deleteCalls != 0 || cloud.createCalls != 1 || guest.sends != 1 {
+				t.Fatalf("%d destruction requests, %d creates, %d sends for a running Pod inside its grace period, want 0, 1 and 1", cloud.deleteCalls, cloud.createCalls, guest.sends)
+			}
+			if after := getRecord(t, r, pod); !reflect.DeepEqual(before, after) {
+				t.Fatal("looking at a held Pod changed its record")
+			}
+			if got := getPod(t, r, pod).Status.Phase; got != corev1.PodRunning {
+				t.Fatalf("Pod is %s while held, want Running", got)
+			}
+		})
+	}
+}
+
+// A read that fails shows nothing about the Pod, so it stays held. Nothing is
+// sent to the guest and no verification deadline starts.
+func TestDeletionStaysHeldWhenAReadFails(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		fail func(*Reconciler, *fakeCloud)
+		want time.Duration
+	}{
+		{"cloud unavailable", func(_ *Reconciler, c *fakeCloud) {
+			c.get = func(string) (*instance, error) { return nil, errors.New("cloud unavailable") }
+		}, pollInterval},
+		{"cloud rate limit", func(_ *Reconciler, c *fakeCloud) {
+			c.get = func(string) (*instance, error) {
+				return nil, &cloudProblem{status: http.StatusTooManyRequests, retryAfter: 20 * time.Second}
+			}
+		}, 20 * time.Second},
+		{"cloud rate limit past the wait", func(_ *Reconciler, c *fakeCloud) {
+			c.get = func(string) (*instance, error) {
+				return nil, &cloudProblem{status: http.StatusTooManyRequests, retryAfter: time.Hour}
+			}
+		}, 30 * time.Second},
+		{"instance starting", func(_ *Reconciler, c *fakeCloud) { c.in.Status = "provisioning" }, pollInterval},
+		{"answer naming no instance", func(_ *Reconciler, c *fakeCloud) {
+			c.get = func(string) (*instance, error) { return &instance{}, nil }
+		}, pollInterval},
+		{"guest unreachable", func(r *Reconciler, _ *fakeCloud) {
+			r.guest = func(context.Context, *record, string) (podstatus.PodProjection, error) {
+				return podstatus.PodProjection{}, errors.New("attestation failed")
+			}
+		}, pollInterval},
+		{"status of another Pod", func(r *Reconciler, _ *fakeCloud) {
+			r.guest = func(_ context.Context, rec *record, _ string) (podstatus.PodProjection, error) {
+				p := fixtureProjection(rec)
+				p.Metadata.UID, p.Status.Phase = "another", corev1.PodSucceeded
+				return p, nil
+			}
+		}, pollInterval},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pod, r, cloud, guest := heldPod(t)
+			before := getRecord(t, r, pod)
+			tc.fail(r, cloud)
+			if got := reconcileResult(t, r, pod).RequeueAfter; got != tc.want {
+				t.Fatalf("requeued after %s, want %s", got, tc.want)
+			}
+			if cloud.deleteCalls != 0 || cloud.createCalls != 1 || guest.sends != 1 {
+				t.Fatalf("%d destruction requests, %d creates, %d sends after a read that showed nothing, want 0, 1 and 1", cloud.deleteCalls, cloud.createCalls, guest.sends)
+			}
+			if after := getRecord(t, r, pod); !reflect.DeepEqual(before, after) {
+				t.Fatal("a failed read changed the held Pod's record")
+			}
+			if got := getPod(t, r, pod).Status.Phase; got != corev1.PodRunning {
+				t.Fatalf("Pod is %s after a failed read, want its last verified Running", got)
+			}
+		})
+	}
+}
+
+// A look takes no longer than the wait that is left, so a guest that never
+// answers cannot keep the instance past the grace period.
+func TestDeletionLookEndsWithTheWait(t *testing.T) {
+	pod, r, cloud, _ := heldPod(t)
+	end := getPod(t, r, pod).DeletionTimestamp.Time
+	r.now = func() time.Time { return end.Add(-50 * time.Millisecond) }
+	r.guest = func(ctx context.Context, _ *record, _ string) (podstatus.PodProjection, error) {
+		select {
+		case <-ctx.Done():
+			return podstatus.PodProjection{}, ctx.Err()
+		case <-time.After(30 * time.Second):
+			return podstatus.PodProjection{}, errors.New("the look outlived the wait")
+		}
+	}
+	started := time.Now()
+	res := reconcileResult(t, r, pod)
+	if took := time.Since(started); took > 10*time.Second {
+		t.Fatalf("look took %s with 50ms of the wait left", took)
+	}
+	if cloud.deleteCalls != 0 || res.RequeueAfter != 50*time.Millisecond {
+		t.Fatalf("%d destruction requests, requeue %s: want the Pod held and a wake when the wait ends", cloud.deleteCalls, res.RequeueAfter)
+	}
+}
+
+// A look takes time. When the wait ended during it, the instance is
+// destroyed in the same pass, and a verification deadline that ended it is
+// still reported.
+func TestDeletionDoesNotWaitAgainWhenTheWaitEndedDuringALook(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		deadline time.Duration // before the end of the grace period; 0 for none
+		reason   string
+	}{
+		{"grace period", 0, ""},
+		{"verification deadline", 10 * time.Second, verificationTimeoutReason},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pod, r, cloud, _ := heldPod(t)
+			end := getPod(t, r, pod).DeletionTimestamp.Time
+			if tc.deadline != 0 {
+				rec, secret, err := r.loadRecord(context.Background(), identityKey(r.cfg.ProviderID, string(pod.UID)))
+				if err != nil {
+					t.Fatal(err)
+				}
+				deadline := end.Add(-tc.deadline)
+				rec.VerificationDeadline = &deadline
+				if err := r.save(context.Background(), rec, secret); err != nil {
+					t.Fatal(err)
+				}
+			}
+			r.guest = func(context.Context, *record, string) (podstatus.PodProjection, error) {
+				r.now = func() time.Time { return end }
+				return podstatus.PodProjection{}, errors.New("no answer in time")
+			}
+			if res := reconcileResult(t, r, pod); cloud.deleteCalls != 1 {
+				t.Fatalf("%d destruction requests, requeue %s: want the instance destroyed once the wait ended during the look", cloud.deleteCalls, res.RequeueAfter)
+			}
+			if got := getPod(t, r, pod).Status.Reason; got != tc.reason {
+				t.Fatalf("Pod reason is %q, want %q", got, tc.reason)
+			}
+		})
+	}
+}
+
+// An instance under the Pod's identity that another launch owns ends the Pod
+// as it does while the Pod runs, and is not the provider's to destroy.
+func TestDeletionEndsTheWaitForAnInstanceItDoesNotOwn(t *testing.T) {
+	pod, r, cloud, _ := heldPod(t)
+	cloud.in.Labels = nil
+	if err := reconcile(t, r, pod); !errors.Is(err, errForeignInstance) {
+		t.Fatalf("reconcile returned %v, want the refusal to destroy another launch's instance", err)
+	}
+	if got := getPod(t, r, pod).Status; got.Phase != corev1.PodFailed || got.Reason != "InstanceIdentityMismatch" {
+		t.Fatalf("Pod is %s/%q, want Failed/InstanceIdentityMismatch", got.Phase, got.Reason)
+	}
+	if cloud.deleteCalls != 0 {
+		t.Fatal("destruction requested for an instance another launch owns")
+	}
+}
+
+// A Pod is released with its endpoints withdrawn: they named an instance
+// that no longer exists. A withdrawal the API server refused when the Pod
+// ended is made again before the release.
+func TestDeletionWithdrawsEndpointsBeforeReleasingThePod(t *testing.T) {
+	pod, r, cloud, _ := heldPod(t)
+	if getPod(t, r, pod).Annotations[endpointsAnnotation] == "" {
+		t.Fatal("fixture: running Pod publishes no endpoints")
+	}
+	cloud.in.Status = "failed"
+	refused := false
+	r.client = interceptor.NewClient(r.client.(client.WithWatch), interceptor.Funcs{Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+		if _, ok := obj.(*corev1.Pod); ok && !refused {
+			refused = true
+			return errors.New("annotation patch refused")
+		}
+		return c.Patch(ctx, obj, patch, opts...)
+	}})
+	for range 3 {
+		_ = reconcile(t, r, pod)
+		cloud.in.Status = "terminated"
+	}
+	got := getPod(t, r, pod)
+	if !refused || controllerutil.ContainsFinalizer(got, finalizer) {
+		t.Fatalf("fixture: refused=%t, finalizer held=%t", refused, controllerutil.ContainsFinalizer(got, finalizer))
+	}
+	if got.Annotations[endpointsAnnotation] != "" {
+		t.Fatalf("Pod released still advertising %s", got.Annotations[endpointsAnnotation])
+	}
+}
+
+// A verification deadline that passes while the guest's answer is read is
+// reported, as it is for a Pod that is not being deleted: the answer came
+// too late to be the Pod's last status.
+func TestDeletionReportsADeadlineThatPassedDuringALook(t *testing.T) {
+	pod, r, cloud, _ := heldPod(t)
+	end := getPod(t, r, pod).DeletionTimestamp.Time
+	rec, secret, err := r.loadRecord(context.Background(), identityKey(r.cfg.ProviderID, string(pod.UID)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := end.Add(-10 * time.Second)
+	rec.VerificationDeadline = &deadline
+	if err := r.save(context.Background(), rec, secret); err != nil {
+		t.Fatal(err)
+	}
+	r.guest = func(_ context.Context, rec *record, _ string) (podstatus.PodProjection, error) {
+		r.now = func() time.Time { return deadline }
+		p := fixtureProjection(rec)
+		p.Status.Phase = corev1.PodSucceeded
+		p.Status.ContainerStatuses[0].State = &podstatus.ContainerState{Terminated: &podstatus.ContainerTerminated{}}
+		return p, nil
+	}
+	if err := reconcile(t, r, pod); err != nil {
+		t.Fatal(err)
+	}
+	if got := getPod(t, r, pod).Status; got.Phase != corev1.PodFailed || got.Reason != verificationTimeoutReason || cloud.deleteCalls != 1 {
+		t.Fatalf("Pod is %s/%q with %d destruction requests, want Failed/%s and 1", got.Phase, got.Reason, cloud.deleteCalls, verificationTimeoutReason)
+	}
+}
+
+// The instance may already be gone when the withdrawal is refused, so that
+// the same pass reaches the release. The Pod is kept until it is withdrawn.
+func TestDeletionKeepsThePodUntilItsEndpointsAreWithdrawn(t *testing.T) {
+	pod, r, cloud, _ := heldPod(t)
+	cloud.in.Status = "terminated"
+	refusing, refused := true, 0
+	r.client = interceptor.NewClient(r.client.(client.WithWatch), interceptor.Funcs{Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+		// Only the withdrawal is refused: the patch that releases the Pod
+		// would go through.
+		if data, err := patch.Data(obj); err == nil && refusing && bytes.Contains(data, []byte(endpointsAnnotation)) {
+			refused++
+			return errors.New("annotation patch refused")
+		}
+		return c.Patch(ctx, obj, patch, opts...)
+	}})
+	_ = reconcile(t, r, pod)
+	got := getPod(t, r, pod)
+	if refused != 2 {
+		t.Fatalf("%d withdrawals refused, want the one when the Pod ended and the one before its release", refused)
+	}
+	if got.Annotations[endpointsAnnotation] == "" || !controllerutil.ContainsFinalizer(got, finalizer) {
+		t.Fatalf("endpoints %q, finalizer held=%t: want the Pod kept while it still advertises its endpoints", got.Annotations[endpointsAnnotation], controllerutil.ContainsFinalizer(got, finalizer))
+	}
+	refusing = false
+	if err := reconcile(t, r, pod); err != nil {
+		t.Fatal(err)
+	}
+	if got := getPod(t, r, pod); got.Annotations[endpointsAnnotation] != "" || controllerutil.ContainsFinalizer(got, finalizer) {
+		t.Fatalf("after the retry: endpoints %q, finalizer held=%t, want withdrawn and released", got.Annotations[endpointsAnnotation], controllerutil.ContainsFinalizer(got, finalizer))
 	}
 }
