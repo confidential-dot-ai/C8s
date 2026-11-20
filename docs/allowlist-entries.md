@@ -176,7 +176,14 @@ since a variable such
 as `HTTPS_PROXY` or `SSL_CERT_FILE` can redirect or disable the application TLS
 that protects an exit. A pod's `HOSTNAME` is its name unless the pod sets
 `hostname`, so set it to pin `HOSTNAME`. A node refuses an exit that overlaps a
-cluster range, its own address, the resolver, or CDS.
+cluster range, its own address, the resolver, or CDS. The node drops a
+connection from the pod to one of its egress entries that netfilter on the
+node translates to another destination, such as a Service published with an
+`externalIPs` or load-balancer address inside the range: egress reaches the
+range as dialed or not at all. The drop covers translations netfilter
+connection tracking records, such as kube-proxy in iptables or nftables mode.
+It does not cover a translation made in eBPF, such as Cilium's own Service load
+balancing, which never passes the node's netfilter hooks.
 
 ## `hostPorts`
 
