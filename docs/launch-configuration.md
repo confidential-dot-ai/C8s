@@ -209,8 +209,26 @@ workers:
 cluster's `kubernetes.io/kube-apiserver-client` signer issues its certificate
 through a CertificateSigningRequest the command approves.
 
-Run the operator with the same get-cert and mesh images supplied to the worker
-image build and control-plane render:
+`--control-plane-nodes` also writes `DIR/operator.yaml`: the ServiceAccount
+`c8s-operator` in `c8s-system`, the binding that gives it the operator's
+grants, and a one-replica Deployment running `c8s operator` from the release's
+c8s image by digest, on the host network of a control-plane node. Apply it
+where the control-plane hosts run a kubelet:
+
+```sh
+kubectl apply -f DIR/cluster.yaml -f DIR/operator.yaml
+```
+
+The pod authenticates with its ServiceAccount token, and its webhook server
+binds `--webhook-host`, so give the render an address the node it lands on
+holds and every API server reaches it at. An operator upgrade changes this
+Deployment's image, through the cluster's Kubernetes API. The pod serves one
+webhook address, so where each API server reaches its own `127.0.0.1`, run the
+operator by hand on each host.
+
+Where the control plane runs no kubelet, run the operator beside each API
+server with the same get-cert and mesh images supplied to the worker image
+build and control-plane render:
 
 ```sh
 c8s operator \

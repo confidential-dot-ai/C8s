@@ -1,0 +1,113 @@
+{{- /* The operator beside a control plane whose hosts run a kubelet, where it
+       authenticates as this ServiceAccount instead of the user c8s-operator. */ -}}
+{{- if .Values.operator.deployment.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "c8s.operatorName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+{{ include "c8s.commonLabels" . | indent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "c8s.operatorName" . }}-pod
+  labels:
+{{ include "c8s.commonLabels" . | indent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "c8s.operatorName" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "c8s.operatorName" . }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "c8s.operatorName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+{{ include "c8s.commonLabels" . | indent 4 }}
+    app.kubernetes.io/component: operator
+spec:
+  replicas: 1
+  strategy:
+    {{- /* Two pods on a node would collide on the webhook's host port. */}}
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: c8s-operator
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: operator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: c8s-operator
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: operator
+    spec:
+      serviceAccountName: {{ include "c8s.operatorName" . }}
+      {{- /* webhookHost is an address of the node this pod lands on. */}}
+      hostNetwork: true
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: operator
+          image: {{ include "c8s.image" . }}
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          command: {{ include "c8s.entrypoint" (dict "root" . "valuePath" "image") }}
+          args:
+            - operator
+            - --webhook-host={{ .Values.operator.deployment.webhookHost }}
+            - --get-cert-image={{ include "c8s.image" . }}
+            - --mesh-image={{ include "c8s-common.image" .Values.armtlsMesh.image }}
+          ports:
+            - name: metrics
+              containerPort: 8080
+            - name: health
+              containerPort: 8081
+          {{- /* The webhook PKI bootstrap holds :8081 bound but unserved, so a
+                 probe hangs rather than refuses until it finishes. */}}
+          startupProbe:
+            httpGet: { path: /healthz, port: health }
+            periodSeconds: 10
+            failureThreshold: 30
+          readinessProbe:
+            httpGet: { path: /readyz, port: health }
+            initialDelaySeconds: 3
+          livenessProbe:
+            httpGet: { path: /healthz, port: health }
+            periodSeconds: 30
+            failureThreshold: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        {{- /* The serving certificate the operator mints for its webhooks lands
+               here (internal/webhook.DefaultCertDir). */}}
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Mi
+{{- end }}

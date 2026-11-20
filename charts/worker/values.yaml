@@ -17,6 +17,12 @@ armtlsMesh:
 ## control-plane render` takes from the worker document.
 
 operator:
+  deployment:
+    ## Render the operator as a Deployment on the control-plane nodes, with its
+    ## webhooks at webhookHost; `c8s worker control-plane render
+    ## --control-plane-nodes` sets both.
+    enabled: false
+    webhookHost: ""
   podCVMProvider:
     ## Grant the operator's Pod CVM provider, bound to the user c8s-operator;
     ## `c8s worker control-plane render --pod-cvm-provider` sets it.

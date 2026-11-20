@@ -66,6 +66,11 @@ var (
 		"Role/c8s-system/c8s-operator-pod-cvm",
 		"RoleBinding/c8s-system/c8s-operator-pod-cvm",
 	}
+	workerOperatorObjects = []string{
+		"ClusterRoleBinding//c8s-operator-pod",
+		"Deployment/c8s-system/c8s-operator",
+		"ServiceAccount/c8s-system/c8s-operator",
+	}
 )
 
 type workerControlPlaneConfig struct {
@@ -74,6 +79,9 @@ type workerControlPlaneConfig struct {
 	webhookHost string
 	// podCVMProvider grants the operator what its Pod CVM provider needs.
 	podCVMProvider bool
+	// controlPlaneNodes renders the operator's own objects, for a control
+	// plane whose hosts run a kubelet.
+	controlPlaneNodes bool
 }
 
 func newWorkerControlPlaneCmd() *cobra.Command {
@@ -89,7 +97,9 @@ grants bound to the user c8s-operator, and the kube-dns Service at the
 document's clusterDNS. The image flags must be the worker image build's, so the
 router this renders is the one its floor pins. --pod-cvm-provider adds the
 grants the operator's Pod CVM provider needs (run the operator with
---pod-cvm-provider-config); its records are Secrets in c8s-system.`,
+--pod-cvm-provider-config); its records are Secrets in c8s-system.
+--control-plane-nodes also writes --output-dir/operator.yaml, which runs c8s
+operator as a pod on those nodes instead of by hand beside each API server.`,
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -106,8 +116,9 @@ grants the operator's Pod CVM provider needs (run the operator with
 	f.StringVar(&cfg.armtlsMeshImageDigest, "armtls-mesh-image-digest", "", "digest of the armTLS mesh container image (sha256:..., required)")
 	f.StringVar(&cfg.armtlsMeshImageRepository, "armtls-mesh-image-repository", "", "armTLS mesh container repository; empty uses the chart default")
 	f.StringVar(&cfg.chartDir, "chart-dir", "", "c8s-worker chart directory; empty uses the chart bundled in this binary")
-	f.StringVar(&cfg.outputDir, "output-dir", "", "directory for cluster.yaml (required)")
+	f.StringVar(&cfg.outputDir, "output-dir", "", "directory for cluster.yaml, and operator.yaml with --control-plane-nodes (required)")
 	f.BoolVar(&cfg.podCVMProvider, "pod-cvm-provider", false, "grant the operator's Pod CVM provider its nodes, pods/status and c8s-system Secrets")
+	f.BoolVar(&cfg.controlPlaneNodes, "control-plane-nodes", false, "the control-plane hosts are nodes of this cluster, which run c8s operator as a pod (operator.yaml)")
 	cmd.AddCommand(render, newWorkerCredentialsCmd())
 	return cmd
 }
@@ -132,46 +143,57 @@ func renderWorkerControlPlane(ctx context.Context, cfg workerControlPlaneConfig)
 		return err
 	}
 	defer cleanup()
-	cluster, err := renderWorkerCluster(ctx, render, cfg.webhookHost, cfg.podCVMProvider, doc)
+	cfg.nodeImageRenderConfig = render
+	cluster, operator, err := renderWorkerCluster(ctx, cfg, doc)
 	if err != nil {
 		return err
 	}
 	if err := os.MkdirAll(cfg.outputDir, 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(cfg.outputDir, "cluster.yaml"), cluster, 0o644)
+	if err := os.WriteFile(filepath.Join(cfg.outputDir, "cluster.yaml"), cluster, 0o644); err != nil {
+		return err
+	}
+	if operator == nil {
+		return nil
+	}
+	return os.WriteFile(filepath.Join(cfg.outputDir, "operator.yaml"), operator, 0o644)
 }
 
 // renderWorkerCluster renders the objects a cluster of workers holds for doc,
-// with the operator's webhooks at host.
-func renderWorkerCluster(
-	ctx context.Context,
-	cfg nodeImageRenderConfig,
-	host string,
-	podCVMProvider bool,
-	doc *worker.Document,
-) ([]byte, error) {
+// and, where its hosts are control-plane nodes, the operator's own objects.
+func renderWorkerCluster(ctx context.Context, cfg workerControlPlaneConfig, doc *worker.Document) ([]byte, []byte, error) {
 	args := []string{
 		"--include-crds",
 		"--set-string", "clusterDNS=" + doc.Kubernetes.ClusterDNS,
-		"--set-string", "controlPlane.webhook.url=" + operatorWebhookBaseURL(host),
+		"--set-string", "controlPlane.webhook.url=" + operatorWebhookBaseURL(cfg.webhookHost),
 	}
 	held := workerClusterObjects
-	if podCVMProvider {
+	if cfg.podCVMProvider {
 		args = append(args, "--set", "operator.podCVMProvider.enabled=true")
 		held = slices.Sorted(slices.Values(slices.Concat(held, workerClusterPodCVMProviderObjects)))
 	}
-	rendered, err := templateWorkerChart(ctx, cfg, args...)
-	if err != nil {
-		return nil, err
+	var operatorHeld []string
+	if cfg.controlPlaneNodes {
+		args = append(args,
+			"--set", "operator.deployment.enabled=true",
+			"--set-string", "operator.deployment.webhookHost="+cfg.webhookHost,
+		)
+		operatorHeld = workerOperatorObjects
 	}
-	return selectWorkerClusterObjects(rendered, held)
+	rendered, err := templateWorkerChart(ctx, cfg.nodeImageRenderConfig, args...)
+	if err != nil {
+		return nil, nil, err
+	}
+	return splitRenderedObjects(rendered, held, operatorHeld)
 }
 
-// selectWorkerClusterObjects is the render's documents a cluster of workers
-// holds, the objects named in want, each as helm wrote it.
-func selectWorkerClusterObjects(rendered []byte, want []string) ([]byte, error) {
-	var out bytes.Buffer
+// splitRenderedObjects sorts the render's objects into the two files a
+// cluster of workers applies, each object as helm wrote it: cluster.yaml holds
+// the objects named in cluster, operator.yaml those named in operator (nil
+// without --control-plane-nodes). An object in neither list is an error.
+func splitRenderedObjects(rendered []byte, cluster, operator []string) ([]byte, []byte, error) {
+	var clusterOut, operatorOut bytes.Buffer
 	var held []string
 	reader := k8syaml.NewYAMLReader(bufio.NewReader(bytes.NewReader(rendered)))
 	for {
@@ -180,28 +202,35 @@ func selectWorkerClusterObjects(rendered []byte, want []string) ([]byte, error) 
 			break
 		}
 		if err != nil {
-			return nil, fmt.Errorf("the worker chart's render: %w", err)
+			return nil, nil, fmt.Errorf("the worker chart's render: %w", err)
 		}
 		key, err := renderedObjectKey(document)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		if key == "" || slices.Contains(workerImageObjects, key) {
+		switch {
+		case key == "" || slices.Contains(workerImageObjects, key):
 			continue
+		case slices.Contains(cluster, key):
+			clusterOut.WriteString("---\n")
+			clusterOut.Write(document)
+		case slices.Contains(operator, key):
+			operatorOut.WriteString("---\n")
+			operatorOut.Write(document)
+		default:
+			return nil, nil, fmt.Errorf("the worker chart renders %s, which a cluster of workers neither holds nor leaves to the image", key)
 		}
-		if !slices.Contains(want, key) {
-			return nil, fmt.Errorf("the worker chart renders %s, which a cluster of workers neither holds nor leaves to the image", key)
-		}
-		out.WriteString("---\n")
-		out.Write(document)
 		held = append(held, key)
 	}
-	for _, key := range want {
+	for _, key := range slices.Concat(cluster, operator) {
 		if !slices.Contains(held, key) {
-			return nil, fmt.Errorf("the worker chart rendered no %s", key)
+			return nil, nil, fmt.Errorf("the worker chart rendered no %s", key)
 		}
 	}
-	return out.Bytes(), nil
+	if operator == nil {
+		return clusterOut.Bytes(), nil, nil
+	}
+	return clusterOut.Bytes(), operatorOut.Bytes(), nil
 }
 
 // renderedObjectKey is the document's object as kind/namespace/name, and "" for
