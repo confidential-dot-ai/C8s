@@ -5,7 +5,7 @@ go 1.27.3
 require (
 	github.com/confidential-dot-ai/attestation-go v0.8.3
 	github.com/confidential-dot-ai/c8s v0.0.0
-	golang.org/x/crypto v0.58.0
+	golang.org/x/crypto v0.59.0
 )
 
 require (
