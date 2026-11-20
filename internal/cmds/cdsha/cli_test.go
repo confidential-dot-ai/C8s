@@ -166,9 +166,9 @@ func testChain(t *testing.T, n int) ([]cdschain.Entry, *ecdsa.PrivateKey) {
 	return entries, key
 }
 
-// racedReplica takes an entry only on its head and answers 409 otherwise, as
-// a replica does; before each of the next races submits, race lands another
-// writer's entry first.
+// racedReplica accepts exact retries and entries on its head, as a replica
+// does; before each of the next races submits, race lands another writer's
+// entry first.
 type racedReplica struct {
 	mu      sync.Mutex
 	entries []cdschain.Entry
@@ -191,6 +191,17 @@ func (f *racedReplica) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case haapi.EntriesPath:
 		var e cdschain.Entry
 		_ = json.NewDecoder(r.Body).Decode(&e)
+		for seq, accepted := range f.entries {
+			if seq > 0 && accepted.Hash() == e.Hash() {
+				_ = json.NewEncoder(w).Encode(cdschain.Head{
+					V:       cdschain.Version,
+					Cluster: state.Cluster,
+					Seq:     uint64(seq),
+					Hash:    e.Hash(),
+				})
+				return
+			}
+		}
 		if f.races > 0 {
 			f.entries = append(f.entries, f.race(state))
 			f.races--

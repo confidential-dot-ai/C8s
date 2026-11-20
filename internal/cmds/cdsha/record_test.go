@@ -293,3 +293,118 @@ func TestResolveStopsOnAnUnsavedRecord(t *testing.T) {
 		t.Fatalf("policy at seq %d, want one refresh above %d", got, held)
 	}
 }
+
+// A rerun resumes from the plan, so it is written as durably as the record.
+func TestResolvePlanIsWrittenDurably(t *testing.T) {
+	var persisted []string
+	o := &options{stateDir: t.TempDir()}
+	o.persist = func(path string, data []byte, mode os.FileMode) error {
+		persisted = append(persisted, path)
+		return fileutil.WriteAtomic(path, data, mode)
+	}
+	want := resolvePlan{Seq: 4, Keep: cdschain.Hash{9}, Drop: cdschain.Hash{8}, Held: 6}
+	if err := o.savePlan("lane", &want); err != nil {
+		t.Fatal(err)
+	}
+	path, err := o.planPath("lane")
+	if err != nil || len(persisted) != 1 || persisted[0] != path {
+		t.Fatalf("plan written through %v, want one durable write of %s", persisted, path)
+	}
+	if got, err := o.plan("lane"); err != nil || got == nil || *got != want {
+		t.Fatalf("read back %+v, %v", got, err)
+	}
+	if err := o.savePlan("lane", nil); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := o.plan("lane"); err != nil || got != nil {
+		t.Fatalf("a finished resolve left its plan: %+v, %v", got, err)
+	}
+}
+
+func TestResolveRestoredCompletedPlanDoesNotRefreshAgain(t *testing.T) {
+	l, o, seq, mine := forkedReplica(t)
+	path, err := o.planPath("lane")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved []byte
+	o.persist = func(target string, data []byte, mode os.FileMode) error {
+		if target == path {
+			saved = append([]byte(nil), data...)
+		}
+		return fileutil.WriteAtomicDurable(target, data, mode)
+	}
+	run := func() error {
+		return o.resolve(context.Background(), io.Discard, []string{l.url}, seq, mine.Hash(), nil, 0, false, 10*time.Second)
+	}
+	if err := run(); err != nil {
+		t.Fatal(err)
+	}
+	head := l.waitServing(t).Head
+	if len(saved) == 0 {
+		t.Fatal("resolve did not save a plan")
+	}
+	// A crash may roll back the plan's unlink after its refresh was accepted.
+	if err := fileutil.WriteAtomicDurable(path, saved, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(); err != nil {
+		t.Fatal(err)
+	}
+	if got := l.waitServing(t).Head; got != head {
+		t.Fatalf("restored completed plan advanced the head: %+v, want %+v", got, head)
+	}
+}
+
+func TestResolveRetryRepairsAcknowledgementWithoutRefreshing(t *testing.T) {
+	for _, missingRecord := range []bool{false, true} {
+		name := "stale record"
+		if missingRecord {
+			name = "missing record"
+		}
+		t.Run(name, func(t *testing.T) {
+			l, o, seq, mine := forkedReplica(t)
+			o.persist = func(path string, data []byte, mode os.FileMode) error {
+				if filepath.Ext(path) == ".json" {
+					return failedPersist(path, data, mode)
+				}
+				return fileutil.WriteAtomicDurable(path, data, mode)
+			}
+			run := func() error {
+				return o.resolve(context.Background(), io.Discard, []string{l.url}, seq, mine.Hash(), nil, 0, false, 10*time.Second)
+			}
+			if err := run(); !errors.Is(err, errRecordNotSaved) {
+				t.Fatalf("refresh with unsaved acknowledgement: %v", err)
+			}
+			head := l.waitServing(t).Head
+			if missingRecord {
+				path, err := o.recordPath("lane")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Remove(path); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := run(); !errors.Is(err, errRecordNotSaved) {
+				t.Fatalf("retry hid the unsaved acknowledgement: %v", err)
+			}
+			if plan, err := o.plan("lane"); err != nil || plan == nil {
+				t.Fatalf("failed retry lost its plan: %+v, %v", plan, err)
+			}
+			o.persist = nil
+			if err := run(); err != nil {
+				t.Fatal(err)
+			}
+			if got := l.waitServing(t).Head; got != head {
+				t.Fatalf("retry advanced the head: %+v, want %+v", got, head)
+			}
+			if rec, err := o.record("lane"); err != nil || rec == nil || rec.Acknowledged != head {
+				t.Fatalf("retry did not repair the record: %+v, %v", rec, err)
+			}
+			if plan, err := o.plan("lane"); err != nil || plan != nil {
+				t.Fatalf("successful retry retained its plan: %+v, %v", plan, err)
+			}
+		})
+	}
+}
