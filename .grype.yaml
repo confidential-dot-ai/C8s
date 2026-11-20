@@ -1,3 +1,4 @@
+# For the C8s router configuration, also pass --vex .grype/c8s-router-openssl.openvex.json.
 ignore:
   # CVE-2026-4738 affects optional Deflate64 code in contrib/infback9/inftree9.c.
   # Alpine's shared-libz build excludes it; the pinned amd64/arm64 libz exports
