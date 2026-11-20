@@ -145,25 +145,6 @@ func unitValue(t *testing.T, path, key string) string {
 	return found[0]
 }
 
-// unitList are the units path names under key, as systemd accumulates them
-// over repeated lines. An empty assignment resets a systemd list, which no
-// unit of this image does, so it is a failure here.
-func unitList(t *testing.T, path, key string) []string {
-	t.Helper()
-	var out []string
-	for _, line := range lines(t, path) {
-		value, ok := strings.CutPrefix(line, key+"=")
-		if !ok {
-			continue
-		}
-		if value = strings.TrimSpace(value); value == "" {
-			t.Fatalf("%s resets its %s list", path, key)
-		}
-		out = append(out, strings.Fields(value)...)
-	}
-	return out
-}
-
 // tmpfilesDirs are the directories path creates.
 func tmpfilesDirs(t *testing.T, path string) map[string]bool {
 	t.Helper()
@@ -177,41 +158,22 @@ func tmpfilesDirs(t *testing.T, path string) map[string]bool {
 	return dirs
 }
 
-// The volume service runs only while the kubelet's pod directory exists, and
-// only after staging: the watch that starts it is what the preset enables.
-func TestVolumedWaitsForTheKubeletsPodDirectoryBehindStaging(t *testing.T) {
-	watch := baked(t, "etc/systemd/system/volumed.path")
-	service := baked(t, "etc/systemd/system/volumed.service")
-	pods := flagOfExecStart(t, service, "kubelet-root") + "/pods"
-	if got := unitValue(t, watch, "PathExists"); got != pods {
-		t.Errorf("the watch waits for %q, want the pod directory under volumed's kubelet root, %q", got, pods)
-	}
-	if got := unitValue(t, watch, "Unit"); got != "volumed.service" {
-		t.Errorf("the watch starts %q, want volumed.service", got)
-	}
-	if got := unitValue(t, service, "ConditionPathExists"); got != pods {
-		t.Errorf("the service runs on condition %q, want %q, so nothing else can start it without one", got, pods)
-	}
-	if got := unitValue(t, service, "Restart"); got != "always" {
-		t.Errorf("Restart = %q, want always: a worker serves volumes for as long as it runs", got)
-	}
-	if got := unitList(t, service, "Requires"); !slices.Contains(got, "worker-stage.service") {
-		t.Errorf("the service requires %v, want worker-stage.service: volumed holds every volume key", got)
-	}
-	if got := unitList(t, service, "After"); !slices.Contains(got, "worker-stage.service") {
-		t.Errorf("the service starts after %v, want worker-stage.service among them", got)
-	}
-	if !slices.Contains(lines(t, baked(t, "usr/lib/systemd/system-preset/50-worker.preset")), "enable volumed.path") {
-		t.Error("the preset does not enable volumed.path; an unenabled watch never starts volumed")
-	}
-}
+var proxySocketFlag = regexp.MustCompile(`--socket=(\S+)`)
 
-// volumed serves in the directory the plugin mounts into a workload's
-// sidecar, which this image's tmpfiles create.
-func TestVolumedServesWhereTheTmpfilesCreate(t *testing.T) {
-	socketDir := flagOfExecStart(t, baked(t, "etc/systemd/system/volumed.service"), "socket-dir")
-	if !tmpfilesDirs(t, baked(t, "etc/tmpfiles.d/c8s-worker.conf"))[socketDir] {
-		t.Errorf("--socket-dir = %q, which the image's tmpfiles do not create", socketDir)
+// The directory the admission plugin mounts into a workload's sidecar, where
+// the attestation proxy and the volumed DaemonSet serve their sockets, is one
+// this image's tmpfiles create.
+func TestTheNodesSocketDirectoryIsCreatedByTheTmpfiles(t *testing.T) {
+	unit, err := os.ReadFile(baked(t, "etc/systemd/system/attest-proxy.service"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	named := proxySocketFlag.FindStringSubmatch(string(unit))
+	if named == nil {
+		t.Fatal("the attestation proxy's unit names no --socket")
+	}
+	if dir := path.Dir(named[1]); !tmpfilesDirs(t, baked(t, "etc/tmpfiles.d/c8s-worker.conf"))[dir] {
+		t.Errorf("the proxy serves in %q, which the image's tmpfiles do not create", dir)
 	}
 }
 

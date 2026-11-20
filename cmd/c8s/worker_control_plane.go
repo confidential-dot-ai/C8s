@@ -43,6 +43,7 @@ var (
 		"ClusterRoleBinding//c8s-worker-client-cert-renewal",
 		"ClusterRoleBinding//c8s-worker-kube-proxy",
 		"CustomResourceDefinition//confidentialworkloads.confidential.ai",
+		"DaemonSet/c8s-system/c8s-volumed",
 		"Deployment/c8s-router/c8s-router",
 		"MutatingWebhookConfiguration//c8s-pod-injector",
 		"Namespace//c8s-cds",
@@ -59,6 +60,7 @@ var (
 		"Service/kube-system/kube-dns",
 		"ServiceAccount/c8s-cds/cds-store",
 		"ServiceAccount/c8s-router/c8s-router",
+		"ServiceAccount/c8s-system/c8s-volumed",
 		"ValidatingWebhookConfiguration//c8s-pod-validator",
 	}
 	workerImageObjects = []string{

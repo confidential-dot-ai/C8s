@@ -302,7 +302,9 @@ func checkComponentEntry(w Workload) error {
 }
 
 // checkNodeService requires a node service to be one container whose whole
-// launch the entry fixes, so nothing about it is left to the control plane.
+// launch the entry fixes, so nothing about it is left to the control plane. A
+// match environment names every variable the container may launch with and
+// refuses the rest, which is the pin a pod whose name is a variable can hold.
 func checkNodeService(w Workload) error {
 	if !w.NodeService {
 		return nil
@@ -311,10 +313,13 @@ func checkNodeService(w Workload) error {
 		return fmt.Errorf("a node service is one container and no init container")
 	}
 	c := w.Containers[0]
-	for _, policy := range []string{c.Command.Policy, c.Args.Policy, c.Env.Policy, c.Mounts.Policy} {
+	for _, policy := range []string{c.Command.Policy, c.Args.Policy, c.Mounts.Policy} {
 		if policy != PolicyExact {
-			return fmt.Errorf("a node service pins its launch exactly: command, args, env and mounts")
+			return fmt.Errorf("a node service pins its launch exactly: command, args and mounts")
 		}
+	}
+	if c.Env.Policy != PolicyExact && c.Env.Policy != PolicyMatch {
+		return fmt.Errorf("a node service constrains its environment: an exact or match env policy")
 	}
 	return nil
 }

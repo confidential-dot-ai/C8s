@@ -9,4 +9,3 @@ disable containerd.service
 disable nri-image-policy.service
 disable kubelet.service
 disable attest-proxy.service
-disable volumed.path

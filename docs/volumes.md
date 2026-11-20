@@ -159,10 +159,17 @@ test host with `cryptsetup`, `veritysetup`, `mkfs.erofs` and loop-device support
 sudo python3 test/readonly-volume-sharing.py
 ```
 
-On a node running the C8s worker image, volumed runs as the host service
-`volumed.service`, because the image fixes the paths it needs. Everywhere else
-it is a chart DaemonSet, off by default because it is privileged, with `hostPID`
-and a writable kubelet-directory bind; `--volumes` on `c8s install` turns it on.
+On the worker lane, volumed is a DaemonSet of the worker chart, applied with
+the rest of `c8s worker control-plane render`'s `cluster.yaml`, and admitted as
+a node service: the release's component set carries its entry, so the enforcer
+excuses that launch the privilege rules and nothing else on the node holds them
+([allowlist-and-capabilities.md](allowlist-and-capabilities.md#component-sets)).
+Updating volumed is a new component set and a new DaemonSet image: the old pod
+stops before the new one starts, open volumes stay mounted across the gap, and
+a request to open or close one fails while neither pod runs. Elsewhere volumed
+is a DaemonSet of the cloud chart, off by default because it is privileged, with
+`hostPID` and a writable kubelet-directory bind; `--volumes` on `c8s install`
+turns it on.
 
 ### Surviving a volumed restart
 

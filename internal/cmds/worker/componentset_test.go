@@ -11,7 +11,10 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
-const testRouterEntry = "c8s-router-0123456789ab"
+const (
+	testRouterEntry  = "c8s-router-0123456789ab"
+	testVolumedEntry = "c8s-volumed-0123456789ab"
+)
 
 // testSetVersion is a release version, as `c8s node-image render` keys the set
 // it publishes.
@@ -20,8 +23,15 @@ const testSetVersion = "0.43.0"
 // routerHostPorts are the router entry's host ports, as the chart seeds them.
 const routerHostPorts = `"hostPorts":[{"protocol":"TCP","hostPort":443,"containerPort":8443},{"protocol":"TCP","hostPort":80,"containerPort":8080}]`
 
+// volumedContainer is the volumed DaemonSet's container, as the chart seeds
+// it: one launch pinned whole, its environment matched by name.
+var volumedContainer = `{"digest":"sha256:` + strings.Repeat("b", 64) + `",
+    "command":{"policy":"exact","argv":["/c8s"]},"args":{"policy":"exact","argv":["volumed","--state-dir=/var/lib/c8s/volumed"]},
+    "mounts":{"policy":"exact","rules":[{"destination":"/var/lib/c8s/volumed","kind":"host","source":"/var/lib/c8s/volumed"}]},
+    "env":{"policy":"match","variables":{"HOSTNAME":{"present":true},"PATH":{"exact":"/bin"}}}}`
+
 // routerSeed is a chart seed holding the router's entry, which reads the
-// files named, and another component's.
+// files named, the volumed DaemonSet's and another component's.
 func routerSeed(files ...string) []byte {
 	var args []string
 	for _, f := range files {
@@ -32,6 +42,7 @@ func routerSeed(files ...string) []byte {
     "command":{"policy":"exact","argv":["/c8s"]},"args":{"policy":"exact","argv":[` + strings.Join(args, ",") + `]},
     "mounts":{"policy":"exact","rules":[{"destination":"/run/c8s-node","kind":"host","source":"/run/c8s-node","readOnly":true}]},
     "env":{"policy":"exact","values":{"PATH":"/bin"}}}]},
+  "` + testVolumedEntry + `":{"containers":[` + volumedContainer + `]},
   "c8s-operator-0123":{"containers":[{"digest":"sha256:` + strings.Repeat("a", 64) + `","command":{"policy":"exact","argv":["/c8s","operator"]},"args":{"policy":"deny"}}]}}}`)
 }
 
@@ -66,9 +77,15 @@ func TestComponentSetFileCarriesTheTemplateAndTheRouter(t *testing.T) {
 	if !set.Current() {
 		t.Error("the published set carries a deadline")
 	}
-	want := slices.Sorted(slices.Values(append(slices.Clone(platformRoleEntries), testRouterEntry)))
+	want := slices.Sorted(slices.Values(append(slices.Clone(platformRoleEntries), testRouterEntry, testVolumedEntry)))
 	if got := slices.Sorted(maps.Keys(set.Entries)); !slices.Equal(got, want) {
-		t.Fatalf("entries = %v, want the template's role entries and the router's, %v", got, want)
+		t.Fatalf("entries = %v, want the template's role entries, the router's and volumed's, %v", got, want)
+	}
+	if !set.Entries[testVolumedEntry].NodeService {
+		t.Error("volumed's entry is published without the node-service mark, so the enforcer refuses its privilege")
+	}
+	if set.Entries[testRouterEntry].NodeService {
+		t.Error("the router's entry is published as a node service")
 	}
 	roles, err := RoleEntries(template)
 	if err != nil {
@@ -114,7 +131,7 @@ func TestComponentSetFileBindsEveryContainerToARole(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, entry := range doc.Components[testSetVersion].Entries {
-		if name == testRouterEntry {
+		if name == testRouterEntry || name == testVolumedEntry {
 			continue
 		}
 		for _, c := range slices.Concat(entry.InitContainers, entry.Containers) {
@@ -130,6 +147,9 @@ func TestComponentSetFileRefusesWhatItCannotPublish(t *testing.T) {
 	seed := routerSeed("/run/c8s-node/cds.json")
 	// An entry declaring host ports pins its launch, so the open one declares none.
 	unpinnedRouter := []byte(strings.Replace(strings.Replace(string(seed), routerHostPorts+",", "", 1), `"env":{"policy":"exact","values":{"PATH":"/bin"}}`, `"env":{"policy":"any"}`, 1))
+	second := strings.ReplaceAll(volumedContainer, "/var/lib/c8s/volumed", "/var/lib/c8s/other")
+	twoContainerVolumed := []byte(strings.Replace(string(seed),
+		`"containers":[`+volumedContainer, `"containers":[`+volumedContainer+`,`+second, 1))
 	for _, tc := range []struct {
 		name           string
 		template, seed []byte
@@ -148,6 +168,8 @@ func TestComponentSetFileRefusesWhatItCannotPublish(t *testing.T) {
 		{"a router entry named as a platform role", template, []byte(strings.ReplaceAll(string(seed), testRouterEntry, "c8s-router-nginx")), testSetVersion, "a platform role is named c8s-router-nginx"},
 		{"an entry without a platform role", regexp.MustCompile(`(?m)^ +role: "acme"\n`).ReplaceAll(template, nil), seed, testSetVersion, "entry c8s-acme container with digest sha256:"},
 		{"no platform role at all", regexp.MustCompile(`(?m)^ +role: .*\n`).ReplaceAll(template, nil), seed, testSetVersion, "holds no platform role"},
+		{"no volumed entry", template, []byte(strings.ReplaceAll(string(seed), testVolumedEntry, "other")), testSetVersion, "want one c8s-volumed-* entry"},
+		{"a volumed entry of two containers", template, twoContainerVolumed, testSetVersion, "a node service is one container"},
 		{"a version no set is keyed by", template, seed, "0.43", `version "0.43" is not MAJOR.MINOR.PATCH`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

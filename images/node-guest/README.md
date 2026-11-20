@@ -188,7 +188,7 @@ kernel, runtime binaries, runtime wrapper, NRI plugin and boot gates, bakes a
 floor of its own, and changes what stages and starts them:
 
 - `40-pod.preset` turns off worker staging, the worker's containerd,
-  kubelet, attest-proxy and volumed. `pod-stage.service` replaces worker
+  kubelet and attest-proxy. `pod-stage.service` replaces worker
   staging: `c8s launch-config stage` verifies the signed pod launch document
   on the `opkeydata` disk under the measured pod launch key, then
   `c8s node-services prepare` stages the pod network and kubelet inputs.
