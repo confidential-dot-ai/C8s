@@ -22,6 +22,8 @@ func TestDeleteInWindow(t *testing.T) {
 		{"received inside the window, however late it was seen", at(29 * time.Second), ""},
 		{"received as the window closes", at(window), ""},
 		{"received after the window, however late the step began", at(32 * time.Second), "later than 30s"},
+		{"received as the pod was deleted", at(0), ""},
+		{"received before the pod was deleted", at(-time.Second), "before the pod was deleted"},
 		{"never received", nil, "received no delete"},
 		{"received at a time the cloud API does not state", &cloudCall{}, "does not say when"},
 	} {

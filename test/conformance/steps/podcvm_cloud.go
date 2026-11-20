@@ -431,8 +431,10 @@ const deleteLag = 5 * time.Second
 // for a delete that a later cause would also bring about: the provider
 // destroys an unverified instance at its verification deadline whatever
 // else it decided. The window therefore closes before that deadline. It
-// opens when the scenario deleted the pod and is judged by when the cloud
-// API received the delete, not by when this step began or first saw it. That
+// opens when the scenario asked for the pod's deletion, which is no later
+// than the deletion itself, so the provider is never given longer than the
+// figure. It is judged by when the cloud API received the delete, not by
+// when this step began or first saw it. That
 // compares this process's clock with the cloud API's; on kind both are one
 // host's.
 func cloudReceivesDeleteWithin(ctx context.Context, name string, seconds int) error {
@@ -477,6 +479,8 @@ func deleteInWindow(name string, deleted time.Time, window time.Duration, first 
 		return fmt.Errorf("the cloud API received no delete for the instance of %q within %s", name, window)
 	case first.ReceivedAt.IsZero():
 		return fmt.Errorf("the cloud API does not say when it received the delete for the instance of %q", name)
+	case first.ReceivedAt.Before(deleted):
+		return fmt.Errorf("the cloud API received a delete for the instance of %q %s before the pod was deleted", name, deleted.Sub(first.ReceivedAt).Round(time.Millisecond))
 	case first.ReceivedAt.Sub(deleted) > window:
 		return fmt.Errorf("the cloud API received the delete for the instance of %q %s after the pod was deleted, later than %s", name, first.ReceivedAt.Sub(deleted).Round(time.Millisecond), window)
 	}
