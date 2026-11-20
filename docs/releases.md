@@ -33,7 +33,7 @@ gate.
 | Component images: `c8s-operator`, `cds`, `get-cert`, `armtls-mesh`, `nri-image-policy`, `volumed` | `ghcr.io/confidential-dot-ai/<name>`, tagged `vX.Y.Z`, `X.Y.Z`, and the 7-character commit SHA |
 | Helm chart | `ghcr.io/confidential-dot-ai/charts/c8s-cloud`, version `X.Y.Z`, carrying the release's component image digests, packaged byte-reproducibly from the release commit |
 | Guest images | `ghcr.io/confidential-dot-ai/guests/worker:vX.Y.Z-{tdx,sev-snp}[-kubevirt]` and `ghcr.io/confidential-dot-ai/guests/cds:vX.Y.Z[-kubevirt]` |
-| GitHub release | `release-statement.json`, `release-statement.sigstore.json`, the CLI as `c8s-linux-amd64` and `c8s-darwin-arm64`, and the allowlist seed of each CPU TEE as `allowlist-seed-tdx.json` and `allowlist-seed-sev-snp.json` |
+| GitHub release | `release-statement.json`, `release-statement.sigstore.json`, the CLI as `c8s-linux-amd64` and `c8s-darwin-arm64`, and the allowlist seed and component set of each CPU TEE as `allowlist-seed-{tdx,sev-snp}.json` and `component-set-{tdx,sev-snp}.json` |
 
 A release also moves the `X.Y` image alias when it is the newest patch of that
 series, and `latest` when it is the newest stable release across all series. It
@@ -55,9 +55,12 @@ stamps that tag; a plain `go build` of the same commit prints `dev`. A released
 other build needs `--chart`. An allowlist seed holds the component entries a
 CDS serves for a cluster of workers booted from this release's worker image,
 the input of `c8s cds config new --allowlist-seed`
-([allowlist-and-capabilities.md](allowlist-and-capabilities.md#bootstrap)). The
-release's CLI renders it from the release's image digests with the kubelet and
-Helm versions of the worker image build.
+([allowlist-and-capabilities.md](allowlist-and-capabilities.md#bootstrap)). A
+component set holds the entries of this release's own components, the input of
+`c8s allowlist components add --set-file`
+([allowlist-and-capabilities.md](allowlist-and-capabilities.md#component-sets)).
+The release's CLI renders both from the release's image digests with the
+kubelet and Helm versions of the worker image build.
 
 ## Verify a release
 
@@ -65,16 +68,17 @@ Each release from `v0.36.0` on has a GitHub release carrying
 `release-statement.json`:
 
 ```json
-{"allowlistSeeds":{"sev-snp":{"asset":"allowlist-seed-sev-snp.json","sha256":"<HEX>"},"tdx":{"asset":"allowlist-seed-tdx.json","sha256":"<HEX>"}},"chart":"ghcr.io/confidential-dot-ai/charts/c8s-cloud@sha256:<DIGEST>","cli":{"darwin-arm64":{"asset":"c8s-darwin-arm64","sha256":"<HEX>"},"linux-amd64":{"asset":"c8s-linux-amd64","sha256":"<HEX>"}},"commit":"<SHA>","repository":"confidential-dot-ai/C8s","tag":"vX.Y.Z"}
+{"allowlistSeeds":{"sev-snp":{"asset":"allowlist-seed-sev-snp.json","sha256":"<HEX>"},"tdx":{"asset":"allowlist-seed-tdx.json","sha256":"<HEX>"}},"chart":"ghcr.io/confidential-dot-ai/charts/c8s-cloud@sha256:<DIGEST>","cli":{"darwin-arm64":{"asset":"c8s-darwin-arm64","sha256":"<HEX>"},"linux-amd64":{"asset":"c8s-linux-amd64","sha256":"<HEX>"}},"commit":"<SHA>","componentSets":{"sev-snp":{"asset":"component-set-sev-snp.json","sha256":"<HEX>"},"tdx":{"asset":"component-set-tdx.json","sha256":"<HEX>"}},"repository":"confidential-dot-ai/C8s","tag":"vX.Y.Z"}
 ```
 
 `chart` names the published chart by its manifest digest, which a Flux
 `OCIRepository` can pin. `cli` names each CLI asset and its SHA-256, keyed by
-`<os>-<arch>`; `allowlistSeeds` names each allowlist seed asset and its SHA-256,
-keyed by CPU TEE, `tdx` or `sev-snp`. A statement without `cli` or
-`allowlistSeeds` belongs to a release older than those assets; published
-statements do not change, so build that CLI from source, and render that seed
-as [allowlist-and-capabilities.md](allowlist-and-capabilities.md#bootstrap)
+`<os>-<arch>`; `allowlistSeeds` and `componentSets` name each allowlist seed
+and component set asset and its SHA-256, keyed by CPU TEE, `tdx` or `sev-snp`.
+A statement without `cli`, `allowlistSeeds` or `componentSets` belongs to a
+release older than those assets; published statements do not change, so build
+that CLI from source, and render that seed and set as
+[allowlist-and-capabilities.md](allowlist-and-capabilities.md#bootstrap)
 describes.
 
 and `release-statement.sigstore.json`, a Sigstore bundle over those bytes,
@@ -162,26 +166,28 @@ cmp "rebuilt/c8s-$PLATFORM" "c8s-$PLATFORM"
 [`release-cli.sh`](../.github/scripts/release-cli.sh) fixes every build input,
 so the same commit, tag, toolchain and platform give the same bytes on any host.
 
-### Verify an allowlist seed
+### Verify an allowlist seed and component set
 
-After the two release checks above, download the seed for the CPU TEE of your
-worker image and compare it with the digest the statement lists. `PLATFORM` is
-`tdx` or `sev-snp`:
+After the two release checks above, download the seed and the component set for
+the CPU TEE of your worker image and compare them with the digests the
+statement lists. `PLATFORM` is `tdx` or `sev-snp`:
 
 ```sh
 PLATFORM=tdx
-gh release download "$TAG" --repo confidential-dot-ai/C8s --pattern "allowlist-seed-$PLATFORM.json"
-jq -r --arg p "$PLATFORM" '.allowlistSeeds[$p] | "\(.sha256)  \(.asset)"' release-statement.json \
+gh release download "$TAG" --repo confidential-dot-ai/C8s \
+  --pattern "allowlist-seed-$PLATFORM.json" --pattern "component-set-$PLATFORM.json"
+jq -r --arg p "$PLATFORM" '.allowlistSeeds[$p], .componentSets[$p] | "\(.sha256)  \(.asset)"' release-statement.json \
   | sha256sum -c -
 ```
 
 ```text
 allowlist-seed-tdx.json: OK
+component-set-tdx.json: OK
 ```
 
 A platform the statement does not list fails this check.
 
-The seed is a render of the release commit, so you can also render it again and
+Both are a render of the release commit, so you can also render them again and
 compare. In a checkout of the release commit, with the verified
 `c8s-linux-amd64`, `crane`, and Helm at the version
 [`mkosi.sync`](../images/node-guest/worker/mkosi.sync) pins as `HELM_VERSION`
@@ -192,6 +198,7 @@ OPERATOR=$(crane digest "ghcr.io/confidential-dot-ai/c8s-operator:$TAG")
 MESH=$(crane digest "ghcr.io/confidential-dot-ai/armtls-mesh:$TAG")
 .github/scripts/release-seeds.sh ./c8s-linux-amd64 rendered "$OPERATOR" "$MESH" "$PLATFORM"
 cmp "rendered/allowlist-seed-$PLATFORM.json" "allowlist-seed-$PLATFORM.json"
+cmp "rendered/component-set-$PLATFORM.json" "component-set-$PLATFORM.json"
 ```
 
 [`release-seeds.sh`](../.github/scripts/release-seeds.sh) renders with the

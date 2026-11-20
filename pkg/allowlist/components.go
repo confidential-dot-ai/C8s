@@ -7,9 +7,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
-	"strconv"
-	"strings"
 	"time"
+
+	"golang.org/x/mod/semver"
 
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
@@ -20,8 +20,9 @@ import (
 const SupportedComponentMajor = 0
 
 // ComponentSet is one release's entries for the c8s components: the injected
-// sidecars, the router and the node services. A document keys it by its
-// version, MAJOR.MINOR.PATCH.
+// sidecars, the router and the node services. A document keys it by the
+// release that built it, MAJOR.MINOR.PATCH with the pre-release a beta tag
+// carries.
 //
 // A set with no retirement is current; one with a retirement runs until its
 // deadline. See docs/allowlist-entries.md.
@@ -216,11 +217,10 @@ func (s ComponentSet) DigestString() string {
 	return "sha256:" + hex.EncodeToString(digest)
 }
 
-// CompareSetVersions orders two set versions by their numbers.
+// CompareSetVersions orders two set versions as semver orders the releases
+// that built them, a pre-release before the version it leads to.
 func CompareSetVersions(a, b string) int {
-	x, _ := parseComponentVersion(a)
-	y, _ := parseComponentVersion(b)
-	return slices.Compare(x[:], y[:])
+	return semver.Compare("v"+a, "v"+b)
 }
 
 // normalizeComponents canonicalizes the components section. A set that fails a
@@ -267,35 +267,19 @@ func (s *ComponentSet) normalize(version string) error {
 	return s.checkDistinctLaunches()
 }
 
-// checkComponentVersion requires the set's key to be MAJOR.MINOR.PATCH in the
-// major version this reader judges.
+// checkComponentVersion requires the set's key to be the release tag that
+// built it without its v: semver in its canonical spelling, so one release
+// has one key, and in the major version this reader judges. Build metadata is
+// refused, since two keys differing in it name one version.
 func checkComponentVersion(version string) error {
-	numbers, err := parseComponentVersion(version)
-	if err != nil {
-		return err
+	tag := "v" + version
+	if !semver.IsValid(tag) || semver.Canonical(tag) != tag {
+		return fmt.Errorf("version %q is not MAJOR.MINOR.PATCH, optionally with a pre-release, and nothing else", version)
 	}
-	if numbers[0] != SupportedComponentMajor {
-		return fmt.Errorf("major version %d is not %d, the one this reader judges", numbers[0], SupportedComponentMajor)
+	if major := fmt.Sprintf("v%d", SupportedComponentMajor); semver.Major(tag) != major {
+		return fmt.Errorf("major version %s is not %s, the one this reader judges", semver.Major(tag), major)
 	}
 	return nil
-}
-
-// parseComponentVersion reads MAJOR.MINOR.PATCH, each a decimal number
-// without a leading zero, as the numbers that order two sets.
-func parseComponentVersion(version string) ([3]uint64, error) {
-	var numbers [3]uint64
-	parts := strings.Split(version, ".")
-	if len(parts) != 3 {
-		return numbers, fmt.Errorf("version %q is not MAJOR.MINOR.PATCH", version)
-	}
-	for i, part := range parts {
-		number, err := strconv.ParseUint(part, 10, 64)
-		if err != nil || strconv.FormatUint(number, 10) != part {
-			return numbers, fmt.Errorf("version %q is not MAJOR.MINOR.PATCH", version)
-		}
-		numbers[i] = number
-	}
-	return numbers, nil
 }
 
 // checkComponentEntry requires an entry to pin what the privilege it carries
@@ -336,15 +320,16 @@ func checkNodeService(w Workload) error {
 }
 
 // checkDistinctLaunches refuses a set that binds one launch twice: two
-// declarations of the same bytes under the same command line could grant it
-// two roles, and the set would describe neither.
+// declarations admitting the same container could grant it two roles, and the
+// set would describe neither. The credential clients are separated by their
+// mount sets alone, so the mount set is part of the launch.
 func (s *ComponentSet) checkDistinctLaunches() error {
 	bound := make(map[string]bool)
 	for _, entry := range s.Entries {
 		for _, c := range entry.containers() {
 			key := launchKey(c)
 			if bound[key] {
-				return fmt.Errorf("container %s is bound twice under the same command line", c.Digest)
+				return fmt.Errorf("container %s is bound twice under the same command line and mounts", c.Digest)
 			}
 			bound[key] = true
 		}
@@ -352,9 +337,9 @@ func (s *ComponentSet) checkDistinctLaunches() error {
 	return nil
 }
 
-// launchKey is the launch a declaration binds: the bytes and the argv the set
-// admits them under.
+// launchKey is the launch a declaration binds: the bytes, the argv and the
+// mounts the set admits them under.
 func launchKey(c Container) string {
-	key, _ := json.Marshal([]any{c.Digest.String(), c.Command.Argv, c.Args.Policy, c.Args.Argv})
+	key, _ := json.Marshal([]any{c.Digest.String(), c.Command.Argv, c.Args.Policy, c.Args.Argv, c.Mounts.Rules})
 	return string(key)
 }

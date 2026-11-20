@@ -32,6 +32,7 @@ while [ $# -gt 0 ]; do
 done
 mkdir -p "$out"
 echo "seed of $args" > "$out/allowlist-seed.json"
+echo "set of $args" > "$out/component-set.json"
 EOF
 chmod +x "$work/bin/c8s"
 export FAKE_C8S_LOG="$work/c8s.log"
@@ -39,16 +40,21 @@ export FAKE_C8S_LOG="$work/c8s.log"
 operator=sha256:1111111111111111111111111111111111111111111111111111111111111111
 mesh=sha256:2222222222222222222222222222222222222222222222222222222222222222
 bash "$script" "$work/bin/c8s" "$work/out" "$operator" "$mesh" tdx sev-snp
-[ -f "$work/out/allowlist-seed-tdx.json" ] || fail "the tdx seed is missing"
-[ -f "$work/out/allowlist-seed-sev-snp.json" ] || fail "the sev-snp seed is missing"
+for platform in tdx sev-snp; do
+  [ -f "$work/out/allowlist-seed-$platform.json" ] || fail "the $platform seed is missing"
+  [ -f "$work/out/component-set-$platform.json" ] || fail "the $platform component set is missing"
+done
 pass
 
+template="$test_dir/../../../images/node-guest/worker/image-policy.yaml.in"
 for platform in tdx sev-snp; do
-  args="--hardware-platform $platform --kube-version $kube --image-digest $operator --armtls-mesh-image-digest $mesh --output-dir "
+  args="--hardware-platform $platform --kube-version $kube --image-digest $operator --armtls-mesh-image-digest $mesh --floor-template $template --output-dir "
   grep -Fq "args $args" "$work/c8s.log" ||
     fail "$platform did not render with the worker image's inputs: $(cat "$work/c8s.log")"
   grep -Fq "seed of $args" "$work/out/allowlist-seed-$platform.json" ||
     fail "allowlist-seed-$platform.json is not the render's seed"
+  grep -Fq "set of $args" "$work/out/component-set-$platform.json" ||
+    fail "component-set-$platform.json is not the render's set"
 done
 pass
 
