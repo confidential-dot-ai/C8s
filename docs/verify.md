@@ -167,7 +167,13 @@ check prints, with `…` for elided lines:
   WARNING:      the attested front door was observed on this verify's single connection to a single router replica at a single instant: … clients must verify their own connection
   sandbox id:   <SANDBOX_ID>
                 verified: the leaf chains to the supplied mesh CA
+  component set: <VERSION>  (digest <SHA256_HEX>)
 ```
+
+The `component set` line appears when the leaf names one: the release whose
+component entries admitted the pod's c8s containers, and the digest of that
+set's entries (`component_set` and `component_set_digest` in JSON). It stands
+on the same mesh CA chain the workload stamp does.
 
 `WARNING:` names a limit of the policy you gave, such as an unpinned
 measurement, or of the observation made: the front-door warning above says the

@@ -1,11 +1,13 @@
 package cds
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 	"time"
 
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
@@ -215,5 +217,62 @@ func TestPolicySnapshot_ContainsCoversTheSetsInForce(t *testing.T) {
 		if got := snapshot.Contains(digest.String(), tc.now); got != tc.admits {
 			t.Errorf("%s: Contains = %v, want %v", tc.name, got, tc.admits)
 		}
+	}
+}
+
+// A pod on more than one set is stamped with the newest of them: the release
+// its containers have reached, and the one whose entries must keep admitting
+// them.
+func TestAttest_ComponentSets_LeafNamesTheNewestSet(t *testing.T) {
+	store := componentDoc(t,
+		[]string{anyArgvEntry("api", wlDigestA)},
+		[]string{
+			currentSet("0.43.0", wlDigestB, pkgallowlist.RoleMesh),
+			currentSet("0.44.0", wlDigestB, pkgallowlist.RoleCredentials),
+		},
+	)
+	reported := []workloadclaims.SandboxContainer{
+		workloadLaunch(wlDigestA),
+		sidecarLaunch(wlDigestB, pkgallowlist.RoleMesh),
+	}
+	leaf := leafFromInventory(t, store, []string{wlDigestA, wlDigestB}, reported, nil)
+	stamp, err := armtls.ComponentSetFromCert(leaf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stamp == nil || stamp.Version != "0.44.0" {
+		t.Fatalf("stamp = %#v, want the newest set 0.44.0", stamp)
+	}
+	al, _, err := store.LoadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := al.Components["0.44.0"].Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(stamp.Digest, want) {
+		t.Fatalf("stamp digest = %x, want %x", stamp.Digest, want)
+	}
+}
+
+// A pod on no set carries no stamp, so a verifier can tell a judged pod from
+// one the workloads section alone admits.
+func TestAttest_ComponentSets_NoSetLeavesTheLeafUnstamped(t *testing.T) {
+	store := componentDoc(t,
+		[]string{
+			anyArgvEntry("api", wlDigestA),
+			anyArgvEntry("c8s-mesh-endpoint", wlDigestB),
+		},
+		[]string{currentSet("0.43.0", wlDigestC, pkgallowlist.RoleMesh)},
+	)
+	reported := []workloadclaims.SandboxContainer{
+		workloadLaunch(wlDigestA),
+		sidecarLaunch(wlDigestB, pkgallowlist.RoleMesh),
+	}
+	leaf := leafFromInventory(t, store, []string{wlDigestA, wlDigestB}, reported, nil)
+	stamp, err := armtls.ComponentSetFromCert(leaf)
+	if err != nil || stamp != nil {
+		t.Fatalf("stamp = %#v, err = %v, want none", stamp, err)
 	}
 }
