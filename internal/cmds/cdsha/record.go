@@ -82,8 +82,10 @@ var ErrRecordConflict = errors.New("the local record disagrees")
 var errStateDir = errors.New("the state directory cannot hold the record, so no mutation was submitted")
 
 // prepareStateDir makes the state directory, creates and removes a file in
-// it, and syncs it as a save does. A write runs it before anything else
-// creates the directory, so an unusable one refuses the write unsent.
+// it, and syncs it as a save does. A command runs it before it submits a
+// mutation and before anything else creates the directory, so an unusable
+// one refuses with no mutation submitted. Endpoint selection and genesis
+// discovery may read replica status first.
 func (o *options) prepareStateDir() error {
 	dir, err := o.recordDir()
 	if err == nil {
