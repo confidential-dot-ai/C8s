@@ -94,6 +94,7 @@ func pullInitialOnce(
 	if err := args.target.install(ctx, served.Allowlist, version); err != nil {
 		return "", err
 	}
+	args.target.policy().freshness.replied(served.CertificateLifetime, true)
 	args.pull.reached()
 	args.logger.Info("initial allowlist pulled from CDS",
 		"workloads", len(served.Allowlist.Workloads),
@@ -126,7 +127,8 @@ type pullLoopArgs struct {
 // serves the document at; it and errors leave the index untouched. A
 // version the measurer refuses for good also advances the ETag and is logged
 // once per digest. Every tick ends the component sets whose deadline the CDS's
-// time has passed, whatever the poll answered.
+// time has passed, and falls back to the base allowlist once the certificate
+// lifetime has passed without a fresh poll, whatever the poll answered.
 func runPullLoop(ctx context.Context, args pullLoopArgs) {
 	ticker := time.NewTicker(args.interval)
 	defer ticker.Stop()
@@ -138,6 +140,8 @@ func runPullLoop(ctx context.Context, args pullLoopArgs) {
 		timeout: args.timeout,
 		logger:  args.logger,
 		etag:    args.etag,
+		// pullInitial returns the ETag of the document it installed.
+		appliedETag: args.etag,
 	}
 	for {
 		select {
@@ -148,6 +152,7 @@ func runPullLoop(ctx context.Context, args pullLoopArgs) {
 				args.refresh(ctx)
 			}
 			loop.poll(ctx)
+			loop.fallBackWhenStale(ctx)
 			loop.target.endSets(ctx)
 		}
 	}
@@ -164,6 +169,9 @@ type pullLoop struct {
 
 	// etag names the document CDS answers 304 for.
 	etag string
+	// appliedETag names the document admission applies, which the ETag runs
+	// ahead of once a document is refused for good.
+	appliedETag string
 	// refusedDigest and unmeasuredDigest are the documents last logged at
 	// Error as refused for good and as not yet measured.
 	refusedDigest    string
@@ -173,10 +181,13 @@ type pullLoop struct {
 func (l *pullLoop) poll(ctx context.Context) {
 	served, notModified, err := fetchServed(ctx, l.client, l.timeout, l.etag)
 	l.target.policy().clock.observe(served.Date)
+	named := l.namedByReply(served, notModified)
 	switch {
 	case err != nil:
 		l.pull.failed(err)
 		l.logger.Warn("pull loop fetch failed", "error", err)
+		l.freshness().unanswered()
+		return
 	case notModified:
 		l.keepUnchanged(served)
 	case served.Allowlist == nil:
@@ -185,6 +196,45 @@ func (l *pullLoop) poll(ctx context.Context) {
 		l.ignoreRollback(served)
 	case l.settle(ctx, served):
 		l.etag, l.unmeasuredDigest = served.ETag, ""
+	}
+	l.freshness().replied(served.CertificateLifetime, l.applies(named))
+}
+
+// applies reports whether admission applies the document a reply named: a
+// node fed a document it refuses for good, and answered 304 for it after,
+// applies another one and is not fresh.
+func (l *pullLoop) applies(etag string) bool {
+	return etag != "" && etag == l.appliedETag
+}
+
+// namedByReply is the ETag of the document the reply stands for: the pulled
+// document's, or on a 304 the one the request asked about.
+func (l *pullLoop) namedByReply(served allowlistclient.Served, notModified bool) string {
+	if notModified {
+		return l.etag
+	}
+	return served.ETag
+}
+
+func (l *pullLoop) freshness() *freshness {
+	return l.target.policy().freshness
+}
+
+// fallBackWhenStale falls back to the base allowlist once the certificate
+// lifetime has passed without a fresh poll. Dropping a served document clears
+// the ETag, so the next poll fetches a document to apply instead of being told
+// it has that one already.
+func (l *pullLoop) fallBackWhenStale(ctx context.Context) {
+	fresh := l.freshness()
+	if !fresh.pendingFallback() {
+		return
+	}
+	fresh.noteFallback()
+	_, limit := fresh.report()
+	l.logger.Error("no allowlist of the CDS's within one certificate lifetime: this node falls back to its base allowlist and ends the pods the served allowlist admitted",
+		"limit", limit)
+	if l.target.fallBack(ctx) {
+		l.etag, l.appliedETag = "", ""
 	}
 }
 
@@ -234,6 +284,7 @@ func (l *pullLoop) replace(
 		l.logger.Warn("pull loop: retained Pod policy refused update", "error", err)
 		return false
 	}
+	l.appliedETag = served.ETag
 	l.pull.reached()
 	l.logger.Info("pull loop: allowlist refreshed",
 		"workloads", len(served.Allowlist.Workloads),

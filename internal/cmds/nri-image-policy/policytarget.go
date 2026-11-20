@@ -19,6 +19,10 @@ type policyTarget interface {
 	// endSets puts the end of a retired component set into force: the sets a
 	// kept document holds are the ones in force at the CDS's time.
 	endSets(ctx context.Context)
+	// fallBack drops the served document and ends the pods it admitted, so
+	// the base allowlist alone judges until a poll is fresh again. Reports
+	// whether a served document was in force.
+	fallBack(ctx context.Context) bool
 }
 
 func policyTargetFor(cfg *config, plugin *plugin) policyTarget {
@@ -66,6 +70,12 @@ func (n nodeTarget) endSets(ctx context.Context) {
 	}
 }
 
+func (n nodeTarget) fallBack(ctx context.Context) bool {
+	dropped := n.store.dropServed()
+	n.recheckRunning(ctx)
+	return dropped
+}
+
 // podTarget is a Pod guest's policy, which applyPodPolicy installs under
 // admission's lock.
 type podTarget struct {
@@ -96,4 +106,10 @@ func (p podTarget) endSets(ctx context.Context) {
 	if p.plugin.policy.rebuildEndedSets() {
 		p.plugin.recheckRunning(ctx)
 	}
+}
+
+func (p podTarget) fallBack(ctx context.Context) bool {
+	dropped := p.plugin.policy.dropServed()
+	p.plugin.recheckRunning(ctx)
+	return dropped
 }

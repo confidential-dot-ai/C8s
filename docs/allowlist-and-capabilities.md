@@ -418,6 +418,29 @@ a newer set also admits runs on when the older set ends. A node rebuilds this
 membership from the containers it recovers after a restart, and an ended pod
 stays ended: admission refuses a container no set in force admits.
 
+A node must also keep up with the CDS. A poll is **fresh** when its reply, a
+304 included, names by ETag the document the node applies, so a document the
+node refuses, and 304s for it after, leave the node behind. The **freshness
+limit** is the certificate lifetime the reply reports, at most 24h, and 24h
+when the reply reports none. It is counted on the node's own clock.
+
+Past the limit without a fresh poll the node falls back to its base allowlist:
+it drops the served document, keeping its version so a rolled-back document
+cannot take its place, ends every pod the served document admitted — whole, and
+the Pod deleted, as a pod off its component sets — and admits from the base
+alone until a poll is fresh again. The first poll that lands puts the served
+document back in force. So a host gains nothing by cutting a node off,
+holding a write back, or feeding a node a document it refuses. A CDS outage longer than one
+certificate lifetime therefore ends every pod the served allowlist admitted,
+tenant pods included, on every node.
+
+A node is not fresh until its first poll of this process lands. The startup
+fetch retries for about 30s; when it gives up, the node runs on its base
+allowlist and ends the pods it recovered that the base alone does not admit. A
+restart while CDS answers changes nothing for running pods. `GET /healthz`
+reports `fresh` and `freshness_limit_seconds`, so an operator sees a node falling
+behind before it falls back.
+
 ## Bootstrap
 
 Two documents start the platform before CDS serves anything. The base allowlist
