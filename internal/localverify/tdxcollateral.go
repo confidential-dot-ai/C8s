@@ -1,12 +1,10 @@
 package localverify
 
 import (
-	"bytes"
 	"context"
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
-	"io"
 	"slices"
 	"strings"
 	"sync"
@@ -14,6 +12,7 @@ import (
 
 	"github.com/google/go-tdx-guest/pcs"
 	tdxtrust "github.com/google/go-tdx-guest/verify/trust"
+	sigsjson "sigs.k8s.io/json"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/tdx"
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
@@ -98,9 +97,7 @@ func (f *collateralFetch) Get(url string) (map[string][]string, []byte, error) {
 	return header, body, nil
 }
 
-// checkSignedEnvelope requires a TCB info or QE identity response to hold
-// exactly the signed object and its signature, each once. Only those two members are
-// covered by Intel's signature, so nothing else may reach a decoder.
+// Intel PCS envelopes contain exactly one signed payload and one signature.
 func checkSignedEnvelope(url string, body []byte) error {
 	var signed string
 	switch {
@@ -111,32 +108,11 @@ func checkSignedEnvelope(url string, body []byte) error {
 	default:
 		return nil
 	}
-	malformed := fmt.Errorf("response %s from Intel PCS is not a signed %s object", url, signed)
-	dec := json.NewDecoder(bytes.NewReader(body))
-	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
-		return malformed
-	}
-	seen := make(map[string]bool)
-	for dec.More() {
-		tok, err := dec.Token()
-		key, ok := tok.(string)
-		if err != nil || !ok {
-			return malformed
-		}
-		if (key != signed && key != "signature") || seen[key] {
-			return fmt.Errorf("unexpected member %q in Intel PCS response %s", key, url)
-		}
-		seen[key] = true
-		var value json.RawMessage
-		if err := dec.Decode(&value); err != nil {
-			return malformed
-		}
-	}
-	if _, err := dec.Token(); err != nil || len(seen) != 2 {
-		return malformed
-	}
-	if _, err := dec.Token(); err != io.EOF {
-		return malformed
+	var members map[string]json.RawMessage
+	strictErrs, err := sigsjson.UnmarshalStrict(body, &members)
+	if err != nil || len(strictErrs) != 0 || len(members) != 2 ||
+		members[signed] == nil || members["signature"] == nil {
+		return fmt.Errorf("intel PCS response %s must contain exactly %q and %q once each", url, signed, "signature")
 	}
 	return nil
 }
