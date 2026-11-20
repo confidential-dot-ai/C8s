@@ -78,14 +78,15 @@ func (o *options) record(cluster string) (*record, error) {
 var ErrRecordConflict = errors.New("the local record disagrees")
 
 // errStateDir is a state directory that cannot hold a record, found before
-// a mutation was submitted.
-var errStateDir = errors.New("the state directory cannot hold the record, so no mutation was submitted")
+// the write it guards was submitted.
+var errStateDir = errors.New("the state directory cannot hold the record, so this write was not submitted")
 
 // prepareStateDir makes the state directory, creates and removes a file in
-// it, and syncs it as a save does. A command runs it before it submits a
-// mutation and before anything else creates the directory, so an unusable
-// one refuses with no mutation submitted. Endpoint selection and genesis
-// discovery may read replica status first.
+// it, and syncs it as a save does. Each write runs it before submitting and
+// before anything else creates the directory, so an unusable one refuses
+// that write unsubmitted. Endpoint selection and genesis discovery may read
+// replica status first, and a resolve's allowlist refresh checks again
+// after the resolution was posted.
 func (o *options) prepareStateDir() error {
 	dir, err := o.recordDir()
 	if err == nil {
