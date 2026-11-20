@@ -20,6 +20,8 @@ Prerequisites:
   `--cds-address`: the front door relays neither CDS endpoint used here.
 - Outbound HTTPS to `kdsintf.amd.com` for AMD endorsement certificates
   evidence does not carry inline.
+- For TDX, outbound HTTPS to `api.trustedservices.intel.com`
+  and `certificates.trustedservices.intel.com` for Intel collateral.
 - The measurements you accept, from the operator or from the image build.
 
 ## Choose the pins and the CA anchor
@@ -140,6 +142,56 @@ c8s cds verify https://<CDS_ADDRESS> --image-policy-file cds-pin.json
 "Check the routes" below. Add `--server-name <HOST>` when the name you dial is
 not the name the endpoint serves, as through a port-forward.
 
+## Require a current Intel TCB on TDX
+
+`c8s verify` requires Intel to rate each TDX VM `UpToDate` by default.
+Supply the VM's expected image policy to check its measurements in the same
+invocation. For example, to check the CDS, run
+
+```sh
+c8s cds verify https://<CDS_ADDRESS> --image-policy-file cds-pin.json \
+    --tdx-tcb-status UpToDate
+```
+
+Each verification, including `--from-file`, fetches signed TCB information,
+quoting enclave (QE) identity, and the PCK and root CA revocation lists from
+Intel PCS within a positive `--timeout`. It rejects revoked certificates and
+invalid or expired collateral. The platform and QE must each have an accepted
+status. The TDX module must also match when the quote carries a nonzero module
+version (`TEE_TCB_SVN[1]`).
+
+Supplying `--tdx-tcb-status` replaces the default set. Repeat the flag to
+accept multiple statuses. Every component must have a status in the set, so
+keep `UpToDate` when you add a weaker one: an out-of-date platform usually has
+an up-to-date QE. The CLI reports the status Intel's signed collateral assigns,
+not the values of the flag. When the platform, QE and TDX module differ, it
+reports the least favourable of them. Statuses run from most to least
+favourable:
+
+1. `UpToDate`
+2. `SWHardeningNeeded`
+3. `ConfigurationNeeded`
+4. `ConfigurationAndSWHardeningNeeded`
+5. `OutOfDate`
+6. `OutOfDateConfigurationNeeded`
+
+The CLI rejects `Revoked` and refuses explicit status requirements for
+evidence without a TDX quote. Use `--min-tcb-*` for SEV-SNP. With
+`--tdx-offline`, the CLI skips the PCS check and warns on a passing TDX
+verdict. Offline mode excludes named TCB statuses.
+
+An online verdict reports Intel's advisories and the earliest signed
+`nextUpdate` across the four collateral documents.
+
+```text
+  Intel TCB:    UpToDate (Intel PCS collateral, expires 2026-12-17T21:30:01Z)
+```
+
+`-o json` carries these as `tdx_tcb_status`, `tdx_advisory_ids` and
+`tdx_collateral_expires_at`. A status outside the set fails the verdict
+(exit 2), as does a response Intel did not sign or that cannot be parsed.
+Collateral that cannot be fetched exits 3, so a gate can retry.
+
 ## Read the verdict
 
 The first line is the verdict and the exit code repeats it:
@@ -151,8 +203,9 @@ The first line is the verdict and the exit code repeats it:
 | `✗ NOT VERIFIED  (attestation-go backend)` | 2 | Verification or a policy check failed; `reason:` names it. |
 
 Exit 1 (usage) prints only an `error:` line on stderr. Exit 3 prints that line
-and no verdict when no evidence could be fetched, and a `✗ NOT VERIFIED`
-verdict when a policy-history fetch could not be reached. A passing router
+and no verdict when no evidence, AMD KDS certificate or Intel PCS collateral
+could be fetched, and a `✗ NOT VERIFIED` verdict when a policy-history fetch
+could not be reached. A passing router
 check prints, with `…` for elided lines:
 
 ```text

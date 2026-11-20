@@ -81,15 +81,17 @@ type Params struct {
 	// list. Verify ignores it; a caller enforcing anchored image pins replays
 	// it (armtls.EnforceImages).
 	RuntimeExtensions []string
+
+	// A nonempty set requires an online Intel status check for TDX evidence.
+	TDXTCBStatuses []teetypes.TdxTcbStatus
 }
 
 // VerifyFunc is the signature of [Verify], taken as a parameter by consumers
 // so tests can stub it.
 type VerifyFunc func(ctx context.Context, platform string, evidence json.RawMessage, p Params) (*teetypes.VerificationResult, error)
 
-// CollateralError marks a failure to obtain verification collateral (AMD KDS
-// unreachable, context expired): no verdict was reached. Every other Verify
-// error is a verdict — evidence was obtained and rejected.
+// CollateralError means verification could not obtain required vendor
+// collateral, so no verdict was reached. Every other Verify error is a verdict.
 type CollateralError struct{ Err error }
 
 func (e *CollateralError) Error() string { return e.Err.Error() }
@@ -98,29 +100,34 @@ func (e *CollateralError) Unwrap() error { return e.Err }
 // ErrMeasurementNotAllowed reports a launch digest outside Params.Measurements.
 var ErrMeasurementNotAllowed = errors.New("launch measurement not in the allowed set")
 
-// Verify verifies a self-describing evidence envelope and enforces p. The
-// chain, binding, debug, min-TCB, and init-data checks are attestation-go's
-// verdict; the measurement allowlist is enforced here on its claims. ctx
-// bounds any AMD KDS collateral fetch.
+// Verify authenticates the evidence and enforces p within the caller's collateral-fetch deadline.
 func Verify(ctx context.Context, platform string, evidence json.RawMessage, p Params) (*teetypes.VerificationResult, error) {
+	res, _, err := VerifyWithCollateralExpiry(ctx, platform, evidence, p)
+	return res, err
+}
+
+// VerifyWithCollateralExpiry also returns the expiry from a successful online TDX status check.
+func VerifyWithCollateralExpiry(ctx context.Context, platform string, evidence json.RawMessage, p Params) (*teetypes.VerificationResult, *time.Time, error) {
 	envelope := teetypes.AttestationEvidence{
 		Platform: teetypes.NormalizePlatform(platform),
 		Evidence: evidence,
 	}
-	// A bare armTLS serving cert carries the SNP report with no inline VCEK;
-	// the Getter lets the snp and gcp-snp arms fetch it from AMD KDS, bounded
-	// by ctx. Nothing else here reaches the network.
-	res, err := teeverify.VerifyEnvelope(ctx, envelope, p.VerifyParams, teeverify.Options{
+	if envelope.Platform.IsTDX() && len(p.TDXTCBStatuses) > 0 {
+		return verifyOnlineTDX(ctx, envelope, p)
+	}
+	res, err := verifyEnvelope(ctx, envelope, p, teeverify.Options{
 		SNP: snp.Options{Getter: snp.NewCachingKDSGetter(defaultKDSCacheDir(), kdsGetter())},
 	})
+	return res, nil, err
+}
+
+func verifyEnvelope(ctx context.Context, envelope teetypes.AttestationEvidence, p Params, opts teeverify.Options) (*teetypes.VerificationResult, error) {
+	res, err := teeverify.VerifyEnvelope(ctx, envelope, p.VerifyParams, opts)
 	if err != nil {
 		var re *trust.AttestationRecreationErr
 		if errors.Is(err, snp.ErrCollateralUnavailable) || errors.As(err, &re) {
 			return nil, &CollateralError{Err: err}
 		}
-		// attestation-go returns an error (not a false verdict) on a bad
-		// signature, chain, policy, or REPORTDATA mismatch — a
-		// reachable-but-rejected outcome, i.e. a security verdict.
 		return nil, err
 	}
 	if err := enforceResult(res, p); err != nil {

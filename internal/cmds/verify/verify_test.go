@@ -935,7 +935,7 @@ func TestVerifyRealAzSnpEvidence_UnpaddedAnchor(t *testing.T) {
 	if ev.platform != "az-snp" {
 		t.Fatalf("platform = %q, want az-snp", ev.platform)
 	}
-	res, err := verifyInProcess(context.Background(), ev, &armtls.VerifyPolicy{}, nil, nil)
+	res, _, err := verifyInProcess(context.Background(), ev, &verifyPlan{policy: &armtls.VerifyPolicy{}}, nil)
 	if err != nil {
 		t.Fatalf("az-snp evidence with its bound nonce must verify: %v", err)
 	}
@@ -945,21 +945,12 @@ func TestVerifyRealAzSnpEvidence_UnpaddedAnchor(t *testing.T) {
 
 	// A different anchor fails closed, at the nonce gate specifically.
 	ev.erd = []byte("not-the-nonce")
-	if _, err := verifyInProcess(context.Background(), ev, &armtls.VerifyPolicy{}, nil, nil); err == nil || !strings.Contains(err.Error(), "nonce") {
+	if _, _, err := verifyInProcess(context.Background(), ev, &verifyPlan{policy: &armtls.VerifyPolicy{}}, nil); err == nil || !strings.Contains(err.Error(), "nonce") {
 		t.Fatalf("wrong nonce must fail closed at the nonce check, got: %v", err)
 	}
 }
 
-// TestNewOutcomeFromRealGenoaEvidence drives the vendored Genoa fixture
-// through verifyInProcess + newOutcome and asserts the verdict carries the
-// platform's real security state — the platform has SMT on, a value no
-// hand-built PlatformData map can accidentally supply. The debug-off policy
-// is pinned by the key's presence in the real claims: the fixture's value is
-// the zero value, so value alone cannot catch a renamed key. Together these
-// pin reportFlags against the engine's real claim keys: an attestation-go
-// key rename fails here instead of silently reporting false. No TDX fixture
-// verifies offline, so the TDX mapping keeps only the hand-built pin in
-// TestRenderOutcome.
+// The Genoa fixture has SMT enabled and debug disabled.
 func TestNewOutcomeFromRealGenoaEvidence(t *testing.T) {
 	fixture, err := os.ReadFile("testdata/snp-evidence-genoa.json")
 	if err != nil {
@@ -969,7 +960,7 @@ func TestNewOutcomeFromRealGenoaEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := verifyInProcess(context.Background(), ev, &armtls.VerifyPolicy{}, nil, nil)
+	res, _, err := verifyInProcess(context.Background(), ev, &verifyPlan{policy: &armtls.VerifyPolicy{}}, nil)
 	if err != nil {
 		t.Fatalf("the real fixture must verify: %v", err)
 	}

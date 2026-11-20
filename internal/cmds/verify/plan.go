@@ -18,6 +18,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/c8s/internal/localverify"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
@@ -51,6 +52,7 @@ type verifyPlan struct {
 	// operatorKeysDigest is the digest the set a kind=cds target serves at
 	// /operator-keys must equal, nil when no --operator-keys bundle pins it.
 	operatorKeysDigest []byte
+	tdxTCBStatuses     []teetypes.TdxTcbStatus
 }
 
 // buildPolicy parses the measurement allowlist, resolves the register pins and
@@ -58,6 +60,10 @@ type verifyPlan struct {
 // min-TCB are enforced on the verifier verdict (newOutcome / verifyInProcess);
 // only Measurements and AllowDebug are read by the verifier itself.
 func buildPolicy(cfg config) (*verifyPlan, error) {
+	tdxTCBStatuses, err := cfg.acceptedTDXStatuses()
+	if err != nil {
+		return nil, err
+	}
 	if err := refuseMeshLeafFlagsWithKindCDS(cfg); err != nil {
 		return nil, err
 	}
@@ -209,7 +215,28 @@ func buildPolicy(cfg config) (*verifyPlan, error) {
 		routes:             routes,
 		trustKeys:          trustKeys,
 		operatorKeysDigest: operatorKeysDigest,
+		tdxTCBStatuses:     tdxTCBStatuses,
 	}, nil
+}
+
+func (cfg config) acceptedTDXStatuses() ([]teetypes.TdxTcbStatus, error) {
+	switch {
+	case cfg.tdxOffline && len(cfg.tdxTCBStatuses) > 0:
+		return nil, fmt.Errorf("--tdx-offline excludes --tdx-tcb-status")
+	case cfg.tdxOffline:
+		return nil, nil
+	case len(cfg.tdxTCBStatuses) == 0:
+		return []teetypes.TdxTcbStatus{teetypes.TdxUpToDate}, nil
+	}
+	var statuses []teetypes.TdxTcbStatus
+	for _, f := range cfg.tdxTCBStatuses {
+		status, err := localverify.ParseTDXTCBStatus(strings.TrimSpace(f))
+		if err != nil {
+			return nil, fmt.Errorf("--tdx-tcb-status: %w", err)
+		}
+		statuses = append(statuses, status)
+	}
+	return statuses, nil
 }
 
 // parseInitDataPin parses --init-data: the SHA-256 hex digest of the init-data

@@ -119,6 +119,8 @@ type config struct {
 	minTCBTEE          uint
 	minTCBSNP          uint
 	minTCBMicrocode    uint
+	tdxTCBStatuses     []string
+	tdxOffline         bool
 	expectedRDHex      string
 	pinPolicies        []string
 	trustOperator      bool
@@ -158,7 +160,10 @@ attestation-rs engine the cluster runs. It auto-detects the platform and AMD
 product — including Zen4c (Siena/Bergamo), which stock go-sev-guest cannot — so
 the product line never has to be supplied by hand, and it fetches the VCEK for a
 bare report from AMD KDS (bounded by --timeout), so the machine running it needs
-outbound HTTPS to kdsintf.amd.com (no container runtime required).
+outbound HTTPS to kdsintf.amd.com (no container runtime required). TDX evidence
+requires Intel's UpToDate TCB status by default, using fresh PCS collateral
+from api.trustedservices.intel.com and certificates.trustedservices.intel.com
+(bounded by --timeout). --tdx-offline skips the Intel TCB status check.
 
 Evidence sources:
   https://host:port      GET the discovery endpoint (/v1/discovery — cert +
@@ -189,7 +194,8 @@ manifest the router applied. Check it with exactly one of:
                          --routes-floor REV:HEX to refuse a rollback.
 
 Exit codes: 0 verified · 1 usage · 2 verification/policy failed · 3 evidence
-unavailable (unreachable / unparseable) · 4 partially verified (the evidence
+or collateral unavailable (unreachable / unparseable; AMD KDS or Intel PCS
+unreachable) · 4 partially verified (the evidence
 verified, but a property it presents is not proven — the front door's live
 handshake presented a serving key the evidence does not attest, no handshake
 could be observed (a non-TLS discovery target), or a chain anchor the
@@ -212,7 +218,7 @@ responder chose).`,
 	f.StringVar(&cfg.mode, "mode", orDefault(d.Mode, "auto"), "evidence mode: auto, armtls-cert, discovery, attest-pq, or attest-lb")
 	f.StringVar(&cfg.discoveryPath, "discovery-path", routerdiscovery.DefaultPath, "path of the LB discovery document (discovery mode)")
 	f.StringVar(&cfg.server, "server-name", "", "TLS SNI server name (for port-forward / routed domains)")
-	f.DurationVar(&cfg.timeout, "timeout", 15*time.Second, "per-attempt timeout (evidence fetch, AMD KDS collateral fetch, and each policy-history fetch, with four times it for the whole history check; --trust-operator and --fetch-allowlists need it positive)")
+	f.DurationVar(&cfg.timeout, "timeout", 15*time.Second, "per-attempt timeout (evidence fetch, AMD KDS or Intel PCS collateral fetch, and each policy-history fetch, with four times it for the whole history check; --trust-operator and --fetch-allowlists need it positive)")
 	f.StringVar(&cfg.fromFile, "from-file", "", "verify evidence from a saved PEM certificate or attestation-response JSON instead of dialing")
 	f.StringVar(&cfg.observedServingCert, "observed-serving-cert", "", "with --mode attest-lb --from-file: PEM serving leaf observed on the connection that fetched the receipt")
 	f.StringVar(&cfg.attestationNonce, "attestation-nonce", "", "with --mode attest-lb --from-file: unpadded base64url nonce sent to fetch the receipt")
@@ -241,6 +247,8 @@ responder chose).`,
 	f.UintVar(&cfg.minTCBTEE, "min-tcb-tee", 0, "minimum TEE TCB component"+tcbSNPOnly)
 	f.UintVar(&cfg.minTCBSNP, "min-tcb-snp", 0, "minimum SNP firmware TCB component"+tcbSNPOnly)
 	f.UintVar(&cfg.minTCBMicrocode, "min-tcb-microcode", 0, "minimum microcode TCB component"+tcbSNPOnly)
+	f.StringSliceVar(&cfg.tdxTCBStatuses, "tdx-tcb-status", nil, "accepted Intel TCB status(es), default UpToDate on TDX (repeatable / comma-separated; never Revoked; every component must match one, so keep UpToDate when adding a weaker status). Checks fresh Intel PCS collateral within --timeout. Explicit values require TDX evidence; excludes --tdx-offline")
+	f.BoolVar(&cfg.tdxOffline, "tdx-offline", false, "verify TDX without fetching Intel PCS collateral or checking Intel TCB status (UNSAFE); excludes --tdx-tcb-status")
 	f.StringSliceVar(&cfg.pinPolicies, "pin-policy", nil, "accepted allowlist policy digest(s) sha256:<hex> (repeatable / comma-separated): every policy in the node's replayed history, and the policy the leaf was issued under, must be one of these. The leaf's stamp counts as proven only with --mesh-ca; without it the verdict stays partial. Requires --operator-pkey or a TDX --image-policy-file image pinning an approver_key; excludes --trust-operator")
 	f.BoolVar(&cfg.trustOperator, "trust-operator", false, "accept every policy in the node's replayed history, and the policy the leaf was issued under, only when it carries a valid operator signature: each one is fetched from <target>/allowlist/objects/sha256/<hex>, re-hashed, and its stored write token checked against --trust-operator-keys. Only a document uploaded whole with a signed PUT /allowlist carries a token; a per-workload edit yields an unsigned policy. The leaf's stamp counts as proven only with --mesh-ca; without it the verdict stays partial. Requires --operator-pkey or a TDX --image-policy-file image pinning an approver_key, and --trust-operator-keys")
 	f.StringVar(&cfg.trustOperatorKeys, "trust-operator-keys", "", "PEM bundle of the operator public keys --trust-operator accepts signatures from. Requires --trust-operator; --operator-keys does not feed it")
@@ -408,16 +416,13 @@ func gatherOperatorKeys(ctx context.Context, cfg config, ev *evidence, fetch att
 	return operatorKeysReport{fingerprints: fps, digest: digest, note: note}
 }
 
-// verifyEvidence verifies already-gathered evidence (from any source/mode)
-// in-process with attestation-go (the Go port of the attestation-rs engine the
-// cluster runs), which auto-detects the product and fetches the VCEK from KDS
-// when it is not shipped inline — so a bare armTLS report and a discovery doc
-// both work — then renders the verdict. The verification attempt (including the
-// KDS fetch) is bounded by --timeout; an unobtainable-collateral failure is
-// exit 3, not a verification verdict.
 func verifyEvidence(ctx context.Context, cfg config, plan *verifyPlan, ev *evidence, held *heldAllowlist, opKeys operatorKeysReport, servedMeasurements measurementsReport, out, errOut io.Writer) int {
 	if ev.podLeaf {
 		return verifyPodLeaf(cfg, plan, ev, held, out)
+	}
+	if isTDX(ev.platform) && !cfg.tdxOffline && cfg.timeout <= 0 {
+		fmt.Fprintln(errOut, "error: online TDX verification requires a positive --timeout")
+		return exitUsage
 	}
 	verifyCtx := ctx
 	if cfg.timeout > 0 {
@@ -425,7 +430,7 @@ func verifyEvidence(ctx context.Context, cfg config, plan *verifyPlan, ev *evide
 		verifyCtx, cancel = context.WithTimeout(ctx, cfg.timeout)
 		defer cancel()
 	}
-	result, verr := verifyInProcess(verifyCtx, ev, plan.policy, plan.initDataHash, minTCBFromCfg(cfg))
+	result, expiresAt, verr := verifyInProcess(verifyCtx, ev, plan, minTCBFromCfg(cfg))
 	if isConnectError(verr) {
 		fmt.Fprintf(errOut, "error: could not fetch verification collateral: %v\n", verr)
 		return exitNoEvidence
@@ -437,6 +442,7 @@ func verifyEvidence(ctx context.Context, cfg config, plan *verifyPlan, ev *evide
 	// The history check gets its own --timeout budget, not what the
 	// verification left of it.
 	unreachable := checkPolicyHistory(ctx, &oc, cfg, ev, plan.trustKeys)
+	applyTDXTCBStatus(&oc, result, expiresAt, cfg)
 	applyFinalNotes(&oc, ev, result, plan)
 	render(cfg, oc, out)
 	if unreachable {
@@ -464,7 +470,7 @@ func verifyPodLeaf(cfg config, plan *verifyPlan, ev *evidence, held *heldAllowli
 		Verified:   true,
 	}
 	if len(plan.policy.Policy.Measurements) > 0 || plan.pins.any() || !plan.refValues.Empty() || plan.initDataHash != nil ||
-		minTCBFromCfg(cfg) != nil {
+		minTCBFromCfg(cfg) != nil || len(cfg.tdxTCBStatuses) > 0 {
 		oc.Verified = false
 		oc.Error = "a Pod CVM leaf carries no hardware evidence, so measurement, register, init-data, TCB and policy-history pins cannot be checked against it; pin its stamps (--workload, --client-document, --sandbox-id, --allowlist) instead"
 	}

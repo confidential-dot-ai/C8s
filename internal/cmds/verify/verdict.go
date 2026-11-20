@@ -89,6 +89,9 @@ func enforcePins(
 	if err := enforceMinTCB(oc.Platform, cfg, result); err != nil {
 		return err
 	}
+	if len(cfg.tdxTCBStatuses) > 0 && !isTDX(oc.Platform) {
+		return fmt.Errorf("--tdx-tcb-status is set but the evidence platform is %q: an Intel TCB status exists only for TDX, so this policy cannot be enforced against %q evidence", oc.Platform, oc.Platform)
+	}
 	coverage, err := enforceImagePolicy(oc, measured, result, plan)
 	if err != nil {
 		return err
@@ -324,6 +327,26 @@ func replayedHistory(response remote.VerifyResponse, images []remote.ImagePin, p
 		return slices.Clone(replayed[:k]), true
 	}
 	return nil, false
+}
+
+const tdxTCBUncheckedWarning = "Intel TCB status not checked: --tdx-offline accepts an out-of-date TDX platform"
+
+func applyTDXTCBStatus(oc *Outcome, result *teetypes.VerificationResult, expiresAt *time.Time, cfg config) {
+	if oc.Error != "" || !isTDX(oc.Platform) {
+		return
+	}
+	if cfg.tdxOffline {
+		oc.Warnings = append(oc.Warnings, tdxTCBUncheckedWarning)
+		return
+	}
+	if result.TCBStatus == nil || expiresAt == nil {
+		oc.Verified, oc.Partial = false, false
+		oc.Error = "online TDX verification requires a verified Intel TCB status and collateral expiry"
+		return
+	}
+	oc.TDXTCBStatus = string(result.TCBStatus.TCBStatus)
+	oc.TDXAdvisoryIDs = result.TCBStatus.AdvisoryIDs
+	oc.TDXCollateralExpiresAt = expiresAt
 }
 
 // enforceMinTCB settles the --min-tcb-* floor on the signature-verified
