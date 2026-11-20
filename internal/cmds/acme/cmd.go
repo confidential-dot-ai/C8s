@@ -42,6 +42,7 @@ type config struct {
 	emailFile        string
 	directoryURLFile string
 	standbyCertDir   string
+	routeHostsFile   string
 }
 
 // The front door's issued credential, split so that a reader of the chain
@@ -82,7 +83,9 @@ On a node image the inputs come from the signed launch file:
 --domains-file, --acme-email-file and --acme-directory-url-file. When the
 domains file is empty, no ACME account is used: nginx serves the mesh leaf
 from --standby-cert-dir instead, and the sidecar only reports ready once that
-leaf exists.`,
+leaf exists.
+The certificate covers the hosts of the applied route manifest as well, which
+the route authority writes to --route-hosts-file.`,
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -102,6 +105,7 @@ leaf exists.`,
 	f.StringVar(&cfg.domainsFile, "domains-file", "", "file with one domain per line, read at start instead of --domains; empty file means no ACME (see --standby-cert-dir)")
 	f.StringVar(&cfg.emailFile, "acme-email-file", "", "file holding --acme-email; an empty file keeps the flag value")
 	f.StringVar(&cfg.directoryURLFile, "acme-directory-url-file", "", "file holding --acme-directory-url; an empty file keeps the flag value")
+	f.StringVar(&cfg.routeHostsFile, "route-hosts-file", "", "file the route authority writes the applied route manifest's hosts to; the certificate covers them beside --domains-file's names")
 	f.StringVar(&cfg.standbyCertDir, "standby-cert-dir", "", "with an empty --domains-file, do no ACME: report ready once this directory holds the tls.crt and tls.key nginx serves instead")
 
 	return cmd
@@ -239,6 +243,7 @@ func runWith(ctx context.Context, cfg config, probe *http.Client) error {
 	}
 	mgr := newManager(cfg.directoryURL, cfg.email, cfg.certDir, cfg.keyDir, cfg.domains, logger)
 	mgr.httpPort = cfg.httpPort
+	mgr.routeHostsFile = cfg.routeHostsFile
 	if probe == nil {
 		probe = publicProbeClient()
 	}

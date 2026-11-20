@@ -323,10 +323,11 @@ allowlist:
             # Per cluster: the domains it proves, the ACME directory it uses
             # and the account it registers.
             args: {policy: any}
-            # Its own leaf's volumes, the member credential it stands by for
-            # and the node's launch inputs: the ACME key is the one credential
-            # this role mints for itself, and it is written apart from the
-            # chain so a reader of the chain never holds it.
+            # Its own leaf's volumes, the member credential it stands by for,
+            # the node's launch inputs and the hosts the route authority
+            # publishes: the ACME key is the one credential this role mints
+            # for itself, and it is written apart from the chain so a reader
+            # of the chain never holds it.
             mounts:
               policy: exact
               rules:
@@ -343,6 +344,9 @@ allowlist:
                   kind: "host"
                   source: "/run/c8s-node"
                   readOnly: true
+                - destination: "/run/c8s-route-hosts"
+                  kind: "emptyDir"
+                  source: "route-hosts"
       # The pod's route authority: it holds the signed route manifest and
       # dials the member each route names as a mesh client, so it runs as the
       # upstream identity, the one this pod's ruleset leaves uncaptured into
@@ -395,7 +399,8 @@ allowlist:
                   kind: "host"
                   source: "/run/c8s-node"
                   readOnly: true
-          # The acme front door's attestation sidecar reads that leaf as well.
+          # The acme front door's attestation sidecar reads that leaf as well,
+          # and publishes the manifest's hosts for the sidecar that orders it.
           - digest: "@OPERATOR_DIGEST@"
             image: "@OPERATOR_REPO@@@OPERATOR_DIGEST@"
             role: "upstream"
@@ -418,6 +423,9 @@ allowlist:
                   kind: "host"
                   source: "/run/c8s-node"
                   readOnly: true
+                - destination: "/run/c8s-route-hosts"
+                  kind: "emptyDir"
+                  source: "route-hosts"
       c8s-allowlist-proxy:
         label: "c8s allowlist-proxy"
         containers:

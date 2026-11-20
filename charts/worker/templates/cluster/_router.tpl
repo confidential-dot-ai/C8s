@@ -69,6 +69,12 @@ volumes:
     emptyDir:
       medium: Memory
       sizeLimit: 1Mi
+  {{- /* cds-attest publishes the applied manifest's hosts here and the acme
+         sidecar reads them. */}}
+  - name: route-hosts
+    emptyDir:
+      medium: Memory
+      sizeLimit: 1Mi
   - name: discovery
     emptyDir:
       medium: Memory
@@ -180,6 +186,7 @@ securityContext:
   (printf "--routing-port=%s" (include "router.routingPort" .))
   (printf "--backend-timeout=%s" (include "router.backendTimeout" .))
   (printf "--reserved-paths=%s" (include "router.reservedPaths" .))
+  (printf "--route-hosts-file=%s" (include "router.routeHostsFile" .))
   "--publish-routes"
   | toJson -}}
 {{- end -}}
@@ -189,12 +196,15 @@ securityContext:
 - name: acme-tls
   mountPath: {{ include "router.acmeCertDir" . }}
   readOnly: true
+- name: route-hosts
+  mountPath: {{ include "router.routeHostsDir" . }}
 {{- end -}}
 
-{{/* Issues one ACME leaf for the launch file's hostnames, answers HTTP-01
-     behind nginx's :80 server, and stands by when it names none. An HTTP
-     startup probe holds nginx until the leaf exists: the node denies every
-     runc exec it was not granted. */}}
+{{/* Issues one ACME leaf for the launch file's hostnames and the applied route
+     manifest's hosts, answers HTTP-01 behind nginx's :80 server, and stands by
+     when the launch file names no hostname. An HTTP startup probe holds nginx
+     until the leaf exists: the node denies every runc exec it was not
+     granted. */}}
 {{- define "router.acmeContainer" -}}
 - name: acme
   image: {{ include "c8s.image" . }}
@@ -221,6 +231,9 @@ securityContext:
     - name: c8s-certs
       mountPath: {{ include "c8s.certDir" . }}
       readOnly: true
+    - name: route-hosts
+      mountPath: {{ include "router.routeHostsDir" . }}
+      readOnly: true
     {{- include "router.nodeConfigMount" . | nindent 4 }}
   securityContext:
     {{- include "c8s.getCertSecurityContext" (dict
@@ -238,6 +251,7 @@ securityContext:
   (printf "--domains-file=%s/hostnames" $dir)
   (printf "--acme-email-file=%s/acme-email" $dir)
   (printf "--acme-directory-url-file=%s/acme-directory-url" $dir)
+  (printf "--route-hosts-file=%s" (include "router.routeHostsFile" .))
   (printf "--standby-cert-dir=%s" (include "c8s.certDir" .))
   (printf "--challenge-port=%s" (include "router.acmeChallengePort" .))
   (printf "--http-port=%s" (include "router.acmeHTTPPort" .))

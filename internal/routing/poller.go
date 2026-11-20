@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
+	"github.com/confidential-dot-ai/c8s/pkg/routes"
 )
 
 // firstApplyBackoff is the first retry delay before any manifest is applied.
@@ -24,8 +25,11 @@ type PollerConfig struct {
 	// Transports, when set, is reset when the mesh CA bundle changes and
 	// pruned to the backends each applied manifest names.
 	Transports *Transports
-	Interval   time.Duration
-	Logger     *slog.Logger
+	// Applied, when set, is called after every poll that leaves a manifest
+	// applied, with the manifest in force.
+	Applied  func(*routes.Manifest) error
+	Interval time.Duration
+	Logger   *slog.Logger
 }
 
 // Poller fetches the signed manifest from the CDS on an interval and offers
@@ -112,8 +116,14 @@ func (p *Poller) Poll(ctx context.Context) (err error) {
 	case OutcomeStaged:
 		p.log.Info("route manifest staged until its notBefore", "applied", applied != nil)
 	}
-	if p.cfg.Transports != nil && applied != nil {
+	if applied == nil {
+		return nil
+	}
+	if p.cfg.Transports != nil {
 		p.cfg.Transports.Retain(applied.Manifest)
+	}
+	if p.cfg.Applied != nil {
+		return p.cfg.Applied(applied.Manifest)
 	}
 	return nil
 }
