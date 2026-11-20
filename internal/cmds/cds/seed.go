@@ -15,6 +15,9 @@ import (
 // reflects the configuration. Any error fails closed: CDS must not serve an
 // empty or partial allowlist because its seed could not be applied.
 func seedWorkloads(store *allowlist.Store, seed *pkgallowlist.Allowlist) error {
+	if len(seed.Components) > 0 {
+		return fmt.Errorf("the components section is written by an operator, never seeded: remove it from the measured configuration")
+	}
 	added, retired, err := store.SeedWorkloads(seed.Workloads)
 	if err != nil {
 		return fmt.Errorf("seed allowlist workloads: %w", err)

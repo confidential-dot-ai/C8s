@@ -3,6 +3,7 @@ package cds
 import (
 	"fmt"
 	"sync"
+	"time"
 
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
@@ -125,10 +126,30 @@ func (c *policySnapshotCache) snapshot(store policyStore) (*PolicySnapshot, erro
 	return snapshot, nil
 }
 
-// Contains reports whether a canonical digest string is admitted as any
-// workload container — the same question internal/allowlist.Store.Contains
-// answers, but against this snapshot rather than a separate store read.
-func (s *PolicySnapshot) Contains(digest string) bool {
-	_, ok := s.members[digest]
-	return ok
+// Contains reports whether a canonical digest string is admitted at now: by a
+// workload entry, or by an entry of a component set in force then. The answer
+// moves with now — a set's deadline ends its entries without a write — so it
+// is decided per request and never memoized.
+func (s *PolicySnapshot) Contains(digest string, now time.Time) bool {
+	if _, ok := s.members[digest]; ok {
+		return true
+	}
+	for _, set := range s.Allowlist.Components {
+		if set.InForce(now) && setLists(set, digest) {
+			return true
+		}
+	}
+	return false
+}
+
+// setLists reports whether an entry of the set declares digest.
+func setLists(set pkgallowlist.ComponentSet, digest string) bool {
+	for _, entry := range set.Entries {
+		for _, d := range entry.Digests() {
+			if d.String() == digest {
+				return true
+			}
+		}
+	}
+	return false
 }
