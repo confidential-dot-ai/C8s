@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
 	"slices"
 	"sync"
@@ -22,6 +23,9 @@ import (
 
 const (
 	pollInterval = 10 * time.Second
+	// minLookGap is the shortest time from the end of one look at a held Pod
+	// to the next, for a look that outlasted the poll interval.
+	minLookGap = time.Second
 	// optInRequiredReason fails a pod bound to the node without the opt-in.
 	optInRequiredReason = "PodCVMOptInRequired"
 	// instanceDestroyedReason fails a deleted pod whose instance the provider
@@ -45,6 +49,9 @@ type Reconciler struct {
 	// jitter returns a random duration in [0, n); nil adds none.
 	jitter func(n time.Duration) time.Duration
 	mu     sync.Mutex
+	// nextLook is when each deleted Pod whose instance is held may be looked
+	// at again, under mu. It is not saved: a restarted provider looks at once.
+	nextLook map[types.UID]time.Time
 }
 
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -325,14 +332,33 @@ func (r *Reconciler) deletePod(ctx context.Context, pod *corev1.Pod) (ctrl.Resul
 		var last *corev1.PodStatus
 		verified := false
 		if wait > 0 {
+			// Looks are spaced from start to start, whatever triggered this
+			// pass. The spacing never delays the end of the wait.
+			if next, ok := r.nextLook[pod.UID]; ok && now.Before(next) {
+				return ctrl.Result{RequeueAfter: min(wait, next.Sub(now))}, nil
+			}
 			// The wait is for the Pod's containers to stop: a Pod that has
 			// ended is not held for the rest of it.
+			started := now
 			var retry time.Duration
 			last, verified, retry = r.endedWhileHeld(ctx, pod, rec, now, wait)
 			// The look took time: one new reading decides again.
 			now = r.now()
 			if wait, timedOut = heldFor(end, rec.VerificationDeadline, now); wait > 0 && last == nil {
-				return ctrl.Result{RequeueAfter: min(wait, max(retry, pollInterval))}, nil
+				// A poll interval from the look's start; Cloud's wait runs
+				// from its answer; no later than the end of the wait.
+				next := started.Add(pollInterval)
+				if !next.After(now) {
+					next = now.Add(minLookGap)
+				}
+				if after := now.Add(retry); after.After(next) {
+					next = after
+				}
+				if limit := now.Add(wait); next.After(limit) {
+					next = limit
+				}
+				r.lookAgainAt(pod.UID, next, now)
+				return ctrl.Result{RequeueAfter: next.Sub(now)}, nil
 			}
 		}
 		// A deadline that passed first is the Pod's end, whatever a look
@@ -349,6 +375,7 @@ func (r *Reconciler) deletePod(ctx context.Context, pod *corev1.Pod) (ctrl.Resul
 			publicationErr = errors.Join(r.publish(ctx, pod, *last, verified), r.publishEndpoints(ctx, pod, nil))
 		}
 	}
+	delete(r.nextLook, pod.UID)
 	done, err := r.removeInstance(ctx, rec, secret)
 	if err != nil || !done {
 		return ctrl.Result{RequeueAfter: pollInterval}, errors.Join(publicationErr, err)
@@ -359,6 +386,18 @@ func (r *Reconciler) deletePod(ctx context.Context, pod *corev1.Pod) (ctrl.Resul
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{}, r.discard(ctx, secret)
+}
+
+// lookAgainAt records when a held Pod may next be looked at. A Pod removed
+// while held never comes back to clear its entry, so entries too old to
+// belong to a Pod still held are dropped here.
+func (r *Reconciler) lookAgainAt(uid types.UID, next, now time.Time) {
+	if r.nextLook == nil {
+		r.nextLook = map[types.UID]time.Time{}
+	}
+	stale := now.Add(-time.Duration(r.cfg.MaxDeletionGraceSeconds) * time.Second)
+	maps.DeleteFunc(r.nextLook, func(_ types.UID, at time.Time) bool { return at.Before(stale) })
+	r.nextLook[uid] = next
 }
 
 // heldFor is how much longer at now a deleted Pod's instance is left running:
