@@ -97,6 +97,7 @@ allowlist").`,
 		newEditCmd(o),
 		newDeleteCmd(o),
 		newUploadCmd(o),
+		newComponentsCmd(o),
 		lint,
 		inspectImage,
 	)

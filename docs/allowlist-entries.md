@@ -280,6 +280,11 @@ Reads are unauthenticated; writes are signed with the operator key from
 | `edit <name>` | fetch, `$EDITOR`, validate, diff, confirm, apply |
 | `delete <name>...` | delete entries |
 | `upload <file>` | replace the whole document; `--force`, `--require`, `--cvm-mode`, `--strict`, `--dry-run` |
+| `components add --set-file <file>` | add a component set; `--retire VERSION=DEADLINE`, `--remove VERSION`, `--force`, `--dry-run` |
+| `components retire <version> <deadline>` | set or move a set's deadline; `--force` |
+| `components unretire <version>` | take a set's deadline off |
+| `components remove <version>` | drop a set; `--force` |
+| `components list` | print every set, its state, entry count and digest |
 
 `derive` takes `--env=any|deny` or `--env-file` (exactly one is required),
 `--mounts=any|deny` or `--mounts-file` (omitted leaves every container at
