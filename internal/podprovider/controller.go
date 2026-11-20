@@ -4,13 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
 	"reflect"
 	"slices"
 	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -18,6 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
+	"github.com/confidential-dot-ai/c8s/internal/cmds/podstatus"
 	"github.com/confidential-dot-ai/c8s/internal/podlaunch"
 )
 
@@ -26,6 +27,8 @@ const (
 	// minLookGap is the shortest time from the end of one look at a held Pod
 	// to the next, for a look that outlasted the poll interval.
 	minLookGap = time.Second
+	// lookCheck is how soon a pass comes back for a look still being made.
+	lookCheck = time.Second
 	// optInRequiredReason fails a pod bound to the node without the opt-in.
 	optInRequiredReason = "PodCVMOptInRequired"
 	// instanceDestroyedReason fails a deleted pod whose instance the provider
@@ -52,6 +55,34 @@ type Reconciler struct {
 	// nextLook is when each deleted Pod whose instance is held may be looked
 	// at again, under mu. It is not saved: a restarted provider looks at once.
 	nextLook map[types.UID]time.Time
+	// looks are the looks at held Pods being made or not yet used, under mu.
+	looks map[types.UID]*heldLook
+}
+
+// heldLook is one read of a held Pod's instance and guest, made off the
+// reconcile worker so that a slow one delays no other Pod. What it read and
+// when it ended are set before done is closed and used only after.
+type heldLook struct {
+	started    time.Time
+	ended      time.Time
+	cancel     context.CancelFunc
+	done       chan struct{}
+	in         *instance
+	err        error
+	projection podstatus.PodProjection
+	guestErr   error
+}
+
+func (l *heldLook) finished() bool {
+	if l == nil {
+		return false
+	}
+	select {
+	case <-l.done:
+		return true
+	default:
+		return false
+	}
 }
 
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -315,6 +346,7 @@ func (r *Reconciler) deletePod(ctx context.Context, pod *corev1.Pod) (ctrl.Resul
 	key := identityKey(r.cfg.ProviderID, string(pod.UID))
 	rec, secret, err := r.loadRecord(ctx, key)
 	if notFound(err) {
+		r.forgetLooks(pod.UID)
 		return ctrl.Result{}, r.finishDeletion(ctx, pod, nil)
 	}
 	if err != nil {
@@ -331,51 +363,85 @@ func (r *Reconciler) deletePod(ctx context.Context, pod *corev1.Pod) (ctrl.Resul
 		wait, timedOut := heldFor(end, rec.VerificationDeadline, now)
 		var last *corev1.PodStatus
 		verified := false
-		if wait > 0 {
-			// Looks are spaced from start to start, whatever triggered this
-			// pass. The spacing never delays the end of the wait.
-			if next, ok := r.nextLook[pod.UID]; ok && now.Before(next) {
-				return ctrl.Result{RequeueAfter: min(wait, next.Sub(now))}, nil
-			}
-			// The wait is for the Pod's containers to stop: a Pod that has
-			// ended is not held for the rest of it.
-			started := now
+		// A look is made off this worker and used by the pass that finds it
+		// finished. What it showed counts from when it ended: a look that
+		// ended inside the wait is used even when the wait has since ended,
+		// and one that ended after it shows nothing. A look that showed the
+		// Pod ended is kept until the wait is over, so that a refused save
+		// decides the same.
+		look := r.looks[pod.UID]
+		if look.finished() {
 			var retry time.Duration
-			last, verified, retry = r.endedWhileHeld(ctx, pod, rec, now, wait)
-			// The look took time: one new reading decides again.
-			now = r.now()
-			if wait, timedOut = heldFor(end, rec.VerificationDeadline, now); wait > 0 && last == nil {
+			if inside, _ := heldFor(end, rec.VerificationDeadline, look.ended); inside > 0 {
+				last, verified, retry = r.endedWhileHeld(ctx, pod, rec, look, now)
+			}
+			if last == nil {
+				delete(r.looks, pod.UID)
+			}
+			if last == nil && wait > 0 {
 				// A poll interval from the look's start; Cloud's wait runs
-				// from its answer; no later than the end of the wait.
-				next := started.Add(pollInterval)
-				if !next.After(now) {
-					next = now.Add(minLookGap)
+				// from the look's end; no later than the end of the wait.
+				next := look.started.Add(pollInterval)
+				if !next.After(look.ended) {
+					next = look.ended.Add(minLookGap)
 				}
-				if after := now.Add(retry); after.After(next) {
+				if after := look.ended.Add(retry); after.After(next) {
 					next = after
 				}
 				if limit := now.Add(wait); next.After(limit) {
 					next = limit
 				}
-				r.lookAgainAt(pod.UID, next, now)
-				return ctrl.Result{RequeueAfter: next.Sub(now)}, nil
+				r.lookAgainAt(pod.UID, next)
 			}
+			look = nil
 		}
-		// A deadline that passed first is the Pod's end, whatever a look
-		// that outlasted it then showed.
-		if timedOut {
+		if wait > 0 && last == nil {
+			// Looks are spaced from start to start, whatever triggered this
+			// pass. The spacing never delays the end of the wait.
+			if next, ok := r.nextLook[pod.UID]; look == nil && ok && now.Before(next) {
+				return ctrl.Result{RequeueAfter: min(wait, next.Sub(now))}, nil
+			}
+			if rec.InstanceID == "" {
+				return ctrl.Result{RequeueAfter: min(wait, pollInterval)}, nil
+			}
+			if look == nil {
+				r.startLook(ctx, pod.UID, rec, now, wait)
+			}
+			return ctrl.Result{RequeueAfter: min(wait, lookCheck)}, nil
+		}
+		// A deadline that passed before any look showed the Pod ended is
+		// the Pod's end.
+		if timedOut && last == nil {
 			status := failedStatus(pod, verificationTimeoutReason, now)
 			last, verified = &status, false
 		}
 		if last != nil {
 			rec.TerminalStatus = last
-			if err := r.save(ctx, rec, secret); err != nil {
+			err := r.save(ctx, rec, secret)
+			switch {
+			case err == nil:
+				publicationErr = errors.Join(r.publish(ctx, pod, *last, verified), r.publishEndpoints(ctx, pod, nil))
+			case !apierrors.IsInvalid(err) && !apierrors.IsRequestEntityTooLargeError(err):
 				return ctrl.Result{}, err
+			default:
+				// A status the API server will never take must not keep
+				// the instance, nor leave the next pass to the back-off of
+				// a failed one: the look is dropped, the next is a poll
+				// interval away, and the wait ends without the status.
+				log.FromContext(ctx).Info("held Pod CVM's last status cannot be saved", "pod", client.ObjectKeyFromObject(pod), "cause", err.Error())
+				delete(r.looks, pod.UID)
+				rec.TerminalStatus = nil
+				// The save took time: one new reading decides again.
+				now = r.now()
+				if wait, _ = heldFor(end, rec.VerificationDeadline, now); wait > 0 {
+					r.lookAgainAt(pod.UID, now.Add(pollInterval))
+					return ctrl.Result{RequeueAfter: min(wait, pollInterval)}, nil
+				}
 			}
-			publicationErr = errors.Join(r.publish(ctx, pod, *last, verified), r.publishEndpoints(ctx, pod, nil))
 		}
 	}
-	delete(r.nextLook, pod.UID)
+	// The wait is over: a look still being made is stopped and not used.
+	r.forgetLooks(pod.UID)
 	done, err := r.removeInstance(ctx, rec, secret)
 	if err != nil || !done {
 		return ctrl.Result{RequeueAfter: pollInterval}, errors.Join(publicationErr, err)
@@ -388,16 +454,23 @@ func (r *Reconciler) deletePod(ctx context.Context, pod *corev1.Pod) (ctrl.Resul
 	return ctrl.Result{}, r.discard(ctx, secret)
 }
 
-// lookAgainAt records when a held Pod may next be looked at. A Pod removed
-// while held never comes back to clear its entry, so entries too old to
-// belong to a Pod still held are dropped here.
-func (r *Reconciler) lookAgainAt(uid types.UID, next, now time.Time) {
+// lookAgainAt records when a held Pod may next be looked at.
+func (r *Reconciler) lookAgainAt(uid types.UID, next time.Time) {
 	if r.nextLook == nil {
 		r.nextLook = map[types.UID]time.Time{}
 	}
-	stale := now.Add(-time.Duration(r.cfg.MaxDeletionGraceSeconds) * time.Second)
-	maps.DeleteFunc(r.nextLook, func(_ types.UID, at time.Time) bool { return at.Before(stale) })
 	r.nextLook[uid] = next
+}
+
+// forgetLooks stops a look at the Pod still being made and drops what the
+// provider keeps about looking at it: on the way out of the wait, and when
+// the orphan sweep finds the Pod removed.
+func (r *Reconciler) forgetLooks(uid types.UID) {
+	if look := r.looks[uid]; look != nil {
+		look.cancel()
+		delete(r.looks, uid)
+	}
+	delete(r.nextLook, uid)
 }
 
 // heldFor is how much longer at now a deleted Pod's instance is left running:
@@ -413,22 +486,60 @@ func heldFor(end time.Time, deadline *time.Time, now time.Time) (wait time.Durat
 	return 0, timedOut
 }
 
-// endedWhileHeld looks at a deleted Pod whose instance is left running and
-// returns the Pod's last status once it has ended: the guest's own, read as
-// verified, or a failure when the instance can no longer run the Pod. It only
-// reads, for no longer than the wait that is left. A read that fails or shows
-// a Pod still running returns nil, and the wait Cloud asked for when it
-// throttled the read.
-func (r *Reconciler) endedWhileHeld(ctx context.Context, pod *corev1.Pod, rec *record, now time.Time, wait time.Duration) (last *corev1.PodStatus, verified bool, retry time.Duration) {
-	if rec.InstanceID == "" {
-		return nil, false, 0
+// startLook reads a held Pod's instance and guest in the background, for no
+// longer than the wait that is left. It only reads, with this pass's record
+// and readers, and outlives the pass that started it.
+func (r *Reconciler) startLook(ctx context.Context, uid types.UID, rec *record, now time.Time, wait time.Duration) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), wait)
+	look := &heldLook{started: now, cancel: cancel, done: make(chan struct{}), guestErr: errGuestNotRead}
+	if r.looks == nil {
+		r.looks = map[types.UID]*heldLook{}
 	}
-	ctx, cancel := context.WithTimeout(ctx, wait)
-	defer cancel()
-	in, err := r.cloud.Get(ctx, rec.InstanceID)
-	if errors.Is(err, errCloudNotFound) {
-		in, err = nil, nil
+	r.looks[uid] = look
+	cloud, guest, clock := r.cloud, r.guest, r.now
+	go func() {
+		defer close(look.done)
+		defer cancel()
+		defer func() {
+			// Nothing else recovers a panic outside a pass.
+			if p := recover(); p != nil {
+				look.err = fmt.Errorf("look at held Pod CVM panicked: %v", p)
+			}
+			look.ended = clock()
+		}()
+		look.in, look.err = cloud.Get(ctx, rec.InstanceID)
+		if errors.Is(look.err, errCloudNotFound) {
+			look.in, look.err = nil, nil
+		}
+		if look.err != nil {
+			return
+		}
+		if address, _, ok := heldGuest(rec, look.in); ok {
+			look.projection, look.guestErr = guestStatus(ctx, guest, rec, address)
+		}
+	}()
+}
+
+// errGuestNotRead is the guest status of a look that did not read the guest.
+var errGuestNotRead = errors.New("guest status was not read")
+
+// heldGuest is where the guest of a held Pod is read: only on a running
+// instance that the record owns and that can still run the Pod.
+func heldGuest(rec *record, in *instance) (address, podIP string, ok bool) {
+	if in == nil || rec.owns(in) != nil || endedReason(&rec.instanceIntent, in) != "" || in.Status != "running" {
+		return "", "", false
 	}
+	address, _, podIP, err := endpoints(rec.Request.Network, in)
+	return address, podIP, err == nil
+}
+
+// endedWhileHeld returns a held Pod's last status once a look showed that it
+// has ended: the guest's own, read as verified, or a failure when the
+// instance can no longer run the Pod. A read that failed or showed a Pod
+// still running returns nil, and the wait Cloud asked for when it throttled
+// the read.
+func (r *Reconciler) endedWhileHeld(ctx context.Context, pod *corev1.Pod, rec *record, look *heldLook, now time.Time) (last *corev1.PodStatus, verified bool, retry time.Duration) {
+	in, err := look.in, look.err
 	// An answer that names no instance shows nothing; one that names another
 	// instance ends the Pod, as it does while the Pod runs.
 	if err == nil && in != nil {
@@ -445,17 +556,13 @@ func (r *Reconciler) endedWhileHeld(ctx context.Context, pod *corev1.Pod, rec *r
 		status := failedStatus(pod, reason, now)
 		return &status, false, 0
 	}
-	if in.Status != "running" {
+	_, podIP, ok := heldGuest(rec, in)
+	if !ok {
 		return nil, false, 0
 	}
-	address, _, podIP, err := endpoints(rec.Request.Network, in)
-	if err != nil {
-		return nil, false, 0
-	}
-	projection, err := r.guestStatus(ctx, rec, address)
 	var status corev1.PodStatus
-	if err == nil {
-		status, err = projectedStatus(rec, projection, pod, podIP, rec.Key)
+	if err = look.guestErr; err == nil {
+		status, err = projectedStatus(rec, look.projection, pod, podIP, rec.Key)
 	}
 	if err != nil {
 		log.FromContext(ctx).Info("held Pod CVM gave no verified status", "pod", client.ObjectKeyFromObject(pod), "cause", err.Error())
@@ -672,6 +779,7 @@ func (r *Reconciler) sweepRecord(ctx context.Context, key string) error {
 	if err != nil && !notFound(err) {
 		return err
 	}
+	r.forgetLooks(rec.UID)
 	done, err := r.removeInstance(ctx, rec, secret)
 	if err != nil || !done {
 		return err

@@ -6,10 +6,12 @@ import (
 	"errors"
 	"net/http"
 	"reflect"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -38,7 +40,7 @@ func TestDeletionLeavesTheInstanceUntilTheGracePeriodHasPassed(t *testing.T) {
 	runToRunning(t, r, pod)
 	end := deleteWithGraceLeft(t, r, pod, 30*time.Second)
 
-	res, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(pod)})
+	res, err := reconcileLooked(r, pod)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -314,7 +316,7 @@ func TestVerificationDeadlineEndsTheGracePeriod(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(pod)})
+	res, err := reconcileLooked(r, pod)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -595,8 +597,10 @@ func TestDeletionDoesNotWaitAgainWhenTheWaitEndedDuringALook(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			at := end.Add(-30 * time.Second)
+			r.now = func() time.Time { return at }
 			r.guest = func(context.Context, *record, string) (podstatus.PodProjection, error) {
-				r.now = func() time.Time { return end }
+				at = end
 				return podstatus.PodProjection{}, errors.New("no answer in time")
 			}
 			if res := reconcileResult(t, r, pod); cloud.deleteCalls != 1 {
@@ -670,8 +674,10 @@ func TestDeletionReportsADeadlineThatPassedDuringALook(t *testing.T) {
 	if err := r.save(context.Background(), rec, secret); err != nil {
 		t.Fatal(err)
 	}
+	at := end.Add(-30 * time.Second)
+	r.now = func() time.Time { return at }
 	r.guest = func(_ context.Context, rec *record, _ string) (podstatus.PodProjection, error) {
-		r.now = func() time.Time { return deadline }
+		at = deadline
 		p := fixtureProjection(rec)
 		p.Status.Phase = corev1.PodSucceeded
 		p.Status.ContainerStatuses[0].State = &podstatus.ContainerState{Terminated: &podstatus.ContainerTerminated{}}
@@ -774,9 +780,10 @@ func TestDeletionLooksAPollIntervalApart(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			pod, r, cloud, _ := heldPod(t)
 			end := getPod(t, r, pod).DeletionTimestamp.Time
-			r.now = func() time.Time { return end.Add(-60 * time.Second) }
+			at := end.Add(-60 * time.Second)
+			r.now = func() time.Time { return at }
 			gets := countGets(cloud, func() (*instance, error) {
-				r.now = func() time.Time { return end.Add(-60*time.Second + tc.took) }
+				at = at.Add(tc.took)
 				return cloud.in, nil
 			})
 			if got := reconcileResult(t, r, pod).RequeueAfter; *gets != 1 || got != tc.want {
@@ -813,10 +820,10 @@ func TestDeletionSpacesLooksFromWhenTheLastEnded(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			pod, r, cloud, _ := heldPod(t)
 			end := getPod(t, r, pod).DeletionTimestamp.Time
-			after := end.Add(-tc.left + tc.took)
-			r.now = func() time.Time { return end.Add(-tc.left) }
+			after, at := end.Add(-tc.left+tc.took), end.Add(-tc.left)
+			r.now = func() time.Time { return at }
 			gets := countGets(cloud, func() (*instance, error) {
-				r.now = func() time.Time { return after }
+				at = after
 				if tc.retry != 0 {
 					return nil, &cloudProblem{status: http.StatusTooManyRequests, retryAfter: tc.retry}
 				}
@@ -829,10 +836,282 @@ func TestDeletionSpacesLooksFromWhenTheLastEnded(t *testing.T) {
 				t.Fatalf("next look kept as %s after the look ended, want %s and no later than the end of the hold", next.Sub(after), tc.want)
 			}
 			// A pass triggered just short of that time is not another look.
-			r.now = func() time.Time { return after.Add(tc.want - time.Millisecond) }
+			at = after.Add(tc.want - time.Millisecond)
 			if reconcileResult(t, r, pod); *gets != 1 {
 				t.Fatalf("%d reads for a pass before the next look was due, want 1", *gets)
 			}
 		})
+	}
+}
+
+// A look is made off the reconcile worker: the pass returns while the guest
+// has not answered, a later pass starts no second look, and the end of the
+// wait destroys the instance without the answer.
+func TestDeletionDoesNotWaitForALookBeingMade(t *testing.T) {
+	pod, r, cloud, _ := heldPod(t)
+	end := getPod(t, r, pod).DeletionTimestamp.Time
+	var reads atomic.Int32
+	reading, stopped := make(chan struct{}, 2), make(chan struct{})
+	r.guest = func(ctx context.Context, _ *record, _ string) (podstatus.PodProjection, error) {
+		reads.Add(1)
+		reading <- struct{}{}
+		<-ctx.Done()
+		close(stopped)
+		return podstatus.PodProjection{}, ctx.Err()
+	}
+	req := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(pod)}
+	for pass := range 2 {
+		res, err := r.Reconcile(context.Background(), req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if pass == 0 {
+			select {
+			case <-reading:
+			case <-time.After(10 * time.Second):
+				t.Fatal("the pass started no guest read")
+			}
+		}
+		if res.RequeueAfter != lookCheck || cloud.deleteCalls != 0 || reads.Load() != 1 {
+			t.Fatalf("pass %d with the guest not answering: requeue %s, %d destruction requests, %d guest reads; want the Pod held on one read and a pass in %s", pass, res.RequeueAfter, cloud.deleteCalls, reads.Load(), lookCheck)
+		}
+	}
+	r.now = func() time.Time { return end }
+	if _, err := r.Reconcile(context.Background(), req); err != nil || cloud.deleteCalls != 1 {
+		t.Fatalf("%v, %d destruction requests once the wait ended with the guest not answering, want 1", err, cloud.deleteCalls)
+	}
+	select {
+	case <-stopped:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the look was not stopped when the wait ended")
+	}
+	if len(r.looks) != 0 || len(r.nextLook) != 0 {
+		t.Fatalf("%d looks and %d next-look times kept after the wait ended, want none", len(r.looks), len(r.nextLook))
+	}
+}
+
+// What a finished look showed is used by the next pass, even one that comes
+// after the grace period has ended, and is kept until it is saved: neither a
+// refused save nor another Pod's look loses it.
+func TestDeletionUsesAFinishedLookAfterTheGracePeriodEnded(t *testing.T) {
+	pod, r, cloud, _ := heldPod(t)
+	live := getPod(t, r, pod)
+	end := live.DeletionTimestamp.Time
+	r.guest = func(_ context.Context, rec *record, _ string) (podstatus.PodProjection, error) {
+		p := fixtureProjection(rec)
+		p.Status.Phase = corev1.PodSucceeded
+		p.Status.ContainerStatuses[0].State = &podstatus.ContainerState{Terminated: &podstatus.ContainerTerminated{}}
+		return p, nil
+	}
+	req := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(pod)}
+	if _, err := r.Reconcile(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	<-r.looks[live.UID].done
+	rec, _, err := r.loadRecord(context.Background(), identityKey(r.cfg.ProviderID, string(pod.UID)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.startLook(context.Background(), "another-pod", rec, end.Add(time.Hour), time.Second)
+	<-r.looks["another-pod"].done
+	r.now = func() time.Time { return end }
+	refused := false
+	r.client = interceptor.NewClient(r.client.(client.WithWatch), interceptor.Funcs{Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+		if _, record := obj.(*corev1.Secret); record && !refused {
+			refused = true
+			return errors.New("record update refused")
+		}
+		return c.Update(ctx, obj, opts...)
+	}})
+	if _, err := r.Reconcile(context.Background(), req); err == nil || !refused {
+		t.Fatalf("fixture: refused=%t, pass returned %v", refused, err)
+	}
+	if _, err := r.Reconcile(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if got := getPod(t, r, pod).Status; got.Phase != corev1.PodSucceeded || cloud.deleteCalls != 1 {
+		t.Fatalf("Pod is %s/%q with %d destruction requests, want the guest's Succeeded and 1", got.Phase, got.Reason, cloud.deleteCalls)
+	}
+}
+
+// A Pod removed while held never comes back for its look: the orphan sweep
+// stops and forgets it.
+func TestOrphanSweepForgetsALookAtARemovedPod(t *testing.T) {
+	pod, r, _, _ := heldPod(t)
+	reading, stopped := make(chan struct{}), make(chan struct{})
+	r.guest = func(ctx context.Context, _ *record, _ string) (podstatus.PodProjection, error) {
+		close(reading)
+		<-ctx.Done()
+		close(stopped)
+		return podstatus.PodProjection{}, ctx.Err()
+	}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(pod)}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-reading:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the pass started no guest read")
+	}
+	gone := getPod(t, r, pod)
+	gone.Finalizers = nil
+	if err := r.client.Update(context.Background(), gone); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.sweep(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-stopped:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the look was not stopped when its Pod was found removed")
+	}
+	if len(r.looks) != 0 {
+		t.Fatalf("%d looks kept for a removed Pod, want none", len(r.looks))
+	}
+}
+
+// What a look showed counts from when the look ended, not from when a pass
+// used it: a Pod that ended before its verification deadline is not reported
+// as timed out, and one that ended after its wait did is not reported at all.
+func TestDeletionCountsALookFromWhenItEnded(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		ended, usedAt time.Duration // before the end of the grace period
+		want          corev1.PodPhase
+	}{
+		{"ended before the deadline, used after it", 11 * time.Second, 9 * time.Second, corev1.PodSucceeded},
+		{"ended after the deadline", 9 * time.Second, 9 * time.Second, corev1.PodFailed},
+		{"ended after the grace period", -time.Second, -time.Second, corev1.PodRunning},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pod, r, cloud, _ := heldPod(t)
+			end := getPod(t, r, pod).DeletionTimestamp.Time
+			rec, secret, err := r.loadRecord(context.Background(), identityKey(r.cfg.ProviderID, string(pod.UID)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.want != corev1.PodRunning {
+				deadline := end.Add(-10 * time.Second)
+				rec.VerificationDeadline = &deadline
+				if err := r.save(context.Background(), rec, secret); err != nil {
+					t.Fatal(err)
+				}
+			}
+			at := end.Add(-30 * time.Second)
+			r.now = func() time.Time { return at }
+			r.guest = func(_ context.Context, rec *record, _ string) (podstatus.PodProjection, error) {
+				at = end.Add(-tc.ended)
+				p := fixtureProjection(rec)
+				p.Status.Phase = corev1.PodSucceeded
+				p.Status.ContainerStatuses[0].State = &podstatus.ContainerState{Terminated: &podstatus.ContainerTerminated{}}
+				return p, nil
+			}
+			req := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(pod)}
+			if _, err := r.Reconcile(context.Background(), req); err != nil {
+				t.Fatal(err)
+			}
+			<-r.looks[pod.UID].done
+			at = end.Add(-tc.usedAt)
+			if _, err := r.Reconcile(context.Background(), req); err != nil {
+				t.Fatal(err)
+			}
+			if got := getPod(t, r, pod).Status; got.Phase != tc.want || cloud.deleteCalls != 1 {
+				t.Fatalf("Pod is %s/%q with %d destruction requests, want %s and 1", got.Phase, got.Reason, cloud.deleteCalls, tc.want)
+			}
+		})
+	}
+}
+
+// A look runs outside the pass, where nothing else recovers a panic: one in
+// a read is a look that failed, and the Pod stays held.
+func TestDeletionStaysHeldWhenALookPanics(t *testing.T) {
+	pod, r, cloud, _ := heldPod(t)
+	r.guest = func(context.Context, *record, string) (podstatus.PodProjection, error) {
+		panic("guest answer not understood")
+	}
+	if res := reconcileResult(t, r, pod); cloud.deleteCalls != 0 || res.RequeueAfter != pollInterval {
+		t.Fatalf("%d destruction requests, requeue %s after a look that panicked: want the Pod held and another look in %s", cloud.deleteCalls, res.RequeueAfter, pollInterval)
+	}
+}
+
+// A status the API server will never take must not keep the instance, nor
+// leave the next pass to the back-off of a failed one: the look is dropped,
+// and the end of the wait destroys the instance without it.
+func TestDeletionDropsALookWhoseStatusCanNeverBeSaved(t *testing.T) {
+	succeeded := func(_ context.Context, rec *record, _ string) (podstatus.PodProjection, error) {
+		p := fixtureProjection(rec)
+		p.Status.Phase = corev1.PodSucceeded
+		p.Status.ContainerStatuses[0].State = &podstatus.ContainerState{Terminated: &podstatus.ContainerTerminated{}}
+		return p, nil
+	}
+	for _, waitEnds := range []string{"after the refusal", "before the look is used", "during the refused save"} {
+		t.Run("wait ends "+waitEnds, func(t *testing.T) {
+			pod, r, cloud, _ := heldPod(t)
+			live := getPod(t, r, pod)
+			end := live.DeletionTimestamp.Time
+			usedAfterTheWait := waitEnds != "after the refusal"
+			refuse := interceptor.Funcs{Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+				if s, record := obj.(*corev1.Secret); record && bytes.Contains(s.Data["state.json"], []byte(`"phase":"Succeeded"`)) {
+					if waitEnds == "during the refused save" {
+						r.now = func() time.Time { return end }
+					}
+					return apierrors.NewRequestEntityTooLargeError("record too large")
+				}
+				return c.Update(ctx, obj, opts...)
+			}}
+			r.guest = succeeded
+			req := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(pod)}
+			if _, err := r.Reconcile(context.Background(), req); err != nil {
+				t.Fatal(err)
+			}
+			<-r.looks[live.UID].done
+			gets := countGets(cloud, nil)
+			r.client = interceptor.NewClient(r.client.(client.WithWatch), refuse)
+			if !usedAfterTheWait {
+				for pass := range 2 {
+					res, err := r.Reconcile(context.Background(), req)
+					if err != nil || len(r.looks) != 0 || *gets != 0 || res.RequeueAfter != pollInterval {
+						t.Fatalf("pass %d: %v, %d looks kept, %d Cloud reads, requeue %s: want the look dropped and no other for %s", pass, err, len(r.looks), *gets, res.RequeueAfter, pollInterval)
+					}
+				}
+			}
+			if waitEnds != "during the refused save" {
+				r.now = func() time.Time { return end }
+			}
+			if _, err := r.Reconcile(context.Background(), req); err != nil || cloud.deleteCalls != 1 {
+				t.Fatalf("%v, %d destruction requests once the wait ended with a status that can never be saved, want 1", err, cloud.deleteCalls)
+			}
+		})
+	}
+}
+
+// A look that ended inside the interval does not push the next one back:
+// a pass that uses it after the next look fell due starts that look.
+func TestDeletionStartsALookThatFellDueBeforeTheLastWasUsed(t *testing.T) {
+	pod, r, cloud, _ := heldPod(t)
+	uid := getPod(t, r, pod).UID
+	at := r.now()
+	start := at
+	r.now = func() time.Time { return at }
+	gets := countGets(cloud, func() (*instance, error) {
+		if at.Equal(start) {
+			at = start.Add(9800 * time.Millisecond)
+		}
+		return cloud.in, nil
+	})
+	req := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(pod)}
+	if _, err := r.Reconcile(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	first := r.looks[uid]
+	<-first.done
+	at = start.Add(10100 * time.Millisecond)
+	res, err := r.Reconcile(context.Background(), req)
+	if err != nil || r.looks[uid] == nil || r.looks[uid] == first {
+		t.Fatalf("%v, requeue %s: want a new look started by the pass that used the last", err, res.RequeueAfter)
+	}
+	if <-r.looks[uid].done; *gets != 2 {
+		t.Fatalf("%d Cloud reads, want 2", *gets)
 	}
 }

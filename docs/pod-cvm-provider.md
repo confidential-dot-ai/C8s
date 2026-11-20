@@ -11,14 +11,19 @@ is terminated once the deletion's grace period has passed, or after
 grace period keeps the CVM for 30 seconds; `--grace-period=0 --force`
 terminates it at once, and so does deleting a Pod its CVM has not received
 yet. The guest is not told to stop its containers earlier. During the grace
-period the provider looks at the Pod every 10 seconds, counted from the start
-of each look, and terminates the CVM as soon as the guest reports the Pod
-succeeded or failed, or Cloud reports the instance ended, restarted or gone.
-When Cloud rate-limits a look, the next one waits as long as Cloud asks. A
-look that fails changes nothing: the CVM is kept and looked at again, until
-the grace period passes. A verification deadline that passes during the grace
-period ends it: the Pod reports `GuestVerificationTimedOut` and its CVM is
-terminated then. Neither is delayed by the wait between looks.
+period the provider looks at the Pod, normally every 10 seconds counted from
+the start of each look, and terminates the CVM as soon as the guest reports
+the Pod succeeded or failed, or Cloud reports the instance ended, restarted or
+gone. A look that takes longer than that is followed by the next a second
+after it ends, and a longer wait that Cloud asks for when it rate-limits a
+look is kept. Looks are made in the background, so a guest slow to answer
+delays no other Pod; the provider comes back for a look still being made after
+a second, and acts on what it showed then. A look that fails changes nothing:
+the CVM is kept and looked at again, until the grace period passes. A
+verification deadline that passes during the grace period ends it: the CVM is
+terminated then, and the Pod reports `GuestVerificationTimedOut` unless a look
+that ended before the deadline showed the Pod had ended. Neither is delayed by
+the wait between looks.
 
 Every pod CVM boots generic and receives exactly one pod. An assigned, rebooted
 or terminal VM is never reused for another Pod. Kubernetes workload controllers

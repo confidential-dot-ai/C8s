@@ -262,8 +262,23 @@ func restartReconciler(r *Reconciler, guest *fakeGuest) *Reconciler {
 
 func reconcile(t *testing.T, r *Reconciler, pod *corev1.Pod) error {
 	t.Helper()
-	_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(pod)})
+	_, err := reconcileLooked(r, pod)
 	return err
+}
+
+// reconcileLooked runs a pass and, when the pass started a look at a held
+// Pod, waits for the look and runs the pass that uses it.
+func reconcileLooked(r *Reconciler, pod *corev1.Pod) (ctrl.Result, error) {
+	req := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(pod)}
+	res, err := r.Reconcile(context.Background(), req)
+	for _, look := range r.looks {
+		if err != nil {
+			break
+		}
+		<-look.done
+		res, err = r.Reconcile(context.Background(), req)
+	}
+	return res, err
 }
 
 // runToRunning reconciles until the pod reports verified running status: the
