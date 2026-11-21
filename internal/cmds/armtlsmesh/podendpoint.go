@@ -51,6 +51,7 @@ type origDstFunc func(net.Conn) (string, error)
 
 type podEndpointConfig struct {
 	chainPath, keyPath, caPath string
+	peerWorkloads              []string
 	// probes are the health-port paths the injector rewrote the pod's
 	// application probes onto, from MeshProbesEnv.
 	probes []string
@@ -67,12 +68,23 @@ captured outbound connection to its original destination over armTLS with the
 pod's published credentials, and delivers each inbound armTLS connection to the
 original destination on one of the pod's own addresses.
 
+C8S_MESH_PEER_WORKLOADS optionally restricts outbound peers to a comma-separated
+list of matched workload names under the same allowlist digest as this pod.
+Pin it in application environment: the node refuses an application whose
+requirement differs from its actual mesh endpoint. It does not restrict
+declared exits, which bypass the mesh.
+
 Each application probe the injector moved onto the health port is named in
 ${C8S_MESH_PROBES}. The endpoint forwards those paths, and no others, to the
 pod's own addresses, and answers with the application's status code alone.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			var err error
+			cfg.peerWorkloads, err = workloadclaims.ParseMeshPeerWorkloads(os.Getenv(workloadclaims.MeshPeerWorkloadsEnv))
+			if err != nil {
+				return err
+			}
 			cfg.probes = workloadclaims.SplitMeshProbePaths(os.Getenv(workloadclaims.MeshProbesEnv))
 			return runPodEndpoint(cmd.Context(), &cfg, podOutboundPort, podInboundPort, podHealthPort)
 		},
@@ -123,13 +135,14 @@ func newPodEndpoint(c *podEndpointConfig, logger *slog.Logger) (*podEndpoint, er
 			volume: volume,
 			logger: logger,
 		},
-		own:         own,
-		origDst:     defaultOrigDstFunc,
-		dialPeer:    dialPeerDirectly,
-		logger:      logger,
-		bufPool:     newBufPool(),
-		probes:      probes,
-		probeClient: newProbeClient(),
+		own:           own,
+		origDst:       defaultOrigDstFunc,
+		dialPeer:      dialPeerDirectly,
+		logger:        logger,
+		bufPool:       newBufPool(),
+		probes:        probes,
+		probeClient:   newProbeClient(),
+		peerWorkloads: slices.Clone(c.peerWorkloads),
 	}, nil
 }
 
@@ -164,9 +177,10 @@ func isMeshPort(port int) bool {
 type probeTargets map[string][]string
 
 type podEndpoint struct {
-	credentials *credentials
-	own         podAddresses
-	origDst     origDstFunc
+	peerWorkloads []string
+	credentials   *credentials
+	own           podAddresses
+	origDst       origDstFunc
 	// dialPeer opens the transport to a peer; the armTLS handshake runs on it.
 	// Nil dials directly.
 	dialPeer    func(context.Context, netip.AddrPort) (net.Conn, error)
@@ -349,9 +363,20 @@ func (e *podEndpoint) handleOutbound(ctx context.Context, app net.Conn) {
 		return
 	}
 	defer peer.Close()
-	if _, err := e.credentials.usable(time.Now()); err != nil {
+	current, err := e.credentials.usable(time.Now())
+	if err != nil {
 		log.Warn("refusing to forward: the credentials went away during the handshake", "error", err)
 		return
+	}
+	if len(e.peerWorkloads) > 0 {
+		if current != g {
+			log.Warn("refusing to forward: the credential generation changed during the handshake")
+			return
+		}
+		if err := requirePeerWorkload(g.cert.Leaf, peer.ConnectionState().PeerCertificates[0], e.peerWorkloads); err != nil {
+			log.Warn("refusing a mesh peer", "error", err)
+			return
+		}
 	}
 	log.Debug("mesh connection established", "dst", dst)
 	pipeConns(e.bufPool, app, peer)

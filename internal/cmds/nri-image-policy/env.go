@@ -129,6 +129,9 @@ func (p *plugin) gateMesh(ctx context.Context, req *api.ValidateContainerAdjustm
 	if err != nil {
 		return err
 	}
+	if role == meshRole && len(req.GetAdjust().GetCDIDevices()) > 0 {
+		return errors.New("the mesh endpoint cannot defer CDI edits beyond validation")
+	}
 	return p.mesh.admit(pod, ctr, gatedContainer{
 		role:         role,
 		mountsPinned: p.bindsRoleMounts(declared, role),

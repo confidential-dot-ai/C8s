@@ -556,8 +556,11 @@
 {{- $args := include "c8s.meshArgs" .root | fromJsonArray -}}
 {{- $out := list -}}
 {{- range $env := list (list) (list (dict "name" "C8S_MESH_PROBES" "valueFrom" (dict "fieldRef" dict))) -}}
+{{- range $peerEnv := list (list) (list (dict "name" "C8S_MESH_PEER_WORKLOADS" "valueFrom" (dict "fieldRef" dict))) -}}
+{{- $env = concat $env $peerEnv -}}
 {{- $matched := include "c8s.componentEnv" (dict "imageEnv" $.imageEnv "container" (dict "env" $env) "where" "injected mesh endpoint") | fromJson -}}
 {{- $out = append $out (dict "digest" $.digest "image" $.image "command" (dict "policy" "exact" "argv" $.entrypoint) "args" (dict "policy" "exact" "argv" $args) "mounts" (dict "policy" "exact" "rules" (list $certs)) "env" $matched) -}}
+{{- end -}}
 {{- end -}}
 {{ $out | toJson }}
 {{- end -}}

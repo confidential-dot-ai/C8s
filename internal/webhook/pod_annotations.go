@@ -11,6 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/volume"
+	"github.com/confidential-dot-ai/c8s/internal/podmesh"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
@@ -18,6 +19,7 @@ import (
 
 // injection captures everything the mutator decides from pod annotations.
 type injection struct {
+	MeshEnv    []corev1.EnvVar
 	WorkloadID string
 	// SAN is the DNS SAN get-cert requests from CDS. The c8s-san annotation
 	// sets it directly; otherwise Handle derives it from the workload id and
@@ -100,6 +102,9 @@ func parseAnnotations(pod *corev1.Pod, namespace string) (*injection, error) {
 		},
 	}
 	var err error
+	if inj.MeshEnv, err = podmesh.PeerWorkloadEnv(pod); err != nil {
+		return nil, fmt.Errorf("%w: %v", errInvalidInjectionAnnotation, err)
+	}
 	if inj.Cert.RenewInterval, err = durationAnnotation(annotations, AnnotationRenewInterval); err != nil {
 		return nil, err
 	}

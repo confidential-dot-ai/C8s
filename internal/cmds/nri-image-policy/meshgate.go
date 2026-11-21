@@ -17,6 +17,8 @@ import (
 
 	"github.com/containerd/nri/pkg/api"
 	"golang.org/x/sys/unix"
+
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 // errSandboxOffRecord is the gate's answer for a sandbox it holds no state for.
@@ -105,9 +107,10 @@ type exit struct {
 // later container of the same role running the same bytes under the same
 // arguments is a replacement of it.
 type roleLaunch struct {
-	role   string
-	digest string
-	argv   []string
+	role          string
+	digest        string
+	argv          []string
+	peerWorkloads string
 }
 
 // podNamespace is a pod's own network namespace: the runtime chose the path,
@@ -126,7 +129,8 @@ type fileID struct {
 // role, the bytes and arguments that role was read from, and the adjustments
 // that could move its packets.
 type gatedContainer struct {
-	role string
+	peerWorkloads string
+	role          string
 	// mountsPinned reports that the declaration granting the role pins the
 	// mount set too, which the router's namespace requires of every
 	// container (requireRoleOnlyPod).
@@ -299,6 +303,20 @@ func (g *meshGate) recovered(pod *api.PodSandbox, ctrs []recoveredContainer, exi
 		exits:         exits.exits,
 		guarded:       len(exits.exits) > 0,
 	}
+	ctrs = slices.Clone(ctrs)
+	for i := range ctrs {
+		value, err := workloadclaims.MeshPeerWorkloads(ctrs[i].ctr.GetEnv())
+		if err != nil {
+			return nil, err
+		}
+		ctrs[i].launch.peerWorkloads = value
+		if ctrs[i].launch.role == meshRole {
+			if err := state.requirePeerWorkloads(ctrs[i].launch); err != nil {
+				return nil, err
+			}
+			state.recordLaunch(ctrs[i].launch)
+		}
+	}
 	for _, c := range ctrs {
 		if err := state.restore(g.policy, c); err != nil {
 			return nil, fmt.Errorf("container %s: %w", c.ctr.GetName(), err)
@@ -326,6 +344,9 @@ func (s *protectedPod) restore(policy meshPolicy, c recoveredContainer) error {
 // requireContainerAlone runs the create checks that need only the container,
 // shared by admission and recovery.
 func (s *protectedPod) requireContainerAlone(policy meshPolicy, ctr *api.Container, launch gatedContainer) error {
+	if err := s.requirePeerWorkloads(launch); err != nil {
+		return err
+	}
 	if err := s.requireRoleOnlyPod(launch); err != nil {
 		return err
 	}
@@ -477,6 +498,11 @@ func (g *meshGate) update(sandboxID string, change func(*protectedPod)) {
 func (g *meshGate) admit(pod *api.PodSandbox, ctr *api.Container, launch gatedContainer) error {
 	if !g.hosts(pod) {
 		return nil
+	}
+	var err error
+	launch.peerWorkloads, err = workloadclaims.MeshPeerWorkloads(ctr.GetEnv())
+	if err != nil {
+		return err
 	}
 	netns, kubeNamespace, err := g.admissible(pod, ctr, launch)
 	if err != nil {
@@ -735,6 +761,7 @@ func (s *protectedPod) admittedBefore(launch gatedContainer) bool {
 	return slices.ContainsFunc(s.roleLaunches, func(admitted roleLaunch) bool {
 		return admitted.role == launch.role &&
 			admitted.digest == launch.digest &&
+			admitted.peerWorkloads == launch.peerWorkloads &&
 			slices.Equal(admitted.argv, launch.argv)
 	})
 }
@@ -742,10 +769,53 @@ func (s *protectedPod) admittedBefore(launch gatedContainer) bool {
 // identity is the part of an admitted launch a replacement must repeat.
 func (c gatedContainer) identity() roleLaunch {
 	return roleLaunch{
-		role:   c.role,
-		digest: c.digest,
-		argv:   slices.Clone(c.argv),
+		role:          c.role,
+		digest:        c.digest,
+		argv:          slices.Clone(c.argv),
+		peerWorkloads: c.peerWorkloads,
 	}
+}
+
+// requirePeerWorkloads binds a workload's policy-pinned environment to the
+// actual endpoint, which is a platform role excluded from workload matching.
+func (s *protectedPod) requirePeerWorkloads(launch gatedContainer) error {
+	if launch.role != meshRole && launch.peerWorkloads == "" {
+		return nil
+	}
+	for _, admitted := range s.roleLaunches {
+		if admitted.role == meshRole {
+			if admitted.peerWorkloads != launch.peerWorkloads {
+				return errors.New("workload peer requirement differs from the admitted mesh endpoint")
+			}
+			return nil
+		}
+	}
+	if launch.role == meshRole {
+		return nil
+	}
+	return errors.New("workload requires peer authorization but no mesh endpoint was admitted")
+}
+
+// requireFinalPeerWorkloads rechecks the runtime's final OCI environment at
+// start: adjustment validation precedes deferred runtime transformations.
+func (g *meshGate) requireFinalPeerWorkloads(pod *api.PodSandbox, ctr *api.Container, role string) error {
+	if !g.hosts(pod) {
+		return nil
+	}
+	value, err := workloadclaims.MeshPeerWorkloads(ctr.GetEnv())
+	if err != nil {
+		return err
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	state, err := g.state(pod.GetId())
+	if err != nil {
+		if value == "" {
+			return nil
+		}
+		return err
+	}
+	return state.requirePeerWorkloads(gatedContainer{role: role, peerWorkloads: value})
 }
 
 // requireRoleOnlyPod requires a pod of the router's namespace to hold role
