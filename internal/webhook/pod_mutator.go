@@ -384,7 +384,7 @@ func mutatePod(pod *corev1.Pod, inj *injection, cfg Config) {
 	probes := rewriteWorkloadProbes(pod)
 	// The pod's own endpoint leads: it runs before any credential exists.
 	injected := []corev1.Container{
-		meshContainer(cfg, probes),
+		meshContainer(cfg, probes, effective.MeshEnv),
 		certContainer(&effective, cfg),
 		certWaitContainer(&effective, cfg),
 	}

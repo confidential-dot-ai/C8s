@@ -17,8 +17,10 @@ import (
 // pod's captured TCP over armTLS with the credentials get-cert publishes. The
 // pod's fsGroup owns the credential volume, which is how the mesh role reads a
 // key get-cert's UID wrote.
-func meshContainer(cfg Config, probes []string) corev1.Container {
-	return podmesh.Endpoint(cfg.MeshImage, probes)
+func meshContainer(cfg Config, probes []string, peerEnv []corev1.EnvVar) corev1.Container {
+	endpoint := podmesh.Endpoint(cfg.MeshImage, probes)
+	endpoint.Env = append(endpoint.Env, peerEnv...)
+	return endpoint
 }
 
 // certContainer is the workload's mesh-cert sidecar. It publishes the pod's
