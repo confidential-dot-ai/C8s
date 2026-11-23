@@ -1,4 +1,4 @@
-module github.com/confidential-dot-ai/c8s/test/conformance/steps
+module github.com/confidential-dot-ai/confidential-kubernetes/test/conformance/steps
 
 go 1.27.3
 

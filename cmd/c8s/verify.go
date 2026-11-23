@@ -1,6 +1,6 @@
 package main
 
-import "github.com/confidential-dot-ai/c8s/internal/cmds/verify"
+import "github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/verify"
 
 func init() {
 	rootCmd.AddCommand(verify.NewCmd(verify.Defaults{

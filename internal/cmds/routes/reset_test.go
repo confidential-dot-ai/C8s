@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/internal/routing"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/routing"
 )
 
 // After a CDS reset, a router keeps a revision that may be above the

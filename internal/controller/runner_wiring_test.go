@@ -29,9 +29,9 @@ import (
 	crreconcile "sigs.k8s.io/controller-runtime/pkg/reconcile"
 	crwebhook "sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	"github.com/confidential-dot-ai/c8s/api/v1alpha2"
-	"github.com/confidential-dot-ai/c8s/internal/issuer"
-	"github.com/confidential-dot-ai/c8s/internal/webhook"
+	"github.com/confidential-dot-ai/confidential-kubernetes/api/v1alpha2"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/issuer"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/webhook"
 )
 
 func confidentialWorkloadResources() *metav1.APIResourceList {

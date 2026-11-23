@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/volume"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/volume"
 )
 
 // A volumeMode is how one mode builds the device stack above the dm-crypt

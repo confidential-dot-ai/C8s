@@ -18,9 +18,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/yaml"
 
-	allowlistcmd "github.com/confidential-dot-ai/c8s/internal/cmds/allowlist"
-	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/types"
+	allowlistcmd "github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/allowlist"
+	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
 )
 
 func TestAllowlistUploadRenderedCvmTopology(t *testing.T) {

@@ -131,7 +131,7 @@ pass
 
 reset
 expect_failure bash "$script" --sha "$sha" | grep -q 'push it to a branch first' || fail "unknown commit did not fail"
-grep -q 'gh api repos/confidential-dot-ai/C8s/git/commits/' "$calls" || fail "commit existence was not checked"
+grep -q 'gh api repos/confidential-dot-ai/confidential-kubernetes/git/commits/' "$calls" || fail "commit existence was not checked"
 ! grep -q 'workflow run' "$calls" || fail "a workflow was dispatched for an unknown commit"
 pass
 
@@ -148,12 +148,12 @@ pass
 reset
 touch "$state/commit-known"
 out=$(bash "$script" --sha "$sha" --confos-ref af8cef0e937e4cc300ddd30c85af6ccd8cb9be91)
-grep -q 'gh api -X POST repos/confidential-dot-ai/C8s/git/refs -f ref=refs/heads/build/c7cf2f3 -f sha='"$sha" "$calls" || fail "build branch was not created at the commit"
+grep -q 'gh api -X POST repos/confidential-dot-ai/confidential-kubernetes/git/refs -f ref=refs/heads/build/c7cf2f3 -f sha='"$sha" "$calls" || fail "build branch was not created at the commit"
 grep -q 'component tags missing at :c7cf2f3' <<<"$out" || fail "missing components not reported"
 order=$(grep -o 'gh workflow run [a-z0-9.-]*' "$calls" | tr '\n' ' ')
 [ "$order" = "gh workflow run docker.yml gh workflow run c8s-image-manual.yml " ] || fail "dispatch order: $order"
-grep -q 'gh workflow run docker.yml --repo confidential-dot-ai/C8s --ref build/c7cf2f3$' "$calls" || fail "docker dispatch did not use the build branch"
-grep -q 'gh workflow run c8s-image-manual.yml --repo confidential-dot-ai/C8s --ref build/c7cf2f3 -f c8s_ref=c7cf2f3 -f confos_ref=af8cef0e937e4cc300ddd30c85af6ccd8cb9be91$' "$calls" \
+grep -q 'gh workflow run docker.yml --repo confidential-dot-ai/confidential-kubernetes --ref build/c7cf2f3$' "$calls" || fail "docker dispatch did not use the build branch"
+grep -q 'gh workflow run c8s-image-manual.yml --repo confidential-dot-ai/confidential-kubernetes --ref build/c7cf2f3 -f c8s_ref=c7cf2f3 -f confos_ref=af8cef0e937e4cc300ddd30c85af6ccd8cb9be91$' "$calls" \
   || fail "image dispatch arguments differ: $(grep 'c8s-image-manual' "$calls")"
 grep -q 'guests/worker:sha-c7cf2f3-tdx$' <<<"$out" || fail "artifact tag not printed"
 grep -q 'guests/worker:sha-c7cf2f3-sev-snp-kubevirt$' <<<"$out" || fail "KubeVirt tag not printed"
@@ -199,7 +199,7 @@ for c in c8s-operator nri-image-policy cds armtls-mesh; do echo "$c:c7cf2f3" >>"
 out=$(bash "$script" --sha "$sha")
 grep -q 'branch build/c7cf2f3 already at c7cf2f3' <<<"$out" || fail "existing branch not reused"
 ! grep -q 'workflow run docker.yml' "$calls" || fail "docker dispatched although every tag exists"
-grep -q 'gh workflow run c8s-image-manual.yml --repo confidential-dot-ai/C8s --ref build/c7cf2f3 -f c8s_ref=c7cf2f3$' "$calls" || fail "production image dispatch differs"
+grep -q 'gh workflow run c8s-image-manual.yml --repo confidential-dot-ai/confidential-kubernetes --ref build/c7cf2f3 -f c8s_ref=c7cf2f3$' "$calls" || fail "production image dispatch differs"
 grep -q 'guests/worker:sha-c7cf2f3-tdx$' <<<"$out" || fail "production artifact tag not printed"
 pass
 

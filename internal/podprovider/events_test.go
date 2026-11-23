@@ -10,7 +10,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/tools/events"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/podstatus"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/podstatus"
 )
 
 func TestStatusTransitionsRecordOneEventEach(t *testing.T) {

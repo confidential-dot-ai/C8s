@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
 )
 
 // reservedRanges are the IPv4 blocks no pod or Service range may reach into:

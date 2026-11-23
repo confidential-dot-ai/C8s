@@ -2,7 +2,7 @@ package cdsconfig
 
 import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
 )
 
 // Inputs is everything one cluster's CDS VM is configured with, as `c8s cds

@@ -14,9 +14,9 @@ import (
 	"github.com/distribution/reference"
 	"github.com/spf13/cobra"
 
-	cdsallowlist "github.com/confidential-dot-ai/c8s/internal/allowlist"
-	"github.com/confidential-dot-ai/c8s/internal/crane"
-	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	cdsallowlist "github.com/confidential-dot-ai/confidential-kubernetes/internal/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/crane"
+	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
 func newLintCmd(o *options) *cobra.Command {

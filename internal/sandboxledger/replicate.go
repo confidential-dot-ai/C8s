@@ -5,8 +5,8 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/internal/lthash"
-	"github.com/confidential-dot-ai/c8s/internal/replicate"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/lthash"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/replicate"
 )
 
 // Held reports whether a binding holds at the CDS that recorded it: false

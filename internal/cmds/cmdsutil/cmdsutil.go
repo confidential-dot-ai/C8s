@@ -19,7 +19,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/internal/fileutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/fileutil"
 )
 
 // SignalContext is the context a binary runs its command under. The first

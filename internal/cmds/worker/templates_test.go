@@ -12,8 +12,8 @@ import (
 	"github.com/pelletier/go-toml/v2"
 	"sigs.k8s.io/yaml"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/nodeservices"
-	"github.com/confidential-dot-ai/c8s/internal/testutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/nodeservices"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
 )
 
 // imageTree is the worker profile's tree, as the image holds it.

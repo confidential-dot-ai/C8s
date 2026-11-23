@@ -13,7 +13,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-testutil=github.com/confidential-dot-ai/c8s/internal/testutil
+testutil=github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil
 raft=github.com/hashicorp/raft
 
 # Each rule reads "<package> <imports...>" lines and prints one line per

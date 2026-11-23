@@ -43,6 +43,6 @@ actual="$(go env GOVERSION)"
 for platform in "$@"; do
   GOOS="${platform%-*}" GOARCH="${platform#*-}" \
     go build -trimpath -buildvcs=false \
-    -ldflags="-s -w -buildid= -X github.com/confidential-dot-ai/c8s/internal/version.Version=$version" \
+    -ldflags="-s -w -buildid= -X github.com/confidential-dot-ai/confidential-kubernetes/internal/version.Version=$version" \
     -o "$out/c8s-$platform" ./cmd/c8s
 done

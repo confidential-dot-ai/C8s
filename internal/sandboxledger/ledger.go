@@ -19,7 +19,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/internal/lthash"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/lthash"
 )
 
 // binding is what the ledger holds for one sandbox: the node address whose

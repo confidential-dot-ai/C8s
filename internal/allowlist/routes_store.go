@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/confidential-dot-ai/c8s/pkg/routes"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/routes"
 )
 
 var (

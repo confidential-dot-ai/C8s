@@ -9,8 +9,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/confidential-dot-ai/c8s/internal/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/routes"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/routes"
 )
 
 // routeHandler serves GET and PUT /routes, the signed route manifest (route

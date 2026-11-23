@@ -12,7 +12,7 @@ import (
 	"github.com/vishvananda/netns"
 	"golang.org/x/sys/unix"
 
-	"github.com/confidential-dot-ai/c8s/internal/podmesh"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/podmesh"
 )
 
 func preparePodBootstrapRuntime(t *testing.T, cfg *config, dir string) (*api.PodSandbox, string) {

@@ -9,7 +9,7 @@ import (
 
 	"github.com/hashicorp/raft"
 
-	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsdecree"
 )
 
 // The seats of a cluster are filled by its own leader: the tests below watch

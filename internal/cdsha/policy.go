@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsdecree"
 )
 
 // Policy is the limits every replica applies commands under: a sandbox

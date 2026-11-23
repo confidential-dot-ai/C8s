@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
-	"github.com/confidential-dot-ai/c8s/internal/launchbinding"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/launchbinding"
 )
 
 type imageWithoutDigests struct{ runtimemeasure.ImageIdentity }

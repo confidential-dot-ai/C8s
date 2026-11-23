@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/confidential-dot-ai/c8s/internal/podmesh/ruleset"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/podmesh/ruleset"
 )
 
 // notANamespace is a regular file: it exists, so the enforcer reads it, and it

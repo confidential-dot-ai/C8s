@@ -3,7 +3,7 @@ package getsecret
 import (
 	"github.com/spf13/cobra"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/sidecar"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/sidecar"
 )
 
 // NewCmd returns the cobra subcommand. Registered as a child of `c8s`.

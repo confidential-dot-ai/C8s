@@ -7,7 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/confidential-dot-ai/c8s/internal/controller"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/controller"
 )
 
 var operatorCmd = &cobra.Command{

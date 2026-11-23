@@ -3,8 +3,8 @@ package cdsattest
 import (
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/internal/routing"
-	"github.com/confidential-dot-ai/c8s/pkg/overenc"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/routing"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/overenc"
 )
 
 type establishedSession struct {

@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	repoPathPrefix = "github.com/confidential-dot-ai/c8s/"
+	repoPathPrefix = "github.com/confidential-dot-ai/confidential-kubernetes/"
 	cobraPath      = "github.com/spf13/cobra"
 	rulesFile      = "test/workflows/command_imports_test.go"
 

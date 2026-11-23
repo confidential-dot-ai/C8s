@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/pkg/certutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
 )
 
 // DefaultCertTTL is the default certificate lifetime used by both

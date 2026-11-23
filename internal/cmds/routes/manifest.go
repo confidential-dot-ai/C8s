@@ -7,7 +7,7 @@ import (
 	"slices"
 	"time"
 
-	pkgroutes "github.com/confidential-dot-ai/c8s/pkg/routes"
+	pkgroutes "github.com/confidential-dot-ai/confidential-kubernetes/pkg/routes"
 )
 
 type manifestJSON struct {

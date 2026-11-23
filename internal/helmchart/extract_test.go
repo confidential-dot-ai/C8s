@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/confidential-dot-ai/c8s/charts"
+	"github.com/confidential-dot-ai/confidential-kubernetes/charts"
 )
 
 // Every chart's Chart.yaml dependencies resolve to a chart in the extracted tree.

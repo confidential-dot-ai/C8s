@@ -577,5 +577,5 @@ Migration state (see [#264] for the full plan):
    selector.
 
 [confidential-os-builder]: https://github.com/confidential-dot-ai/confidential-os-builder
-[#264]: https://github.com/confidential-dot-ai/c8s/issues/264
-[#669]: https://github.com/confidential-dot-ai/c8s/issues/669
+[#264]: https://github.com/confidential-dot-ai/confidential-kubernetes/issues/264
+[#669]: https://github.com/confidential-dot-ai/confidential-kubernetes/issues/669

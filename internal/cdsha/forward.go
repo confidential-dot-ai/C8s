@@ -16,7 +16,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsdecree"
 )
 
 // forward hands an entry to the cluster's leader and returns once this

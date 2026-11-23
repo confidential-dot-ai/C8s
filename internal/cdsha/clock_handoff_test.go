@@ -11,7 +11,7 @@ import (
 	"github.com/hashicorp/raft"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-	"github.com/confidential-dot-ai/c8s/internal/secrets"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/secrets"
 )
 
 func clockCluster(t *testing.T) (*liveCluster, []*atomic.Int64) {

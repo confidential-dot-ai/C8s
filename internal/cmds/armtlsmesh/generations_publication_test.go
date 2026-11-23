@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/internal/credvolume"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/credvolume"
 )
 
 // A generation whose pointer names an incomplete publication is not read as a

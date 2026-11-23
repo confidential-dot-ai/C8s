@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/confidential-dot-ai/c8s/internal/httputil"
-	"github.com/confidential-dot-ai/c8s/internal/lthash"
-	"github.com/confidential-dot-ai/c8s/internal/replicate"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/httputil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/lthash"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/replicate"
 )
 
 // Committer takes one secret write: a single CDS applies it, a CDS HA replica

@@ -5,7 +5,7 @@ import (
 	"net"
 	"net/netip"
 
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 )
 
 // A private CDS name is resolved by this cluster's DNS service alone, and the

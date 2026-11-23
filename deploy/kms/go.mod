@@ -1,11 +1,11 @@
-module github.com/confidential-dot-ai/c8s/deploy/kms
+module github.com/confidential-dot-ai/confidential-kubernetes/deploy/kms
 
 go 1.27.3
 
 require (
 	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.15.0
 	github.com/Azure/azure-sdk-for-go/sdk/security/keyvault/azsecrets v1.5.1
-	github.com/confidential-dot-ai/c8s v0.0.0
+	github.com/confidential-dot-ai/confidential-kubernetes v0.0.0
 )
 
 require (
@@ -39,4 +39,4 @@ require (
 	google.golang.org/protobuf v1.36.12 // indirect
 )
 
-replace github.com/confidential-dot-ai/c8s => ../..
+replace github.com/confidential-dot-ai/confidential-kubernetes => ../..

@@ -1,6 +1,6 @@
 # C8s
 
-[![CI](https://github.com/confidential-dot-ai/c8s/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/confidential-dot-ai/c8s/actions/workflows/ci.yml)
+[![CI](https://github.com/confidential-dot-ai/confidential-kubernetes/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/confidential-dot-ai/confidential-kubernetes/actions/workflows/ci.yml)
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENCE)
 
 **C8s is confidential Kubernetes.** It runs Kubernetes workloads inside
@@ -194,8 +194,8 @@ on GKE ([guarantees](docs/guarantees.md#only-allowlisted-code-runs)).
 
 ```sh
 # Build and install the c8s CLI of a release
-git clone --branch <RELEASE_TAG> https://github.com/confidential-dot-ai/c8s
-cd c8s
+git clone --branch <RELEASE_TAG> https://github.com/confidential-dot-ai/confidential-kubernetes
+cd confidential-kubernetes
 make install
 ```
 

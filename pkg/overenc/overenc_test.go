@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
 )
 
 var update = flag.Bool("update", false, "regenerate testdata/attest_pq_channel_vectors.json")

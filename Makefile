@@ -11,7 +11,7 @@ CRD_OUT_DIR    ?= ./charts/control-plane/crds
 
 VERSION   ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 BUILD_DIR  = ./build
-MODULE     = github.com/confidential-dot-ai/c8s
+MODULE     = github.com/confidential-dot-ai/confidential-kubernetes
 
 LDFLAGS = -s -w -X $(MODULE)/internal/version.Version=$(VERSION)
 

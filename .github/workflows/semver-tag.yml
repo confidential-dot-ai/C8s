@@ -23,10 +23,10 @@ env:
   ORAS_VERSION: "1.2.3"
   # Fulcio and GITHUB_REPOSITORY keep the case of the repository name, and
   # cosign compares the identity exactly.
-  RELEASE_SIGNER_IDENTITY: https://github.com/confidential-dot-ai/C8s/.github/workflows/semver-tag.yml@refs/heads/main
+  RELEASE_SIGNER_IDENTITY: https://github.com/confidential-dot-ai/confidential-kubernetes/.github/workflows/semver-tag.yml@refs/heads/main
   # The protected beta branch signs prereleases under its own identity, so a
   # verifier that pins the main identity never accepts a beta.
-  RELEASE_BETA_SIGNER_IDENTITY: https://github.com/confidential-dot-ai/C8s/.github/workflows/semver-tag.yml@refs/heads/beta
+  RELEASE_BETA_SIGNER_IDENTITY: https://github.com/confidential-dot-ai/confidential-kubernetes/.github/workflows/semver-tag.yml@refs/heads/beta
   RELEASE_SIGNER_ISSUER: https://token.actions.githubusercontent.com
   # A release asset moves more bytes than an API call does.
   RELEASE_ASSET_TIMEOUT: 10m
