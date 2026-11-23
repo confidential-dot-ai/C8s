@@ -577,21 +577,21 @@ func clusterKubectl(t *testing.T, applied, extra string) string {
 esac`
 }
 
-// pipedCDS names the stubs' CDS in a values file, as an operator's -f does:
+// pipedTA names the stubs' Trust Authority in a values file, as an operator's -f does:
 // the install reads the pin from the values it renders with, so a piped one is
 // held to the same shape as --cds-pin.
-func pipedCDS(t *testing.T) string {
+func pipedTA(t *testing.T) string {
 	t.Helper()
-	return "cds:\n  address: " + installCDSAddressUnreachable + "\n  measurementsConfig: |\n    " +
-		string(cdsPinDocument(t, []string{installSeedEntryName}, "192.0.2.0/24")) + "\n"
+	return "cds:\n  address: " + installTAAddressUnreachable + "\n  measurementsConfig: |\n    " +
+		string(taPinDocument(t, []string{installSeedEntryName}, "192.0.2.0/24")) + "\n"
 }
 
-// runInstall runs c8s install against the CDS the stubs render and serve,
-// which cdsPreflight otherwise demands.
+// runInstall runs c8s install against the Trust Authority the stubs render and serve,
+// which taPreflight otherwise demands.
 func runInstall(t *testing.T, args ...string) error {
 	t.Helper()
-	pin := cdsPinFile(t, []string{installSeedEntryName}, "192.0.2.0/24")
-	return runC8s(t, append([]string{"install", flagArg(flagCDSAddress), installCDSAddressUnreachable, flagArg(flagCDSPin), pin}, args...)...)
+	pin := taPinFile(t, []string{installSeedEntryName}, "192.0.2.0/24")
+	return runC8s(t, append([]string{"install", flagArg(flagTAAddress), installTAAddressUnreachable, flagArg(flagTAPin), pin}, args...)...)
 }
 
 func TestInstallHappyPath(t *testing.T) {
@@ -877,7 +877,7 @@ esac`)
 // must read it, and helm must receive the piped bytes as a
 // -f file ahead of the computed values.
 func TestInstallValuesFromStdin(t *testing.T) {
-	payload := "volumed:\n  enabled: true\n" + pipedCDS(t)
+	payload := "volumed:\n  enabled: true\n" + pipedTA(t)
 
 	s := newInstallStubs(t, "", false)
 	s.f.tool(t, "kubectl", clusterKubectl(t, s.applied, ""))
@@ -1004,7 +1004,7 @@ func platformPodListKubectl(t *testing.T, applied string, pods ...corev1.Pod) st
 }
 
 // podInNodeRange answers inside the range the healthy cluster's node publishes,
-// which is what confirms the ranges install checks the CDS against.
+// which is what confirms the ranges install checks the Trust Authority against.
 func podInNodeRange() corev1.Pod {
 	return corev1.Pod{
 		Namespace: "ws",
@@ -1227,8 +1227,8 @@ func TestInstallReportsDeniedWorkloads(t *testing.T) {
 }
 
 // An install that stores no route manifest prints a front-door check whose
-// route digest the operator reads from CDS under the operator keys.
-func TestInstallHintReadsTheRouteDigestFromCDS(t *testing.T) {
+// route digest the operator reads from the Trust Authority under the operator keys.
+func TestInstallHintReadsTheRouteDigestFromTA(t *testing.T) {
 	var err error
 	stdout := captureStdout(t, func() {
 		s := newInstallStubs(t, "", false)
@@ -1246,8 +1246,8 @@ func TestInstallHintReadsTheRouteDigestFromCDS(t *testing.T) {
 	if i := slices.Index(digestArgs, "--operator-keys"); i < 0 || digestArgs[i+1] != "<operator-pub.pem>" {
 		t.Errorf("the digest command names no operator keys to verify it under:\n%s", stdout)
 	}
-	if i := slices.Index(digestArgs, "--url"); i < 0 || digestArgs[i+1] != "https://"+installCDSAddressUnreachable {
-		t.Errorf("the digest command names another CDS than this install:\n%s", stdout)
+	if i := slices.Index(digestArgs, "--url"); i < 0 || digestArgs[i+1] != "https://"+installTAAddressUnreachable {
+		t.Errorf("the digest command names another Trust Authority than this install:\n%s", stdout)
 	}
 }
 
@@ -1287,7 +1287,7 @@ func TestInstallRefusesAClusterWithoutConfidentialNodes(t *testing.T) {
 // The host-port, image-policy and containerd preflights judge the
 // confidential nodes alone, so a plain node in the cluster neither blocks the
 // router's port nor fails the runtime check. The node-subnet check still reads
-// every node: CDS dials the inventory address of any node a sandbox lands on.
+// every node: Trust Authority dials the inventory address of any node a sandbox lands on.
 func TestInstallReadsNodesThroughTheConfidentialSelector(t *testing.T) {
 	s := newInstallStubs(t, "", false)
 	s.f.tool(t, "kubectl", clusterKubectl(t, s.applied, ""))

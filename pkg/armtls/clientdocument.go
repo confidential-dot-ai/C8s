@@ -1,5 +1,5 @@
 // Client document digest: SHA-256 of the opaque document a client attached to
-// a Pod CVM, stamped by CDS as an X.509 extension in the CA-signed area. The
+// a Pod CVM, stamped by the Trust Authority as an X.509 extension in the CA-signed area. The
 // guest reports it in its Pod claims, which the issuance quote binds, so the
 // stamp says the leaf's pod was assigned exactly that document. Like the
 // sandbox ID, the mesh CA signature vouches for it, never the hardware
@@ -65,9 +65,9 @@ func clientDocumentDigestFromCert(cert *x509.Certificate) ([]byte, error) {
 	return h, nil
 }
 
-// ClientDocumentDigest returns the client document digest CDS stamped on
+// ClientDocumentDigest returns the client document digest Trust Authority stamped on
 // cert. It reports false when the certificate carries none or carries a
-// malformed one. The value is a CDS statement: read it only from a leaf whose
+// malformed one. The value is a Trust Authority statement: read it only from a leaf whose
 // chain to the mesh CA has been verified.
 func ClientDocumentDigest(cert *x509.Certificate) ([]byte, bool) {
 	h, err := clientDocumentDigestFromCert(cert)

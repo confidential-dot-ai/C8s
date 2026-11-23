@@ -15,9 +15,9 @@ import (
 // A leaf stamped under an older document costs one fetch.
 const historyCacheSize = 16
 
-// AllowlistHistory reads a document of the CDS's allowlist history by digest
+// AllowlistHistory reads a document of the Trust Authority's allowlist history by digest
 // (GET /allowlist/objects/sha256/<hex>). The caller supplies a source that
-// verifies the CDS (A1) and refuses bytes that hash to another digest.
+// verifies the Trust Authority (A1) and refuses bytes that hash to another digest.
 type AllowlistHistory interface {
 	Object(ctx context.Context, digest [sha256.Size]byte) (*allowlist.Allowlist, error)
 }
@@ -81,7 +81,7 @@ func (d *entryDocs) document(ctx context.Context, digest []byte) (map[string][]b
 	}
 	al, err := d.src.Object(ctx, [sha256.Size]byte(digest))
 	if err != nil {
-		return nil, fmt.Errorf("fetch from the CDS's history: %w", err)
+		return nil, fmt.Errorf("fetch from the Trust Authority's history: %w", err)
 	}
 	doc := make(map[string][]byte, len(al.Workloads))
 	for name, w := range al.Workloads {

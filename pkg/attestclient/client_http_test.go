@@ -215,10 +215,10 @@ func TestGenerateEvidenceError(t *testing.T) {
 	}
 }
 
-// fullFlowServers wires up a CDS mux and an attestation-api server that
-// together satisfy the full issuance flow. The CDS handler for
+// fullFlowServers wires up a Trust Authority mux and an attestation-api server that
+// together satisfy the full issuance flow. The Trust Authority handler for
 // /attest is supplied by the caller.
-func fullFlowServers(t *testing.T, challenge string, cdsHandler http.Handler) (cdsURL, apiURL string) {
+func fullFlowServers(t *testing.T, challenge string, taHandler http.Handler) (taURL, apiURL string) {
 	t.Helper()
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -231,11 +231,11 @@ func fullFlowServers(t *testing.T, challenge string, cdsHandler http.Handler) (c
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(types.ChallengeResponse{Challenge: challenge})
 	})
-	mux.Handle("/attest", cdsHandler)
-	cds := httptest.NewServer(mux)
-	t.Cleanup(cds.Close)
+	mux.Handle("/attest", taHandler)
+	ta := httptest.NewServer(mux)
+	t.Cleanup(ta.Close)
 
-	return cds.URL, api.URL
+	return ta.URL, api.URL
 }
 
 func TestObtainCertificateSuccess(t *testing.T) {
@@ -243,11 +243,11 @@ func TestObtainCertificateSuccess(t *testing.T) {
 	const certPEM = "-----BEGIN CERTIFICATE-----\nflow\n-----END CERTIFICATE-----\n"
 	csrPEM := testCSRPEM(t)
 
-	cdsURL, apiURL := fullFlowServers(t, challenge, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	taURL, apiURL := fullFlowServers(t, challenge, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(certPEM))
 	}))
 
-	c := NewClient(cdsURL)
+	c := NewClient(taURL)
 	challengeResp, err := c.AuthenticateContext(context.Background())
 	if err != nil {
 		t.Fatalf("AuthenticateContext: %v", err)
@@ -261,7 +261,7 @@ func TestObtainCertificateSuccess(t *testing.T) {
 	}
 }
 
-// The sandbox token is forwarded to CDS verbatim when set and omitted from
+// The sandbox token is forwarded to the Trust Authority verbatim when set and omitted from
 // the wire entirely when empty (the pre-sandbox request shape).
 func TestObtainCertificateForwardsSandboxToken(t *testing.T) {
 	const challenge = "dGVzdC1jaGFsbGVuZ2U="
@@ -270,7 +270,7 @@ func TestObtainCertificateForwardsSandboxToken(t *testing.T) {
 	csrPEM := testCSRPEM(t)
 
 	var sawBody map[string]json.RawMessage
-	cdsURL, apiURL := fullFlowServers(t, challenge, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	taURL, apiURL := fullFlowServers(t, challenge, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sawBody = nil
 		if err := json.NewDecoder(r.Body).Decode(&sawBody); err != nil {
 			t.Errorf("decode attest body: %v", err)
@@ -278,7 +278,7 @@ func TestObtainCertificateForwardsSandboxToken(t *testing.T) {
 		_, _ = w.Write([]byte(certPEM))
 	}))
 
-	c := NewClient(cdsURL)
+	c := NewClient(taURL)
 	if _, err := c.ObtainCertificateWithSandboxContext(context.Background(), apiURL, csrPEM, challenge, sandboxToken); err != nil {
 		t.Fatalf("ObtainCertificateWithSandboxContext: %v", err)
 	}
@@ -294,7 +294,7 @@ func TestObtainCertificateForwardsSandboxToken(t *testing.T) {
 	}
 }
 
-// On TDX the node's runtime extensions, read after the evidence, go to CDS
+// On TDX the node's runtime extensions, read after the evidence, go to the Trust Authority
 // with it and come back in the result; SEV-SNP evidence lists none.
 func TestObtainCertificateRuntimeExtensions(t *testing.T) {
 	const challenge = "dGVzdC1jaGFsbGVuZ2U="
@@ -325,10 +325,10 @@ func TestObtainCertificateRuntimeExtensions(t *testing.T) {
 				}
 				_, _ = w.Write([]byte("cert"))
 			})
-			cds := httptest.NewServer(mux)
-			t.Cleanup(cds.Close)
+			ta := httptest.NewServer(mux)
+			t.Cleanup(ta.Close)
 
-			client := NewClient(cds.URL)
+			client := NewClient(ta.URL)
 			client.MeasuredPolicies = armtls.NewJournal(journal)
 			got, err := client.ObtainCertificateWithSandboxContext(context.Background(), api.URL, testCSRPEM(t), challenge, nil)
 			if err != nil {
@@ -342,12 +342,12 @@ func TestObtainCertificateRuntimeExtensions(t *testing.T) {
 }
 
 func TestObtainCertificateWithContextError(t *testing.T) {
-	// CDS returns a non-base64 challenge so the flow fails at decode.
-	cdsURL, apiURL := fullFlowServers(t, "!!!not-base64!!!", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// Trust Authority returns a non-base64 challenge so the flow fails at decode.
+	taURL, apiURL := fullFlowServers(t, "!!!not-base64!!!", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("attest should not be reached")
 	}))
 
-	c := NewClient(cdsURL)
+	c := NewClient(taURL)
 	challengeResp, err := c.AuthenticateContext(context.Background())
 	if err != nil {
 		t.Fatalf("AuthenticateContext: %v", err)
@@ -360,11 +360,11 @@ func TestObtainCertificateWithContextError(t *testing.T) {
 
 func TestObtainCertificateBadCSR(t *testing.T) {
 	const challenge = "dGVzdC1jaGFsbGVuZ2U="
-	cdsURL, apiURL := fullFlowServers(t, challenge, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	taURL, apiURL := fullFlowServers(t, challenge, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("attest should not be reached with a bad CSR")
 	}))
 
-	c := NewClient(cdsURL)
+	c := NewClient(taURL)
 	_, err := c.ObtainCertificateWithSandboxContext(context.Background(), apiURL, "not a pem csr", challenge, nil)
 	if err == nil || !strings.Contains(err.Error(), "PEM-encoded certificate request") {
 		t.Fatalf("error = %v, want CSR PEM error", err)

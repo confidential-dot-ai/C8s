@@ -13,7 +13,7 @@ import (
 )
 
 // runCreateDryRun drives the command through cobra so flag validation and the
-// build run exactly as they do for an operator, minus the CDS call.
+// build run exactly as they do for an operator, minus the Trust Authority call.
 func runCreateDryRun(t *testing.T, dir string, extra ...string) (string, error) {
 	t.Helper()
 	src := filepath.Join(dir, "src")

@@ -19,9 +19,9 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsconfig"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/nodeservices"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/taconfig"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
 )
 
@@ -38,15 +38,15 @@ func publicKeyPEM(t *testing.T) string {
 	return string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}))
 }
 
-// cdsConfig is a CDS configuration the CDS's own parser accepts.
-func cdsConfig(t *testing.T, nodeSubnets ...string) string {
+// taConfig is a Trust Authority configuration the Trust Authority's own parser accepts.
+func taConfig(t *testing.T, nodeSubnets ...string) string {
 	t.Helper()
 	operator := publicKeyPEM(t)
 	keys, err := operatorauth.ParseKeyBundle([]byte(operator))
 	if err != nil {
 		t.Fatal(err)
 	}
-	workloads, err := cdsconfig.MergeWorkloads([]byte(`{"schema":"c8s.allowlist/v1","workloads":{}}`), nil)
+	workloads, err := taconfig.MergeWorkloads([]byte(`{"schema":"c8s.allowlist/v1","workloads":{}}`), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +57,7 @@ func cdsConfig(t *testing.T, nodeSubnets ...string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	config, err := cdsconfig.Format(cdsconfig.Document{
+	config, err := taconfig.Format(taconfig.Document{
 		ClusterID:    "acme",
 		OperatorKeys: keys,
 		Workloads:    workloads,
@@ -71,8 +71,8 @@ func cdsConfig(t *testing.T, nodeSubnets ...string) string {
 	return string(config)
 }
 
-// testCDSPin pins the CDS image once per launch file, each entry bound to it.
-func testCDSPin(t *testing.T, launchFiles ...string) string {
+// testTAPin pins the Trust Authority image once per launch file, each entry bound to it.
+func testTAPin(t *testing.T, launchFiles ...string) string {
 	t.Helper()
 	pins := refvalues.ReferenceValues{Family: teetypes.FamilySNP}
 	for i, launchFile := range launchFiles {
@@ -131,9 +131,9 @@ func testDocument(t *testing.T) Document {
 	t.Helper()
 	return Document{
 		SchemaVersion: SchemaVersion,
-		CDS: cmdsutil.CDS{
+		TA: cmdsutil.TA{
 			Address:      "cds.acme.example:8443",
-			Measurements: testCDSPin(t, cdsConfig(t, "192.168.0.0/16")),
+			Measurements: testTAPin(t, taConfig(t, "192.168.0.0/16")),
 			PinFloor:     1,
 		},
 		TLSSAN: "c8s.acme.example",
@@ -163,7 +163,7 @@ func TestParseReturnsTheDocument(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.CDS != want.CDS || got.Kubernetes != want.Kubernetes {
+	if got.TA != want.TA || got.Kubernetes != want.Kubernetes {
 		t.Fatalf("parsed %+v, want %+v", got, want)
 	}
 	if got.Router == nil || len(got.Router.Hostnames) != 1 || got.Router.Hostnames[0] != "api.acme.example" || got.Router.ACMEEmail != "ops@acme.example" {
@@ -230,12 +230,12 @@ func TestParseRefusesEachMalformedField(t *testing.T) {
 		want   string
 	}{
 		{"schema", func(d *Document) { d.SchemaVersion = "c8s-worker/v2" }, "schemaVersion must be c8s-worker/v1"},
-		{"cds address without port", func(d *Document) { d.CDS.Address = "cds.acme.example" }, "must be <host>:<port>"},
-		{"cds pin binding no configuration", func(d *Document) { d.CDS.Measurements = testDigestOnlyPin(t) }, "binds no launch file"},
+		{"cds address without port", func(d *Document) { d.TA.Address = "cds.acme.example" }, "must be <host>:<port>"},
+		{"cds pin binding no configuration", func(d *Document) { d.TA.Measurements = testDigestOnlyPin(t) }, "binds no launch file"},
 		{"cds pin entries disagreeing on node subnets", func(d *Document) {
-			d.CDS.Measurements = testCDSPin(t, cdsConfig(t, "192.168.0.0/16"), cdsConfig(t, "172.16.0.0/12"))
+			d.TA.Measurements = testTAPin(t, taConfig(t, "192.168.0.0/16"), taConfig(t, "172.16.0.0/12"))
 		}, "binds another configuration"},
-		{"cds pin binding something else", func(d *Document) { d.CDS.Measurements = testCDSPin(t, "kind: Pod\n") }, "the pinned CDS configuration"},
+		{"cds pin binding something else", func(d *Document) { d.TA.Measurements = testTAPin(t, "kind: Pod\n") }, "the pinned Trust Authority configuration"},
 		{"router", func(d *Document) { d.Router = &nodeservices.Router{ACMEEmail: "ops@acme.example"} }, "require router.hostnames"},
 
 		{"api server with a scheme", func(d *Document) { d.Kubernetes.APIServer = "https://acme.k8s.example:443" }, "must not carry a scheme"},
@@ -299,10 +299,10 @@ func TestParseRefusesEachMalformedField(t *testing.T) {
 		{"pod range covering the service range", func(d *Document) { d.Kubernetes.PodCIDR = "10.52.0.0/15" }, "overlaps kubernetes.serviceCIDR"},
 		{"service range inside the pod range", func(d *Document) { d.Kubernetes.ServiceCIDR = "10.52.128.0/24" }, "overlaps kubernetes.serviceCIDR"},
 		{"pod range overlapping a node subnet", func(d *Document) {
-			d.CDS.Measurements = testCDSPin(t, cdsConfig(t, "10.0.0.0/8"))
+			d.TA.Measurements = testTAPin(t, taConfig(t, "10.0.0.0/8"))
 		}, "node subnet 10.0.0.0/8 overlaps the cluster range 10.52.0.0/16"},
 		{"service range overlapping a node subnet", func(d *Document) {
-			d.CDS.Measurements = testCDSPin(t, cdsConfig(t, "192.168.0.0/16", "10.53.4.0/24"))
+			d.TA.Measurements = testTAPin(t, taConfig(t, "192.168.0.0/16", "10.53.4.0/24"))
 		}, "node subnet 10.53.4.0/24 overlaps the cluster range 10.53.0.0/16"},
 
 		{"cluster dns outside the service range", func(d *Document) { d.Kubernetes.ClusterDNS = "10.52.0.10" }, "must be inside kubernetes.serviceCIDR"},
@@ -314,9 +314,9 @@ func TestParseRefusesEachMalformedField(t *testing.T) {
 		{"no tls san", func(d *Document) { d.TLSSAN = "" }, "tlsSAN"},
 		{"a tls san that is an address", func(d *Document) { d.TLSSAN = "192.0.2.1" }, "tlsSAN"},
 		{"an uppercase tls san", func(d *Document) { d.TLSSAN = "C8S.acme.example" }, "tlsSAN"},
-		{"a tls san the pinned CDS configuration refuses a leaf", func(d *Document) { d.TLSSAN = "other.acme.example" }, "lets a leaf carry"},
+		{"a tls san the pinned Trust Authority configuration refuses a leaf", func(d *Document) { d.TLSSAN = "other.acme.example" }, "lets a leaf carry"},
 		{"a tls san no hostname, under a configuration admitting any", func(d *Document) {
-			d.CDS.Measurements = testCDSPin(t, strings.Replace(cdsConfig(t, "192.168.0.0/16"), "leafDNSPatterns: []", `leafDNSPatterns: [".*"]`, 1))
+			d.TA.Measurements = testTAPin(t, strings.Replace(taConfig(t, "192.168.0.0/16"), "leafDNSPatterns: []", `leafDNSPatterns: [".*"]`, 1))
 			d.TLSSAN = "c8s.acme.example."
 		}, "tlsSAN"},
 	}

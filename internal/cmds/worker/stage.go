@@ -35,8 +35,8 @@ func NewStageCmd() *cobra.Command {
 		Short: "Stage this worker's measured document into its NRI floor and kubelet",
 		Long: `Read the worker document the initrd staged, confirm through the node-local
 attestation API that this worker's launch binding commits the document,
-then publish the CDS pin and router settings under /run/c8s-node, write
-the NRI floor with the document's CDS, pod and Service ranges and cluster
+then publish the Trust Authority pin and router settings under /run/c8s-node, write
+the NRI floor with the document's Trust Authority, pod and Service ranges and cluster
 DNS, publish the node's primary IPv4 for the NRI inventory, and write
 the kubelet's configuration, bootstrap kubeconfig and static pods under
 /run/kubernetes. The node name is derived from the primary IPv4 address.
@@ -159,7 +159,7 @@ func writeOutputs(
 		return err
 	}
 	err = nodeservices.Prepare(rootDir, nodeservices.FloorInputs{
-		CDS:           doc.CDS,
+		TA:            doc.TA,
 		ClusterRanges: []string{doc.Kubernetes.PodCIDR, doc.Kubernetes.ServiceCIDR},
 		Resolver:      doc.Kubernetes.ClusterDNS,
 		Placeholders:  workerValues(name, doc.Kubernetes),
@@ -219,7 +219,7 @@ func stagedPublicNames() ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	return append(slices.Collect(maps.Keys(router)), nodeservices.CDSOutput, operatorKeysOutput, tlsSANOutput), nil
+	return append(slices.Collect(maps.Keys(router)), nodeservices.TAOutput, operatorKeysOutput, tlsSANOutput), nil
 }
 
 func readDocument(path string) ([]byte, error) {

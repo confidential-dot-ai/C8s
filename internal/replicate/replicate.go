@@ -1,4 +1,4 @@
-// Package replicate is the shape every store of a CDS writes through: one
+// Package replicate is the shape every store of a Trust Authority writes through: one
 // command at a time, and the same answer whether the cluster's log committed
 // it or this process alone applied it.
 package replicate
@@ -13,7 +13,7 @@ type Applier[C, R any] interface {
 	Apply(C) R
 }
 
-// Local commits by applying: the whole store of a single CDS.
+// Local commits by applying: the whole store of a single Trust Authority.
 func Local[C, R any](a Applier[C, R]) Committer[C, R] {
 	return local[C, R]{applier: a}
 }

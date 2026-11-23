@@ -41,7 +41,7 @@ set -euo pipefail
 registry_host=ghcr.io
 registry_namespace=confidential-dot-ai
 # The repositories images/node-guest/worker/mkosi.sync resolves at C8S_REF.
-components=(c8s-operator nri-image-policy cds armtls-mesh)
+components=(c8s-operator nri-image-policy ta armtls-mesh)
 image_repo=guests/worker
 # One oras artifact and one KubeVirt image per TEE, per commit.
 ref_tags_expected=4

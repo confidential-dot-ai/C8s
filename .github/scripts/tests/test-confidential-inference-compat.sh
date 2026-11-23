@@ -125,8 +125,8 @@ pass
 
 # Deleting a hashed source file is incompatible without asking the model.
 rm "$work/request"
-git -C "$work/c8s" mv internal/cmds/cds/routes.go internal/cmds/cds/handlers.go
-renamed=$(commit "refactor(cds): rename routes.go")
+git -C "$work/c8s" mv internal/cmds/cds internal/cmds/ta
+renamed=$(commit "refactor(ta): rename the authority package")
 REPLY=unused judge "$api_change" "$renamed"
 [[ $status -eq 1 && $(head -n1 "$work/report") = INCOMPATIBLE && $(cat "$work/report") = *internal/cmds/cds/routes.go* ]] ||
   fail "renaming a hashed file was not incompatible: $(cat "$work/report")"
@@ -134,7 +134,7 @@ REPLY=unused judge "$api_change" "$renamed"
 pass
 
 # The deletion counts only in the change that made it.
-echo 'package cds // later' >"$work/c8s/pkg/allowlist/allowlist.go"
+echo 'package allowlist // later' >"$work/c8s/pkg/allowlist/allowlist.go"
 later=$(commit "chore: later change")
 REPLY=$'COMPATIBLE\n\nFine.' judge "$renamed" "$later"
 [ "$status" -eq 0 ] || fail "an earlier deletion was reported again (exit $status): $(cat "$work/report")"

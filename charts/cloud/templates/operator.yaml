@@ -38,7 +38,7 @@ containers:
       - --exclude-namespaces={{ . }}
       {{- end }}
       - --cert-fs-group={{ include "c8s.certFsGroup" "" }}
-      {{- /* Below the 6h named-leaf TTL, the shortest CDS issues. */}}
+      {{- /* Below the 6h named-leaf TTL, the shortest Trust Authority issues. */}}
       - --get-cert-renew-interval=2h
 
       {{- /* Workload-digest claims (docs/armtls.md): get-cert

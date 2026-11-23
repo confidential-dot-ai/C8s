@@ -17,7 +17,7 @@ run-name: >-
    || format('c8s-image skipped ({0} on {1}, not a main or beta push)', github.event.workflow_run.event, github.event.workflow_run.head_branch) }}
 
 on:
-  # build-c8s resolves cds:<sha> / nri-image-policy:<sha>, which Docker
+  # build-c8s resolves ta:<sha> / nri-image-policy:<sha>, which Docker
   # publishes first. Gate on it so those digests exist.
   workflow_run:
     workflows: ["Docker"]
@@ -180,8 +180,8 @@ jobs:
           }
 
           record_release_aliases "$GUESTS/worker" -tdx -tdx-kubevirt -sev-snp -sev-snp-kubevirt
-          # One CDS image serves both TEE families, so its artifact tag names no TEE.
-          record_release_aliases "$GUESTS/cds" "" -kubevirt
+          # One Trust Authority image serves both TEE families, so its artifact tag names no TEE.
+          record_release_aliases "$GUESTS/ta" "" -kubevirt
 
           while IFS=$'\t' read -r image release_alias source_digest exists; do
             if [ "$exists" = false ]; then

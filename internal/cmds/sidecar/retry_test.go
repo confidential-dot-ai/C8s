@@ -63,7 +63,7 @@ func TestRetryWithoutABoundWaitsUntilReleased(t *testing.T) {
 	}
 }
 
-// CDS's 403 is opaque, so the log has to say what it usually means.
+// Trust Authority's 403 is opaque, so the log has to say what it usually means.
 func TestRefusalReasonNamesTheContainerGate(t *testing.T) {
 	forbidden := fmt.Errorf("volume weights: %w", &StatusError{Status: http.StatusForbidden, Err: errNotYet})
 	if got := refusalReason(forbidden); !strings.Contains(got, "every main container") {

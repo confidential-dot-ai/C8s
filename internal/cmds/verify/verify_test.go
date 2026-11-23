@@ -198,7 +198,7 @@ func TestBuildPolicy_SandboxIDFlag(t *testing.T) {
 	})
 }
 
-func TestBuildPolicy_MeshLeafFlagsRefusedWithKindCDS(t *testing.T) {
+func TestBuildPolicy_MeshLeafFlagsRefusedWithKindTA(t *testing.T) {
 	meshCA := writeMeshCAFile(t)
 	allowlist := filepath.Join(t.TempDir(), "allowlist.json")
 	if err := os.WriteFile(allowlist, []byte("{}"), 0o600); err != nil {
@@ -206,16 +206,16 @@ func TestBuildPolicy_MeshLeafFlagsRefusedWithKindCDS(t *testing.T) {
 	}
 
 	refused := map[string]config{
-		"--mesh-ca":    {kind: "cds", meshCA: meshCA},
-		"--sandbox-id": {kind: "cds", sandboxID: "8d9f6c2b1a0e"},
-		"--workload":   {kind: "cds", workload: "api"},
-		"--allowlist":  {kind: "cds", allowlistFile: allowlist},
+		"--mesh-ca":    {kind: "ta", meshCA: meshCA},
+		"--sandbox-id": {kind: "ta", sandboxID: "8d9f6c2b1a0e"},
+		"--workload":   {kind: "ta", workload: "api"},
+		"--allowlist":  {kind: "ta", allowlistFile: allowlist},
 	}
 	for flag, cfg := range refused {
 		t.Run(flag+" is refused with kind cds", func(t *testing.T) {
 			_, err := buildPolicy(cfg)
-			if err == nil || !strings.Contains(err.Error(), "--kind cds") || !strings.Contains(err.Error(), flag) {
-				t.Fatalf("err = %v, want a refusal naming %s and --kind cds", err, flag)
+			if err == nil || !strings.Contains(err.Error(), "--kind ta") || !strings.Contains(err.Error(), flag) {
+				t.Fatalf("err = %v, want a refusal naming %s and --kind ta", err, flag)
 			}
 		})
 	}
@@ -228,7 +228,7 @@ func TestBuildPolicy_MeshLeafFlagsRefusedWithKindCDS(t *testing.T) {
 	})
 
 	t.Run("kind cds without mesh leaf flags is accepted", func(t *testing.T) {
-		if _, err := buildPolicy(config{kind: "cds", measurementsConfig: testutil.CDSPinFile(t)}); err != nil {
+		if _, err := buildPolicy(config{kind: "ta", measurementsConfig: testutil.TAPinFile(t)}); err != nil {
 			t.Fatalf("buildPolicy: %v", err)
 		}
 	})
@@ -1232,7 +1232,7 @@ func TestRunDiscoveryVerify_EndToEnd(t *testing.T) {
 
 // TestResolveMode locks in kind→mode routing. The regression it guards: an
 // explicit --kind must drive the evidence mode when --mode is left at its
-// (auto) default, so `c8s cds verify --kind lb` resolves to discovery rather
+// (auto) default, so `c8s ta verify --kind lb` resolves to discovery rather
 // than dialing for the embedded armTLS extension the LB front door never
 // serves. An explicit non-auto --mode always wins over kind.
 func TestResolveMode(t *testing.T) {
@@ -1244,12 +1244,12 @@ func TestResolveMode(t *testing.T) {
 	}{
 		{"lb kind, auto mode", "lb", "auto", "discovery"},
 		{"lb kind, empty mode", "lb", "", "discovery"},
-		{"cds kind, auto mode", "cds", "auto", "armtls-cert"},
+		{"cds kind, auto mode", "ta", "auto", "armtls-cert"},
 		{"workload kind, auto mode", "workload", "auto", "armtls-cert"},
 		{"auto kind, auto mode", "auto", "auto", "auto"},
 		{"empty kind, empty mode", "", "", "auto"},
 		{"explicit mode overrides lb kind", "lb", "armtls-cert", "armtls-cert"},
-		{"explicit mode overrides cds kind", "cds", "attest-pq", "attest-pq"},
+		{"explicit mode overrides cds kind", "ta", "attest-pq", "attest-pq"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1286,12 +1286,12 @@ func TestNewCmdDefaults(t *testing.T) {
 	})
 
 	t.Run("preset", func(t *testing.T) {
-		cmd := NewCmd(Defaults{Use: "verify", Short: "Verify the CDS", Kind: "cds", Mode: "armtls-cert"})
-		if cmd.Use != "verify" || cmd.Short != "Verify the CDS" {
+		cmd := NewCmd(Defaults{Use: "verify", Short: "Verify the Trust Authority", Kind: "ta", Mode: "armtls-cert"})
+		if cmd.Use != "verify" || cmd.Short != "Verify the Trust Authority" {
 			t.Errorf("Use/Short = %q/%q, presets not applied", cmd.Use, cmd.Short)
 		}
-		if got := cmd.Flags().Lookup("kind").DefValue; got != "cds" {
-			t.Errorf("--kind default = %q, want cds", got)
+		if got := cmd.Flags().Lookup("kind").DefValue; got != "ta" {
+			t.Errorf("--kind default = %q, want ta", got)
 		}
 		if got := cmd.Flags().Lookup("mode").DefValue; got != "armtls-cert" {
 			t.Errorf("--mode default = %q, want armtls-cert", got)
@@ -1305,8 +1305,8 @@ func TestDefaultPort(t *testing.T) {
 		cfg  config
 		want int
 	}{
-		{"preset wins over kind", config{defaults: Defaults{DefaultPort: 1234}, kind: "cds"}, 1234},
-		{"cds", config{kind: "cds"}, 8443},
+		{"preset wins over kind", config{defaults: Defaults{DefaultPort: 1234}, kind: "ta"}, 1234},
+		{"cds", config{kind: "ta"}, 8443},
 		{"lb", config{kind: "lb"}, 443},
 		{"auto", config{}, 443},
 	}
@@ -1398,7 +1398,7 @@ func TestRenderTextSections(t *testing.T) {
 			"cert sha256:  cert-digest-hex",
 			"sandbox id:   sandbox-1",
 			"vouched by the mesh CA",
-			"operator keys (allowlist writes; CDS-reported config, NOT covered by the measurement):",
+			"operator keys (allowlist writes; Trust Authority-reported config, NOT covered by the measurement):",
 			"    sha256(SPKI DER):fp-one",
 		} {
 			if !strings.Contains(got, want) {
@@ -1716,13 +1716,13 @@ func TestRun_UsageAndGatherFailures(t *testing.T) {
 
 	t.Run("unknown kind is a usage error before evidence is read", func(t *testing.T) {
 		absent := filepath.Join(t.TempDir(), "absent")
-		for _, kind := range []string{"bogus", "CDS"} {
+		for _, kind := range []string{"bogus", "Trust Authority"} {
 			var out, errOut bytes.Buffer
 			code := run(context.Background(), config{fromFile: absent, kind: kind}, &out, &errOut)
 			if code != exitUsage {
 				t.Errorf("--kind %s: code = %d, want %d", kind, code, exitUsage)
 			}
-			if want := fmt.Sprintf("error: unknown --kind %q (valid kinds: auto, cds, lb, workload)\n", kind); errOut.String() != want {
+			if want := fmt.Sprintf("error: unknown --kind %q (valid kinds: auto, ta, lb, workload)\n", kind); errOut.String() != want {
 				t.Errorf("stderr = %q, want %q", errOut.String(), want)
 			}
 			if out.Len() != 0 {
@@ -1761,7 +1761,12 @@ func TestRun_UsageAndGatherFailures(t *testing.T) {
 			{
 				fromFile:           absent,
 				kind:               "cds",
-				measurementsConfig: testutil.CDSPinFile(t),
+				measurementsConfig: testutil.TAPinFile(t),
+			},
+			{
+				fromFile:           absent,
+				kind:               "ta",
+				measurementsConfig: testutil.TAPinFile(t),
 			},
 			{
 				fromFile: absent,
@@ -1814,9 +1819,9 @@ func TestRun_UsageAndGatherFailures(t *testing.T) {
 
 	t.Run("kind cds refuses --mesh-ca as a usage error", func(t *testing.T) {
 		var out, errOut bytes.Buffer
-		code := run(context.Background(), config{url: "https://127.0.0.1:1", kind: "cds", meshCA: writeMeshCAFile(t)}, &out, &errOut)
-		if code != exitUsage || !strings.Contains(errOut.String(), "--kind cds") || out.Len() != 0 {
-			t.Errorf("code = %d, want %d with a --kind cds refusal and no verdict; stdout: %s stderr: %s", code, exitUsage, out.String(), errOut.String())
+		code := run(context.Background(), config{url: "https://127.0.0.1:1", kind: "ta", meshCA: writeMeshCAFile(t)}, &out, &errOut)
+		if code != exitUsage || !strings.Contains(errOut.String(), "--kind ta") || out.Len() != 0 {
+			t.Errorf("code = %d, want %d with a --kind ta refusal and no verdict; stdout: %s stderr: %s", code, exitUsage, out.String(), errOut.String())
 		}
 	})
 

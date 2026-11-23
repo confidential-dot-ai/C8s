@@ -14,7 +14,7 @@ func TestMeshRoleBindingsAfterCredentialEndpoint(t *testing.T) {
 	cfg.Allowlist.NodeTCB = false
 	cfg.Allowlist.Base = roleBase(t, pushDigestB, CredentialRole, []string{"/usr/local/bin/c8s", "get-cert"})
 	cfg.WorkloadClaims.AdvertiseHost = "10.0.0.7"
-	cfg.Allowlist.Pull = installedCDSAddress(t, "cds.example.org:8443").Pull
+	cfg.Allowlist.Pull = installedTAAddress(t, "cds.example.org:8443").Pull
 	cfg.Allowlist.Pull.Interval, cfg.Allowlist.Pull.Timeout = time.Second, time.Second
 	cfg.Allowlist.Pull.AttestationApiURL = "http://127.0.0.1:8400"
 	if _, err := parseConfig(meshConfigDocument(t, cfg)); err != nil {
@@ -28,7 +28,7 @@ func TestMeshRoleBindingsAfterCredentialEndpoint(t *testing.T) {
 	if !ok || bound.Port != 8443 {
 		t.Fatalf("credential role = %+v, bound = %v", bound, ok)
 	}
-	cfg.Allowlist.Pull.CDSAddressFile = ""
+	cfg.Allowlist.Pull.TAAddressFile = ""
 	if _, err := loadMeshConfigDocument(t, cfg); err == nil {
 		t.Fatal("unbound credentials role loaded")
 	}

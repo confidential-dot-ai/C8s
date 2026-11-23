@@ -14,14 +14,14 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cdsconn"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/taconn"
 	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
-// servingCDS is an httptest server that serves the given digests on GET (as a
+// servingTA is an httptest server that serves the given digests on GET (as a
 // canonical allowlist document of any-argv entries) and accepts writes with
 // 204, recording the HTTP methods it saw.
-func servingCDS(t *testing.T, digests map[string]string) (url string, methods *[]string) {
+func servingTA(t *testing.T, digests map[string]string) (url string, methods *[]string) {
 	t.Helper()
 	doc := pkgallowlist.Allowlist{
 		Schema:    pkgallowlist.Schema,
@@ -49,9 +49,9 @@ func servingCDS(t *testing.T, digests map[string]string) (url string, methods *[
 	return srv.URL, &seen
 }
 
-// listFailingCDS fails every GET with 500 but accepts writes (recording the
+// listFailingTA fails every GET with 500 but accepts writes (recording the
 // methods it saw), so the "could not fetch allowlist" warning paths run.
-func listFailingCDS(t *testing.T) (url string, methods *[]string) {
+func listFailingTA(t *testing.T) (url string, methods *[]string) {
 	t.Helper()
 	var mu sync.Mutex
 	seen := []string{}
@@ -95,7 +95,7 @@ func TestClientRejectsUnknownScheme(t *testing.T) {
 // --- signer error paths ---
 
 func TestSignerMissingKeyFile(t *testing.T) {
-	o := &options{Options: cdsconn.Options{OperatorKey: filepath.Join(t.TempDir(), "nope.key")}}
+	o := &options{Options: taconn.Options{OperatorKey: filepath.Join(t.TempDir(), "nope.key")}}
 	if _, err := o.signer(); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expected a read error, got %v", err)
 	}
@@ -107,7 +107,7 @@ func TestSignerRejectsGarbagePEM(t *testing.T) {
 	if err := os.WriteFile(path, []byte("not a pem"), 0o600); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	o := &options{Options: cdsconn.Options{OperatorKey: path, Measurements: []string{"abababababababababababababababababababababababababababababababababababababababababababababababab"}}}
+	o := &options{Options: taconn.Options{OperatorKey: path, Measurements: []string{"abababababababababababababababababababababababababababababababababababababababababababababababab"}}}
 	if _, err := o.signer(); err == nil || !strings.Contains(err.Error(), "no PEM block") {
 		t.Fatalf("expected a key-parse error, got %v", err)
 	}
@@ -116,7 +116,7 @@ func TestSignerRejectsGarbagePEM(t *testing.T) {
 // --- list / export ---
 
 func TestListJSONOutput(t *testing.T) {
-	url, _ := servingCDS(t, map[string]string{digA: "registry/app@" + digA})
+	url, _ := servingTA(t, map[string]string{digA: "registry/app@" + digA})
 
 	out, _, err := runCmd("list", "--url", url, "--insecure", "-o", "json")
 	if err != nil {
@@ -165,7 +165,7 @@ func TestListTextWorkloadTable(t *testing.T) {
 		Schema:    pkgallowlist.Schema,
 		Workloads: map[string]pkgallowlist.Workload{"web": web, "plain": plain},
 	}
-	url, _ := servingAllowlistCDS(t, al)
+	url, _ := servingAllowlistTA(t, al)
 
 	out, _, err := runCmd("list", "--url", url, "--insecure")
 	if err != nil {
@@ -201,7 +201,7 @@ func TestListTextWorkloadTable(t *testing.T) {
 }
 
 func TestExportToStdout(t *testing.T) {
-	url, _ := servingCDS(t, map[string]string{digA: "registry/app@" + digA})
+	url, _ := servingTA(t, map[string]string{digA: "registry/app@" + digA})
 
 	out, _, err := runCmd("export", "--url", url, "--insecure")
 	if err != nil {
@@ -222,7 +222,7 @@ func TestExportToStdout(t *testing.T) {
 }
 
 func TestExportMatchesServedCanonicalBytes(t *testing.T) {
-	url, _ := servingCDS(t, map[string]string{digA: "registry/app@" + digA})
+	url, _ := servingTA(t, map[string]string{digA: "registry/app@" + digA})
 	response, err := http.Get(url + "/allowlist")
 	if err != nil {
 		t.Fatal(err)
@@ -264,7 +264,7 @@ func TestExportMatchesServedCanonicalBytes(t *testing.T) {
 }
 
 func TestExportToFileRoundTrips(t *testing.T) {
-	url, _ := servingCDS(t, map[string]string{digA: "registry/app@" + digA})
+	url, _ := servingTA(t, map[string]string{digA: "registry/app@" + digA})
 	path := filepath.Join(t.TempDir(), "backup.json")
 
 	_, _, err := runCmd("export", path, "--url", url, "--insecure")
@@ -283,7 +283,7 @@ func TestExportToFileRoundTrips(t *testing.T) {
 }
 
 func TestExportWriteFailure(t *testing.T) {
-	url, _ := servingCDS(t, map[string]string{digA: "registry/app@" + digA})
+	url, _ := servingTA(t, map[string]string{digA: "registry/app@" + digA})
 	path := filepath.Join(t.TempDir(), "missing-dir", "backup.json")
 
 	_, _, err := runCmd("export", path, "--url", url, "--insecure")
@@ -295,7 +295,7 @@ func TestExportWriteFailure(t *testing.T) {
 // --- diff ---
 
 func TestDiffJSONOutput(t *testing.T) {
-	url, _ := servingCDS(t, map[string]string{digA: "img-a"})
+	url, _ := servingTA(t, map[string]string{digA: "img-a"})
 	file := writeAllowlistFile(t, t.TempDir(), map[string]string{digB: "img-b"})
 
 	out, _, err := runCmd("diff", file, "--url", url, "--insecure", "-o", "json")
@@ -313,7 +313,7 @@ func TestDiffJSONOutput(t *testing.T) {
 }
 
 func TestDiffRejectsBadFile(t *testing.T) {
-	url, _ := servingCDS(t, nil)
+	url, _ := servingTA(t, nil)
 
 	if _, _, err := runCmd("diff", filepath.Join(t.TempDir(), "nope.json"), "--url", url, "--insecure"); err == nil {
 		t.Fatal("expected a missing allowlist file to fail")
@@ -333,7 +333,7 @@ func TestDiffRejectsBadFile(t *testing.T) {
 func TestAddWritesDerivedEntry(t *testing.T) {
 	dir := t.TempDir()
 	keyPath := writeOperatorKey(t, dir)
-	url, methods := recordingCDS(t)
+	url, methods := recordingTA(t)
 
 	out, _, err := runCmd("add", digA, "registry/app@"+digA, "--url", url, "--insecure", "--operator-key", keyPath)
 	if err != nil {
@@ -348,13 +348,13 @@ func TestAddWritesDerivedEntry(t *testing.T) {
 }
 
 func TestAddDryRunMakesNoCall(t *testing.T) {
-	url, methods := recordingCDS(t)
+	url, methods := recordingTA(t)
 	out, _, err := runCmd("add", digA, "registry/app@"+digA, "--url", url, "--insecure", "--dry-run")
 	if err != nil {
 		t.Fatalf("add --dry-run: %v", err)
 	}
 	if len(*methods) != 0 {
-		t.Fatalf("dry-run must not call CDS, saw %v", *methods)
+		t.Fatalf("dry-run must not call Trust Authority, saw %v", *methods)
 	}
 	if !strings.Contains(out, "would add app-"+digA[7:19]) {
 		t.Fatalf("missing dry-run line:\n%s", out)
@@ -362,7 +362,7 @@ func TestAddDryRunMakesNoCall(t *testing.T) {
 }
 
 func TestAddRejectsInvalidDigestAndWildcardImage(t *testing.T) {
-	url, methods := recordingCDS(t)
+	url, methods := recordingTA(t)
 	if _, _, err := runCmd("add", "sha256:short", "registry/app", "--url", url, "--insecure"); err == nil {
 		t.Fatal("expected an invalid digest to be rejected")
 	}
@@ -370,7 +370,7 @@ func TestAddRejectsInvalidDigestAndWildcardImage(t *testing.T) {
 		t.Fatal("expected a bare-wildcard image to be rejected")
 	}
 	if len(*methods) != 0 {
-		t.Fatalf("must not call CDS with invalid arguments, saw %v", *methods)
+		t.Fatalf("must not call Trust Authority with invalid arguments, saw %v", *methods)
 	}
 }
 
@@ -381,7 +381,7 @@ func TestAddRefusesShadowingLiveEntry(t *testing.T) {
 	keyPath := writeOperatorKey(t, dir)
 	live := mustParseAllowlist(t, `{"schema":"c8s.allowlist/v1","workloads":{
 		"api":{"containers":[`+ctrJSON(digA, "/app")+`]}}}`)
-	url, methods := servingAllowlistCDS(t, live)
+	url, methods := servingAllowlistTA(t, live)
 
 	_, stderr, err := runCmd("add", digA, "registry/app@"+digA, "--url", url, "--insecure", "--operator-key", keyPath)
 	if err == nil || !strings.Contains(err.Error(), "lint error") {
@@ -404,7 +404,7 @@ func TestUploadRefusesWhenListFails(t *testing.T) {
 	dir := t.TempDir()
 	keyPath := writeOperatorKey(t, dir)
 	file := writeAllowlistFile(t, dir, coreImages())
-	url, methods := listFailingCDS(t)
+	url, methods := listFailingTA(t)
 
 	_, _, err := runCmd("upload", file, "--url", url, "--insecure", "--operator-key", keyPath)
 	if err == nil || !strings.Contains(err.Error(), "read the allowlist the upload replaces") {
@@ -419,7 +419,7 @@ func TestUploadRequireOverridesDefaults(t *testing.T) {
 	dir := t.TempDir()
 	// Names none of the defaults, but satisfies the overridden requirement.
 	file := writeAllowlistFile(t, dir, map[string]string{digA: "registry/team/myapp@" + digA})
-	url, _ := servingCDS(t, nil)
+	url, _ := servingTA(t, nil)
 
 	if _, _, err := runCmd("upload", file, "--url", url, "--insecure", "--require", "myapp", "--dry-run"); err != nil {
 		t.Fatalf("upload with --require override failed: %v", err)
@@ -434,7 +434,7 @@ func TestUploadRequireOverridesDefaults(t *testing.T) {
 func TestUploadStrictLint(t *testing.T) {
 	dir := t.TempDir()
 	clean := writeAllowlistFile(t, dir, coreImages())
-	url, methods := recordingCDS(t)
+	url, methods := recordingTA(t)
 
 	if _, _, err := runCmd("upload", clean, "--url", url, "--insecure", "--strict", "--dry-run"); err != nil {
 		t.Fatalf("--strict with a clean file must succeed, got %v", err)
@@ -454,7 +454,7 @@ func TestUploadStrictLint(t *testing.T) {
 // Without --require the default component guard must stay armed.
 func TestUploadGuardOnByDefault(t *testing.T) {
 	file := writeAllowlistFile(t, t.TempDir(), map[string]string{digA: "registry/app/only@" + digA})
-	url, _ := recordingCDS(t)
+	url, _ := recordingTA(t)
 
 	_, _, err := runCmd("upload", file, "--url", url, "--insecure", "--dry-run")
 	if err == nil || !strings.Contains(err.Error(), "refusing to upload an allowlist missing core components") {

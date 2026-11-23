@@ -42,8 +42,8 @@ runtime measurement registers, RTMR[0] to RTMR[3], extendable in the guest.
 
 Pinning MRTD alone leaves the guest unpinned: it covers the firmware, so a host
 can boot another kernel under it. `--image-manifest` pins MRTD, RTMR[1] and
-RTMR[2] from one build. A CDS pin on TDX must carry all three, and the client
-commands (`c8s allowlist`, `c8s secrets`, `c8s volume`, `c8s cds ca`,
+RTMR[2] from one build. A Trust Authority (TA) pin on TDX must carry all three, and the client
+commands (`c8s allowlist`, `c8s secrets`, `c8s volume`, `c8s ta ca`,
 `c8s routes`) refuse a TDX endpoint whose pins leave RTMR[1] or RTMR[2]
 unpinned.
 
@@ -73,9 +73,7 @@ installed cluster. The measurer seeds its journal from the staged document, so a
 applies no pulled allowlist while the setting is on
 ([allowlist-and-capabilities.md](allowlist-and-capabilities.md#measured-policy-history)).
 
-Each policy digest is SHA-256 of the exact allowlist bytes served by CDS, the
-Certificate Distribution Service that holds the cluster's policy and signs its
-workload certificates — the same value a leaf's matched-workload extension
+Each policy digest is SHA-256 of the exact allowlist bytes served by the TA, which holds the cluster's policy and signs workload certificates — the same value a leaf's matched-workload extension
 carries ([certificate-extensions.md](certificate-extensions.md)). The node
 journals a digest before extending it, so a reader's list may run ahead of a
 quote but never lags it, and each digest is extended at most once and at most
@@ -119,11 +117,11 @@ or register that would carry it
 
 A measurements config pins whole images: each entry is one image matched as a
 tuple, so a digest from one build cannot be paired with registers from another.
-Every component that dials a pinned CDS takes it as `--image-policy-file`:
-`c8s verify`, the client commands (`c8s cds`, `c8s allowlist`, `c8s secrets`,
-`c8s routes`, `c8s volume`), CDS itself, and the sidecars C8s
+Every component that dials a pinned TA takes it as `--image-policy-file`:
+`c8s verify`, the client commands (`c8s ta`, `c8s allowlist`, `c8s secrets`,
+`c8s routes`, `c8s volume`), the TA itself, and the sidecars C8s
 injects — among them get-cert, which fetches a pod's certificate. `c8s install`
-takes the same document as `--cds-pin`. Some also accept
+takes the same document as `--ta-pin`. Some also accept
 `--image-policy-json`, the same document inline.
 
 ```json
@@ -156,9 +154,9 @@ takes the same document as `--cds-pin`. Some also accept
 Unknown fields, repeated JSON keys, trailing data and an empty `measurements`
 list are refused; omit the flag to pin nothing.
 
-`c8s install --cds-pin` takes such a document whole: the chart carries it to
-every in-cluster verifier as a file. CDS renders the set it enforces at
-`/measurements`, which `c8s verify --kind cds --served-policy-file` compares
+`c8s install --ta-pin` takes such a document whole: the chart carries it to
+every in-cluster verifier as a file. The TA renders the set it enforces at
+`/measurements`, which `c8s verify --kind ta --served-policy-file` compares
 against the node identities you expect it to serve. To
 build a config from an image build, see
 [verify.md](verify.md#derive-the-pins-yourself).

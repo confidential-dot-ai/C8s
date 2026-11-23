@@ -396,7 +396,7 @@ func (p *plugin) exemptNamespace(cfg *config, observed observedContainer, verdic
 //
 // Two exemptions apply. The first is the node TCB: only the MEASURED base
 // allowlist, and only when the node config claims it as the node TCB
-// (allowlist.node_tcb). A CDS-served entry never is, because the cluster admin
+// (allowlist.node_tcb). A Trust Authority-served entry never is, because the cluster admin
 // this policy defends against authors that document. The control plane picks
 // the image a pod runs, so a base digest alone proves nothing about the launch;
 // nodeTCBExempt says how much a base entry excuses. See

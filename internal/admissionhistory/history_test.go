@@ -324,7 +324,7 @@ func TestHistoryRestoresEvictedEvidence(t *testing.T) {
 	}
 }
 
-// Every variant sits at the per-record evidence limits; CDS reads at most 1 MiB.
+// Every variant sits at the per-record evidence limits; Trust Authority reads at most 1 MiB.
 func TestHistoryInventoryFitsResponseLimit(t *testing.T) {
 	var h History
 	for image := range 4 {

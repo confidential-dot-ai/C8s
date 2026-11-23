@@ -1,8 +1,8 @@
 {{/* The cloud front door: c8s-lib's nginx files from one ConfigMap mounted at
-     router.configDir, the CDS pin and operator keys from values. */}}
+     router.configDir, the Trust Authority pin and operator keys from values. */}}
 
-{{/* The single identity baked into the CDS-issued mesh cert (get-cert), which
-     the CDS's own leaf DNS rules must admit: the first router.san entry, or
+{{/* The single identity baked into the Trust Authority-issued mesh cert (get-cert), which
+     the Trust Authority's own leaf DNS rules must admit: the first router.san entry, or
      the chart-managed Service DNS name. */}}
 {{- define "router.san" -}}
 {{- if .Values.router.san -}}
@@ -33,23 +33,25 @@
 {{- list (dict "name" "https" "containerPort" (include "router.nginxHTTPSPort" . | int) "publicPort" 443) | toJson -}}
 {{- end -}}
 
-{{/* The front door's mounts of the CDS pin and, where set, the operator
+{{/* The front door's mounts of the Trust Authority pin and, where set, the operator
      keys; cds-attest reads both. */}}
-{{- define "router.cdsAttestMounts" -}}
+{{- define "router.taAttestMounts" -}}
+{{- $ta := include "c8s.trustAuthority" . | fromJson -}}
 - name: measurements-config
   mountPath: /mnt/c8s-data/measurements
   readOnly: true
-{{- if .Values.cds.operatorKeys }}
+{{- if $ta.operatorKeys }}
 - name: operator-keys
   mountPath: /mnt/c8s-data/operator-keys
   readOnly: true
 {{- end }}
 {{- end -}}
 
-{{/* cds-attest pins the front-door mode and reads the CDS pin and operator
+{{/* cds-attest pins the front-door mode and reads the Trust Authority pin and operator
      keys from values. Loopback only: nginx proxies /readyz, the attest routes
      and /tunnel to it. */}}
-{{- define "router.cdsAttestArgs" -}}
+{{- define "router.taAttestArgs" -}}
+{{- $ta := include "c8s.trustAuthority" . | fromJson -}}
 {{- $args := list
   "cds-attest"
   "--host=127.0.0.1"
@@ -61,7 +63,7 @@
   (printf "--serving-cert-file=%s" (include "c8s.certFile" .))
   (printf "--measured-policies-file=%s/measured-policies" (include "nri-image-policy.runtimeDir" .))
   "--image-policy-file=/mnt/c8s-data/measurements/cds.json" -}}
-{{- if .Values.cds.operatorKeys -}}
+{{- if $ta.operatorKeys -}}
 {{- $args = append $args "--operator-keys-file=/mnt/c8s-data/operator-keys/keys.pem" -}}
 {{- end -}}
 {{- $args = concat $args (list
@@ -104,7 +106,7 @@ unix://{{ include "router.inventoryDir" . }}/attestation-api.sock
 {{- define "router.getCertArgs" -}}
 {{- list
   (printf "--discovery-out=%s" (include "router.discoveryFilePath" .))
-  (printf "--discovery-cds-cert-url=%s" (include "router.cdsCertPath" .))
+  (printf "--discovery-cds-cert-url=%s" (include "router.taCertPath" .))
   "--discovery-public-tls-mode=cds"
   (printf "--discovery-mesh-ca-url=%s" (include "router.meshCAPath" .))
   "--ca-watch-interval=1m"

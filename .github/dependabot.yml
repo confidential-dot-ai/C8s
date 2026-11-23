@@ -23,7 +23,7 @@ updates:
       - /
       - /test/conformance/steps
       - /test/mock-attestation
-      - /test/mock-cds
+      - /test/mock-ta
       - /test/mock-inventory
     schedule:
       interval: weekly
@@ -38,14 +38,14 @@ updates:
   - package-ecosystem: docker
     directories:
       - /cmd/c8s
-      - /cmd/cds
+      - /cmd/ta
       - /cmd/get-cert
       - /cmd/nri-image-policy
       - /cmd/armtls-mesh
       - /cmd/volumed
       - /test/mock-attestation
       - /test/mock-cloud
-      - /test/mock-cds
+      - /test/mock-ta
       - /test/mock-inventory
     schedule:
       interval: weekly

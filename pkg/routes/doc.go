@@ -7,7 +7,7 @@
 // authorized them. Compile builds the Table that selects a route for a
 // request.
 //
-// A router fetches GET /routes only over TLS that verified the CDS (A1),
+// A router fetches GET /routes only over TLS that verified the Trust Authority (A1),
 // passes the envelope to VerifySigned with its trusted operator keys and
 // mesh CAs (W2, B3), and checks W4 with Supersedes before applying it. The
 // router's route state, its staging (A4) and freshness (F1) live in the
@@ -18,7 +18,7 @@
 //
 // Times come from the router's clock, which the policy trusts (§4).
 //
-// Freshness proves contact with the verified CDS, not that a manifest is
+// Freshness proves contact with the verified Trust Authority, not that a manifest is
 // current: VerifySigned checks no expiry (W3), and the router keeps its
 // route state in memory, so after a restart any validly signed revision is
 // accepted (Q1).

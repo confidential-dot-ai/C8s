@@ -52,7 +52,7 @@ func TestGuestIssuanceChecksSnapshotBeforePublishing(t *testing.T) {
 				_, _ = io.WriteString(w, `{"platform":"tdx","evidence":{"quote":"fake"}}`)
 			}))
 			defer attester.Close()
-			cds := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ta := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path == "/authenticate" {
 					_ = json.NewEncoder(w).Encode(types.ChallengeResponse{Challenge: base64.StdEncoding.EncodeToString(nonce)})
 					return
@@ -95,7 +95,7 @@ func TestGuestIssuanceChecksSnapshotBeforePublishing(t *testing.T) {
 				}
 				_, _ = io.WriteString(w, chain)
 			}))
-			defer cds.Close()
+			defer ta.Close()
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			v := credentialVolume{dir: t.TempDir(), leafName: "tls.crt", keyName: "tls.key", caName: "ca.crt"}
@@ -114,7 +114,7 @@ func TestGuestIssuanceChecksSnapshotBeforePublishing(t *testing.T) {
 					}
 					return publish()
 				}}
-			err := obtainGuestCert(ctx, guest, attestclient.NewClientWithHTTP(cds.URL, cds.Client()), creds)
+			err := obtainGuestCert(ctx, guest, attestclient.NewClientWithHTTP(ta.URL, ta.Client()), creds)
 			if mode == "publish" {
 				if err != nil || creds.current == nil {
 					t.Fatalf("no generation: %v", err)

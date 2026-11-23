@@ -63,7 +63,7 @@ func runPodBootstrap(t *testing.T, cfg *config, root string, podKey []byte, base
 	oldListen := listenPodStarts
 	listenPodStarts = func() (net.Listener, error) { return podstart.Listen(startSocket) }
 	t.Cleanup(func() { listenPodStarts = oldListen })
-	cfg.Allowlist.Pull.CDSMeasurementsConfig = filepath.Join(root, cfg.Allowlist.Pull.CDSMeasurementsConfig)
+	cfg.Allowlist.Pull.TAMeasurementsConfig = filepath.Join(root, cfg.Allowlist.Pull.TAMeasurementsConfig)
 	cfg.Allowlist.Pull.Timeout = 5 * time.Second
 	cfg.Allowlist.Pull.Interval = 20 * time.Millisecond
 	pod, credentialSource := preparePodBootstrapRuntime(t, cfg, dir)
@@ -86,7 +86,7 @@ func runPodBootstrap(t *testing.T, cfg *config, root string, podKey []byte, base
 	}
 	t.Cleanup(func() { newContainerdResolver = oldResolver })
 	if !cfg.Measure.RTMR3 || cfg.Allowlist.Pull.MeasurePolicies || !cfg.PullEnabled() {
-		t.Fatal("prepared policy must measure workloads and poll CDS")
+		t.Fatal("prepared policy must measure workloads and poll Trust Authority")
 	}
 
 	reg := &fakeRegister{value: runtimemeasure.Seed(podKey)}
@@ -114,7 +114,7 @@ func runPodBootstrap(t *testing.T, cfg *config, root string, podKey []byte, base
 	defer release()
 	var pulls, failures atomic.Int64
 	var available atomic.Bool
-	cds := testutil.NewARMTLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	ta := testutil.NewARMTLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if pulls.Add(1) == 1 {
 			close(firstPull)
 			select {
@@ -132,17 +132,17 @@ func runPodBootstrap(t *testing.T, cfg *config, root string, podKey []byte, base
 		w.Header().Set("ETag", `W/"1"`)
 		_, _ = w.Write(body)
 	}))
-	defer cds.Close()
-	// Rebase the already validated CDS location without bypassing armTLS.
+	defer ta.Close()
+	// Rebase the already validated Trust Authority location without bypassing armTLS.
 	// The prepared pin binds this independent SNP server's launch file.
-	cfg.Allowlist.Pull.URL = cds.URL
-	cfg.cdsAddress, err = cmdsutil.CDSURLAddress(cds.URL)
+	cfg.Allowlist.Pull.URL = ta.URL
+	cfg.taAddress, err = cmdsutil.TAURLAddress(ta.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
 	verifier := mockapi.New(t)
 	verdict := mockapi.PassingVerdict(testutil.TestMeasurement)
-	binding := runtimemeasure.HostData([]byte(testutil.CDSLaunchFile))
+	binding := runtimemeasure.HostData([]byte(testutil.TALaunchFile))
 	verdict.Claims.InitData = binding[:]
 	verifier.SetVerdict(verdict)
 	cfg.Allowlist.Pull.AttestationApiURL = verifier.URL()
@@ -199,7 +199,7 @@ func runPodBootstrap(t *testing.T, cfg *config, root string, podKey []byte, base
 		}
 	}
 	wait("NRI synchronization", func() bool { return closed(registered) })
-	wait("first CDS pull", func() bool { return closed(firstPull) })
+	wait("first Trust Authority pull", func() bool { return closed(firstPull) })
 
 	injectedPod(pod) // Forged injection metadata must not enable node services.
 	if err := nri.RunPodSandbox(ctx, &api.RunPodSandboxRequest{Pod: pod}); err != nil {
@@ -271,8 +271,8 @@ func runPodBootstrap(t *testing.T, cfg *config, root string, podKey []byte, base
 	case <-ctx.Done():
 		t.Fatal("guest broker did not start after the measured endpoint")
 	}
-	if guest.CDSURL != cds.URL {
-		t.Fatalf("broker CDS URL = %q, want resolved pull endpoint %q", guest.CDSURL, cds.URL)
+	if guest.TAURL != ta.URL {
+		t.Fatalf("broker Trust Authority URL = %q, want resolved pull endpoint %q", guest.TAURL, ta.URL)
 	}
 	first, err := guest.Snapshot(ctx)
 	if err != nil || len(first.Containers) != 1 || first.Containers[0].Digest != meshDigest || !slices.Equal(first.RuntimeExtensions, []string{meshDigest}) {

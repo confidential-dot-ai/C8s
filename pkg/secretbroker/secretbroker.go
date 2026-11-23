@@ -1,9 +1,9 @@
-// Package secretbroker is the wire of pod secret release through the CDS
-// broker (docs/pod-secrets.md). A pod CVM asks CDS for a secret by name over
-// mutual TLS with its CDS-issued leaf; CDS states which verified pod asks,
+// Package secretbroker is the wire of pod secret release through the Trust Authority
+// broker (docs/pod-secrets.md). A pod CVM asks Trust Authority for a secret by name over
+// mutual TLS with its Trust Authority-issued leaf; Trust Authority states which verified pod asks,
 // signs that statement with its broker key and forwards it to the key
 // management service (KMS) its measured configuration names. The KMS decides
-// and returns the value, which CDS relays without keeping it.
+// and returns the value, which Trust Authority relays without keeping it.
 package secretbroker
 
 import (
@@ -22,9 +22,9 @@ import (
 )
 
 const (
-	// PodRoute is the CDS route a pod CVM requests a secret on.
+	// PodRoute is the Trust Authority route a pod CVM requests a secret on.
 	PodRoute = "/pod-secrets"
-	// StatementVersion and ReleaseVersion version the two documents CDS sends
+	// StatementVersion and ReleaseVersion version the two documents Trust Authority sends
 	// a KMS; a KMS refuses any version it does not implement.
 	StatementVersion = "c8s-secret-statement/v1"
 	ReleaseVersion   = "c8s-secret-release/v1"
@@ -51,14 +51,14 @@ type PodResponse struct {
 	Value []byte `json:"value"`
 }
 
-// Workload is the allowlist entry CDS matched the pod to, as its leaf states.
+// Workload is the allowlist entry Trust Authority matched the pod to, as its leaf states.
 type Workload struct {
 	Name             string `json:"name"`
 	AllowlistVersion string `json:"allowlist_version"`
 	AllowlistDigest  string `json:"allowlist_digest"`
 }
 
-// Statement is what CDS asserts about one request: the verified pod asking,
+// Statement is what Trust Authority asserts about one request: the verified pod asking,
 // the client document digest its leaf carries, and the secret it asks for.
 type Statement struct {
 	Version              string    `json:"version"`
@@ -70,7 +70,7 @@ type Statement struct {
 	Nonce                []byte    `json:"nonce"`
 }
 
-// ReleaseRequest is the body CDS POSTs to the KMS. Statement is the exact
+// ReleaseRequest is the body Trust Authority POSTs to the KMS. Statement is the exact
 // signed bytes; BrokerChain is DER, the broker certificate first and the mesh
 // CA certificate last.
 type ReleaseRequest struct {
@@ -87,7 +87,7 @@ type ReleaseResponse struct {
 	Value   []byte `json:"value"`
 }
 
-// Refusal is the body of any other KMS answer, and of a CDS refusal to the pod.
+// Refusal is the body of any other KMS answer, and of a Trust Authority refusal to the pod.
 type Refusal struct {
 	Error string `json:"error"`
 }
@@ -139,13 +139,13 @@ func statementDigest(statement []byte) [sha256.Size]byte {
 }
 
 // Verifier is the KMS side of a release request. MeshCAKey is SHA-256 of
-// the DER SubjectPublicKeyInfo of the CDS mesh CA the KMS trusts.
+// the DER SubjectPublicKeyInfo of the Trust Authority mesh CA the KMS trusts.
 type Verifier struct {
 	MeshCAKey [sha256.Size]byte
 	Now       func() time.Time
 }
 
-// Verify authenticates req as a statement by a broker of the pinned CDS and
+// Verify authenticates req as a statement by a broker of the pinned Trust Authority and
 // returns it. It checks the broker chain, the statement signature, that the
 // client document hashes to the stated digest and that the statement is
 // current. It does not remember nonces: a KMS that must refuse a replay
@@ -215,7 +215,7 @@ func (v Verifier) verifyChain(chain [][]byte, now time.Time) (*x509.Certificate,
 		return nil, fmt.Errorf("broker certificate: %w", err)
 	}
 	if !armtls.IsCDSBroker(broker) {
-		return nil, errors.New("certificate is not a CDS broker certificate")
+		return nil, errors.New("certificate is not a Trust Authority broker certificate")
 	}
 	return broker, nil
 }

@@ -55,10 +55,10 @@ var InjectedModes = []string{"get-cert", "get-secret", "get-volume", "probe-file
 // RateKey charges a request to the sandbox its client certificate names, so a
 // rate limit bounds one workload rather than one address.
 //
-// Pods reach CDS through a NodePort and the host-network mesh proxy, so every
+// Pods reach Trust Authority through a NodePort and the host-network mesh proxy, so every
 // pod on a node arrives from the same address: keyed on that, one hostile pod
 // exhausts the bucket its co-tenants share and wedges their fetchers into a
-// CrashLoop. The sandbox ID is stamped by CDS into a leaf that crypto/tls has
+// CrashLoop. The sandbox ID is stamped by the Trust Authority into a leaf that crypto/tls has
 // verified against the mesh CA, so a caller can only ever name its own.
 //
 // An unverified or absent certificate returns "", charging the request to the
@@ -123,7 +123,7 @@ type grant struct {
 	secrets  *pkgallowlist.SecretsPolicy
 }
 
-// denial is a refusal to release. The reason reaches the CDS log; the client is
+// denial is a refusal to release. The reason reaches the Trust Authority log; the client is
 // told only that it was refused, because the detail describes the state of a
 // pod the caller may not be entitled to learn about.
 type denial struct {
@@ -460,7 +460,7 @@ func (h Handler) workloadContainers(ctx context.Context, host, sandboxID string)
 // entry never has to enumerate the containers C8s adds to every member pod. A
 // role a pod runs for a purpose of its own, like the router's, stays and is
 // declared. It is a pure function of the report — the one drop-set
-// implementation shared by secrets release, the release diagnostic, and CDS
+// implementation shared by secrets release, the release diagnostic, and Trust Authority
 // certificate issuance. pkg/allowlist stays ignorant of injection by design
 // (its doc: "the caller converts").
 //

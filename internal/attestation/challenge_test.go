@@ -101,7 +101,7 @@ func TestCreateEvictsExpiredChallenges(t *testing.T) {
 const entitledChallenges = 100000
 
 // challengeEntryBytes is a key, a timestamp and the queue slot behind it;
-// challengeBudget is what the store may cost CDS, which holds the mesh CA in
+// challengeBudget is what the store may cost Trust Authority, which holds the mesh CA in
 // the same process.
 const (
 	challengeEntryBytes = 112

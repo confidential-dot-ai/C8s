@@ -14,23 +14,23 @@ func NewCmd() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "get-secret",
-		Short: "Fetch this pod's secrets from CDS and write them into the pod",
+		Short: "Fetch this pod's secrets from the Trust Authority and write them into the pod",
 		Long: `get-secret fetches the secrets a workload is granted and writes each one
 to a file for the pod's other containers to read.
 
-It authenticates with the pod's CDS-issued certificate and a sandbox token
-redeemed from the node's admission inventory, and CDS releases only when the
+It authenticates with the pod's Trust Authority-issued certificate and a sandbox token
+redeemed from the node's admission inventory, and Trust Authority releases only when the
 containers running in the sandbox match a workload entry holding a grant for
 the requested path. That is only true once every main container is running, so
 early attempts are refused and get-secret retries — the files appear shortly
 after the workload starts, and a consumer must wait for them.
 
 A path the store does not hold yet is created, so the first pod of a workload
-to ask is the one that defines the value. The value is generated inside CDS and
-does not survive a CDS restart; nothing durable may be keyed on it.`,
+to ask is the one that defines the value. The value is generated inside Trust Authority and
+does not survive a Trust Authority restart; nothing durable may be keyed on it.`,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if err := cfg.ResolveCDSEndpoint(); err != nil {
+			if err := cfg.ResolveTAEndpoint(); err != nil {
 				return err
 			}
 			for _, spec := range specs {

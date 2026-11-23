@@ -1,6 +1,6 @@
 // Command kms is a reference key management service for C8s pod secret
 // release (docs/pod-secrets.md). It is an example of the KMS side of the
-// CDS broker wire, not a production service: it checks a CDS broker
+// Trust Authority broker wire, not a production service: it checks a Trust Authority broker
 // statement, the client document's signature in the reference document
 // format, and a policy file, then returns the secret from Azure Key Vault.
 package main

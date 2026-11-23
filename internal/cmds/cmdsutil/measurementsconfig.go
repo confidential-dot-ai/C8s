@@ -81,38 +81,38 @@ func (s ImagePolicySource) ValuesExcluding(pins MeasurementPins) (refvalues.Refe
 	return s.Values()
 }
 
-// ErrCDSPinUnbound marks a pin set that does not name one CDS VM.
-var ErrCDSPinUnbound = errors.New("is not one CDS VM's identity")
+// ErrTAPinUnbound marks a pin set that does not name one Trust Authority VM.
+var ErrTAPinUnbound = errors.New("is not one Trust Authority VM's identity")
 
-// CDSLaunchFile is the configuration a pin set identifies its CDS by: every
+// TALaunchFile is the configuration a pin set identifies its Trust Authority by: every
 // entry must pin the registers its family identifies a guest by, and bind the
-// same launch file; a set binding none, or two, names no one VM. A CDS is the
+// same launch file; a set binding none, or two, names no one VM. A Trust Authority is the
 // cluster's trust root, and its image alone says nothing about the cluster it
 // serves — the configuration does, and the launch binding is what proves it.
-func CDSLaunchFile(values refvalues.ReferenceValues) ([]byte, error) {
+func TALaunchFile(values refvalues.ReferenceValues) ([]byte, error) {
 	if values.Empty() {
-		return nil, fmt.Errorf("%w: it pins no image, so nothing tells this cluster's CDS from any other attested TEE", ErrCDSPinUnbound)
+		return nil, fmt.Errorf("%w: it pins no image, so nothing tells this cluster's Trust Authority from any other attested TEE", ErrTAPinUnbound)
 	}
 	if err := armtls.RequireImageRegisters(values.Family, values.Images); err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrCDSPinUnbound, err)
+		return nil, fmt.Errorf("%w: %w", ErrTAPinUnbound, err)
 	}
 	file := values.Images[0].LaunchFile
 	for _, image := range values.Images {
 		if len(image.LaunchFile) == 0 {
-			return nil, fmt.Errorf("%w: entry %q binds no launch file, and a CDS is pinned to the configuration it runs on", ErrCDSPinUnbound, image.Name)
+			return nil, fmt.Errorf("%w: entry %q binds no launch file, and a Trust Authority is pinned to the configuration it runs on", ErrTAPinUnbound, image.Name)
 		}
 		if !bytes.Equal(image.LaunchFile, file) {
-			return nil, fmt.Errorf("%w: entry %q binds another configuration, and one pin names one CDS", ErrCDSPinUnbound, image.Name)
+			return nil, fmt.Errorf("%w: entry %q binds another configuration, and one pin names one Trust Authority", ErrTAPinUnbound, image.Name)
 		}
 	}
 	return file, nil
 }
 
-// ResolveCDSPins returns the pins a client holds its CDS to, and whether the
+// ResolveTAPins returns the pins a client holds its Trust Authority to, and whether the
 // node's own policy decided them. While the node mounts a policy it is the
 // only source and a supplied one is refused. That policy follows the
 // cluster's pin decrees while ctx runs; a supplied one never moves.
-func ResolveCDSPins(ctx context.Context, nodePolicy string, source ImagePolicySource) (armtls.PinSource, bool, error) {
+func ResolveTAPins(ctx context.Context, nodePolicy string, source ImagePolicySource) (armtls.PinSource, bool, error) {
 	node, err := FollowNodePins(ctx, nodePolicy)
 	if err != nil {
 		return nil, false, err
@@ -127,21 +127,21 @@ func ResolveCDSPins(ctx context.Context, nodePolicy string, source ImagePolicySo
 	if err != nil {
 		return nil, false, err
 	}
-	if _, err := CDSLaunchFile(values); err != nil {
+	if _, err := TALaunchFile(values); err != nil {
 		return nil, false, fmt.Errorf("%s %w", suppliedPinSource(source), err)
 	}
 	return armtls.FixedPins(values), false, nil
 }
 
-// ClientCDSPins is ResolveCDSPins and the line a credential client logs about
+// ClientTAPins is ResolveTAPins and the line a credential client logs about
 // the set it resolved. The conformance probe resolves silently
 // (internal/cmds/secretprobe).
-func ClientCDSPins(ctx context.Context, nodePolicy string, source ImagePolicySource) (armtls.PinSource, error) {
-	pins, fromNode, err := ResolveCDSPins(ctx, nodePolicy, source)
+func ClientTAPins(ctx context.Context, nodePolicy string, source ImagePolicySource) (armtls.PinSource, error) {
+	pins, fromNode, err := ResolveTAPins(ctx, nodePolicy, source)
 	if err != nil {
 		return nil, err
 	}
-	slog.Info("CDS pins resolved", "from_node", fromNode)
+	slog.Info("Trust Authority pins resolved", "from_node", fromNode)
 	return pins, nil
 }
 
@@ -151,23 +151,23 @@ func suppliedPinSource(source ImagePolicySource) string {
 	if source.IsSet() {
 		return strings.Join(suppliedPolicyFlags(source), " and ")
 	}
-	return "the CDS pin set"
+	return "the Trust Authority pin set"
 }
 
-// NodeProvidesCDSPins reports whether the enforcer mounts this node's CDS pins
-// at path, so a client can say which half of its CDS configuration is short
+// NodeProvidesTAPins reports whether the enforcer mounts this node's Trust Authority pins
+// at path, so a client can say which half of its Trust Authority configuration is short
 // before resolving either.
-func NodeProvidesCDSPins(path string) (bool, error) {
+func NodeProvidesTAPins(path string) (bool, error) {
 	return nodeProvides(path)
 }
 
 // RequireNodeVerifier holds a credential client to the node's own
-// attestation-api while the enforcer mounts its CDS policy at nodePolicy and
+// attestation-api while the enforcer mounts its Trust Authority policy at nodePolicy and
 // presents that attestation-api at socket. The verifier is what decides
-// whether the CDS a client dials satisfies those pins, so a client answering
+// whether the Trust Authority a client dials satisfies those pins, so a client answering
 // to a named verifier is not pinned at all.
 //
-// Both paths are the node's own mounts, and the rule is ResolveCDSPins': while
+// Both paths are the node's own mounts, and the rule is ResolveTAPins': while
 // they are there they are the only source, and a supplied verifier is refused.
 // Where the node hands out no policy, or runs no attestation-api a pod can
 // reach, the caller's own argument stands.
@@ -184,7 +184,7 @@ func RequireNodeVerifier(nodePolicy, socket, supplied string) error {
 		return nil
 	}
 	if endpoint := "unix://" + socket; supplied != endpoint {
-		return fmt.Errorf("this node pins CDS in %s and serves its attestation-api at %s, so --attestation-api-url must be %s; got %q",
+		return fmt.Errorf("this node pins Trust Authority in %s and serves its attestation-api at %s, so --attestation-api-url must be %s; got %q",
 			nodePolicy, socket, endpoint, supplied)
 	}
 	return nil
@@ -232,15 +232,28 @@ func LoadMeasurements(values []string, path string) ([][]byte, error) {
 // BindImagePolicyFlags registers canonical JSON sources. A nil inline pointer
 // exposes only file input. Only one source may be used.
 func BindImagePolicyFlags(fs *pflag.FlagSet, file, inline *string, purpose string) {
+	bindImagePolicyFlags(fs, file, inline, "image-policy", purpose)
+}
+
+// BindTAImagePolicyFlags binds a policy for a Trust Authority endpoint.
+func BindTAImagePolicyFlags(fs *pflag.FlagSet, file, inline *string, purpose string) {
+	bindImagePolicyFlags(fs, file, inline, "ta-image-policy", purpose)
+	AliasFlag(fs, "ta-image-policy-file", "image-policy-file")
+	if inline != nil {
+		AliasFlag(fs, "ta-image-policy-json", "image-policy-json")
+	}
+}
+
+func bindImagePolicyFlags(fs *pflag.FlagSet, file, inline *string, prefix, purpose string) {
 	selected := ""
 	bind := func(target *string, name, usage string) {
 		fs.Var(&policySourceFlag{target: target, selected: &selected, name: name}, name, usage)
 	}
 	*file = ""
-	bind(file, "image-policy-file", "path to a complete JSON image policy (image, RTMR and launch-key pins); "+purpose)
+	bind(file, prefix+"-file", "path to a complete JSON image policy (image, RTMR and launch-key pins); "+purpose)
 	if inline != nil {
 		*inline = ""
-		bind(inline, "image-policy-json", "inline complete JSON image policy, in the same format as --image-policy-file; "+purpose)
+		bind(inline, prefix+"-json", "inline complete JSON image policy, in the same format as --"+prefix+"-file; "+purpose)
 	}
 }
 

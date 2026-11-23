@@ -293,7 +293,7 @@ func TestClientPrefixChargesAnIPv6PrefixOnce(t *testing.T) {
 	}
 }
 
-// TestSourceAddrKeyKeepsAddressesApart pins the other half of that split: CDS
+// TestSourceAddrKeyKeepsAddressesApart pins the other half of that split: Trust Authority
 // is reached by nodes and pods, which sit densely inside one subnet, so two of
 // them must not land in one bucket.
 func TestSourceAddrKeyKeepsAddressesApart(t *testing.T) {

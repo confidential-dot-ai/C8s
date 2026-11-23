@@ -12,13 +12,13 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cdsconn"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/taconn"
 	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
-// servingAllowlistCDS serves an arbitrary parsed allowlist document on GET and
+// servingAllowlistTA serves an arbitrary parsed allowlist document on GET and
 // accepts writes with 204, recording the HTTP methods it saw.
-func servingAllowlistCDS(t *testing.T, al *pkgallowlist.Allowlist) (url string, methods *[]string) {
+func servingAllowlistTA(t *testing.T, al *pkgallowlist.Allowlist) (url string, methods *[]string) {
 	t.Helper()
 	body, err := al.Canonical()
 	if err != nil {
@@ -91,7 +91,7 @@ func writeFile(t *testing.T, name, data string) string {
 func TestWorkloadListJSON(t *testing.T) {
 	al := mustParseAllowlist(t, `{"schema":"c8s.allowlist/v1","workloads":{
 		"web":{"containers":[`+ctrJSON(digA, "/app")+`]}}}`)
-	url, _ := servingAllowlistCDS(t, al)
+	url, _ := servingAllowlistTA(t, al)
 
 	out, _, err := runCmd("list", "--url", url, "--insecure", "-o", "json")
 	if err != nil {
@@ -105,7 +105,7 @@ func TestWorkloadListJSON(t *testing.T) {
 func TestWorkloadGet(t *testing.T) {
 	al := mustParseAllowlist(t, `{"schema":"c8s.allowlist/v1","workloads":{
 		"web":{"label":"registry/app","containers":[`+ctrJSON(digA, "/app")+`]}}}`)
-	url, _ := servingAllowlistCDS(t, al)
+	url, _ := servingAllowlistTA(t, al)
 
 	out, _, err := runCmd("get", "web", "--url", url, "--insecure")
 	if err != nil {
@@ -127,7 +127,7 @@ func TestWorkloadApplyDryRunDiff(t *testing.T) {
 	live := mustParseAllowlist(t, `{"schema":"c8s.allowlist/v1","workloads":{
 		"same":{"containers":[`+ctrJSON(digA, "/app")+`]},
 		"web":{"containers":[`+ctrJSON(digB, "/old")+`]}}}`)
-	url, methods := servingAllowlistCDS(t, live)
+	url, methods := servingAllowlistTA(t, live)
 
 	file := writeFile(t, "wl.json", `{"schema":"c8s.allowlist/v1",
 		"workloads":{
@@ -155,7 +155,7 @@ func TestWorkloadApplyDryRunDiff(t *testing.T) {
 
 func TestWorkloadApplyWrites(t *testing.T) {
 	live := mustParseAllowlist(t, `{"schema":"c8s.allowlist/v1"}`)
-	url, methods := servingAllowlistCDS(t, live)
+	url, methods := servingAllowlistTA(t, live)
 	keyPath := writeOperatorKey(t, t.TempDir())
 	file := writeFile(t, "wl.json", `{"schema":"c8s.allowlist/v1","workloads":{
 		"web":{"containers":[`+ctrJSON(digA, "/app")+`]}}}`)
@@ -171,7 +171,7 @@ func TestWorkloadApplyWrites(t *testing.T) {
 
 func TestWorkloadApplyFromStdinBareMap(t *testing.T) {
 	live := mustParseAllowlist(t, `{"schema":"c8s.allowlist/v1"}`)
-	url, _ := servingAllowlistCDS(t, live)
+	url, _ := servingAllowlistTA(t, live)
 
 	// A bare name-keyed map (not an allowlist document) read from stdin.
 	stdin := `{"w1":{"containers":[` + ctrJSON(digA, "/app") + `]}}`
@@ -185,7 +185,7 @@ func TestWorkloadApplyFromStdinBareMap(t *testing.T) {
 }
 
 func TestWorkloadApplyRejectsEmptyAndBadInput(t *testing.T) {
-	url, _ := servingCDS(t, nil)
+	url, _ := servingTA(t, nil)
 
 	empty := writeFile(t, "empty.json", `{"schema":"c8s.allowlist/v1"}`)
 	if _, _, err := runCmd("apply", empty, "--url", url, "--insecure"); err == nil ||
@@ -216,7 +216,7 @@ func TestWorkloadApplyRejectsEmptyAndBadInput(t *testing.T) {
 func TestWorkloadApplyRefusesEntryShadowedByLive(t *testing.T) {
 	live := mustParseAllowlist(t, `{"schema":"c8s.allowlist/v1","workloads":{
 		"app-aaaaaaaaaaaa":{"containers":[{"digest":"`+digA+`","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}]}}}`)
-	url, methods := servingAllowlistCDS(t, live)
+	url, methods := servingAllowlistTA(t, live)
 
 	file := writeFile(t, "wl.json", `{"schema":"c8s.allowlist/v1","workloads":{
 		"api":{"containers":[`+ctrJSON(digA, "/app")+`],"secrets":{"policy":"allow","read":["/api/**"]}}}}`)
@@ -254,15 +254,15 @@ func setEditor(t *testing.T, content string) {
 	t.Setenv("EDITOR", path)
 }
 
-func editFixtureCDS(t *testing.T) (url string, methods *[]string) {
+func editFixtureTA(t *testing.T) (url string, methods *[]string) {
 	t.Helper()
 	live := mustParseAllowlist(t, `{"schema":"c8s.allowlist/v1","workloads":{
 		"web":{"containers":[`+ctrJSON(digA, "/app")+`]}}}`)
-	return servingAllowlistCDS(t, live)
+	return servingAllowlistTA(t, live)
 }
 
 func TestWorkloadEditApplies(t *testing.T) {
-	url, methods := editFixtureCDS(t)
+	url, methods := editFixtureTA(t)
 	keyPath := writeOperatorKey(t, t.TempDir())
 	setEditor(t, `{"label":"v2","containers":[`+ctrJSON(digA, "/app")+`]}`)
 
@@ -283,7 +283,7 @@ func TestWorkloadEditApplies(t *testing.T) {
 }
 
 func TestWorkloadEditNoChanges(t *testing.T) {
-	url, methods := editFixtureCDS(t)
+	url, methods := editFixtureTA(t)
 	t.Setenv("EDITOR", "true") // leaves the file untouched
 
 	_, _, err := runCmd("edit", "web", "--url", url, "--insecure")
@@ -296,7 +296,7 @@ func TestWorkloadEditNoChanges(t *testing.T) {
 }
 
 func TestWorkloadEditAborted(t *testing.T) {
-	url, methods := editFixtureCDS(t)
+	url, methods := editFixtureTA(t)
 	setEditor(t, `{"label":"v2","containers":[`+ctrJSON(digA, "/app")+`]}`)
 
 	_, _, err := runCmdIn("n\n", "edit", "web", "--url", url, "--insecure")
@@ -309,7 +309,7 @@ func TestWorkloadEditAborted(t *testing.T) {
 }
 
 func TestWorkloadEditEditorFails(t *testing.T) {
-	url, _ := editFixtureCDS(t)
+	url, _ := editFixtureTA(t)
 	t.Setenv("EDITOR", "false") // exits non-zero
 
 	_, _, err := runCmd("edit", "web", "--url", url, "--insecure")
@@ -324,19 +324,19 @@ func TestWorkloadEditKeepsTheEditWhenTheWriteFails(t *testing.T) {
 	dir := t.TempDir()
 	keyPath, pub := newOperatorKeypair(t, dir, "op.key")
 	unpinnedKeyPath, _ := newOperatorKeypair(t, dir, "unpinned.key")
-	t.Setenv(cdsconn.EnvOperatorKey, "")
+	t.Setenv(taconn.EnvOperatorKey, "")
 
 	cases := []struct {
 		name     string
 		keyFlags []string
 	}{
-		{name: "CDS refuses the write", keyFlags: []string{"--operator-key", unpinnedKeyPath}},
+		{name: "Trust Authority refuses the write", keyFlags: []string{"--operator-key", unpinnedKeyPath}},
 		{name: "no operator key to sign it"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			srv, cds := cdsTestServer(t, []*ecdsa.PublicKey{pub})
-			cds.seedWorkload("web", mustParseAllowlist(t, `{"schema":"c8s.allowlist/v1","workloads":{
+			srv, ta := taTestServer(t, []*ecdsa.PublicKey{pub})
+			ta.seedWorkload("web", mustParseAllowlist(t, `{"schema":"c8s.allowlist/v1","workloads":{
 				"web":{"containers":[`+ctrJSON(digA, "/app")+`]}}}`).Workloads["web"])
 			setEditor(t, `{"label":"v2","containers":[`+ctrJSON(digA, "/app")+`]}`)
 
@@ -350,7 +350,7 @@ func TestWorkloadEditKeepsTheEditWhenTheWriteFails(t *testing.T) {
 			if _, _, err := runCmd("apply", saved, "--url", srv.URL, "--insecure", "--operator-key", keyPath); err != nil {
 				t.Fatalf("apply the saved edit: %v", err)
 			}
-			if wl, _ := cds.workload("web"); wl.Label != "v2" {
+			if wl, _ := ta.workload("web"); wl.Label != "v2" {
 				t.Fatalf("label after applying the saved edit = %q, want v2", wl.Label)
 			}
 		})
@@ -375,20 +375,20 @@ func savedEditPath(t *testing.T, stderr string) string {
 func TestWorkloadDelete(t *testing.T) {
 	dir := t.TempDir()
 	keyPath, pub := newOperatorKeypair(t, dir, "op.key")
-	srv, cds := cdsTestServer(t, []*ecdsa.PublicKey{pub})
+	srv, ta := taTestServer(t, []*ecdsa.PublicKey{pub})
 	for _, name := range []string{"web", "old", "keep"} {
-		cds.seedWorkload(name, oneContainerEntry(t, digA))
+		ta.seedWorkload(name, oneContainerEntry(t, digA))
 	}
 
 	if _, _, err := runCmd("delete", "web", "old", "--url", srv.URL, "--insecure", "--operator-key", keyPath); err != nil {
 		t.Fatalf("workload delete: %v", err)
 	}
 	for _, name := range []string{"web", "old"} {
-		if _, ok := cds.workload(name); ok {
+		if _, ok := ta.workload(name); ok {
 			t.Fatalf("entry %q survived the delete", name)
 		}
 	}
-	if _, ok := cds.workload("keep"); !ok {
+	if _, ok := ta.workload("keep"); !ok {
 		t.Fatal("an entry the delete did not name was lost")
 	}
 }
@@ -397,14 +397,14 @@ func TestWorkloadDelete(t *testing.T) {
 func TestWorkloadDeleteNotFound(t *testing.T) {
 	dir := t.TempDir()
 	keyPath, pub := newOperatorKeypair(t, dir, "op.key")
-	srv, cds := cdsTestServer(t, []*ecdsa.PublicKey{pub})
-	cds.seedWorkload("web", oneContainerEntry(t, digA))
+	srv, ta := taTestServer(t, []*ecdsa.PublicKey{pub})
+	ta.seedWorkload("web", oneContainerEntry(t, digA))
 
 	_, _, err := runCmd("delete", "web", "ghost", "--url", srv.URL, "--insecure", "--operator-key", keyPath)
 	if err == nil || !strings.Contains(err.Error(), `no workload entry named "ghost"`) {
 		t.Fatalf("expected the absent name to be refused, got %v", err)
 	}
-	if _, ok := cds.workload("web"); !ok {
+	if _, ok := ta.workload("web"); !ok {
 		t.Fatal("the refused delete removed an entry")
 	}
 }
@@ -473,28 +473,28 @@ func TestSecretsSummary(t *testing.T) {
 func TestWorkloadDeleteEntryARuleNowRefuses(t *testing.T) {
 	dir := t.TempDir()
 	keyPath, pub := newOperatorKeypair(t, dir, "op.key")
-	srv, cds := cdsTestServer(t, []*ecdsa.PublicKey{pub})
+	srv, ta := taTestServer(t, []*ecdsa.PublicKey{pub})
 	stored, err := pkgallowlist.ParseServedJSON([]byte(`{"schema":"c8s.allowlist/v1","workloads":{"relay":{"containers":[` +
 		`{"digest":"` + digA + `","command":{"policy":"exact","argv":["/app"]},"args":{"policy":"deny"}}],` +
 		`"egress":[{"cidr":"203.0.113.7/32","port":443}]}}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	cds.seedWorkload("relay", stored.Workloads["relay"])
-	cds.seedWorkload("keep", oneContainerEntry(t, digA))
-	cds.seedWorkload("old", oneContainerEntry(t, digA))
+	ta.seedWorkload("relay", stored.Workloads["relay"])
+	ta.seedWorkload("keep", oneContainerEntry(t, digA))
+	ta.seedWorkload("old", oneContainerEntry(t, digA))
 
 	_, _, err = runCmd("delete", "old", "--url", srv.URL, "--insecure", "--operator-key", keyPath)
 	if err == nil || !strings.Contains(err.Error(), `workload "relay"`) {
-		t.Fatalf("delete old = %v, want CDS to refuse the write naming relay", err)
+		t.Fatalf("delete old = %v, want Trust Authority to refuse the write naming relay", err)
 	}
 	if _, _, err := runCmd("delete", "relay", "--url", srv.URL, "--insecure", "--operator-key", keyPath); err != nil {
 		t.Fatalf("delete relay = %v, want nil", err)
 	}
-	if _, ok := cds.workload("relay"); ok {
+	if _, ok := ta.workload("relay"); ok {
 		t.Fatal("relay survived its delete")
 	}
-	if _, ok := cds.workload("keep"); !ok {
+	if _, ok := ta.workload("keep"); !ok {
 		t.Fatal("an entry the delete did not name was lost")
 	}
 }

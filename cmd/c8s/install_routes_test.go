@@ -118,7 +118,7 @@ func TestUpstreamRoutesApply(t *testing.T) {
 	}
 }
 
-// signedEnvelope is what CDS serves after an operator stored manifest.
+// signedEnvelope is what Trust Authority serves after an operator stored manifest.
 func signedEnvelope(t *testing.T, manifest []byte) (pkgroutes.Envelope, string) {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -134,14 +134,14 @@ func signedEnvelope(t *testing.T, manifest []byte) (pkgroutes.Envelope, string) 
 		t.Fatal(err)
 	}
 	var env pkgroutes.Envelope
-	cds := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	ta := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		token, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 		env = pkgroutes.Envelope{Manifest: body, Token: token}
 		w.WriteHeader(http.StatusNoContent)
 	}))
-	defer cds.Close()
-	c, err := routesclient.New(cds.URL, cds.Client())
+	defer ta.Close()
+	c, err := routesclient.New(ta.URL, ta.Client())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,7 +228,7 @@ func TestStoredManifest(t *testing.T) {
 }
 
 // TestStoredManifestKeysFromValues: a stored manifest verifies against the
-// keys a -f file gives CDS when --operator-keys is absent.
+// keys a -f file gives Trust Authority when --operator-keys is absent.
 func TestStoredManifestKeysFromValues(t *testing.T) {
 	stored, err := testUpstream.apply(&pkgroutes.Manifest{MaxAge: time.Hour}, time.Now())
 	if err != nil {
@@ -280,7 +280,7 @@ func TestStoredManifestKeysFromValues(t *testing.T) {
 
 // TestWriteUpstreamRoutes: the fallback leads with `c8s routes add`, which
 // keeps stored routes and the requested max-age and revision, and offers `put`
-// of a new manifest only when install sent no write and CDS may store none.
+// of a new manifest only when install sent no write and Trust Authority may store none.
 func TestWriteUpstreamRoutes(t *testing.T) {
 	const (
 		add          = "c8s routes add --new --host app.example --path / --address c8s-web.ws.svc.cluster.local:8443 --workload web --max-age 2h0m0s --operator-keys"
@@ -302,8 +302,8 @@ func TestWriteUpstreamRoutes(t *testing.T) {
 		want     []string
 		wantNot  []string
 	}{
-		{"CDS may store none", nil, refused, 0, []string{add, addOtherHost, replaces, "c8s routes put "}, []string{"--revision"}},
-		{"CDS stores one", nil, storedManifestError{refused}, 0, []string{add, addOtherHost}, []string{"c8s routes put "}},
+		{"Trust Authority may store none", nil, refused, 0, []string{add, addOtherHost, replaces, "c8s routes put "}, []string{"--revision"}},
+		{"Trust Authority stores one", nil, storedManifestError{refused}, 0, []string{add, addOtherHost}, []string{"c8s routes put "}},
 		{"write refused", stored, refused, 0, []string{add}, []string{"c8s routes put "}},
 		{"--routes-revision", nil, nil, 7, []string{addRevision, addRevision2}, nil},
 		{"--routes-revision refused", nil, storedManifestError{revisionError{refused}}, 7, []string{add}, []string{"--revision", "c8s routes put "}},
@@ -312,7 +312,7 @@ func TestWriteUpstreamRoutes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			resetCLIState(t)
 			installRoutesOut = filepath.Join(t.TempDir(), "routes.json")
-			installCDS = &cdsPin{path: "cds-pin.json"}
+			installTA = &taPin{path: "cds-pin.json"}
 			installRoutesMaxAge, installRoutesRevision = 2*time.Hour, tc.revision
 			var out bytes.Buffer
 			if err := writeUpstreamRoutes(&out, testUpstream, "https://10.9.9.9:8443", map[string]adoptedEntry{"web": {}}, tc.manifest, tc.cause); err != nil {
@@ -444,12 +444,12 @@ func TestPreflightUpstreamRoutes(t *testing.T) {
 		{name: "upstream without key", upstream: "web"},
 		{name: "max age below a second", upstream: "web", maxAge: "500ms", wantErr: "--routes-max-age"},
 		{name: "max age above D4", upstream: "web", maxAge: "600000h", wantErr: "--routes-max-age"},
-		{name: "unpinned CDS", upstream: "web", key: key, keys: pub, wantErr: "unpinned endpoint"},
+		{name: "unpinned Trust Authority", upstream: "web", key: key, keys: pub, wantErr: "unpinned endpoint"},
 		{name: "key in --operator-keys", upstream: "web", key: key, keys: pub, pinned: true},
 		{name: "key in cds.operatorKeys", upstream: "web", key: key, values: []string{values}, pinned: true},
-		{name: "no keys for CDS", upstream: "web", key: key, pinned: true, wantErr: "pass --operator-keys"},
+		{name: "no keys for Trust Authority", upstream: "web", key: key, pinned: true, wantErr: "pass --operator-keys"},
 		{name: "a later file empties cds.operatorKeys", upstream: "web", key: key, values: []string{values, emptied}, pinned: true, wantErr: "pass --operator-keys"},
-		{name: "key CDS does not trust", upstream: "web", key: key, keys: otherPub, pinned: true, wantErr: "not among the operator keys"},
+		{name: "key Trust Authority does not trust", upstream: "web", key: key, keys: otherPub, pinned: true, wantErr: "not among the operator keys"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -457,7 +457,7 @@ func TestPreflightUpstreamRoutes(t *testing.T) {
 			installUpstream, installOperatorKey, installOperatorKeys = tc.upstream, tc.key, tc.keys
 			installValues = tc.values
 			if tc.pinned {
-				installCDS = &cdsPin{path: cdsPinFile(t, []string{"app"}, "192.0.2.0/24")}
+				installTA = &taPin{path: taPinFile(t, []string{"app"}, "192.0.2.0/24")}
 			}
 			installRoutesOutSet, installRoutesMaxAgeSet = tc.outSet, tc.maxAgeSet
 			installRoutesRevision = tc.revision
@@ -526,7 +526,7 @@ func TestCheckServedEntry(t *testing.T) {
 		wantErr   string
 	}{
 		{"ours alone", map[string]pkgallowlist.Workload{"web": ours}, pod, ""},
-		{"stale entry kept by a persistent CDS", map[string]pkgallowlist.Workload{"web": stale}, pod, "does not describe the pod"},
+		{"stale entry kept by a persistent Trust Authority", map[string]pkgallowlist.Workload{"web": stale}, pod, "does not describe the pod"},
 		{"no entry", map[string]pkgallowlist.Workload{}, pod, "serves no allowlist entry"},
 		{"leftover per-digest entry", map[string]pkgallowlist.Workload{"web": ours, "web-aaaaaaaaaaaa": perDigest}, pod, "web, web-aaaaaaaaaaaa"},
 		{"another entry names it", map[string]pkgallowlist.Workload{"web": stale, "old": ours}, pod, "entry old, not web"},
@@ -567,7 +567,7 @@ func want2digest(t *testing.T, s string) types.Digest {
 	return d
 }
 
-// TestPutUpstreamRoutesReturnsARefusedManifest: when CDS refuses the write,
+// TestPutUpstreamRoutesReturnsARefusedManifest: when the Trust Authority refuses the write,
 // putUpstreamRoutes hands back the manifest it built, for --routes-out.
 func TestPutUpstreamRoutesReturnsARefusedManifest(t *testing.T) {
 	resetCLIState(t)
@@ -597,7 +597,7 @@ func TestPutUpstreamRoutesReturnsARefusedManifest(t *testing.T) {
 }
 
 // TestPutUpstreamRoutesLostRace: install sends the digest of the manifest it
-// verified as If-Match; when another write lands first, CDS answers 412 and
+// verified as If-Match; when another write lands first, Trust Authority answers 412 and
 // the fallback still writes --routes-out with the add commands.
 func TestPutUpstreamRoutesLostRace(t *testing.T) {
 	stored, err := testUpstream.apply(&pkgroutes.Manifest{MaxAge: time.Hour}, time.Now())
@@ -681,7 +681,7 @@ func TestPutUpstreamRoutesRevisionBelowStored(t *testing.T) {
 	}
 }
 
-// TestDeliverUpstreamRoutesKeepsTheManifest: when install cannot reach CDS
+// TestDeliverUpstreamRoutesKeepsTheManifest: when install cannot reach Trust Authority
 // after the release changed the cluster, the manifest still lands in
 // --routes-out with the command that stores it.
 func TestDeliverUpstreamRoutesKeepsTheManifest(t *testing.T) {
@@ -691,10 +691,10 @@ func TestDeliverUpstreamRoutesKeepsTheManifest(t *testing.T) {
 	var out bytes.Buffer
 	digest, err := deliverUpstreamRoutes(context.Background(), &out, testUpstream, "https://127.0.0.1:1", nil)
 	if err == nil || !strings.Contains(err.Error(), "add the route as printed above") {
-		t.Fatalf("deliverUpstreamRoutes() = %v, want the unreachable CDS and the fallback", err)
+		t.Fatalf("deliverUpstreamRoutes() = %v, want the unreachable Trust Authority and the fallback", err)
 	}
 	if digest != "" {
-		t.Errorf("deliverUpstreamRoutes() digest = %q, want none: CDS stores no manifest", digest)
+		t.Errorf("deliverUpstreamRoutes() digest = %q, want none: Trust Authority stores no manifest", digest)
 	}
 	b, err := os.ReadFile(installRoutesOut)
 	if err != nil {
@@ -708,7 +708,7 @@ func TestDeliverUpstreamRoutesKeepsTheManifest(t *testing.T) {
 	}
 }
 
-// The digest install hands a client names the bytes CDS stored, not another
+// The digest install hands a client names the bytes Trust Authority stored, not another
 // encoding of the same routes.
 func TestPutUpstreamRoutesPinsTheStoredBytes(t *testing.T) {
 	resetCLIState(t)

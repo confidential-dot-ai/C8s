@@ -13,7 +13,7 @@
   restartPolicy: Always
   command: {{ include "c8s.entrypoint" (dict "root" $root "valuePath" "image") }}
   {{- /* This container holds the credentials role, so the node hands it the
-         one CDS its pod may reach and refuses an argument naming another
+         one Trust Authority its pod may reach and refuses an argument naming another
          (cmdsutil.ResolveCDSEndpoint). */}}
   args:
     - get-cert

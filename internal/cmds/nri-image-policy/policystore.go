@@ -8,7 +8,7 @@ import (
 )
 
 // policySnapshot is an immutable admission view: an Index built from the
-// last-applied CDS pull, tagged with that pull's version.
+// last-applied Trust Authority pull, tagged with that pull's version.
 // Swapped as a unit; policyStore checks the base allowlist ahead of it.
 type policySnapshot struct {
 	index *allowlist.Index
@@ -179,14 +179,14 @@ func (s *policyStore) needsVariableEvidence(digest string) bool {
 }
 
 // apply installs the pulled document at version, unless version is below the
-// applied one — an epoch rollback a withheld/rolled-back CDS must not use to
+// applied one — an epoch rollback a withheld/rolled-back Trust Authority must not use to
 // loosen a tightened policy. Reports whether it applied. Single-writer: only the
 // pull loop calls it, so the read-compare-store needs no lock against other
 // writers.
 //
 // The applied version is process-local (newPolicyStore starts at 0), so
 // rollback is only rejected within a process lifetime: after a restart the first
-// pull is trusted, whatever its version, and state re-syncs from CDS. Surviving a
+// pull is trusted, whatever its version, and state re-syncs from the Trust Authority. Surviving a
 // restart would need a monotonic counter the host cannot reset — out of scope; on
 // the untrusted host a persisted file is itself host-controlled. See
 // docs/allowlist-and-capabilities.md.
@@ -198,7 +198,7 @@ func (s *policyStore) apply(pulled *allowlist.Allowlist, version uint64) bool {
 	return true
 }
 
-// raiseAppliedVersion raises the applied version to version, at which CDS
+// raiseAppliedVersion raises the applied version to version, at which Trust Authority
 // still serves the document the last pull named: a write that moved the
 // version and kept the bytes raises the version later pulls are judged
 // against. It never lowers it.

@@ -72,7 +72,7 @@ grep -Eq '^CONFOS_REF=[0-9a-f]{40}$' <<<"$exported" ||
 grep -Fxq 'CONFOS_TAG=v1.0.0' <<<"$exported" ||
   fail "the export must carry the tag beside the SHA, for hygiene and pin-watch"
 grep -Fxq 'ATTESTATION_API_DIGEST=sha256:4444444444444444444444444444444444444444444444444444444444444444' <<<"$exported" ||
-  fail "the export must carry the attestation-api digest the CDS build fetches"
+  fail "the export must carry the attestation-api digest the Trust Authority build fetches"
 pass
 
 exported=$(bash "$script" export --manifest "$source_manifest" \
@@ -124,7 +124,7 @@ result=$(bash "$script" update --manifest "$retag_fixture" \
 [[ "$result" == "updated node-image" ]] || fail "a retag was not treated as drift"
 pass
 
-# A moved attestation-api digest under the same ref is drift: the CDS image
+# A moved attestation-api digest under the same ref is drift: the Trust Authority image
 # fetches those bytes.
 redigest_fixture=$(new_fixture redigest)
 result=$(bash "$script" update --manifest "$redigest_fixture" \

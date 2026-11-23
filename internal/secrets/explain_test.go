@@ -203,7 +203,7 @@ func TestExplainReportsEarlyRefusals(t *testing.T) {
 			t.Fatalf("refusal = %q", resp.Refusal)
 		}
 	})
-	// A CDS whose bound never resolved must refuse rather than dereference it.
+	// A Trust Authority whose bound never resolved must refuse rather than dereference it.
 	t.Run("no bound at all", func(t *testing.T) {
 		eh := newExplainHarness(t)
 		eh.h.InventoryHosts = nil
@@ -272,7 +272,7 @@ func TestExplainRequiresOperatorAuth(t *testing.T) {
 	}
 }
 
-// The ID is bounded by the same rule CDS applies when it stamps one on a leaf,
+// The ID is bounded by the same rule Trust Authority applies when it stamps one on a leaf,
 // so the diagnostic accepts exactly the IDs that can exist and refuses the rest
 // before dialling anything.
 func TestExplainRejectsAMalformedSandboxID(t *testing.T) {

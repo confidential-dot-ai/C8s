@@ -14,7 +14,7 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
 )
 
-// The journal is the append-only history of every allowlist document CDS
+// The journal is the append-only history of every allowlist document Trust Authority
 // served: journal_object holds each document's canonical bytes under its
 // digest, journal_event the order they were served in, journal_signature the
 // operator write token that wrote a document, and used_token the tokens
@@ -66,7 +66,7 @@ func objectDigest(b []byte) string {
 
 // Served returns the canonical bytes of the document the store serves now and
 // the version it serves them at: the head of the history, which publishTx
-// keeps current in every change and startJournal sets before CDS serves.
+// keeps current in every change and startJournal sets before Trust Authority serves.
 func (s *Store) Served() (body []byte, version string, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -145,8 +145,8 @@ func (s *Store) inEffect(now time.Time) (version, digest string, depth int, err 
 
 // startJournal checks that every journaled document still hashes to its
 // digest, then journals the document the store serves now if it is not
-// already the head, so a fresh database starts its history with it. CDS calls
-// it before serving; an error means the store is corrupt and CDS must not
+// already the head, so a fresh database starts its history with it. Trust Authority calls
+// it before serving; an error means the store is corrupt and Trust Authority must not
 // start.
 func (s *Store) startJournal(at time.Time) error {
 	s.mu.Lock()
@@ -225,7 +225,7 @@ func publishTx(tx *sql.Tx, at time.Time) ([]byte, error) {
 }
 
 // History is what GET /allowlist/history serves: the host privilege the
-// allowlist declared and every document CDS served, oldest first.
+// allowlist declared and every document Trust Authority served, oldest first.
 type History struct {
 	HostPrivilege HostPrivilege  `json:"hostPrivilege"`
 	Entries       []HistoryEntry `json:"entries"`

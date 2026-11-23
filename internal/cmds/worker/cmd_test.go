@@ -10,13 +10,13 @@ import (
 	"testing"
 )
 
-// newFiles writes the CDS pin and CA files `worker new` reads.
+// newFiles writes the Trust Authority pin and CA files `worker new` reads.
 func newFiles(t *testing.T, nodeSubnet string) (pinPath, caPath string) {
 	t.Helper()
 	dir := t.TempDir()
 	pinPath = filepath.Join(dir, "cds-pin.json")
 	caPath = filepath.Join(dir, "ca.crt")
-	if err := os.WriteFile(pinPath, []byte(testCDSPin(t, cdsConfig(t, nodeSubnet))), 0o600); err != nil {
+	if err := os.WriteFile(pinPath, []byte(testTAPin(t, taConfig(t, nodeSubnet))), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(caPath, []byte(selfSigned(t, caTemplate())), 0o600); err != nil {
@@ -71,8 +71,8 @@ func TestNewWritesTheDocumentItsFlagsName(t *testing.T) {
 	}
 	pin, _ := os.ReadFile(pinPath)
 	ca, _ := os.ReadFile(caPath)
-	if doc.CDS.Address != "cds.acme.example:8443" || doc.CDS.Measurements != string(pin) || doc.CDS.PinFloor != 3 {
-		t.Fatalf("cds = %+v, want the flags' address, floor and the pin file's bytes", doc.CDS)
+	if doc.TA.Address != "cds.acme.example:8443" || doc.TA.Measurements != string(pin) || doc.TA.PinFloor != 3 {
+		t.Fatalf("cds = %+v, want the flags' address, floor and the pin file's bytes", doc.TA)
 	}
 	if doc.TLSSAN != "c8s.acme.example" {
 		t.Fatalf("tlsSAN = %q, want the flag's", doc.TLSSAN)

@@ -1,10 +1,10 @@
 // Matched workload: the single allowlist entry whose (digest, argv) policy the
 // pod's attested container inventory uniquely matched at issuance, stamped by
-// CDS as an X.509 extension in the CA-signed area (docs/armtls.md, "Matched
+// Trust Authority as an X.509 extension in the CA-signed area (docs/armtls.md, "Matched
 // workload").
 //
-// This is a statement BY CDS, not by the requester: the match happens on the
-// CDS side after the requester's evidence is frozen, so it lives outside the
+// This is a statement BY Trust Authority, not by the requester: the match happens on the
+// Trust Authority side after the requester's evidence is frozen, so it lives outside the
 // requester's REPORTDATA by construction. Like the sandbox ID, the mesh CA
 // signature — never the hardware evidence — is what vouches for it, and it is
 // enforceable only where a CA chain has been verified.
@@ -14,7 +14,7 @@
 // error, so an ambiguous set never earns a stamp. The allowlist version and
 // canonical digest pin WHICH policy document the match was decided under, so a
 // relying party holding the same canonical bytes can detect skew between the
-// policy it pinned and the one CDS enforced.
+// policy it pinned and the one Trust Authority enforced.
 
 package armtls
 

@@ -65,7 +65,7 @@ func (h Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 }
 
 // HandleReplaceAll handles PUT /allowlist: validate the full document and swap
-// it in atomically. CDS assigns the new version.
+// it in atomically. Trust Authority assigns the new version.
 //
 // If-Match makes the swap conditional on the version: the strong tag "N"
 // matches version N, the version GET serves in its VersionHeader. A refused
@@ -158,7 +158,7 @@ func (h Handler) authorize(w http.ResponseWriter, r *http.Request) ([]byte, bool
 
 // ReadAuthorized reads the body, capped at maxBytes, and authorizes it. On
 // failure it has answered the request; a nil authorizer refuses every write.
-// Every write CDS authorizes as an allowlist write goes through it.
+// Every write Trust Authority authorizes as an allowlist write goes through it.
 func (a WriteAuthorizer) ReadAuthorized(w http.ResponseWriter, r *http.Request, maxBytes int64) ([]byte, bool) {
 	if a == nil {
 		w.WriteHeader(http.StatusUnauthorized)
@@ -215,7 +215,7 @@ func readFailed(w http.ResponseWriter, err error) {
 	http.Error(w, "internal server error", http.StatusInternalServerError)
 }
 
-// HandleHistory handles GET /allowlist/history: every document CDS served,
+// HandleHistory handles GET /allowlist/history: every document Trust Authority served,
 // oldest first, and the host privilege the allowlist declared.
 func (h Handler) HandleHistory(w http.ResponseWriter, _ *http.Request) {
 	history, err := h.Allowlist.History()

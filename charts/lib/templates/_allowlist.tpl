@@ -413,7 +413,7 @@
 
 {{/* Operator entries that pin at most the command — args, env and mounts any,
      command any or exact — as digest -> {image, entrypoint}, entrypoint empty
-     for command any. Both shapes can start a component before CDS is
+     for command any. Both shapes can start a component before the Trust Authority is
      reachable, so both feed the base and cover a component for the render
      guard. An entry that pins args, env or mounts is seed-only. */ -}}
 {{- define "c8s.openArgsEntries" -}}
@@ -720,7 +720,7 @@ null
      cut to 41 characters, then the first 8 hex of sha256 over its
      containers without their image labels, which matching ignores, 63
      characters at most. A configuration change that alters
-     an argv, env or mount table names a new entry, which CDS's seeding adds
+     an argv, env or mount table names a new entry, which Trust Authority's seeding adds
      beside the old one (it retires an old one only when it left a
      component's args, mounts or env open, or an override replaces it). See
      ../helpers/allowlist/README.md#entry-names. */ -}}
@@ -884,7 +884,7 @@ null
 {{ $workloads | toJson }}
 {{- end -}}
 
-{{/* The seed CDS serves, as JSON. Takes root and templates, the chart's
+{{/* The seed Trust Authority serves, as JSON. Takes root and templates, the chart's
      component pod templates. */}}
 {{- define "c8s.allowlistSeedJSON" -}}
 {{- $root := .root -}}

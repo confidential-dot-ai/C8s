@@ -52,7 +52,7 @@ func TestPodRulesetServesOwnPortsOnlyInTheRouterNamespace(t *testing.T) {
 }
 
 // A member pod's ruleset carries the exits it was granted and no others: the
-// CDS its credential clients are bound to is theirs, not the workload's.
+// Trust Authority its credential clients are bound to is theirs, not the workload's.
 func TestPodRulesetCarriesOnlyTheGrantedExits(t *testing.T) {
 	policy := meshRoles()
 	policy.Roles = append(policy.Roles, roleBinding{
@@ -71,9 +71,9 @@ func TestPodRulesetCarriesOnlyTheGrantedExits(t *testing.T) {
 	}
 }
 
-// The injected credential clients verify CDS evidence through the
+// The injected credential clients verify Trust Authority evidence through the
 // attestation-api on their own node, so the ruleset admits that port at this
-// node's address — not the CDS's, which an off-node CDS makes another host
+// node's address — not the Trust Authority's, which an off-node Trust Authority makes another host
 // entirely — and the clients' identity alone reaches it.
 func TestPodRulesetAdmitsTheCredentialAttestationPort(t *testing.T) {
 	policy := meshRoles()
@@ -96,7 +96,7 @@ func TestPodRulesetAdmitsTheCredentialAttestationPort(t *testing.T) {
 		t.Fatalf("credential destinations = %+v, want %+v", credentials.Destinations, want)
 	}
 	if credentials.OutsidePort != 8443 {
-		t.Fatalf("credential outside port = %d, want the port its CDS serves on", credentials.OutsidePort)
+		t.Fatalf("credential outside port = %d, want the port its Trust Authority serves on", credentials.OutsidePort)
 	}
 }
 
@@ -115,7 +115,7 @@ func TestRulesetPolicyNamesThisNodesVerifier(t *testing.T) {
 	}
 }
 
-// Standalone Pod capture stays distinct from the member policy's CDS port
+// Standalone Pod capture stays distinct from the member policy's Trust Authority port
 // exceptions when both are rendered through podRuleset.
 func TestStandalonePodRulesetKeepsSignedPeersWithoutCredentialBypass(t *testing.T) {
 	policy := meshRoles()

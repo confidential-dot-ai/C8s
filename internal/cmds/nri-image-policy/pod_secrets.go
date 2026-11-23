@@ -23,8 +23,8 @@ import (
 
 // Pod secret delivery (docs/pod-secrets.md). The signed pod manifest names
 // the secrets its pod reads in podSecretsAnnotation. Once the pod holds its
-// CDS leaf, the guest broker asks CDS for each over mutual TLS with that leaf
-// and the client document; CDS brokers the release to the KMS. The values go
+// Trust Authority leaf, the guest broker asks Trust Authority for each over mutual TLS with that leaf
+// and the client document; Trust Authority brokers the release to the KMS. The values go
 // into the pod's memory emptyDir podSecretVolume, which only workload
 // containers may mount, read-only. One fetch per pod: no rotation.
 const (
@@ -106,8 +106,8 @@ func (p *plugin) podSecretReader(pod *api.PodSandbox, ctr *api.Container, role s
 	return nil
 }
 
-// podLeafCertificate presents the pod's current CDS leaf, as published to
-// the mesh endpoint's credential volume, to CDS.
+// podLeafCertificate presents the pod's current Trust Authority leaf, as published to
+// the mesh endpoint's credential volume, to the Trust Authority.
 func (p *plugin) podLeafCertificate(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
 	p.podMu.Lock()
 	b := p.podBroker
@@ -135,7 +135,7 @@ func (p *plugin) podLeafCertificate(*tls.CertificateRequestInfo) (*tls.Certifica
 	return &cert, nil
 }
 
-// runPodSecretWorker fetches the manifest's secrets once, retrying until CDS
+// runPodSecretWorker fetches the manifest's secrets once, retrying until the Trust Authority
 // releases all of them: before the first leaf is published, and while the
 // KMS refuses, a request fails and is tried again.
 func (p *plugin) runPodSecretWorker() {
@@ -149,7 +149,7 @@ func (p *plugin) runPodSecretWorker() {
 		return
 	}
 	if b.secretsClient == nil {
-		p.logger.Error("Pod secrets requested but the broker has no CDS client for them")
+		p.logger.Error("Pod secrets requested but the broker has no Trust Authority client for them")
 		return
 	}
 	doc := []byte(p.cfg.Pod.ClientDocument)
@@ -212,12 +212,12 @@ func (p *plugin) fetchPodSecrets(ctx context.Context, client *http.Client, names
 	return nil
 }
 
-func requestPodSecret(ctx context.Context, client *http.Client, cdsURL, name string, doc []byte) ([]byte, error) {
+func requestPodSecret(ctx context.Context, client *http.Client, taURL, name string, doc []byte) ([]byte, error) {
 	body, err := json.Marshal(secretbroker.PodRequest{Secret: name, ClientDocument: doc})
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimSuffix(cdsURL, "/")+secretbroker.PodRoute, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimSuffix(taURL, "/")+secretbroker.PodRoute, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -232,7 +232,7 @@ func requestPodSecret(ctx context.Context, client *http.Client, cdsURL, name str
 		return nil, fmt.Errorf("read Pod secret response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("CDS answered %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+		return nil, fmt.Errorf("the Trust Authority answered %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
 	}
 	var answer secretbroker.PodResponse
 	err = json.Unmarshal(raw, &answer)

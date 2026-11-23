@@ -23,8 +23,8 @@ can create replacement Pods in their normal way.
 Use a validated TDX Pod image, its exact published `manifest.json`, and a Cloud
 API/catalog launch contract that accept `c8s-launch/v2`. Historical v1 images and
 catalog entries do not satisfy this requirement. The Pod measurement contract
-does not support SNP; the separate measured CDS image may use another TEE.
-CDS must authorize the Pod image and provider's Pod launch public key in its
+does not support SNP; the separate measured Trust Authority (TA) image may use another TEE.
+The TA must authorize the Pod image and provider's Pod launch public key in its
 measured Pod image policy; see [the Pod launch contract](operator.md#pod-cvm).
 Use a Pod signing key that signs nothing else.
 
@@ -51,8 +51,8 @@ and size placeholders with compatible Cloud values:
   "image": "c8s-pod@V2_COMPATIBLE_CATALOG_VERSION",
   "imageManifestFile": "manifest.json",
   "launchKeyFile": "pod.key",
-  "cdsAddress": "cds.example.com:8443",
-  "cdsImagePolicyFile": "cds.json",
+  "cdsAddress": "ta.example.com:8443",
+  "cdsImagePolicyFile": "ta.json",
   "workloadsFile": "workloads.json",
   "clusterID": "demo",
   "size": "CLOUD_SIZE",
@@ -73,14 +73,14 @@ characters, letters, digits, `-`, `_` and `.`, starting and ending with a letter
 or digit. It names this provider's records, its Node and its Cloud instances,
 and the provider refuses to start without a valid one.
 
-`cdsAddress` names the external CDS host and port; `cdsImagePolicyFile` contains
-the generated policy binding every admitted CDS image to the same exact measured
-CDS configuration. Both are required. A DNS host and a different CDS image or
+`cdsAddress` names the external TA host and port; `cdsImagePolicyFile` contains
+the generated policy binding every admitted TA image to the same exact measured
+TA configuration. Both are required. A DNS host and a different TA image or
 TEE are supported. Every generic launch
-document carries this explicit CDS trust. Changing it affects new records only;
+document carries this explicit TA trust. Changing it affects new records only;
 existing Pod records retain their signed bytes.
 
-The provider takes no CDS pin decree: after a CDS image roll, deploy an updated
+The provider takes no TA pin decree: after a TA image roll, deploy an updated
 `cdsImagePolicyFile`. Existing frozen Pod and assignment records keep their
 original trust.
 
@@ -100,7 +100,7 @@ kubectl -n c8s-system create secret generic pod-cvm-provider \
   --from-file=cloud-token=provider/cloud-token \
   --from-file=manifest.json=provider/manifest.json \
   --from-file=pod.key=provider/pod.key \
-  --from-file=cds.json=provider/cds.json \
+  --from-file=ta.json=provider/ta.json \
   --from-file=workloads.json=provider/workloads.json
 ```
 
@@ -138,7 +138,7 @@ c8s operator --pod-cvm-provider-config /etc/c8s/pod-cvm/config.json ...
 
 `--pod-cvm-provider` binds the provider's cluster grants and its Secret grant
 in `c8s-system` to the user `c8s-operator`. The provider is untrusted for
-confidentiality, like the control plane: a pod's attestation and the CDS
+confidentiality, like the control plane: a pod's attestation and the TA
 replay of its measured journal protect it, and the signed document and
 assignment protect integrity and availability.
 
@@ -265,8 +265,8 @@ after creation, and refuses a FieldRef to it.
    `/run/c8s/client-document`.
 3. The guest puts `H = SHA-256(document)` into its Pod claims as
    `client_document_digest`. The quote that authorizes each certificate
-   binds the claims, so CDS issues nothing for claims with another digest.
-4. CDS stamps H on the Pod's leaf as the client document digest extension
+   binds the claims, so the TA issues nothing for claims with another digest.
+4. The TA stamps H on the Pod's leaf as the client document digest extension
    ([certificate-extensions.md](certificate-extensions.md)).
 
 A Pod without the annotation has an empty document: no file, no claim and no
@@ -285,9 +285,9 @@ c8s verify --kind workload --mesh-ca mesh-ca.pem \
 The verdict prints the digest and the agent label, and fails unless the leaf
 chains to the mesh CA and names the SHA-256 of `document.bin`.
 
-A Pod CVM leaf carries no hardware evidence: CDS issued it after verifying
+A Pod CVM leaf carries no hardware evidence: the TA issued it after verifying
 the Pod's attestation. So the verdict rests on the chain to the mesh CA, which
-you pinned after verifying CDS, and on the stamps (`--workload`,
+you pinned after verifying the TA, and on the stamps (`--workload`,
 `--client-document`, `--sandbox-id`). Pins on hardware evidence, such as
 `--measurements` or `--image-manifest`, fail against it.
 

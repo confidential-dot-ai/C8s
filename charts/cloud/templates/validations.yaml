@@ -1,9 +1,8 @@
-{{- $_ := include "c8s.validatedCDSPin" . -}}
-{{- include "c8s.checkCDSAddress" .Values.cds.address -}}
-{{- /* The operator keys the router holds the route manifest to, which it reads
-       from its own namespace (templates/cds-operator-keys.yaml). */ -}}
-{{- if and .Values.cds.operatorKeys (not (contains "BEGIN PUBLIC KEY" .Values.cds.operatorKeys)) -}}
-{{- fail "VALIDATION_ERROR kind=cds_operator_keys_content: cds.operatorKeys must be the PEM content of the operator public-key bundle, not a file path — use `c8s install --operator-keys <file>` or helm --set-file cds.operatorKeys=<file>" -}}
+{{- $ta := include "c8s.trustAuthority" . | fromJson -}}
+{{- include "c8s.validateTAPin" $ta.measurementsConfig -}}
+{{- include "c8s.checkTAAddress" $ta.address -}}
+{{- if and $ta.operatorKeys (not (contains "BEGIN PUBLIC KEY" $ta.operatorKeys)) -}}
+{{- fail "VALIDATION_ERROR kind=cds_operator_keys_content: ta.operatorKeys must contain the PEM operator public-key bundle. Pass `c8s install --operator-keys <file>` or `helm --set-file ta.operatorKeys=<file>`." -}}
 {{- end -}}
 {{- /* The keys that name the cluster's confidential VMs. A stock values file
        values-<platform>.yaml sets all three; nothing else can know them.

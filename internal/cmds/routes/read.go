@@ -25,10 +25,10 @@ func newShowCmd(o *options) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "show",
 		Short: "Print the stored route manifest, its revision and digest",
-		Long: `Fetch the signed route manifest from CDS and print its revision, notBefore,
+		Long: `Fetch the signed route manifest from the Trust Authority and print its revision, notBefore,
 maxAgeSeconds, route digest (SHA-256 of the manifest bytes, the value a client
 pins) and routes. --raw prints the manifest bytes, ready to edit and 'put'.
--o json prints the envelope CDS serves.`,
+-o json prints the envelope Trust Authority serves.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if output != "text" && output != "json" {

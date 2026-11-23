@@ -58,15 +58,15 @@ func assignmentFixture(t *testing.T) (*assignmentService, *ecdsa.PrivateKey, *ec
 		SchemaVersion: podlaunch.SchemaVersion, ClusterID: "cluster", Role: podlaunch.Pod,
 		Node:                 podlaunch.Node{Name: "guest"},
 		PodOperatorPublicKey: public(key),
-		CDS:                  cmdsutil.CDS{Address: "cds.example.org:8443", Measurements: testutil.CDSPinDocument(testutil.TestMeasurement, testutil.CDSLaunchFile)},
+		TA:                   cmdsutil.TA{Address: "cds.example.org:8443", Measurements: testutil.TAPinDocument(testutil.TestMeasurement, testutil.TALaunchFile)},
 		Image:                podlaunch.Image{Platform: "tdx", Measurement: strings.Repeat("11", 48), RTMRs: map[int]string{1: strings.Repeat("22", 48), 2: strings.Repeat("33", 48)}},
 	}
 	store := &memoryAssignmentStore{}
 	s, err := newAssignmentService(t.Context(), doc, store,
 		func(context.Context) (*ecdsa.PublicKey, error) { return &key.PublicKey, nil },
 		func(d *podlaunch.AssignedPod) (nodeservices.PodRuntime, error) {
-			if d.CDS != doc.CDS {
-				return nodeservices.PodRuntime{}, errors.New("assignment changed authenticated CDS trust")
+			if d.TA != doc.TA {
+				return nodeservices.PodRuntime{}, errors.New("assignment changed authenticated Trust Authority trust")
 			}
 			return nodeservices.PodRuntime{UID: d.Pod.UID, Policy: []byte(d.Entries), Manifest: []byte(d.Pod.Manifest)}, nil
 		},

@@ -71,14 +71,14 @@ binding](#pod-image-binding)), and the runtime wrapper starts the created
 process only with a one-use permission from the live plugin
 ([node-exec-mode.md](node-exec-mode.md#pod-admission-before-start)).
 
-CDS — the Certificate Distribution Service, the VM outside the cluster that
+The Trust Authority (TA) — the VM outside the cluster that
 serves this policy and signs each pod's certificate — checks again when it
 issues a pod's certificate: it asks that pod's own admission inventory which
 images the sandbox runs and requires every reported digest to be allowlisted,
 against one atomic snapshot ([armtls.md](armtls.md#sandbox-identity)). That is
 membership, not the whole entry, because issuance lands mid-lifecycle, where the
 running set is a subset of what the pod declares; when the set does match
-exactly one entry, CDS stamps the leaf with its name
+exactly one entry, the TA stamps the leaf with its name
 ([armtls.md](armtls.md#matched-workload)). Neither point gates a combination of
 images, since the plugin sees one container at a time: secret release is where a
 whole entry is required ([secrets.md](secrets.md)).
@@ -110,7 +110,7 @@ digest its applied policy lists; missing evidence fails closed. To start using
 1. Upgrade every allowlist consumer to one release, then publish the policies
    ([upgrade.md](upgrade.md)).
 2. Wait until every affected node logs `pull loop: allowlist refreshed` — or
-   `initial allowlist pulled from CDS`, if it started after you published — at a
+   `initial allowlist pulled from the Trust Authority`, if it started after you published — at a
    version at or above the one `c8s allowlist list` reports.
 3. Recreate the affected pods; a restarted container keeps the sandbox's earlier
    records, which the match must admit too.
@@ -272,18 +272,18 @@ through into a running container of its bytes, YAML-only for the same reason
 ## Writing policy
 
 Reads are unauthenticated: consumers fetch `GET /allowlist` over armTLS —
-mutual TLS whose certificates carry TEE evidence — pinned to CDS's launch
+mutual TLS whose certificates carry TEE evidence — pinned to the TA's launch
 measurement, and that attested channel is the document's integrity in transit.
-Writes are authorized by an operator EC key whose public half CDS pins: the CLI
+Writes are authorized by an operator EC key whose public half the TA pins: the CLI
 mints a short-lived token bound to the exact method, path, and body, so a
 captured token cannot be replayed against another method, path, or body, and
-each token authorizes one request, so it cannot be replayed at all (CDS answers
+each token authorizes one request, so it cannot be replayed at all (the TA answers
 a replay with 409).
 
 `PUT /allowlist` is the one write: it carries the whole document, and the token
 that authorized it is that document's signature ([below](#allowlist-history)).
 It takes `If-Match: "N"`, the strong tag of version N, the version that
-`GET /allowlist` serves in `X-C8s-Allowlist-Version`: CDS replaces the document
+`GET /allowlist` serves in `X-C8s-Allowlist-Version`: the TA replaces the document
 only while the version is still N and answers 412 otherwise, leaving the
 allowlist unchanged.
 A write without `If-Match` replaces the document unconditionally.
@@ -298,7 +298,7 @@ since its file is the whole document: run it again to see the new diff.
 
 Every node polls `GET /allowlist` every 5s, the `allowlist.pull.interval` the
 chart and the measured node image both fix, and refreshes when the document
-changes: CDS tags it with its digest,
+changes: the TA tags it with its digest,
 `"sha256:<hex>"`, and sends its version in `X-C8s-Allowlist-Version`, and the
 response carries `Cache-Control: no-store`. The document swaps wholesale, gated
 by that monotone version: a consumer applies a pull only if its version is not
@@ -306,9 +306,9 @@ below the last applied, and a 304 raises the last applied version to the one
 it names.
 
 Nodes ask for the allowlist in effect (`?requester=node`). The node plugin
-sends it over attested TLS to CDS; anything else sending it just gets the
+sends it over attested TLS to the TA; anything else sending it just gets the
 allowlist in effect. An allowlist write takes effect on nodes
-`--allowlist-node-delay` (30s) after it is written. CDS issues certificates
+`--allowlist-node-delay` (30s) after it is written. The TA issues certificates
 under it at once, and router certificates (`--router-cert-ttl`, 20s) last less
 than that, so any router still serving advertises it before it
 takes effect. A write replaced before it takes effect never does. The first
@@ -335,34 +335,34 @@ narrowing an entry stops its containers on every node within
 
 ## Bootstrap
 
-Two documents start the platform before CDS serves anything. The base allowlist
+Two documents start the platform before the TA serves anything. The base allowlist
 is the set of entries each plugin holds in its own boot config, checked ahead of
 every pulled snapshot and never changed by a pull, so a node admits the platform
-before CDS is reachable and a failed pull never drops it. The chart renders it
+before the TA is reachable and a failed pull never drops it. The chart renders it
 from `nriImagePolicy.bootstrapAllowlist`; a measured node image carries it in
 the floor its own build rendered, which it bakes at
 `/usr/lib/c8s/image-policy.yaml` and staging fills in and writes to
 `/etc/nri/conf.d/image-policy.yaml`, where the plugin reads it
 ([launch-configuration.md](launch-configuration.md#staging-a-worker-document)).
 
-The CDS seed is the component entries this release needs served. The chart
+The TA seed is the component entries this release needs served. The chart
 renders them into a ConfigMap from the resolved component digests, its
 argv-pinned platform entries, and
 `nriImagePolicy.bootstrapAllowlist.workloads`;
 `c8s install --allowlist-seed-out` writes the same document for
-`c8s cds config new`, which merges it with the operator's tenant workloads
-into the configuration the CDS VM boots on. The seed is a render of this
+`c8s ta config new`, which merges it with the operator's tenant workloads
+into the configuration the TA VM boots on. The seed is a render of this
 release under the flags the install was given, so it must be written with the
-flags the final install runs with, except `--cds-address` and `--cds-pin`,
-which name the CDS the seed is written before. `--chart`, `--platform`, `-f`,
+flags the final install runs with, except `--ta-address` and `--ta-pin`,
+which identify the TA once the seed has been generated. `--chart`, `--platform`, `-f`,
 `--operator-keys`, `--volumes`, `--workload-ref`, `--namespace` and
 `--release` all change the entries; an install whose flags differ from the
-seed's finds the CDS serving another shape and refuses. Each component entry's name
+seed's finds the TA serving another shape and refuses. Each component entry's name
 carries its image and the digests of its policy, so an image bump or a
 configuration change adds an entry beside the old one. Seeding runs once, at
 start: it adds every name the store lacks and retires the chart-generated
 shapes its seed replaces, leaving an operator entry under any other name
-untouched, so an operator edit survives until the CDS VM restarts and a
+untouched, so an operator edit survives until the TA VM restarts and a
 deleted entry returns then for as long as the configuration carries it.
 
 A cluster of workers runs no chart install, so it has no `--allowlist-seed-out` to
@@ -372,7 +372,7 @@ in its signed statement
 ([releases.md](releases.md#verify-an-allowlist-seed)):
 
 ```sh
-c8s cds config new --allowlist-seed allowlist-seed-sev-snp.json ...
+c8s ta config new --allowlist-seed allowlist-seed-sev-snp.json ...
 ```
 
 For a worker image built from a commit without a release, `c8s node-image
@@ -384,7 +384,7 @@ c8s node-image render --output-dir seed \
     --hardware-platform sev-snp --kube-version v1.36.6 \
     --image-digest sha256:<operator/get-cert digest> \
     --armtls-mesh-image-digest sha256:<armTLS mesh digest>
-c8s cds config new --allowlist-seed seed/allowlist-seed.json ...
+c8s ta config new --allowlist-seed seed/allowlist-seed.json ...
 ```
 
 The seed must be the release the worker image was built from: a seed from
@@ -392,8 +392,8 @@ another release leaves pods waiting in `c8s-cert-wait`.
 
 ## Allowlist history
 
-CDS keeps an append-only history of every document it served: a write that
-changes the document appends an entry, as does CDS's start when the document
+The TA keeps an append-only history of every document it served: a write that
+changes the document appends an entry, as does the TA's start when the document
 differs from the head. A policy digest is `sha256:<hex>` of the exact bytes
 `GET /allowlist` serves. The routes are unauthenticated reads:
 
@@ -417,12 +417,12 @@ before confirming it.
 `hostPrivilege` reports the host privilege the allowlist declared: an entry
 declares it with `hostPorts`, a container `capabilities`, or a `host` mount
 rule — a `nodeRootFile` rule names a measured node-image file and declares
-none. `declaredBySeed` is whether the measured seed this CDS booted on
+none. `declaredBySeed` is whether the measured seed this TA booted on
 declares any. `firstOperatorGrant` names, as `{"digest"}`, the document of the
 first operator write that served a declaration the document it replaced did
 not serve, and is `null` until one does; a write that moves a declaration to
 another entry name grants nothing, and no later write clears the record. Both
-last as long as the store: a CDS restart that starts from an empty database
+last as long as the store: a TA restart that starts from an empty database
 reports its seed again and no grant.
 
 ## Measured policy history
@@ -447,7 +447,7 @@ A Pod CVM (`role: pod`, see [operator.md](operator.md#pod-cvm)) measures each
 image digest it admits instead (`measure.rtmr3`, which excludes
 `allowlist.pull.measure_policies`: a boot has one RTMR[3] writer). The journal
 is seeded with the Pod launch key the initrd staged. The guest authenticates
-CDS with the separate image and launch-file policy in its signed launch
+the TA with the separate image and launch-file policy in its signed launch
 configuration. Fetched policies affect admission without extending this image
 journal, whose directory is never mounted into Pod containers.
 `c8s pod-status serve` carries the retained image list in its armTLS

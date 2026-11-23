@@ -99,7 +99,7 @@ func TestPutBlobNeverAsksToOverwrite(t *testing.T) {
 		t.Fatalf("put: %v", err)
 	}
 	if p.gotReq.Overwrite {
-		t.Fatal("create asked CDS to overwrite")
+		t.Fatal("create asked Trust Authority to overwrite")
 	}
 }
 

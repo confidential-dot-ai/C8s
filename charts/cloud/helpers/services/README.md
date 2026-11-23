@@ -16,6 +16,6 @@ readiness over the socket (`/healthz`) and the API's liveness
 (`/upstream/livez`). `c8s.attestationApiConfig` renders the API's
 TOML.
 
-The host plugin and the clients it injects reach the CDS by the address the
+The host plugin and the clients it injects reach the Trust Authority by the address the
 installer copies to the node from the `-measurements` ConfigMap, beside the pin
-it holds it to (`cds.address`, `cds.measurementsConfig`).
+it holds it to (`ta.address`, `ta.measurementsConfig`).

@@ -76,7 +76,7 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- define "router.acmeKeyDir" -}}/etc/c8s-acme-key{{- end -}}
 {{- define "router.discoveryFilePath" -}}/discovery/discovery.json{{- end -}}
 {{- define "router.discoveryPath" -}}/v1/discovery{{- end -}}
-{{- define "router.cdsCertPath" -}}/.well-known/cds-cert.pem{{- end -}}
+{{- define "router.taCertPath" -}}/.well-known/cds-cert.pem{{- end -}}
 {{- define "router.meshCAPath" -}}/.well-known/mesh-ca.pem{{- end -}}
 
 {{- define "router.terminationGracePeriodSeconds" -}}10{{- end -}}
@@ -89,7 +89,7 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
   "/.well-known/c8s/"
   "/.well-known/acme-challenge/"
   (include "router.discoveryPath" .)
-  (include "router.cdsCertPath" .)
+  (include "router.taCertPath" .)
   (include "router.meshCAPath" .)
   "/readyz"
   "/healthz"
@@ -99,7 +99,7 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{/*
 The router pod's nginx, cds-attest and allowlist-proxy containers. Takes:
   root
-  allowlistProxyMounts  the proxy's mounts of the attestation-api it verifies CDS through, as YAML
+  allowlistProxyMounts  the proxy's mounts of the attestation-api it verifies the Trust Authority through, as YAML
   attestationApiMounts  cds-attest's mounts of the attestation-api it attests through, as YAML
   attestationApiURL     the attestation-api URL a credentials-role container of this pod dials
   certificateMounts     nginx's mounts of the certificates it serves beside the mesh leaf
@@ -193,7 +193,7 @@ The router pod's nginx, cds-attest and allowlist-proxy containers. Takes:
     capabilities:
       drop:
         - ALL
-{{- /* It verifies CDS's armTLS evidence before proxying /allowlist, the
+{{- /* It verifies the Trust Authority's armTLS evidence before proxying /allowlist, the
        second trust hop behind nginx. */}}
 - name: allowlist-proxy
   image: {{ include "c8s.image" $root }}
@@ -210,7 +210,7 @@ The router pod's nginx, cds-attest and allowlist-proxy containers. Takes:
     allowPrivilegeEscalation: false
     readOnlyRootFilesystem: true
     runAsNonRoot: true
-    {{- /* It dials CDS, so it holds the credentials role. */}}
+    {{- /* It dials Trust Authority, so it holds the credentials role. */}}
     runAsUser: {{ include "c8s.credentialsUID" $root }}
     runAsGroup: {{ include "c8s.credentialsUID" $root }}
     capabilities:
@@ -218,7 +218,7 @@ The router pod's nginx, cds-attest and allowlist-proxy containers. Takes:
         - ALL
 {{- end -}}
 
-{{/* The proxy holds the credentials role, so the node hands it the one CDS
+{{/* The proxy holds the credentials role, so the node hands it the one Trust Authority
      its pod may reach and the pins to verify it with, and refuses an argument
      naming either (cmdsutil.ResolveCDSEndpoint, cmdsutil.ResolveCDSPins).
      Takes root and attestationApiURL. */}}

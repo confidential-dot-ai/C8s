@@ -80,7 +80,7 @@ func RenderPodRuntime(rootDir string, d *podlaunch.AssignedPod) (PodRuntime, err
 	}
 	a["base"] = base
 	a["node_tcb"] = false
-	pull, err := bindCDSPull(a, d.CDS)
+	pull, err := bindTAPull(a, d.TA)
 	if err != nil {
 		return PodRuntime{}, err
 	}
@@ -94,7 +94,7 @@ func RenderPodRuntime(rootDir string, d *podlaunch.AssignedPod) (PodRuntime, err
 		pull["measure_policies"] = false
 	}
 	// A Pod boot has no node namespaces, in-Pod credential clients or
-	// platform services: its guest broker reaches CDS outside the Pod
+	// platform services: its guest broker reaches Trust Authority outside the Pod
 	// network namespace, and its egress is the standalone ruleset's.
 	delete(mesh, "credential_attestation_port")
 	// No cluster DNS answers a pod CVM: the resolver the ruleset leaves
@@ -166,23 +166,23 @@ func renderPodManifest(spec *podlaunch.PodSpec, image string) ([]byte, map[strin
 	return manifest, images, nil
 }
 
-// PreparePod publishes a pod CVM's CDS pin and stages its boot inputs from
+// PreparePod publishes a pod CVM's Trust Authority pin and stages its boot inputs from
 // the verified launch document loaded by podlaunch.LoadStaged.
 func PreparePod(rootDir string, d *podlaunch.Document) error {
 	return preparePodDocument(rootDir, d, discoverPodMTU)
 }
 
 func preparePodDocument(rootDir string, d *podlaunch.Document, resolveMTU func() (int, error)) error {
-	endpoint, err := d.CDS.Parse()
+	endpoint, err := d.TA.Parse()
 	if err != nil {
 		return err
 	}
-	// The staged document is this Pod's only source for its CDS.
-	cds, err := endpoint.Policy()
+	// The staged document is this Pod's only source for its Trust Authority.
+	ta, err := endpoint.Policy()
 	if err != nil {
 		return err
 	}
-	return preparePod(rootDir, d, map[string][]byte{CDSOutput: cds}, resolveMTU)
+	return preparePod(rootDir, d, map[string][]byte{TAOutput: ta}, resolveMTU)
 }
 
 // preparePod stages boot inputs before the status service starts. It stages

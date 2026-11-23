@@ -45,7 +45,7 @@ func runCheckConfig(args []string) error {
 }
 
 // openStartInputs opens what the plugin opens at start beyond its config: its
-// log sink and the CDS identity set its clients are held to.
+// log sink and the Trust Authority identity set its clients are held to.
 func openStartInputs(cfg *config) error {
 	logOut, err := logWriter(cfg.Logging)
 	if err != nil {

@@ -253,14 +253,14 @@ func TestInstallRefusesAMissingImagePullSecretBeforeTheCluster(t *testing.T) {
 	mustRunNoMutation(t, s.f.calls(t))
 }
 
-// An install that leaves its temp files behind leaves a CDS pin and a values file in /tmp.
+// An install that leaves its temp files behind leaves a Trust Authority pin and a values file in /tmp.
 func TestInstallRemovesTheFilesItCreated(t *testing.T) {
 	s := newInstallStubs(t, "", false)
 	s.f.tool(t, "kubectl", clusterKubectl(t, s.applied, ""))
 
 	resetCLIState(t)
 	t.Cleanup(func() { rootCmd.SetIn(nil) })
-	rootCmd.SetIn(strings.NewReader(pipedCDS(t)))
+	rootCmd.SetIn(strings.NewReader(pipedTA(t)))
 	rootCmd.SetArgs([]string{"install", "--platform=aks-snp", "--wait=false", "-f", "-"})
 	if err := rootCmd.Execute(); err != nil {
 		t.Fatalf("install: %v", err)
@@ -282,12 +282,12 @@ func TestInstallRemovesTheFilesItCreated(t *testing.T) {
 		}
 	}
 	pin := ""
-	if installCDS != nil {
-		pin = installCDS.path
+	if installTA != nil {
+		pin = installTA.path
 	}
 	for _, tmp := range []struct{ name, path, prefix string }{
 		{"stdin values file", stdinValues, "c8s-install-stdin-"},
-		{"CDS pin copy", pin, "c8s-cds-pin-"},
+		{"Trust Authority pin copy", pin, "c8s-cds-pin-"},
 		{"work directory", filepath.Dir(flagValue(calls[pull], "--untardir")), "c8s-install-"},
 		{"computed values file", files[len(files)-1], "c8s-install-values-"},
 	} {

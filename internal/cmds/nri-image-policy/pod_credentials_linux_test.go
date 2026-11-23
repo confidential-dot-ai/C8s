@@ -125,9 +125,9 @@ func podBrokerPlugins(t *testing.T, base string) func() *plugin {
 	openPodCredentialRoot = func(source string) (*os.Root, error) { return openPodCredentialRootBeneath(base, source) }
 	runGuestCredentials = func(ctx context.Context, _ getcert.GuestConfig) error { <-ctx.Done(); return nil }
 	t.Cleanup(func() { openPodCredentialRoot, runGuestCredentials = oldOpen, oldRun })
-	cdsPins := testCDSPinFile(t)
+	taPins := testTAPinFile(t)
 	return func() *plugin {
-		p := &plugin{cfg: &config{Platform: "tdx", Pod: &podConfig{}, Allowlist: allowlistConfig{Pull: pullConfig{CDSMeasurementsConfig: cdsPins}}, WorkloadClaims: workloadClaimsConfig{SocketDir: base}}, logger: discardLogger()}
+		p := &plugin{cfg: &config{Platform: "tdx", Pod: &podConfig{}, Allowlist: allowlistConfig{Pull: pullConfig{TAMeasurementsConfig: taPins}}, WorkloadClaims: workloadClaimsConfig{SocketDir: base}}, logger: discardLogger()}
 		p.mesh = newMeshGate(meshPolicy{Pod: &podMeshPolicy{Peers: []netip.AddrPort{netip.MustParseAddrPort("203.0.113.1:15006")}}}, discardLogger())
 		if err := p.preparePodBroker(t.Context(), &http.Client{}, nil); err != nil {
 			t.Fatal(err)

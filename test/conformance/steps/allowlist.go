@@ -13,7 +13,7 @@ import (
 )
 
 // Sentences about the served allowlist as a scenario writes it: entries
-// described in Given steps, written to CDS by the operator's signed path when
+// described in Given steps, written to the Trust Authority by the operator's signed path when
 // the plugin is said to have applied the served allowlist, and undone
 // afterwards.
 func registerAllowlist(sc *godog.ScenarioContext) {
@@ -46,7 +46,7 @@ func registerAllowlist(sc *godog.ScenarioContext) {
 }
 
 // mutation is a change to the served allowlist: when it happened and the tag
-// of the document the CDS served the operator after it, the document nodes
+// of the document the Trust Authority served the operator after it, the document nodes
 // are served the node delay later.
 type mutation struct {
 	at          time.Time
@@ -62,7 +62,7 @@ func (m mutation) pending() bool { return m.documentTag != "" }
 // scenario's applied sentence has to wait out.
 var lastMutation mutation
 
-// writtenName is the entry's allowlist workload name at CDS: the scenario's
+// writtenName is the entry's allowlist workload name at Trust Authority: the scenario's
 // name, or the base an entry was given instead of it, suffixed so that two
 // scenarios naming "web" never meet.
 func (w *world) writtenName(name string) string {
@@ -128,7 +128,7 @@ func entryNamed(ctx context.Context, name string) error {
 }
 
 // entryNamedGenerated describes an entry the scenario calls name and the
-// CDS stores under the generated name for image.
+// Trust Authority stores under the generated name for image.
 func entryNamedGenerated(ctx context.Context, name, image string) error {
 	w := getWorld(ctx)
 	base, err := w.generatedBase(image)
@@ -409,7 +409,7 @@ func someEntryAdmitsAnyArgv(ctx context.Context, image string) error {
 	return w.writeEntries()
 }
 
-// writeEntries writes every described entry not yet at CDS.
+// writeEntries writes every described entry not yet at Trust Authority.
 func (w *world) writeEntries() error {
 	for name := range w.entries {
 		if err := w.writeEntry(name); err != nil {
@@ -466,7 +466,7 @@ func (w *world) deleteEntry(name string) error {
 }
 
 // noteMutation records a change to the served allowlist and the document the
-// CDS serves the operator after it, so a wait for nodes to be served that
+// Trust Authority serves the operator after it, so a wait for nodes to be served that
 // write compares against it rather than against a later read.
 func (w *world) noteMutation() error {
 	lastMutation.at = time.Now()
@@ -588,17 +588,17 @@ func (w *world) sync() error {
 	return w.awaitApplied()
 }
 
-// awaitApplied waits for the plugin to hold what the CDS serves now, and
-// records the version it holds. A write takes effect on nodes the CDS's node
+// awaitApplied waits for the plugin to hold what the Trust Authority serves now, and
+// records the version it holds. A write takes effect on nodes the Trust Authority's node
 // delay after it is written (workloads specification J9), so it waits for the
-// CDS to serve nodes the document the last write left, then polls the version
+// Trust Authority to serve nodes the document the last write left, then polls the version
 // the plugin reports until it reaches the version nodes are served it at,
 // failing when the pull loop has not followed within the node delay and
 // three pull intervals of that write.
 // Where nothing can be observed, the wait is the clock: the node delay and
 // two pull intervals, so a pull that started just before the write took
 // effect has been followed by one that saw it. That is the case where the
-// pull is blocked, where the backend cannot ask the CDS or the plugin, and
+// pull is blocked, where the backend cannot ask the Trust Authority or the plugin, and
 // where the served version is below the applied one: the plugin ignores that
 // pull by design, so nothing says it happened.
 func (w *world) awaitApplied() error {
@@ -619,7 +619,7 @@ func (w *world) awaitApplied() error {
 const pollsPerInterval = 5
 
 // appliedBy is when a write made at lastMutation has reached a reader that
-// pulls every interval: the CDS withholds it from nodes for delay, and
+// pulls every interval: the Trust Authority withholds it from nodes for delay, and
 // intervals pulls carry it from there.
 func appliedBy(interval, delay time.Duration, intervals int) time.Time {
 	return lastMutation.at.Add(delay + time.Duration(intervals)*interval)
@@ -654,9 +654,9 @@ func (w *world) pullTiming() (interval, delay time.Duration, err error) {
 	return interval, delay, nil
 }
 
-// awaitInEffect waits until the CDS serves nodes the document the last write
+// awaitInEffect waits until the Trust Authority serves nodes the document the last write
 // left it serving the operator, and returns the version nodes are served it
-// at. Not observable where the backend cannot read what the CDS serves.
+// at. Not observable where the backend cannot read what the Trust Authority serves.
 //
 // Nodes are served only journaled writes: the newest journaled document the
 // node delay after its write, at that write's version. A write that leaves
@@ -694,17 +694,17 @@ func (w *world) awaitInEffect() (version int, observable bool, err error) {
 		return 0, false, err
 	}
 	if !inEffect {
-		return 0, false, fmt.Errorf("the CDS serves nodes allowlist document %s at version %d, not the written %s, %s after the write with a node delay of %s", served.documentTag, served.version, lastMutation.documentTag, time.Since(lastMutation.at).Round(time.Millisecond), delay)
+		return 0, false, fmt.Errorf("the Trust Authority serves nodes allowlist document %s at version %d, not the written %s, %s after the write with a node delay of %s", served.documentTag, served.version, lastMutation.documentTag, time.Since(lastMutation.at).Round(time.Millisecond), delay)
 	}
 	return served.version, true, nil
 }
 
 // observeApplied polls the plugin's applied version until it is at or past
-// the one the CDS serves nodes, records it, and says whether it saw that
+// the one the Trust Authority serves nodes, records it, and says whether it saw that
 // version itself; false where either version cannot be asked for or the
-// plugin is ahead of the CDS.
+// plugin is ahead of the Trust Authority.
 func (w *world) observeApplied(interval, delay time.Duration) (bool, error) {
-	if w.cdsBlocked {
+	if w.taBlocked {
 		return false, nil
 	}
 	nodeVersion, observable, err := w.awaitInEffect()
@@ -729,13 +729,13 @@ func (w *world) observeApplied(interval, delay time.Duration) (bool, error) {
 		return false, err
 	}
 	if !caughtUp {
-		return false, fmt.Errorf("the admission plugin still reports allowlist version %q while the CDS serves nodes %d, %s after the write with a node delay of %s and a pull every %s", answer, nodeVersion, time.Since(lastMutation.at).Round(time.Millisecond), delay, interval)
+		return false, fmt.Errorf("the admission plugin still reports allowlist version %q while the Trust Authority serves nodes %d, %s after the write with a node delay of %s and a pull every %s", answer, nodeVersion, time.Since(lastMutation.at).Round(time.Millisecond), delay, interval)
 	}
 	w.appliedVersion = answer
 	return applied == nodeVersion, nil
 }
 
-// servedVersion is the version of the allowlist the CDS serves now.
+// servedVersion is the version of the allowlist the Trust Authority serves now.
 func (w *world) servedVersion() (int, error) {
 	s, err := w.be.call("served_version")
 	if err != nil {

@@ -1,6 +1,6 @@
 # A confidential-workload fixture: the confidential.ai/cw annotation opts the
 # pod into webhook injection (get-cert sidecar, mesh identity). The app image
-# is allowlisted/denied by the harness through the CDS allowlist API.
+# is allowlisted/denied by the harness through the TA allowlist API.
 apiVersion: v1
 kind: Namespace
 metadata:

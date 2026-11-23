@@ -7,8 +7,8 @@ set -euo pipefail
 TESTS_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 if [[ "${1:-}" != --inside ]]; then
     # Every profile of the node-guest image narrows a composed attester, as
-    # the CDS image does.
-    FINALIZE_SCRIPTS=(/cgi/cds/mkosi.finalize)
+    # the Trust Authority image does.
+    FINALIZE_SCRIPTS=(/taguest/ta/mkosi.finalize)
     for finalize in "$TESTS_DIR"/../*/mkosi.finalize; do
         FINALIZE_SCRIPTS+=("/ngi/${finalize#"$TESTS_DIR/../"}")
     done
@@ -18,7 +18,7 @@ if [[ "${1:-}" != --inside ]]; then
     for script in "${FINALIZE_SCRIPTS[@]}"; do
         docker run --rm --network=none \
             -v "$TESTS_DIR/..:/ngi:ro" \
-            -v "$TESTS_DIR/../../cds-guest:/cgi:ro" \
+            -v "$TESTS_DIR/../../ta-guest:/taguest:ro" \
             -v "$CONFOS_DIR:/confos:ro" \
             -e "FINALIZE_SCRIPT=$script" \
             debian:12 bash /ngi/tests/attester-finalize-test.sh --inside

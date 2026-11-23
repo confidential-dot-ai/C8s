@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -104,10 +106,10 @@ func TestPodSecretNamesParseTheManifest(t *testing.T) {
 }
 
 // The broker sends the secret name and the client document, and reads the
-// value back; a refusal is an error carrying CDS's answer.
+// value back; a refusal is an error carrying Trust Authority's answer.
 func TestRequestPodSecret(t *testing.T) {
 	doc := []byte(`{"agent_id":"a"}`)
-	cds := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	ta := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req secretbroker.PodRequest
 		if r.URL.Path != secretbroker.PodRoute || json.NewDecoder(r.Body).Decode(&req) != nil || string(req.ClientDocument) != string(doc) {
 			w.WriteHeader(http.StatusBadRequest)
@@ -119,12 +121,12 @@ func TestRequestPodSecret(t *testing.T) {
 		}
 		_ = json.NewEncoder(w).Encode(secretbroker.PodResponse{Value: []byte("v")})
 	}))
-	defer cds.Close()
-	value, err := requestPodSecret(t.Context(), cds.Client(), cds.URL+"/", "agent-token", doc)
+	defer ta.Close()
+	value, err := requestPodSecret(t.Context(), ta.Client(), ta.URL+"/", "agent-token", doc)
 	if err != nil || string(value) != "v" {
 		t.Fatalf("%q %v", value, err)
 	}
-	if _, err := requestPodSecret(t.Context(), cds.Client(), cds.URL, "other", doc); err == nil || !strings.Contains(err.Error(), "not yours") {
+	if _, err := requestPodSecret(t.Context(), ta.Client(), ta.URL, "other", doc); err == nil || !strings.Contains(err.Error(), "not yours") {
 		t.Fatalf("refusal: %v", err)
 	}
 }
@@ -243,11 +245,11 @@ func TestPodLeafCertificateNeedsACredentialVolume(t *testing.T) {
 	}
 }
 
-// secretCDS answers each secret request with the value "v-<name>" once
+// secretTA answers each secret request with the value "v-<name>" once
 // refuse has returned false for it.
-func secretCDS(t *testing.T, refuse func(secret string) bool) *httptest.Server {
+func secretTA(t *testing.T, refuse func(secret string) bool) *httptest.Server {
 	t.Helper()
-	cds := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	ta := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req secretbroker.PodRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
@@ -259,20 +261,20 @@ func secretCDS(t *testing.T, refuse func(secret string) bool) *httptest.Server {
 		}
 		_ = json.NewEncoder(w).Encode(secretbroker.PodResponse{Value: []byte("v-" + req.Secret)})
 	}))
-	t.Cleanup(cds.Close)
-	return cds
+	t.Cleanup(ta.Close)
+	return ta
 }
 
-func secretFetcher(t *testing.T, cds *httptest.Server, names string) (*plugin, string) {
+func secretFetcher(t *testing.T, ta *httptest.Server, names string) (*plugin, string) {
 	t.Helper()
 	pod := sandboxedPod()
 	pod.Annotations = map[string]string{podSecretsAnnotation: names}
 	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
 	p := &plugin{
-		cfg:       &config{cdsAddress: strings.TrimPrefix(cds.URL, "https://"), Pod: &podConfig{ClientDocument: clientDocument(`{"agent_id":"a"}`)}},
+		cfg:       &config{taAddress: strings.TrimPrefix(ta.URL, "https://"), Pod: &podConfig{ClientDocument: clientDocument(`{"agent_id":"a"}`)}},
 		logger:    discardLogger(),
-		podBroker: &podCredentialBroker{ctx: ctx, cancel: cancel, pod: pod, secretsClient: cds.Client()},
+		podBroker: &podCredentialBroker{ctx: ctx, cancel: cancel, pod: pod, secretsClient: ta.Client()},
 	}
 	dir := t.TempDir()
 	previous := openPodSecretRoot
@@ -303,13 +305,13 @@ func readPodSecret(t *testing.T, dir, name string) string {
 }
 
 func TestFetchPodSecretsPublishesTheWholeSet(t *testing.T) {
-	cds := secretCDS(t, func(string) bool { return false })
-	p, dir := secretFetcher(t, cds, "a,b")
-	if err := p.fetchPodSecrets(t.Context(), cds.Client(), []string{"a", "b"}, nil); err != nil {
+	ta := secretTA(t, func(string) bool { return false })
+	p, dir := secretFetcher(t, ta, "a,b")
+	if err := p.fetchPodSecrets(t.Context(), ta.Client(), []string{"a", "b"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if readPodSecret(t, dir, "a") != "v-a" || readPodSecret(t, dir, "b") != "v-b" {
-		t.Fatal("published values differ from CDS's")
+		t.Fatal("published values differ from the Trust Authority's")
 	}
 }
 
@@ -320,7 +322,7 @@ func TestFetchPodSecretsPublishesNothingOnFailure(t *testing.T) {
 		change func(*plugin, string)
 		want   string
 	}{
-		{name: "refused", refuse: "b", want: "secret b: CDS answered 403: refused b"},
+		{name: "refused", refuse: "b", want: "secret b: the Trust Authority answered 403: refused b"},
 		{name: "ended identity", change: func(p *plugin, _ string) { p.podBroker.terminal = errors.New("identity ended") }, want: "identity ended"},
 		{name: "no volume", change: func(*plugin, string) {
 			openPodSecretRoot = func(string) (*os.Root, error) { return nil, errors.New("not RAM-backed") }
@@ -332,12 +334,12 @@ func TestFetchPodSecretsPublishesNothingOnFailure(t *testing.T) {
 		}, want: "write Pod secret b"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cds := secretCDS(t, func(s string) bool { return s == tc.refuse })
-			p, dir := secretFetcher(t, cds, "a,b")
+			ta := secretTA(t, func(s string) bool { return s == tc.refuse })
+			p, dir := secretFetcher(t, ta, "a,b")
 			if tc.change != nil {
 				tc.change(p, dir)
 			}
-			err := p.fetchPodSecrets(t.Context(), cds.Client(), []string{"a", "b"}, nil)
+			err := p.fetchPodSecrets(t.Context(), ta.Client(), []string{"a", "b"}, nil)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("got %v, want %q", err, tc.want)
 			}
@@ -355,8 +357,11 @@ func TestRequestPodSecretFailures(t *testing.T) {
 		_, _ = w.Write([]byte("not json"))
 	}))
 	defer garbled.Close()
-	closed := httptest.NewTLSServer(http.NotFoundHandler())
-	closed.Close()
+	unreachable := &http.Client{Transport: &http.Transport{
+		DialContext: func(context.Context, string, string) (net.Conn, error) {
+			return nil, os.NewSyscallError("connect", syscall.ECONNREFUSED)
+		},
+	}}
 	oversized := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write(bytes.Repeat([]byte("x"), 2*secretbroker.MaxValue+4097))
 	}))
@@ -367,7 +372,7 @@ func TestRequestPodSecretFailures(t *testing.T) {
 		want      string
 	}{
 		{"malformed URL", "https://cds\x7f", garbled.Client(), "invalid control character"},
-		{"unreachable", closed.URL, closed.Client(), "connect"},
+		{"unreachable", "https://ta.example", unreachable, "connect"},
 		{"undecodable answer", garbled.URL, garbled.Client(), "decode Pod secret response"},
 		{"answer past the cap", oversized.URL, oversized.Client(), "read Pod secret response"},
 	} {
@@ -380,7 +385,7 @@ func TestRequestPodSecretFailures(t *testing.T) {
 }
 
 func TestRunPodSecretWorkerStartsOnlyForAValidRequest(t *testing.T) {
-	cds := secretCDS(t, func(string) bool { return false })
+	ta := secretTA(t, func(string) bool { return false })
 	for _, tc := range []struct {
 		name   string
 		names  string
@@ -391,7 +396,7 @@ func TestRunPodSecretWorkerStartsOnlyForAValidRequest(t *testing.T) {
 		{"no client", "a", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			p, dir := secretFetcher(t, cds, tc.names)
+			p, dir := secretFetcher(t, ta, tc.names)
 			if !tc.client {
 				p.podBroker.secretsClient = nil
 			}
@@ -406,8 +411,8 @@ func TestRunPodSecretWorkerStartsOnlyForAValidRequest(t *testing.T) {
 
 func TestRunPodSecretWorkerRetriesUntilReleased(t *testing.T) {
 	var asked atomic.Int32
-	cds := secretCDS(t, func(string) bool { return asked.Add(1) == 1 })
-	p, dir := secretFetcher(t, cds, "agent-token")
+	ta := secretTA(t, func(string) bool { return asked.Add(1) == 1 })
+	p, dir := secretFetcher(t, ta, "agent-token")
 	p.runPodSecretWorker()
 	p.podBroker.wg.Wait()
 	if asked.Load() != 2 || readPodSecret(t, dir, "agent-token") != "v-agent-token" {
@@ -417,14 +422,14 @@ func TestRunPodSecretWorkerRetriesUntilReleased(t *testing.T) {
 
 func TestRunPodSecretWorkerStopsWithTheBroker(t *testing.T) {
 	asked := make(chan struct{}, 1)
-	cds := secretCDS(t, func(string) bool {
+	ta := secretTA(t, func(string) bool {
 		select {
 		case asked <- struct{}{}:
 		default:
 		}
 		return true
 	})
-	p, dir := secretFetcher(t, cds, "agent-token")
+	p, dir := secretFetcher(t, ta, "agent-token")
 	p.runPodSecretWorker()
 	<-asked
 	time.Sleep(50 * time.Millisecond)
@@ -437,11 +442,11 @@ func TestRunPodSecretWorkerStopsWithTheBroker(t *testing.T) {
 
 func TestRunPodSecretWorkerStopsWhenCancelledMidRequest(t *testing.T) {
 	var p *plugin
-	cds := secretCDS(t, func(string) bool {
+	ta := secretTA(t, func(string) bool {
 		p.podBroker.cancel()
 		return true
 	})
-	p, _ = secretFetcher(t, cds, "agent-token")
+	p, _ = secretFetcher(t, ta, "agent-token")
 	p.runPodSecretWorker()
 	p.podBroker.wg.Wait()
 }

@@ -7,7 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cdsconn"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/taconn"
 	intsecrets "github.com/confidential-dot-ai/confidential-kubernetes/internal/secrets"
 	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
@@ -17,7 +17,7 @@ func newPutCmd(o *options) *cobra.Command {
 		fromFile  string
 		overwrite bool
 		dryRun    bool
-		gate      = cdsconn.MeshCAGate{
+		gate      = taconn.MeshCAGate{
 			What:      "secret",
 			ForceNote: "Unrelated to --overwrite, which governs replacing an existing value",
 		}
@@ -25,14 +25,14 @@ func newPutCmd(o *options) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "put <path>",
 		Short: "Store an operator-supplied value at a secret path",
-		Long: `Store a value at <path> in the CDS secret store, reading it from stdin or from
+		Long: `Store a value at <path> in the Trust Authority secret store, reading it from stdin or from
 --from-file. The bytes are stored exactly as read, including any trailing
 newline; the byte count is printed so you can confirm which bytes were sent.
 
 A path that already holds a value needs --overwrite, and the value it holds is
 named before it is replaced.
 
-The write names the CDS it trusts with --mesh-ca: the mesh CA CDS serves must be
+The write names the Trust Authority it trusts with --mesh-ca: the mesh CA Trust Authority serves must be
 one you pinned, or the secret is refused. --force writes without that check.
 
 A workload reads its secret into a file once, at startup. Replacing a value
@@ -101,7 +101,7 @@ reaches a running pod when that pod next restarts.`,
 	}
 	cmd.Flags().StringVar(&fromFile, "from-file", "", "read the value from this file instead of stdin")
 	cmd.Flags().BoolVar(&overwrite, "overwrite", false, "replace a value already at the path")
-	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print the intended change without calling CDS")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print the intended change without calling Trust Authority")
 	gate.BindFlags(cmd.Flags())
 	return cmd
 }

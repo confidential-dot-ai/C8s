@@ -129,7 +129,7 @@ jobs:
         id: release-images
         env:
           C8S: "false"
-          CDS: "false"
+          TA: "false"
           GET_CERT: "false"
           NRI_IMAGE_POLICY: "false"
           ARMTLS_MESH: "false"
@@ -435,7 +435,7 @@ jobs:
           retention-days: 1
           compression-level: 0
 
-  # The allowlist seed of each CPU TEE, the core entries a CDS serves for this
+  # The allowlist seed of each CPU TEE, the core entries a Trust Authority serves for this
   # release, rendered by the CLI the release publishes from the digests the
   # images job pushed, with the kubelet and Helm versions of the worker image
   # build. The sign job lists their digests in the statement.

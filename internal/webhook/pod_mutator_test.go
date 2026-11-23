@@ -64,7 +64,7 @@ func TestMutatePodInjectsCertSidecar(t *testing.T) {
 			t.Fatalf("c8s-cert args %v missing %s", cert.Args, want)
 		}
 	}
-	// get-cert's default CDS watch is the contract for injected sidecars.
+	// get-cert's default Trust Authority watch is the contract for injected sidecars.
 	for _, arg := range cert.Args {
 		if strings.HasPrefix(arg, "--ca-watch-interval") {
 			t.Fatalf("c8s-cert args %v carry %s, want get-cert's default watch", cert.Args, arg)
@@ -96,7 +96,7 @@ func TestMutatePodInjectsCertSidecar(t *testing.T) {
 	if cert.SecurityContext.RunAsNonRoot == nil || !*cert.SecurityContext.RunAsNonRoot {
 		t.Fatalf("c8s-cert does not require non-root")
 	}
-	// The credential role's reserved identity, which the node binds to the CDS
+	// The credential role's reserved identity, which the node binds to the Trust Authority
 	// address and refuses elsewhere.
 	if got := *cert.SecurityContext.RunAsUser; got != int64(workloadclaims.CredentialsUID) {
 		t.Fatalf("c8s-cert runAsUser = %d, want the reserved %d", got, workloadclaims.CredentialsUID)
@@ -274,7 +274,7 @@ func TestMutatePodSupportsRouterProfile(t *testing.T) {
 			AnnotationRenewInterval:          "1h",
 			AnnotationDiscoveryVolume:        "discovery",
 			AnnotationDiscoveryOut:           "/run/c8s/discovery/discovery.json",
-			AnnotationDiscoveryCDSCertURL:    "/.well-known/cds-cert.pem",
+			AnnotationDiscoveryTACertURL:     "/.well-known/cds-cert.pem",
 			AnnotationDiscoveryMeshCAURL:     "/.well-known/mesh-ca.pem",
 			AnnotationDiscoveryPublicTLSMode: "webpki",
 			AnnotationGetCertVerbose:         "true",
@@ -397,8 +397,8 @@ func TestParseAnnotationsRejectsInjectionDetailsWithoutWorkloadAnnotation(t *tes
 func TestParseAnnotationsRejectsIncompleteDiscovery(t *testing.T) {
 	_, err := parseAnnotations(&corev1.Pod{
 		Annotations: map[string]string{
-			AnnotationWorkload:            "api",
-			AnnotationDiscoveryCDSCertURL: "/.well-known/cds-cert.pem",
+			AnnotationWorkload:           "api",
+			AnnotationDiscoveryTACertURL: "/.well-known/cds-cert.pem",
 		},
 	}, "")
 	if !errors.Is(err, errInvalidInjectionAnnotation) {
@@ -414,7 +414,7 @@ func TestParseAnnotationsRefusesACMEDiscoveryPublicTLSMode(t *testing.T) {
 			AnnotationWorkload:               "api",
 			AnnotationDiscoveryVolume:        "discovery",
 			AnnotationDiscoveryOut:           "/run/c8s/discovery/discovery.json",
-			AnnotationDiscoveryCDSCertURL:    "/.well-known/cds-cert.pem",
+			AnnotationDiscoveryTACertURL:     "/.well-known/cds-cert.pem",
 			AnnotationDiscoveryPublicTLSMode: "acme",
 		},
 	}, "")
@@ -432,7 +432,7 @@ func TestParseAnnotationsRejectsInvalidDiscoveryPublicTLSMode(t *testing.T) {
 			AnnotationWorkload:               "api",
 			AnnotationDiscoveryVolume:        "discovery",
 			AnnotationDiscoveryOut:           "/run/c8s/discovery/discovery.json",
-			AnnotationDiscoveryCDSCertURL:    "/.well-known/cds-cert.pem",
+			AnnotationDiscoveryTACertURL:     "/.well-known/cds-cert.pem",
 			AnnotationDiscoveryPublicTLSMode: "invalid",
 		},
 	}, "")
@@ -475,7 +475,7 @@ func TestParseAnnotationsPinsSidecarDestinations(t *testing.T) {
 func TestParseAnnotationsKeepsSidecarFilesInTheirMounts(t *testing.T) {
 	discovery := map[string]string{
 		AnnotationDiscoveryVolume:        "discovery",
-		AnnotationDiscoveryCDSCertURL:    "/.well-known/cds-cert.pem",
+		AnnotationDiscoveryTACertURL:     "/.well-known/cds-cert.pem",
 		AnnotationDiscoveryPublicTLSMode: "cds",
 	}
 	for _, tc := range []struct {
@@ -521,7 +521,7 @@ func TestParseAnnotationsRejectsDiscoveryVolumeAliases(t *testing.T) {
 				AnnotationWorkload:               "api",
 				AnnotationDiscoveryVolume:        tc.volume,
 				AnnotationDiscoveryOut:           discoveryMountPath + "/tls.key",
-				AnnotationDiscoveryCDSCertURL:    "/.well-known/cds-cert.pem",
+				AnnotationDiscoveryTACertURL:     "/.well-known/cds-cert.pem",
 				AnnotationDiscoveryPublicTLSMode: "cds",
 			}
 			if tc.certVolume != "" {
@@ -1156,7 +1156,7 @@ func TestMutatePodKeepsFSGroupWithWorkloadClaims(t *testing.T) {
 }
 
 // The wait gate's timeout must comfortably exceed get-cert's initial retry so
-// a slow CDS cold start is absorbed in one wait.
+// a slow Trust Authority cold start is absorbed in one wait.
 func TestCertWaitContainerTimeout(t *testing.T) {
 	pod := &corev1.Pod{
 		Annotations: map[string]string{},
@@ -1172,10 +1172,10 @@ func TestCertWaitContainerTimeout(t *testing.T) {
 	}
 }
 
-// No injected client takes a pin as an argument: it reads the node's CDS
+// No injected client takes a pin as an argument: it reads the node's Trust Authority
 // policy from the path the enforcer mounts, which neither the pod nor the
 // control plane can choose.
-func TestInjectedClientsCarryNoCDSPins(t *testing.T) {
+func TestInjectedClientsCarryNoTAPins(t *testing.T) {
 	cfg := secretsConfig()
 	cfg.WorkloadClaimsHostDir = "/var/run/nri-image-policy"
 	pod := podWithApp()

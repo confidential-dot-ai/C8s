@@ -1,7 +1,7 @@
 # Workload entries
 
 A workload entry names the containers a pod may run, in the format
-`c8s allowlist` writes, CDS serves, and every node enforces.
+`c8s allowlist` writes, the Trust Authority (TA) serves, and every node enforces.
 
 One invariant runs through it: policy is looked up by container digest, and an
 absent `command`, `args`, or `mounts` policy denies. For why, see
@@ -136,7 +136,7 @@ document leniently and ignores the field, so on such a node an fs-verity rollout
 keyed on `verityDigest` degrades to a plain `host` rule. The same enforcer
 refuses a served document that carries a `nodeRootFile` rule, so roll out such
 a rule only once every node enforces it. An upgraded node keeps working with an
-older CDS: CDS decodes the node's inventory leniently and drops the provenance,
+older TA: the TA decodes the node's inventory leniently and drops the provenance,
 which none of its rules asks for.
 
 ## `capabilities`
@@ -176,7 +176,7 @@ since a variable such
 as `HTTPS_PROXY` or `SSL_CERT_FILE` can redirect or disable the application TLS
 that protects an exit. A pod's `HOSTNAME` is its name unless the pod sets
 `hostname`, so set it to pin `HOSTNAME`. A node refuses an exit that overlaps a
-cluster range, its own address, the resolver, or CDS. The node drops a
+cluster range, its own address, the resolver, or the TA. The node drops a
 connection from the pod to one of its egress entries that netfilter on the
 node translates to another destination, such as a Service published with an
 `externalIPs` or load-balancer address inside the range: egress reaches the

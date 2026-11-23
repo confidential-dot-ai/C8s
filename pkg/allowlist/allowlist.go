@@ -1,4 +1,4 @@
-// Package allowlist defines the CDS-served image allowlist and its deterministic
+// Package allowlist defines the Trust Authority-served image allowlist and its deterministic
 // canonical serialization.
 //
 // The allowlist is a map of named workload entries. Each entry pins an
@@ -153,7 +153,7 @@ func (l *HostPortList) UnmarshalJSON(data []byte) error {
 //
 // Role names the platform role an enforcer grants to these bytes under this
 // policy. It is YAML-only: a document on the wire carries no role, so a role
-// comes from a measured boot config and nothing a CDS serves can claim one.
+// comes from a measured boot config and nothing a Trust Authority serves can claim one.
 type Container struct {
 	Digest types.Digest `json:"digest" yaml:"digest"`
 	Image  string       `json:"image,omitempty" yaml:"image,omitempty"`
@@ -274,12 +274,12 @@ type SecretsPolicy struct {
 // as empty. The result is normalized (digests lowercased and deduplicated,
 // container and path lists sorted) so Canonical is a function of content alone.
 //
-// Use ParseServedJSON for a document pulled from CDS.
+// Use ParseServedJSON for a document pulled from the Trust Authority.
 func ParseJSON(data []byte) (*Allowlist, error) {
 	return parseJSON(data, authoredDocument{})
 }
 
-// ParseServedJSON decodes a document served by CDS, ignoring fields it does not
+// ParseServedJSON decodes a document served by the Trust Authority, ignoring fields it does not
 // know. Its consumers pin a schema version in a launch measurement, so a strict
 // parse would make any newer field freeze their policy until a node-image
 // rebuild.
@@ -287,11 +287,11 @@ func ParseServedJSON(data []byte) (*Allowlist, error) {
 	return parseJSON(data, servedDocument{})
 }
 
-// ParseStoredJSON decodes the document CDS stores, for a write built from it.
+// ParseStoredJSON decodes the document Trust Authority stores, for a write built from it.
 // It refuses what ParseJSON refuses, except that it keeps an entry failing a
 // pinning rule only authored documents face (one a newer release added), so
 // the write can repair or delete that entry. A write that still holds the
-// entry is refused by CDS's ParseJSON.
+// entry is refused by the Trust Authority's ParseJSON.
 func ParseStoredJSON(data []byte) (*Allowlist, error) {
 	return parseJSON(data, storedDocument{})
 }
@@ -905,7 +905,7 @@ var nodeServicePorts = []int{
 	2379,  // etcd client
 	2380,  // etcd peer
 	6443,  // Kubernetes API
-	8443,  // the router's front door, and a CDS by default
+	8443,  // the router's front door, and a Trust Authority by default
 	9345,  // node-join supervisor
 	10250, // kubelet
 }

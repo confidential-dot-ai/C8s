@@ -9,12 +9,12 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/replicate"
 )
 
-// Committer takes one secret write: a single CDS applies it, a CDS HA replica
+// Committer takes one secret write: a single Trust Authority applies it, a Trust Authority HA replica
 // commits it to the cluster's log first.
 type Committer = replicate.Committer[Command, Result]
 
 // Handle is the secret store as its writers hold it. It is the only way to
-// write, so no write path asks which kind of CDS it serves.
+// write, so no write path asks which kind of Trust Authority it serves.
 type Handle struct {
 	store  *MemoryStore
 	commit Committer
@@ -30,7 +30,7 @@ func (s *MemoryStore) Local() *Handle {
 	}
 }
 
-// CommittedBy is a handle whose writes c commits to a CDS HA cluster before
+// CommittedBy is a handle whose writes c commits to a Trust Authority HA cluster before
 // any replica applies them.
 func (s *MemoryStore) CommittedBy(c Committer) *Handle {
 	return &Handle{
@@ -83,13 +83,13 @@ func (r Result) refusal() error {
 }
 
 // sentinels carries a refusal across the cluster's log, so a caller matches
-// the same error at every replica as in a single CDS.
+// the same error at every replica as in a single Trust Authority.
 var sentinels = map[string]error{
 	"holder_quota": ErrHolderQuota,
 	"store_full":   ErrStoreFull,
 }
 
-// SnapshotEntry is one stored path in a CDS HA snapshot.
+// SnapshotEntry is one stored path in a Trust Authority HA snapshot.
 type SnapshotEntry struct {
 	Path   string `json:"path"`
 	Value  []byte `json:"value"`

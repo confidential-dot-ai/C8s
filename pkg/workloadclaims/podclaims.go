@@ -25,7 +25,7 @@ const (
 
 	// AnnotationClientDocument carries a Pod CVM's client document, base64:
 	// opaque bytes the client chose, which the provider signs into the
-	// assignment and CDS names on the pod's leaf by their SHA-256.
+	// assignment and Trust Authority names on the pod's leaf by their SHA-256.
 	AnnotationClientDocument = "confidential.ai/client-document"
 	// ClientDocumentPath is where every container of a Pod CVM reads its
 	// client document, read-only. It is absent when the document is empty.
@@ -105,7 +105,7 @@ func podWire(p PodClaims) podClaimsWire {
 // lowercase hex SHA-256 of a domain tag and the compact JSON of those three.
 // The environment enters through its format and aggregate digest only, which
 // fix the per-variable digests, so evicting per-variable evidence does not
-// change it. The guest computes it from the recorded admission and CDS
+// change it. The guest computes it from the recorded admission and Trust Authority
 // recomputes it, so a canonical claim's spec_digest always agrees with its
 // observation.
 func ContainerSpecDigest(c SandboxContainer) string {
@@ -149,7 +149,7 @@ func (w podClaimsWire) claims() PodClaims {
 }
 
 // PodInstancePrefix starts every Pod CVM instance ID, the sandbox ID a Pod
-// CVM leaf names. It is reserved: only InstanceID produces it, and CDS refuses
+// CVM leaf names. It is reserved: only InstanceID produces it, and Trust Authority refuses
 // a node sandbox token that carries it.
 const PodInstancePrefix = "pcvm-"
 

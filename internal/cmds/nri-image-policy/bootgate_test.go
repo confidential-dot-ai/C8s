@@ -179,7 +179,7 @@ func TestBootGateEscalatesADeniedContainerOnRestart(t *testing.T) {
 }
 
 // A restart whose first pull has not landed yet judges against the boot floor
-// alone, so a workload CDS admitted earlier looks unknown. That must stop the
+// alone, so a workload Trust Authority admitted earlier looks unknown. That must stop the
 // container, as an ungated plugin does — not the node.
 func TestBootGateDoesNotEscalateBeforeTheFirstPull(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "registered")

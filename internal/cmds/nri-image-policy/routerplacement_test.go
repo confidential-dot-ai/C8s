@@ -20,7 +20,7 @@ import (
 func TestWorkerRouterEligibilityTransitions(t *testing.T) {
 	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "worker", UID: "node-1", Labels: map[string]string{routerEligibleLabel: "true", "keep": "value"}}, Spec: corev1.NodeSpec{Unschedulable: true, Taints: []corev1.Taint{{Key: "keep", Effect: corev1.TaintEffectNoSchedule}}}}
 	client := fake.NewClientset(node)
-	eligible, checkErr := false, errors.New("CDS unavailable")
+	eligible, checkErr := false, errors.New("Trust Authority unavailable")
 	observer := testPlacement(client)
 	observer.check = func(context.Context) (bool, error) { return eligible, checkErr }
 	for _, step := range []struct {
@@ -204,7 +204,7 @@ func TestWorkerRouterRetriesFailedExclusionWhenCheckIsUnknown(t *testing.T) {
 	if err := observer.reconcile(t.Context()); err == nil {
 		t.Fatal("expected failed exclusion")
 	}
-	observer.check = func(context.Context) (bool, error) { return false, errors.New("CDS unavailable") }
+	observer.check = func(context.Context) (bool, error) { return false, errors.New("Trust Authority unavailable") }
 	if err := observer.reconcile(t.Context()); err != nil {
 		t.Fatal(err)
 	}

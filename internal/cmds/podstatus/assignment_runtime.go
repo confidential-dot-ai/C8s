@@ -233,7 +233,7 @@ func assignmentHealthAt(ctx context.Context, uid, socket string) error {
 	if health.PodEnded {
 		return errPodIdentityEnded
 	}
-	// Registration installs the floor before CDS's first pull (503). Waiting
+	// Registration installs the floor before Trust Authority's first pull (503). Waiting
 	// for the pull would make the assignment depend on it.
 	if (code != http.StatusOK && code != http.StatusServiceUnavailable) || !health.PodRegistered || health.PodUID != uid {
 		return errors.New("pod admission has not installed the expected assignment")

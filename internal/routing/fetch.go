@@ -17,10 +17,10 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/routesclient"
 )
 
-// errNoManifest reports that the CDS stores no manifest (C1, 404).
-var errNoManifest = errors.New("CDS stores no route manifest")
+// errNoManifest reports that the Trust Authority stores no manifest (C1, 404).
+var errNoManifest = errors.New("the Trust Authority stores no route manifest")
 
-// Fetcher fetches the signed manifest the CDS stores (C1).
+// Fetcher fetches the signed manifest the Trust Authority stores (C1).
 type Fetcher interface {
 	Routes(ctx context.Context) (routes.Envelope, error)
 }
@@ -44,40 +44,40 @@ func (f KeyFile) OperatorKeys(context.Context) ([]*ecdsa.PublicKey, error) {
 	return operatorauth.ParsePublicKeysPEM(b)
 }
 
-// CDSClient reads the route manifest and the operator keys from the CDS. It
+// TAClient reads the route manifest and the operator keys from the Trust Authority. It
 // is a Fetcher and a KeySource. The caller supplies an HTTP client that
-// verifies the CDS (A1).
-type CDSClient struct {
+// verifies the Trust Authority (A1).
+type TAClient struct {
 	routes    routesclient.Client
 	allowlist allowlistclient.Client
 	base      string
 	http      *http.Client
 }
 
-// NewCDSClient returns a client for the CDS at base, an https origin.
-func NewCDSClient(base string, client *http.Client) (*CDSClient, error) {
+// NewTAClient returns a client for the Trust Authority at base, an https origin.
+func NewTAClient(base string, client *http.Client) (*TAClient, error) {
 	u, err := url.Parse(base)
 	if err != nil || u.Scheme != "https" {
-		return nil, fmt.Errorf("CDS URL %q must use https", base)
+		return nil, fmt.Errorf("the Trust Authority URL %q must use https", base)
 	}
 	if u.User != nil {
-		return nil, fmt.Errorf("CDS URL %q must carry no credentials", base)
+		return nil, fmt.Errorf("the Trust Authority URL %q must carry no credentials", base)
 	}
 	rc, err := routesclient.New(base, client)
 	if err != nil {
 		return nil, err
 	}
 	origin := u.Scheme + "://" + u.Host
-	return &CDSClient{routes: rc, allowlist: allowlistclient.NewClientWithHTTP(origin, client), base: origin, http: client}, nil
+	return &TAClient{routes: rc, allowlist: allowlistclient.NewClientWithHTTP(origin, client), base: origin, http: client}, nil
 }
 
 // Object implements AllowlistHistory.
-func (c *CDSClient) Object(ctx context.Context, digest [sha256.Size]byte) (*allowlist.Allowlist, error) {
+func (c *TAClient) Object(ctx context.Context, digest [sha256.Size]byte) (*allowlist.Allowlist, error) {
 	return c.allowlist.Object(ctx, digest)
 }
 
 // Routes implements Fetcher.
-func (c *CDSClient) Routes(ctx context.Context) (routes.Envelope, error) {
+func (c *TAClient) Routes(ctx context.Context) (routes.Envelope, error) {
 	env, err := c.routes.Get(ctx)
 	if errors.Is(err, routesclient.ErrNotFound) {
 		return routes.Envelope{}, errNoManifest
@@ -85,9 +85,9 @@ func (c *CDSClient) Routes(ctx context.Context) (routes.Envelope, error) {
 	return env, err
 }
 
-// OperatorKeys implements KeySource from the CDS's published keys. It returns
-// operatorauth.ErrNoPublishedKeys when the CDS pins none.
-func (c *CDSClient) OperatorKeys(ctx context.Context) ([]*ecdsa.PublicKey, error) {
+// OperatorKeys implements KeySource from the Trust Authority's published keys. It returns
+// operatorauth.ErrNoPublishedKeys when the Trust Authority pins none.
+func (c *TAClient) OperatorKeys(ctx context.Context) ([]*ecdsa.PublicKey, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+operatorauth.PublishedKeysPath, nil)
 	if err != nil {
 		return nil, err

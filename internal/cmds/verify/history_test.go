@@ -320,7 +320,7 @@ func loadSignatureVector(t *testing.T) signatureVector {
 	return v
 }
 
-// objectServer serves CDS's history object routes: body under digest, and
+// objectServer serves Trust Authority's history object routes: body under digest, and
 // token as its signature when non-empty.
 func objectServer(digest string, body []byte, token string) http.Handler {
 	object := "/allowlist/objects/sha256/" + strings.TrimPrefix(digest, "sha256:")
@@ -372,7 +372,7 @@ func TestTrustOperator(t *testing.T) {
 }
 
 // signatureFails answers every signature request with 502, as a router does
-// while CDS is unavailable.
+// while the Trust Authority is unavailable.
 func signatureFails(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/signature") {

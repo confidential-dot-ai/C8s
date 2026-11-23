@@ -233,7 +233,7 @@ func TestEvidenceFromCertRequiresServerAuthAndSupportedCurve(t *testing.T) {
 
 // mintCAIssuedLeaf mints an attested leaf issued by a fresh CA with the given
 // TLS purpose, and returns it with its key and a pool holding that CA — the
-// shape CDS produces.
+// shape Trust Authority produces.
 func mintCAIssuedLeaf(t *testing.T, usages []x509.ExtKeyUsage) (*x509.Certificate, *ecdsa.PrivateKey, *x509.CertPool) {
 	t.Helper()
 	caKey := testKey(t)

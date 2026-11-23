@@ -1,7 +1,7 @@
 {{- /*
 The component entries this release needs served: every shape the chart renders,
 plus the operator's own. `c8s install --allowlist-seed-out` writes it beside
-the CDS configuration that carries it, and this copy is what the cluster was
+the Trust Authority configuration that carries it, and this copy is what the cluster was
 installed with.
 */ -}}
 apiVersion: v1

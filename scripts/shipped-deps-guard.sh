@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # shipped-deps-guard.sh — keep test code and the replication library out of
-# the binaries a CDS or a node measures.
+# the binaries a Trust Authority or a node measures.
 #
 # Usage, from anywhere in a checkout:
 #   scripts/shipped-deps-guard.sh check     the ./cmd/... builds and the c8s_node build of ./cmd/c8s
@@ -9,7 +9,7 @@
 # internal/testutil is linked by nothing shipped. `testing` is linked only by
 # github.com/hashicorp/raft, whose testing.go sits in its non-test package;
 # linking it registers no test flag unless testing.Init runs. A node runs no
-# CDS replica, so the node build links no raft.
+# Trust Authority replica, so the node build links no raft.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

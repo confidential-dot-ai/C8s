@@ -42,10 +42,10 @@ if cw_namespace denied; then fail "label rejection ignored"; fi
 
 echo 'PASS: CW namespace creation, exact labels, collision refusal, create error and label error ownership'
 
-# cds_write: a CDS without persistence refuses operator tokens for
+# ta_write: a TA without persistence refuses operator tokens for
 # --jwt-clock-skew after it starts, so that refusal is retried with a fresh
 # token; any other outcome passes straight through.
-too_early='server returned 401: operator token issued too early: this CDS keeps no record of tokens spent before it, or its replica set, last started; wait its --jwt-clock-skew (30s by default) after that start and mint a fresh one'
+too_early='server returned 401: operator token issued too early: this TA keeps no record of tokens spent before it, or its replica set, last started; wait its --jwt-clock-skew (30s by default) after that start and mint a fresh one'
 errfile=$(mktemp)
 callfile=$(mktemp)
 sleepfile=$(mktemp)
@@ -67,25 +67,25 @@ c8s_calls() { wc -l <"$callfile" | tr -d " "; }
 slept() { awk '{ s += $1 } END { print s + 0 }' "$sleepfile"; }
 
 reset 2 "" 0
-out=$(cds_write c8s allowlist add digest image 2>"$errfile") || fail "write refused during the start window was not retried"
+out=$(ta_write c8s allowlist add digest image 2>"$errfile") || fail "write refused during the start window was not retried"
 [[ $out == 'wrote allowlist add digest image' && $(c8s_calls) == 3 ]] || fail "write not retried until accepted: calls=$(c8s_calls) out=$out"
 grep -q 'retrying' "$errfile" || fail "the wait was not explained: $(cat "$errfile")"
 grep -q 'router front door' "$errfile" || fail "the accepted write's stderr was dropped"
 
 reset 0 "" 0
-out=$(cds_write c8s allowlist add digest image 2>"$errfile") || fail "accepted write failed"
+out=$(ta_write c8s allowlist add digest image 2>"$errfile") || fail "accepted write failed"
 [[ $(c8s_calls) == 1 && $(slept) == 0 ]] || fail "an accepted write waited or repeated: calls=$(c8s_calls) slept=$(slept)"
 
 reset 0 'server returned 401: operator token reused' 3
 status=0
-cds_write c8s allowlist add digest image >/dev/null 2>"$errfile" || status=$?
+ta_write c8s allowlist add digest image >/dev/null 2>"$errfile" || status=$?
 [[ $status == 3 && $(c8s_calls) == 1 && $(slept) == 0 ]] || fail "another refusal was retried or its status changed: status=$status calls=$(c8s_calls) slept=$(slept)"
 [[ $(cat "$errfile") == 'server returned 401: operator token reused' ]] || fail "another refusal's stderr was not preserved: $(cat "$errfile")"
 
 reset 1000 "" 0
 status=0
-cds_write c8s allowlist add digest image >/dev/null 2>"$errfile" || status=$?
+ta_write c8s allowlist add digest image >/dev/null 2>"$errfile" || status=$?
 [[ $status == 1 && $(slept) -ge 30 ]] || fail "retrying must outlast the default 30s window and then fail: status=$status slept=$(slept)"
 grep -q 'issued too early' "$errfile" || fail "the final refusal was not reported: $(cat "$errfile")"
 
-echo 'PASS: cds_write retries the start-window refusal with a fresh token, outlasts the default window, and passes every other outcome through'
+echo 'PASS: ta_write retries the start-window refusal with a fresh token, outlasts the default window, and passes every other outcome through'

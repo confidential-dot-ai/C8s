@@ -270,7 +270,7 @@ given as JSON in <file> (or stdin with '-'). Nothing is sent; pipe the result to
 
 Deriving from the live object keeps the entry from drifting away from what is
 actually running, and handles two things a hand-written entry usually gets
-wrong. Init containers are part of the set CDS matches, so omitting them makes
+wrong. Init containers are part of the set Trust Authority matches, so omitting them makes
 every release fail with "no workload entry matches the running containers". And
 a container with a command and no args needs an args policy of "deny", because
 "exact" requires a non-empty argv. A container that sets no command runs its

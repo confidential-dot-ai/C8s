@@ -52,7 +52,7 @@ func TestRunGuestRejectsIncompleteConfig(t *testing.T) {
 	claims := guestTestClaims(t)
 	valid := func(t *testing.T) GuestConfig {
 		return GuestConfig{
-			CDSURL: "https://cds.example", HTTPClient: &http.Client{}, VolumeRoot: guestTempRoot(t), InstanceID: claims.InstanceID(),
+			TAURL: "https://cds.example", HTTPClient: &http.Client{}, VolumeRoot: guestTempRoot(t), InstanceID: claims.InstanceID(),
 			Snapshot: func(context.Context) (workloadclaims.PodClaims, error) { return claims, nil },
 			Commit:   func(_ workloadclaims.PodClaims, publish func() error) error { return publish() },
 		}
@@ -61,14 +61,14 @@ func TestRunGuestRejectsIncompleteConfig(t *testing.T) {
 		mutate func(*GuestConfig)
 		want   string
 	}{
-		"unparseable CDS URL":  {func(g *GuestConfig) { g.CDSURL = "://cds" }, "CDSURL: "},
-		"plaintext CDS URL":    {func(g *GuestConfig) { g.CDSURL = "http://cds.example" }, "https URL with a host"},
-		"CDS URL without host": {func(g *GuestConfig) { g.CDSURL = "https:///attest" }, "https URL with a host"},
-		"no HTTP client":       {func(g *GuestConfig) { g.HTTPClient = nil }, "HTTPClient is required"},
-		"no volume root":       {func(g *GuestConfig) { g.VolumeRoot = nil }, "volume root is required"},
-		"no snapshot":          {func(g *GuestConfig) { g.Snapshot = nil }, "snapshot and commit callbacks are required"},
-		"no commit":            {func(g *GuestConfig) { g.Commit = nil }, "snapshot and commit callbacks are required"},
-		"malformed instance":   {func(g *GuestConfig) { g.InstanceID = "../instance" }, "instance ID: "},
+		"unparseable Trust Authority URL":  {func(g *GuestConfig) { g.TAURL = "://cds" }, "CDSURL: "},
+		"plaintext Trust Authority URL":    {func(g *GuestConfig) { g.TAURL = "http://cds.example" }, "https URL with a host"},
+		"Trust Authority URL without host": {func(g *GuestConfig) { g.TAURL = "https:///attest" }, "https URL with a host"},
+		"no HTTP client":                   {func(g *GuestConfig) { g.HTTPClient = nil }, "HTTPClient is required"},
+		"no volume root":                   {func(g *GuestConfig) { g.VolumeRoot = nil }, "volume root is required"},
+		"no snapshot":                      {func(g *GuestConfig) { g.Snapshot = nil }, "snapshot and commit callbacks are required"},
+		"no commit":                        {func(g *GuestConfig) { g.Commit = nil }, "snapshot and commit callbacks are required"},
+		"malformed instance":               {func(g *GuestConfig) { g.InstanceID = "../instance" }, "instance ID: "},
 	} {
 		t.Run(name, func(t *testing.T) {
 			guest := valid(t)
@@ -93,14 +93,14 @@ func TestRunGuestWithdrawsFromUnverifiedVolume(t *testing.T) {
 		t.Fatal(err)
 	}
 	var requests atomic.Int64
-	cds := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	ta := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		requests.Add(1)
 		http.Error(w, "must refuse locally", http.StatusServiceUnavailable)
 	}))
-	defer cds.Close()
+	defer ta.Close()
 	claims := guestTestClaims(t)
 	err := RunGuest(t.Context(), GuestConfig{
-		CDSURL: cds.URL, HTTPClient: cds.Client(), VolumeRoot: root, InstanceID: claims.InstanceID(),
+		TAURL: ta.URL, HTTPClient: ta.Client(), VolumeRoot: root, InstanceID: claims.InstanceID(),
 		Snapshot: func(context.Context) (workloadclaims.PodClaims, error) { return claims, nil },
 		Commit:   func(_ workloadclaims.PodClaims, publish func() error) error { return publish() },
 	})
@@ -198,7 +198,7 @@ func TestRunGuestRetriesWithoutEvidenceUntilCancelled(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		done <- RunGuest(ctx, GuestConfig{
-			CDSURL: "https://cds.invalid", HTTPClient: &http.Client{}, VolumeRoot: root, InstanceID: claims.InstanceID(),
+			TAURL: "https://cds.invalid", HTTPClient: &http.Client{}, VolumeRoot: root, InstanceID: claims.InstanceID(),
 			Snapshot: func(context.Context) (workloadclaims.PodClaims, error) {
 				select {
 				case asked <- struct{}{}:
@@ -289,17 +289,17 @@ func TestGuestRootWithdrawalKeepsIssuerRecord(t *testing.T) {
 	}
 }
 
-// guestCDS answers the challenge and returns chain for every certificate
+// guestTA answers the challenge and returns chain for every certificate
 // request, or fails every request when chain is empty.
-func guestCDS(t *testing.T, chain string) (cds, attester *httptest.Server) {
+func guestTA(t *testing.T, chain string) (ta, attester *httptest.Server) {
 	t.Helper()
 	attester = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, `{"platform":"tdx","evidence":{"quote":"fake"}}`)
 	}))
 	t.Cleanup(attester.Close)
-	cds = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	ta = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if chain == "" {
-			http.Error(w, "CDS unavailable", http.StatusServiceUnavailable)
+			http.Error(w, "Trust Authority unavailable", http.StatusServiceUnavailable)
 			return
 		}
 		if r.URL.Path == "/authenticate" {
@@ -308,18 +308,18 @@ func guestCDS(t *testing.T, chain string) (cds, attester *httptest.Server) {
 		}
 		_, _ = io.WriteString(w, chain)
 	}))
-	t.Cleanup(cds.Close)
-	return cds, attester
+	t.Cleanup(ta.Close)
+	return ta, attester
 }
 
 func TestGuestIssuanceFailureCommitsNothing(t *testing.T) {
 	for name, chain := range map[string]string{
-		"CDS unavailable":    "",
-		"chain without a CA": testCertificatePEM(t),
+		"Trust Authority unavailable": "",
+		"chain without a CA":          testCertificatePEM(t),
 	} {
 		t.Run(name, func(t *testing.T) {
 			claims := guestTestClaims(t)
-			cds, attester := guestCDS(t, chain)
+			ta, attester := guestTA(t, chain)
 			v := credentialVolume{dir: t.TempDir(), leafName: "tls.crt", keyName: "tls.key", caName: "ca.crt"}
 			creds := &credentials{volume: v, instanceID: claims.InstanceID()}
 			var commits atomic.Int64
@@ -329,7 +329,7 @@ func TestGuestIssuanceFailureCommitsNothing(t *testing.T) {
 					commits.Add(1)
 					return publish()
 				}}
-			err := obtainGuestCert(t.Context(), guest, attestclient.NewClientWithHTTP(cds.URL, cds.Client()), creds)
+			err := obtainGuestCert(t.Context(), guest, attestclient.NewClientWithHTTP(ta.URL, ta.Client()), creds)
 			if err == nil || commits.Load() != 0 || creds.current != nil {
 				t.Fatalf("failed issuance committed: %v, commits=%d", err, commits.Load())
 			}

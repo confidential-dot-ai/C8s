@@ -7,7 +7,7 @@
 # construction. The canonical data lives in .github/build-pins.json;
 # .github/scripts/pin-manifest.sh validates the full schema before updating it.
 # An attestation-rs bump also resolves the release's attestation-api image to
-# its digest (the CDS image's build input) and writes the same digest to the
+# its digest (the Trust Authority image's build input) and writes the same digest to the
 # chart's attestationApi pinnedDigest, the host DaemonSet's copy that
 # pin-hygiene holds equal to the manifest.
 #

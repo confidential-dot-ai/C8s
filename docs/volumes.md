@@ -1,7 +1,7 @@
 # Encrypted volumes
 
 On a confidential node, a volume's plaintext exists only inside that node's CVM,
-and CDS releases its key only to a pod whose containers match an entitled
+and the Trust Authority (TA) releases its key only to a pod whose containers match an entitled
 allowlist entry; every pod on the node shares that boundary.
 
 Guarantee: [Data stays in the TEE](guarantees.md#data-stays-in-the-tee),
@@ -9,8 +9,7 @@ Guarantee: [Data stays in the TEE](guarantees.md#data-stays-in-the-tee),
 
 An encrypted volume is data too large to be a secret — model weights above all —
 encrypted at rest on storage the host can read and write. Its key is a secret in
-CDS, the Certificate Distribution Service holding C8s policy and the secret
-store, released by the machinery in [secrets.md](secrets.md). Steps are in
+the TA's secret store, released as described in [secrets.md](secrets.md). Steps are in
 [workloads.md](workloads.md), names in [glossary.md](glossary.md).
 
 ## Why a volume is different from a secret
@@ -68,15 +67,15 @@ for blobs sharing a name.
 ### Keep the escrow file
 
 `--escrow-out` is required, written `0600`, and refuses to overwrite. It is the
-only copy of the key outside CDS, which holds secrets in process memory, so a
-CDS restart makes every volume unopenable until its key is written back with
+only copy of the key outside the TA, which holds secrets in process memory, so a
+TA restart makes every volume unopenable until its key is written back with
 `c8s secrets put <PATH> --from-file <ESCROW>` and that command's write flags —
-`--url`, a measurement pin, `--operator-key`, and the `--mesh-ca` bundle CDS
+`--url`, a measurement pin, `--operator-key`, and the `--mesh-ca` bundle the TA
 must serve. The restart drops the consumer's workload entry too, so the volume
 opens again only once that entry's `secrets` grant and `data` mount rule are
 back as well. Lose the escrow file and the ciphertext is gone for good. The
 whole recovery, and what else a restart drops, is in
-[operator.md](operator.md#cds-runs-as-one-vm).
+[operator.md](operator.md#the-ta-runs-as-one-vm).
 
 ### The device
 
@@ -126,7 +125,7 @@ the node's mount propagates into. The sidecar fetches the key over the attested
 secrets flow and posts it to volumed, the node agent, which opens the device and
 mounts it into that pod: read-only erofs under dm-verity, or read-write ext4.
 
-Three things decide whether a mount happens. CDS releases the blob to the pod's
+Three things decide whether a mount happens. The TA releases the blob to the pod's
 sandbox, on the checks in [secrets.md](secrets.md). volumed mounts into the
 calling pod's directory and no other: it takes the caller's identity from the
 kernel, by resolving the connecting process's cgroup, so a caller cannot name
@@ -173,7 +172,7 @@ live read-write mount. A cgroup reaper collects after pods that die without it.
 
 ### Possession of the blob is the authorization
 
-volumed does not repeat CDS's release decision. It resolves who is calling only
+volumed does not repeat the TA's release decision. It resolves who is calling only
 to decide where to mount: any pod reaching its socket with a well-formed blob
 has that volume opened into its own directory. That holds only while the
 daemon's reach is one tenant's — the node is the confidential VM, and every pod

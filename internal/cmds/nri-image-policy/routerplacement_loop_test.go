@@ -10,10 +10,10 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 )
 
-func TestWorkerWithoutCDSConnectionRetainsUnknownDecision(t *testing.T) {
+func TestWorkerWithoutTAConnectionRetainsUnknownDecision(t *testing.T) {
 	check := workerPolicyCheck(&config{Worker: true}, nil)
 	if eligible, err := check(t.Context()); eligible || err == nil {
-		t.Fatalf("missing CDS produced a decision: %v, %v", eligible, err)
+		t.Fatalf("missing Trust Authority produced a decision: %v, %v", eligible, err)
 	}
 }
 

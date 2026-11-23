@@ -71,13 +71,13 @@ func (c *Config) peers() []string {
 }
 
 // document is the generic launch document every pod CVM of this provider
-// boots under: the cluster, image and CDS trust the operator
+// boots under: the cluster, image and Trust Authority trust the operator
 // configured, signed by the pod launch key. It names no pod and carries no
 // allowlist entries; those travel in the assignment.
 func (c *Config) document(name string) podlaunch.Document {
 	return podlaunch.Document{
 		SchemaVersion: podlaunch.SchemaVersion, ClusterID: c.ClusterID, Role: podlaunch.Pod, Image: c.image,
-		Node: podlaunch.Node{Name: name}, PodOperatorPublicKey: c.pub, CDS: c.cds,
+		Node: podlaunch.Node{Name: name}, PodOperatorPublicKey: c.pub, TA: c.ta,
 	}
 }
 

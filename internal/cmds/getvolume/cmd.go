@@ -15,13 +15,13 @@ func NewCmd() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "get-volume",
-		Short: "Fetch this pod's volume keys from CDS and have the node open them",
+		Short: "Fetch this pod's volume keys from the Trust Authority and have the node open them",
 		Long: `get-volume fetches the key for each encrypted volume a workload is granted
 and hands it to the node agent, which opens the device and mounts it into this
 pod — read-only for an immutable volume, read-write for a mutable one.
 
-It authenticates with the pod's CDS-issued certificate and a sandbox token
-redeemed from the node's admission inventory, and CDS releases only when the
+It authenticates with the pod's Trust Authority-issued certificate and a sandbox token
+redeemed from the node's admission inventory, and Trust Authority releases only when the
 containers running in the sandbox match a workload entry holding a grant for
 the requested path. That is only true once every main container is running, so
 early attempts are refused and get-volume retries — the volume appears shortly
@@ -31,7 +31,7 @@ The key must already be in the store, put there by ` + "`c8s volume create`" + `
 Nothing here creates one.`,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if err := cfg.ResolveCDSEndpoint(); err != nil {
+			if err := cfg.ResolveTAEndpoint(); err != nil {
 				return err
 			}
 			for _, spec := range specs {
@@ -47,7 +47,7 @@ Nothing here creates one.`,
 	f := cmd.Flags()
 	sidecar.BindFlags(f, &cfg.Config)
 	// This command's timeout also covers the node agent.
-	f.Lookup("request-timeout").Usage = "per-request timeout against CDS and the node agent"
+	f.Lookup("request-timeout").Usage = "per-request timeout against the Trust Authority and the node agent"
 	f.StringSliceVar(&specs, "volume", nil, "NAME=/store/path to open; NAME selects the device by serial (repeatable)")
 	// The socket directory is baked in, not supplied, like get-cert's inventory
 	// endpoint: a flag would let a pod author point the key handoff at a

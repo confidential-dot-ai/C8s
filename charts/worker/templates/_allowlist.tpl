@@ -4,7 +4,7 @@
 {{ list (list "router" "router.podSpec") | toJson }}
 {{- end -}}
 
-{{/* The seed a worker cluster's CDS serves: the component shapes of the
+{{/* The seed a worker cluster's Trust Authority serves: the component shapes of the
      router and of the sidecars the webhook injects, and the router entry. */}}
 {{- define "worker.allowlistSeedJSON" -}}
 {{- $shapes := include "c8s.componentShapes" (dict "root" . "templates" (include "worker.componentPodTemplates" .)) -}}

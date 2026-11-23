@@ -43,7 +43,7 @@ func (k Kubernetes) validate(nodeSubnets []netip.Prefix) error {
 		return fmt.Errorf("kubernetes.podCIDR %s overlaps kubernetes.serviceCIDR %s", pods, services)
 	}
 	if subnet, inCluster, ok := firstOverlap(nodeSubnets, pods, services); ok {
-		return fmt.Errorf("kubernetes: the pinned CDS configuration's node subnet %s overlaps the cluster range %s", subnet, inCluster)
+		return fmt.Errorf("kubernetes: the pinned Trust Authority configuration's node subnet %s overlaps the cluster range %s", subnet, inCluster)
 	}
 	if err := checkClusterDNS(k.ClusterDNS, services); err != nil {
 		return fmt.Errorf("kubernetes.clusterDNS %w", err)

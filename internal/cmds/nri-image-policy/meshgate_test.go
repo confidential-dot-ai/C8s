@@ -940,7 +940,7 @@ func TestValidateContainerAdjustmentPinsThePodsOwnMounts(t *testing.T) {
 				},
 				Policy: policyConfig{Mode: ModeAudit},
 			}, anyAllowlist(map[string]string{pushDigestA: "image-a"}))
-			p.cdsAddress = enforcerAddress
+			p.taAddress = enforcerAddress
 			pod := meshPod(routerNamespace, "c8s-router", testNetNS)
 			gate, state := gateWithPod(pod)
 			state.meshStarted = true
@@ -1054,7 +1054,7 @@ func TestStartContainerOpensTheGateOnTheMeshEndpointAlone(t *testing.T) {
 	}
 }
 
-// The install that deploys CDS deploys the router too, so a member pod's
+// The install that deploys Trust Authority deploys the router too, so a member pod's
 // containers are created while the enforcer is still initializing. The gate
 // refuses them until the pod's own endpoint has started, so that start is
 // recorded on the initializing path as well — otherwise the endpoint runs and

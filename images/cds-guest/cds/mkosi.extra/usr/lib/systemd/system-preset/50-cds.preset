@@ -1,3 +1,0 @@
-# Presets are applied at image build time. The CDS is the only service this
-# profile adds; the attester comes from the attest profile.
-enable cds.service

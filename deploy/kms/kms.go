@@ -156,7 +156,7 @@ func decodeRelease(body io.Reader, out *secretbroker.ReleaseRequest) error {
 	return nil
 }
 
-// release makes the decision. The order is: CDS vouches for the pod and the
+// release makes the decision. The order is: Trust Authority vouches for the pod and the
 // document (the broker statement), the document's owner is the client key it
 // names (its signature), and the policy lets that key read the secret.
 func (h *handler) release(ctx context.Context, req secretbroker.ReleaseRequest) ([]byte, int, error) {

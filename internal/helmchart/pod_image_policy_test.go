@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// Pod issuance authority belongs in the measured CDS configuration, never in
+// Pod issuance authority belongs in the measured Trust Authority configuration, never in
 // the cluster chart or its credential clients.
 func TestChartCannotConfigurePodIssuance(t *testing.T) {
 	t.Parallel()
@@ -31,7 +31,7 @@ func TestChartCannotConfigurePodIssuance(t *testing.T) {
 			}
 			for _, workload := range renderedPodSpecs(t, out) {
 				if workload.name == "c8s-cds" {
-					t.Fatal("chart rendered an unmeasured CDS")
+					t.Fatal("chart rendered an unmeasured Trust Authority")
 				}
 				for _, c := range append(workload.spec.Containers, workload.spec.InitContainers...) {
 					for _, arg := range c.Args {

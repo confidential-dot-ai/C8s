@@ -31,22 +31,22 @@ import (
 // ApproveAll reports.
 const TestMeasurement = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
-// ApproveAll is a verifier that accepts any evidence as this cluster's CDS VM:
+// ApproveAll is a verifier that accepts any evidence as this cluster's Trust Authority VM:
 // a report at TestMeasurement on the platform the evidence names, launched
-// with CDSLaunchFile, which is what CDSPinDocument pins. A test then exercises
+// with TALaunchFile, which is what TAPinDocument pins. A test then exercises
 // what a command does with a verified endpoint.
 func ApproveAll() VerifierStub {
 	return func(_ context.Context, platform string, _ json.RawMessage, _ localverify.Params) (*teetypes.VerificationResult, error) {
 		match := true
 		result := &teetypes.VerificationResult{Platform: teetypes.NormalizePlatform(platform), SignatureValid: true, ReportDataMatch: &match}
 		result.Claims.LaunchDigest = TestMeasurement
-		binding := runtimemeasure.HostData([]byte(CDSLaunchFile))
+		binding := runtimemeasure.HostData([]byte(TALaunchFile))
 		result.Claims.InitData = binding[:]
 		return result, nil
 	}
 }
 
-// MeshCA mints a self-signed CA certificate standing in for one CDS's mesh CA
+// MeshCA mints a self-signed CA certificate standing in for one Trust Authority's mesh CA
 // and returns its DER. Two calls produce two distinct CAs.
 func MeshCA(t testing.TB, cn string) []byte {
 	t.Helper()
@@ -70,7 +70,7 @@ func MeshCA(t testing.TB, cn string) []byte {
 	return der
 }
 
-// PEMCerts renders DER certificates as a PEM bundle, as CDS serves /ca.
+// PEMCerts renders DER certificates as a PEM bundle, as Trust Authority serves /ca.
 func PEMCerts(ders ...[]byte) []byte {
 	var buf bytes.Buffer
 	for _, der := range ders {
@@ -80,7 +80,7 @@ func PEMCerts(ders ...[]byte) []byte {
 }
 
 // ARMTLSServingCert mints the self-signed armTLS serving certificate a direct
-// CDS presents. Each call has a fresh key, so two servers are two peers that
+// Trust Authority presents. Each call has a fresh key, so two servers are two peers that
 // attest identically.
 func ARMTLSServingCert(t testing.TB) tls.Certificate {
 	t.Helper()

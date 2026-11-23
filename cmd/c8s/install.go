@@ -22,7 +22,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cdsconn"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/taconn"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/fileutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/helmchart"
 )
@@ -42,16 +43,16 @@ var (
 	installUpstream     string
 	installWorkloadRefs []string
 
-	installChartDir   string
-	installCDSAddress string
-	installCDSPin     string
-	installSeedOut    string
-	installPodCIDRs   []string
+	installChartDir  string
+	installTAAddress string
+	installTAPin     string
+	installSeedOut   string
+	installPodCIDRs  []string
 
-	// installCDS is the pin this install holds its CDS to, resolved once from
+	// installTA is the pin this install holds its Trust Authority to, resolved once from
 	// the values the release renders with, so the chart, the clients this
 	// install dials and the commands it prints name one document.
-	installCDS *cdsPin
+	installTA *taPin
 )
 
 // Flag names referenced in more than one place (registration plus a Changed()
@@ -63,8 +64,8 @@ const (
 	flagHardwarePlatform = "hardware-platform"
 	flagWorkloadRef      = "workload-ref"
 	flagUpstream         = "upstream"
-	flagCDSAddress       = "cds-address"
-	flagCDSPin           = "cds-pin"
+	flagTAAddress        = "ta-address"
+	flagTAPin            = "ta-pin"
 	flagSeedOut          = "allowlist-seed-out"
 	flagPodCIDR          = "pod-cidr"
 )
@@ -134,6 +135,10 @@ func chartComponents(ctx context.Context, chartPath string) ([]c8sComponent, err
 	if err != nil {
 		return nil, err
 	}
+	return chartComponentsFromValues(chartPath, values)
+}
+
+func chartComponentsFromValues(chartPath string, values map[string]any) ([]c8sComponent, error) {
 	file, err := chartComponentsFile(chartPath)
 	if err != nil {
 		return nil, err
@@ -190,27 +195,6 @@ func componentsFromFile(components componentsFile, values map[string]any) ([]c8s
 		})
 	}
 	return comps, nil
-}
-
-// cdsValues are the CDS settings the -f files name, merged as helm merges
-// them: the last file writing a path is the one the release renders with.
-func cdsValues(valuesFiles []string) (map[string]any, error) {
-	values := map[string]any{}
-	for _, f := range valuesFiles {
-		tree, err := decodeValuesFile(f)
-		if err != nil {
-			return nil, err
-		}
-		for _, path := range []string{
-			"cds.address",
-			"cds.measurementsConfig",
-		} {
-			if v, ok := valueAtPath(tree, path); ok {
-				values[path] = v
-			}
-		}
-	}
-	return values, nil
 }
 
 // boolAtPath walks a dotted path through a decoded YAML tree and returns the
@@ -370,8 +354,8 @@ files set the platform's values. Deploys:
   - the ConfidentialWorkload CRD
   - the mutating admission webhook configuration
   - the attestation-api DaemonSet (per-node /attest + /verify)
-  - cds.address and cds.measurementsConfig, pointing the cluster at the external
-    CDS named by --cds-address and --cds-pin
+  - ta.address and ta.measurementsConfig, pointing the cluster at the external
+    Trust Authority named by --ta-address and --ta-pin
   - the pod-validating webhook configuration
   - the nri-image-policy and router components
 
@@ -384,7 +368,7 @@ the images requested in pod specs and prints the matching images.
 
 Before changing the cluster, install checks requested containers on confidential
 nodes against repository exemptions, component and bootstrap digests, and the
-authenticated allowlist fetched from CDS. It refuses resolved platform images
+authenticated allowlist fetched from the Trust Authority. It refuses resolved platform images
 outside that available policy; --force overrides this guard. Other uncovered
 images and containers without a current digest are reported as warnings.
 This checks image coverage; runtime admission also checks the full workload,
@@ -416,23 +400,23 @@ nriImagePolicy.bootstrapAllowlist.workloads entry per adopted workload, named
 after its cw id and listing every image of its pod template under any command
 and args, with mounts limited to the template's memory-backed emptyDirs (the
 webhook refuses a workload container that mounts the cert volume), so image
-admission (the host NRI plugin) allows the rollout and CDS stamps the cw id on
+admission (the host NRI plugin) allows the rollout and Trust Authority stamps the cw id on
 the workload's certificate. A template mounting anything else or a subPath, or
 requesting c8s secrets or volumes, gets an entry admitting any mounts and a
-warning: CDS still names the pod, so a route written to it later
+warning: Trust Authority still names the pod, so a route written to it later
 trusts those mounts. For the --upstream workload install refuses instead;
 write its entry with 'c8s allowlist'. Install refuses an adoption whose pod another entry of the
-seed also describes, since CDS would then name it nothing.
+seed also describes, since the Trust Authority would then name it nothing.
 
-The router routes only by the operator-signed route manifest on CDS, verified
+The router routes only by the operator-signed route manifest on the Trust Authority, verified
 under --operator-keys. Without one the router takes the keys from the pinned
-CDS. To front an adopted workload, give its ref the :<port> it serves TLS on,
+Trust Authority. To front an adopted workload, give its ref the :<port> it serves TLS on,
 with its get-cert
 certificate, and pass --upstream <id>: install builds a manifest whose every
 router.san DNS name routes / to c8s-<id>.<ns>.svc.cluster.local:<port>, verified
 as the allowlist entry <id>. With --operator-key (or C8S_OPERATOR_KEY) install
-signs it and stores it on CDS once the release is ready, keeping the routes of a
-manifest CDS already stores (verified against --operator-keys). Without one, or
+signs it and stores it on the Trust Authority once the release is ready, keeping the routes of a
+manifest Trust Authority already stores (verified against --operator-keys). Without one, or
 when storing fails, it writes the manifest to --routes-out and prints the
 'c8s routes add' commands that store the route. Its revision is the later of
 the stored one plus one and the current Unix time in seconds, or
@@ -466,12 +450,12 @@ func installC8s(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	pin, removePin, err := resolveCDSPin(installValues)
+	pin, removePin, err := resolveTAPin(installValues)
 	if err != nil {
 		return err
 	}
 	defer removePin()
-	installCDS = pin
+	installTA = pin
 	installRoutesOutSet, installRoutesMaxAgeSet = cmd.Flags().Changed("routes-out"), cmd.Flags().Changed("routes-max-age")
 	if err := checkInstallFlags(seedOnly); err != nil {
 		return err
@@ -531,10 +515,10 @@ func checkInstallFlags(seedOnly bool) error {
 		return err
 	}
 	if seedOnly {
-		if installCDSAddress != "" || installCDSPin != "" {
-			return fmt.Errorf("--%s writes the seed the CDS is configured with, so it runs before --%s and --%s name one", flagSeedOut, flagCDSAddress, flagCDSPin)
+		if installTAAddress != "" || installTAPin != "" {
+			return fmt.Errorf("--%s writes the seed the Trust Authority is configured with, so it runs before --%s and --%s name one", flagSeedOut, flagTAAddress, flagTAPin)
 		}
-	} else if err := cdsPreflight(installCDSAddress, installCDSPin, installValues); err != nil {
+	} else if err := taPreflight(installTAAddress, installTAPin, installValues); err != nil {
 		return err
 	}
 	if _, err := exec.LookPath("helm"); err != nil {
@@ -581,6 +565,7 @@ func (r releaseRender) seedRender() seedRender {
 		kubeVersion: r.kubeVersion,
 		valueFiles:  r.valuesFiles,
 		computed:    r.computed,
+		legacyTA:    r.chart.legacyTA,
 	}
 }
 
@@ -602,6 +587,13 @@ func renderRelease(
 	values, err := buildComputedValues(chart.imagePins)
 	if err != nil {
 		return releaseRender{}, nil, err
+	}
+	if chart.legacyTA {
+		delete(values, "cds")
+		if ta, ok := values["ta"]; ok {
+			values["cds"] = ta
+			delete(values, "ta")
+		}
 	}
 	adoption, err := resolvedWorkloadImageValues(ctx, adopted, installUpstream)
 	if err != nil {
@@ -626,9 +618,9 @@ func renderRelease(
 
 type installPlan struct {
 	values map[string]any
-	// routes and cdsURL are set only with --upstream.
+	// routes and taURL are set only with --upstream.
 	routes upstreamRoutes
-	cdsURL string
+	taURL  string
 }
 
 func (p installPlan) routesUpstream() bool {
@@ -678,7 +670,7 @@ func preflightCluster(
 	if err != nil {
 		return installPlan{}, err
 	}
-	servedDigests, warn, err := checkNamedCDS(ctx, release.seedRender(), installCDS, values)
+	servedDigests, warn, err := checkNamedTA(ctx, release.seedRender(), installTA, values)
 	if err != nil {
 		return installPlan{}, err
 	}
@@ -687,7 +679,7 @@ func preflightCluster(
 	}
 	plan := installPlan{values: values}
 	if upstream != "" {
-		if plan.routes, plan.cdsURL, err = planUpstreamRoutes(values, upstream); err != nil {
+		if plan.routes, plan.taURL, err = planUpstreamRoutes(values, upstream); err != nil {
 			return installPlan{}, err
 		}
 	}
@@ -715,11 +707,11 @@ func planUpstreamRoutes(values map[string]any, upstream string) (upstreamRoutes,
 	if len(hosts) == 0 {
 		return upstreamRoutes{}, "", fmt.Errorf("--%s needs a DNS name in router.san to route requests for: a route manifest host cannot be a wildcard, an IP address or end in a numeric label", flagUpstream)
 	}
-	cdsURL, err := installCDSURL(values)
+	taURL, err := installTAURL(values)
 	if err != nil {
 		return upstreamRoutes{}, "", err
 	}
-	return upstreamRoutes{hosts: hosts, address: upstream, workload: installUpstream}, cdsURL, nil
+	return upstreamRoutes{hosts: hosts, address: upstream, workload: installUpstream}, taURL, nil
 }
 
 // interruptOnCancel stops helm with SIGINT when hc's context ends, as a
@@ -756,7 +748,7 @@ func applyRelease(
 	}
 	var storedRouteDigest string
 	if plan.routesUpstream() {
-		digest, err := deliverUpstreamRoutes(ctx, os.Stdout, plan.routes, plan.cdsURL, release.adoptedEntries)
+		digest, err := deliverUpstreamRoutes(ctx, os.Stdout, plan.routes, plan.taURL, release.adoptedEntries)
 		if err != nil {
 			return err
 		}
@@ -767,12 +759,12 @@ func applyRelease(
 }
 
 func printInstallVerifyHint(values map[string]any, storedRouteDigest string) {
-	verifyURL, verifyPin := "https://<cds-address>", "<cds-pin.json>"
-	if url, err := installCDSURL(values); err == nil {
+	verifyURL, verifyPin := "https://<ta-address>", "<cds-pin.json>"
+	if url, err := installTAURL(values); err == nil {
 		verifyURL = url
 	}
-	if installCDS != nil {
-		verifyPin = installCDS.path
+	if installTA != nil {
+		verifyPin = installTA.path
 	}
 	printVerifyHint(os.Stdout, verifyURL, verifyPin, installOperatorKeysFlag(), storedRouteDigest)
 }
@@ -782,8 +774,8 @@ func printInstallVerifyHint(values map[string]any, storedRouteDigest string) {
 // when this run stored none.
 func printVerifyHint(
 	w io.Writer,
-	cdsURL string,
-	cdsPin string,
+	taURL string,
+	taPin string,
 	operatorKeys string,
 	storedRouteDigest string,
 ) {
@@ -791,12 +783,12 @@ func printVerifyHint(
 	fmt.Fprintln(w, "+ router attestation sidecar enabled; clients verify the front door against the")
 	fmt.Fprintln(w, "  node measurements, the mesh anchor and the route digest:")
 	fmt.Fprintf(w, "    c8s verify https://<router> --kind lb --mode attest-lb --image-policy-file <node-pins.json> --mesh-ca mesh-ca.pem --route-digest %s\n", routeDigest)
-	fmt.Fprintln(w, "  node-pins.json pins the node images: the nodes of the CDS configuration, or")
+	fmt.Fprintln(w, "  node-pins.json pins the node images: the nodes of the Trust Authority configuration, or")
 	fmt.Fprintln(w, "  'c8s measurements derive' of a node image build, never what the endpoint reports.")
-	fmt.Fprintf(w, "  Write the anchor with: c8s cds ca --url %s --image-policy-file %s --out mesh-ca.pem\n", cdsURL, cdsPin)
+	fmt.Fprintf(w, "  Write the anchor with: c8s ta ca --ta-url %s --ta-image-policy-file %s --out mesh-ca.pem\n", taURL, taPin)
 	if storedRouteDigest == "" {
 		fmt.Fprintf(w, "  Read the route digest with: c8s routes show --url %s --image-policy-file %s --operator-keys %s\n",
-			cdsURL, cdsPin, operatorKeys)
+			taURL, taPin, operatorKeys)
 	}
 }
 
@@ -920,18 +912,20 @@ func init() {
 	installCmd.Flags().BoolVar(&installVolumes, "volumes", false, "serve encrypted volumes (docs/volumes.md): deploy volumed, the node agent that opens a pod's volume devices, and pin its image into the NRI allowlist. Off by default — it runs privileged, with hostPID and a writable bind of the kubelet directory")
 	installCmd.Flags().StringSliceVar(&installWorkloadRefs, flagWorkloadRef, nil, "existing workload to adopt as a c8s confidential workload, as <cw-id>=<namespace>/<kind>/<name>[:<port>]; repeatable. Kind is any resource exposing a pod template at spec.template (deployment, statefulset, daemonset, or an operator CRD such as <kind>.<group>). The optional :<port> is the port the workload serves TLS on with its get-cert certificate, needed on the ref --upstream selects")
 	installCmd.Flags().StringVar(&installUpstream, flagUpstream, "", "confidential.ai/cw id of the adopted --workload-ref workload to route / to: writes a route manifest naming c8s-<id>.<ns>.svc.cluster.local:<port> (that ref's :<port>, serving TLS on its get-cert certificate) and the allowlist entry <id>, for every router.san DNS name")
-	installCmd.Flags().StringVar(&installOperatorKey, flagOperatorKey, "", "operator EC private key PEM (env "+cdsconn.EnvOperatorKey+") that signs the --upstream route manifest; install then stores it on CDS, pinned by --cds-pin. Without it the manifest goes to --routes-out. Requires --upstream")
-	installCmd.Flags().StringVar(&installRoutesOut, "routes-out", "routes.json", "file the --upstream route manifest is written to when no --operator-key signs it, or when install cannot store it on CDS")
-	installCmd.Flags().Uint64Var(&installRoutesRevision, "routes-revision", 0, "revision of the --upstream route manifest, above the one CDS stores; default the later of the stored revision plus one and the current Unix time. After a CDS reset, pass one above the highest revision any router applied")
-	installCmd.Flags().DurationVar(&installRoutesMaxAge, "routes-max-age", 24*time.Hour, "maxAgeSeconds of a new --upstream route manifest: how long the router admits new attested sessions by it without a successful fetch from CDS; application routing goes on regardless. A manifest CDS already stores keeps its own")
+	installCmd.Flags().StringVar(&installOperatorKey, flagOperatorKey, "", "operator EC private key PEM (env "+taconn.EnvOperatorKey+") that signs the --upstream route manifest; install then stores it on the Trust Authority, pinned by --ta-pin. Without it the manifest goes to --routes-out. Requires --upstream")
+	installCmd.Flags().StringVar(&installRoutesOut, "routes-out", "routes.json", "file the --upstream route manifest is written to when no --operator-key signs it, or when install cannot store it on the Trust Authority")
+	installCmd.Flags().Uint64Var(&installRoutesRevision, "routes-revision", 0, "revision of the --upstream route manifest, above the one Trust Authority stores; default the later of the stored revision plus one and the current Unix time. After a Trust Authority reset, pass one above the highest revision any router applied")
+	installCmd.Flags().DurationVar(&installRoutesMaxAge, "routes-max-age", 24*time.Hour, "maxAgeSeconds of a new --upstream route manifest: how long the router admits new attested sessions by it without a successful fetch from the Trust Authority; application routing goes on regardless. A manifest Trust Authority already stores keeps its own")
 	installCmd.Flags().StringVar(&installPlatform, flagPlatform, "", "the cluster's confidential VMs: aks-snp and aks-tdx (Azure, evidence from the vTPM), or gke-snp (GKE, evidence from the SNP report). Selects the chart's values-<platform>.yaml; without it the -f files set the platform's values")
 	installCmd.Flags().StringVar(&installChartDir, flagChart, "", "chart directory to render instead of the bundled chart, with the component images it and the -f files set; required for a build that is not a release")
-	installCmd.Flags().StringVar(&installCDSAddress, flagCDSAddress, "", "<host>:<port> of the CDS this cluster trusts, the host a DNS name or an IPv4 address: the VM 'c8s cds config new' wrote a configuration and a pin for. Sets cds.address, which every client of this cluster dials and whose port is the only one their packet rules admit outside the cluster")
-	installCmd.Flags().StringVar(&installCDSPin, flagCDSPin, "", "path to that CDS's pin document (cds-pin.json): the image and launch file its VM proves. Sets cds.measurementsConfig, which every client holds the CDS to")
-	installCmd.Flags().StringArrayVar(&installPodCIDRs, flagPodCIDR, nil, "a range this cluster assigns pod addresses from, the one 'c8s cds config new --pod-cidr' names; repeatable. The CDS's node subnets are checked against these ranges and the ones the nodes publish, and every pod must answer inside them")
-	installCmd.Flags().StringVar(&installSeedOut, flagSeedOut, "", "write the component allowlist entries this install needs served to <file> and stop, changing nothing in the cluster: it reads the cluster's Kubernetes version, so the seed matches the render this install applies. The input 'c8s cds config new --allowlist-seed' takes before the CDS this install then names exists")
+	installCmd.Flags().StringVar(&installTAAddress, flagTAAddress, "", "<host>:<port> of the Trust Authority this cluster uses, with a DNS name or IPv4 address. Sets ta.address")
+	cmdsutil.AliasFlag(installCmd.Flags(), flagTAAddress, "cds-address")
+	installCmd.Flags().StringVar(&installTAPin, flagTAPin, "", "path to the Trust Authority pin document from c8s ta config new. Sets ta.measurementsConfig")
+	cmdsutil.AliasFlag(installCmd.Flags(), flagTAPin, "cds-pin")
+	installCmd.Flags().StringArrayVar(&installPodCIDRs, flagPodCIDR, nil, "a range this cluster assigns pod addresses from, the one 'c8s ta config new --pod-cidr' names; repeatable. The Trust Authority's node subnets are checked against these ranges and the ones the nodes publish, and every pod must answer inside them")
+	installCmd.Flags().StringVar(&installSeedOut, flagSeedOut, "", "write the component allowlist entries this install needs served to <file> and stop, changing nothing in the cluster: it reads the cluster's Kubernetes version, so the seed matches the render this install applies. The input 'c8s ta config new --allowlist-seed' takes before the Trust Authority this install then names exists")
 	installCmd.Flags().StringVar(&installImagePullSecret, "image-pull-secret", "", "name of an existing registry-credential Secret (kubernetes.io/dockerconfigjson) in the release namespace; the chart appends it to every component's imagePullSecrets, so all pods can pull the c8s images from an authenticated registry (e.g. a private mirror) from first start. The Secret itself is never created or managed by the install — the install fails fast if it is missing or has the wrong type")
-	installCmd.Flags().StringVar(&installOperatorKeys, "operator-keys", "", "path to a PEM bundle of operator EC public keys the router verifies route manifests under; sets cds.operatorKeys. Without it the router uses the keys the pinned CDS serves. CDS's own write keys come from 'c8s cds config new --operator-keys'")
+	installCmd.Flags().StringVar(&installOperatorKeys, "operator-keys", "", "path to a PEM bundle of operator EC public keys the router verifies route manifests under; sets ta.operatorKeys. Without it the router uses the keys the pinned Trust Authority serves. Trust Authority's own write keys come from 'c8s ta config new --operator-keys'")
 	installCmd.Flags().BoolVar(&installForce, "force", false, "install despite a fail-closed image policy that would deny the cluster's own platform pods (they do not come back after the containerd restart)")
 	rootCmd.AddCommand(installCmd)
 }

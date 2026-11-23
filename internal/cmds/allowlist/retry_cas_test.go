@@ -16,12 +16,12 @@ import (
 	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
-// rateLimitedCDS is the fake CDS behind the limiter CDS meters allowlist
+// rateLimitedTA is the fake Trust Authority behind the limiter Trust Authority meters allowlist
 // writes with, at its defaults (cds --rate-limit 10 --rate-burst 20). Reads
-// are not metered, as in CDS.
-func rateLimitedCDS(t *testing.T, pinned []*ecdsa.PublicKey) (*httptest.Server, *fakeCDS) {
+// are not metered, as in Trust Authority.
+func rateLimitedTA(t *testing.T, pinned []*ecdsa.PublicKey) (*httptest.Server, *fakeTA) {
 	t.Helper()
-	f := newFakeCDS(pinned)
+	f := newFakeTA(pinned)
 	rl, err := issuer.NewIPRateLimiter(rate.Limit(10), 20, 100)
 	if err != nil {
 		t.Fatal(err)
@@ -61,21 +61,21 @@ func workloadOf(t *testing.T, n int) pkgallowlist.Workload {
 func TestApplyLargeFileThroughRateLimit(t *testing.T) {
 	dir := t.TempDir()
 	keyPath, pub := newOperatorKeypair(t, dir, "op.key")
-	srv, cds := rateLimitedCDS(t, []*ecdsa.PublicKey{pub})
+	srv, ta := rateLimitedTA(t, []*ecdsa.PublicKey{pub})
 	names := make([]string, 60)
 	for i := range names {
 		names[i] = fmt.Sprintf("app-%02d", i)
 	}
 	file := writeFile(t, "big.json", entryMap(names...))
-	before := cds.currentVersion()
+	before := ta.currentVersion()
 
 	if _, _, err := runCmd("apply", file, "--url", srv.URL, "--insecure", "--operator-key", keyPath); err != nil {
-		t.Fatalf("apply of %d entries: %v (store holds %d)", len(names), err, cds.count())
+		t.Fatalf("apply of %d entries: %v (store holds %d)", len(names), err, ta.count())
 	}
-	if got := cds.count(); got != len(names) {
+	if got := ta.count(); got != len(names) {
 		t.Fatalf("store holds %d entries, want %d", got, len(names))
 	}
-	if got := cds.currentVersion(); got != before+1 {
+	if got := ta.currentVersion(); got != before+1 {
 		t.Fatalf("version %d -> %d, want one atomic write", before, got)
 	}
 }
@@ -84,22 +84,22 @@ func TestApplyLargeFileThroughRateLimit(t *testing.T) {
 func TestDeleteManyThroughRateLimit(t *testing.T) {
 	dir := t.TempDir()
 	keyPath, pub := newOperatorKeypair(t, dir, "op.key")
-	srv, cds := rateLimitedCDS(t, []*ecdsa.PublicKey{pub})
+	srv, ta := rateLimitedTA(t, []*ecdsa.PublicKey{pub})
 	args := []string{"delete"}
 	for i := range 30 {
 		name := fmt.Sprintf("app-%02d", i)
-		cds.seedWorkload(name, workloadOf(t, i))
+		ta.seedWorkload(name, workloadOf(t, i))
 		args = append(args, name)
 	}
-	before := cds.currentVersion()
+	before := ta.currentVersion()
 
 	if _, _, err := runCmd(append(args, "--url", srv.URL, "--insecure", "--operator-key", keyPath)...); err != nil {
-		t.Fatalf("delete of 30 entries: %v (store holds %d)", err, cds.count())
+		t.Fatalf("delete of 30 entries: %v (store holds %d)", err, ta.count())
 	}
-	if got := cds.count(); got != 0 {
+	if got := ta.count(); got != 0 {
 		t.Fatalf("store holds %d entries after deleting all", got)
 	}
-	if got := cds.currentVersion(); got != before+1 {
+	if got := ta.currentVersion(); got != before+1 {
 		t.Fatalf("version %d -> %d, want one atomic write", before, got)
 	}
 }
@@ -110,22 +110,22 @@ func TestDeleteManyThroughRateLimit(t *testing.T) {
 func TestUploadKeepsARacingWrite(t *testing.T) {
 	dir := t.TempDir()
 	keyPath, pub := newOperatorKeypair(t, dir, "op.key")
-	srv, cds := cdsTestServer(t, []*ecdsa.PublicKey{pub})
-	cds.seedWorkload("keep", workloadOf(t, 5))
-	cds.beforeReplace = func() { cds.put("racer", workloadOf(t, 6)) }
+	srv, ta := taTestServer(t, []*ecdsa.PublicKey{pub})
+	ta.seedWorkload("keep", workloadOf(t, 5))
+	ta.beforeReplace = func() { ta.put("racer", workloadOf(t, 6)) }
 
 	file := writeFile(t, "doc.json", `{"schema":"c8s.allowlist/v1","workloads":`+entryMap("web")+`}`)
 	_, _, err := runCmd("upload", file, "--force", "--url", srv.URL, "--insecure", "--operator-key", keyPath)
 	if err == nil || !strings.Contains(err.Error(), "changed since it was read") || !strings.Contains(err.Error(), "nothing was uploaded") {
 		t.Fatalf("err = %v, want a refusal saying nothing was written", err)
 	}
-	if _, ok := cds.workload("racer"); !ok {
+	if _, ok := ta.workload("racer"); !ok {
 		t.Fatal("the racing write was overwritten")
 	}
-	if _, ok := cds.workload("web"); ok {
+	if _, ok := ta.workload("web"); ok {
 		t.Fatal("the refused write landed")
 	}
-	if _, ok := cds.workload("keep"); !ok {
+	if _, ok := ta.workload("keep"); !ok {
 		t.Fatal("an entry the write did not name was lost")
 	}
 }
@@ -133,14 +133,14 @@ func TestUploadKeepsARacingWrite(t *testing.T) {
 // raceWrites makes each of the next n whole-document writes lose to a write
 // of entry name(i) landing just before it. The returned function reports how
 // many writes it raced.
-func raceWrites(cds *fakeCDS, n int, name func(i int) string, w pkgallowlist.Workload) func() int {
+func raceWrites(ta *fakeTA, n int, name func(i int) string, w pkgallowlist.Workload) func() int {
 	raced := 0
-	cds.beforeReplace = func() {
+	ta.beforeReplace = func() {
 		if raced == n {
 			return
 		}
 		raced++
-		cds.put(name(raced), w)
+		ta.put(name(raced), w)
 	}
 	return func() int { return raced }
 }
@@ -151,10 +151,10 @@ func raceWrites(cds *fakeCDS, n int, name func(i int) string, w pkgallowlist.Wor
 func TestApplyAfterRacingWritesToOtherEntries(t *testing.T) {
 	dir := t.TempDir()
 	keyPath, pub := newOperatorKeypair(t, dir, "op.key")
-	srv, cds := cdsTestServer(t, []*ecdsa.PublicKey{pub})
-	cds.seedWorkload("keep", workloadOf(t, 5))
-	raced := raceWrites(cds, 2, func(i int) string { return fmt.Sprintf("racer-%d", i) }, workloadOf(t, 6))
-	before := cds.currentVersion()
+	srv, ta := taTestServer(t, []*ecdsa.PublicKey{pub})
+	ta.seedWorkload("keep", workloadOf(t, 5))
+	raced := raceWrites(ta, 2, func(i int) string { return fmt.Sprintf("racer-%d", i) }, workloadOf(t, 6))
+	before := ta.currentVersion()
 
 	file := writeFile(t, "doc.json", entryMap("web"))
 	_, stderr, err := runCmd("apply", file, "--url", srv.URL, "--insecure", "--operator-key", keyPath)
@@ -165,11 +165,11 @@ func TestApplyAfterRacingWritesToOtherEntries(t *testing.T) {
 		t.Fatalf("raced %d writes, want 2", raced())
 	}
 	for _, name := range []string{"web", "keep", "racer-1", "racer-2"} {
-		if _, ok := cds.workload(name); !ok {
+		if _, ok := ta.workload(name); !ok {
 			t.Fatalf("entry %q missing after apply", name)
 		}
 	}
-	if got := cds.currentVersion(); got != before+3 {
+	if got := ta.currentVersion(); got != before+3 {
 		t.Fatalf("version %d -> %d, want the 2 racing writes and one apply", before, got)
 	}
 	if !strings.Contains(stderr, "racer-1") || !strings.Contains(stderr, "racer-2") {
@@ -182,15 +182,15 @@ func TestApplyAfterRacingWritesToOtherEntries(t *testing.T) {
 func TestApplyOverARacingWriteToTheSameEntry(t *testing.T) {
 	dir := t.TempDir()
 	keyPath, pub := newOperatorKeypair(t, dir, "op.key")
-	srv, cds := cdsTestServer(t, []*ecdsa.PublicKey{pub})
-	cds.seedWorkload("web", workloadOf(t, 5))
-	raceWrites(cds, 1, func(int) string { return "web" }, workloadOf(t, 6))
+	srv, ta := taTestServer(t, []*ecdsa.PublicKey{pub})
+	ta.seedWorkload("web", workloadOf(t, 5))
+	raceWrites(ta, 1, func(int) string { return "web" }, workloadOf(t, 6))
 
 	file := writeFile(t, "doc.json", entryMap("web"))
 	if _, _, err := runCmd("apply", file, "--url", srv.URL, "--insecure", "--operator-key", keyPath); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
-	got, _ := cds.workload("web")
+	got, _ := ta.workload("web")
 	if want := mustParseAllowlist(t, `{"schema":"c8s.allowlist/v1","workloads":`+entryMap("web")+`}`).Workloads["web"]; !reflect.DeepEqual(got, want) {
 		t.Fatalf("web = %+v, want the file's value %+v", got, want)
 	}
@@ -201,8 +201,8 @@ func TestApplyOverARacingWriteToTheSameEntry(t *testing.T) {
 func TestApplyGivesUpWhenEveryWriteLosesARace(t *testing.T) {
 	dir := t.TempDir()
 	keyPath, pub := newOperatorKeypair(t, dir, "op.key")
-	srv, cds := cdsTestServer(t, []*ecdsa.PublicKey{pub})
-	raced := raceWrites(cds, maxApplyAttempts+1, func(i int) string { return fmt.Sprintf("racer-%d", i) }, workloadOf(t, 6))
+	srv, ta := taTestServer(t, []*ecdsa.PublicKey{pub})
+	raced := raceWrites(ta, maxApplyAttempts+1, func(i int) string { return fmt.Sprintf("racer-%d", i) }, workloadOf(t, 6))
 
 	file := writeFile(t, "doc.json", entryMap("web"))
 	_, _, err := runCmd("apply", file, "--url", srv.URL, "--insecure", "--operator-key", keyPath)
@@ -213,12 +213,12 @@ func TestApplyGivesUpWhenEveryWriteLosesARace(t *testing.T) {
 	if raced() != maxApplyAttempts {
 		t.Fatalf("apply wrote %d times, want %d", raced(), maxApplyAttempts)
 	}
-	if _, ok := cds.workload("web"); ok {
+	if _, ok := ta.workload("web"); ok {
 		t.Fatal("a refused write landed")
 	}
 }
 
-// CDS can apply a write and still answer 503 (the reply is lost). The client
+// Trust Authority can apply a write and still answer 503 (the reply is lost). The client
 // sends it again, which the version it was conditional on now refuses; the
 // allowlist holds exactly what was sent, so the write succeeded.
 func TestWholeDocumentWriteAfterALost503(t *testing.T) {
@@ -226,38 +226,38 @@ func TestWholeDocumentWriteAfterALost503(t *testing.T) {
 		t.Run(command, func(t *testing.T) {
 			dir := t.TempDir()
 			keyPath, pub := newOperatorKeypair(t, dir, "op.key")
-			srv, cds := cdsTestServer(t, []*ecdsa.PublicKey{pub})
-			cds.lost503 = 1
-			before := cds.currentVersion()
+			srv, ta := taTestServer(t, []*ecdsa.PublicKey{pub})
+			ta.lost503 = 1
+			before := ta.currentVersion()
 
 			if _, _, err := runCmd(append(wholeDocArgs(t, command), "--url", srv.URL, "--insecure", "--operator-key", keyPath)...); err != nil {
 				t.Fatalf("a write applied before its 503 reported as failed: %v", err)
 			}
-			if _, ok := cds.workload("web"); !ok {
+			if _, ok := ta.workload("web"); !ok {
 				t.Fatal("entry not stored")
 			}
-			if got := cds.currentVersion(); got != before+1 {
+			if got := ta.currentVersion(); got != before+1 {
 				t.Fatalf("version %d -> %d, want the one applied write", before, got)
 			}
 		})
 	}
 }
 
-// A write CDS applied but answered 500 for is not sent again by the client;
+// A write Trust Authority applied but answered 500 for is not sent again by the client;
 // reading the allowlist back finds it served, so the command reports success.
 func TestWholeDocumentWriteAfterALost500(t *testing.T) {
 	for _, command := range []string{"upload", "apply"} {
 		t.Run(command, func(t *testing.T) {
 			dir := t.TempDir()
 			keyPath, pub := newOperatorKeypair(t, dir, "op.key")
-			srv, cds := cdsTestServer(t, []*ecdsa.PublicKey{pub})
-			cds.lost500 = 1
-			before := cds.currentVersion()
+			srv, ta := taTestServer(t, []*ecdsa.PublicKey{pub})
+			ta.lost500 = 1
+			before := ta.currentVersion()
 
 			if _, _, err := runCmd(append(wholeDocArgs(t, command), "--url", srv.URL, "--insecure", "--operator-key", keyPath)...); err != nil {
 				t.Fatalf("an applied write whose answer was a 500 reported as failed: %v", err)
 			}
-			if got := cds.currentVersion(); got != before+1 {
+			if got := ta.currentVersion(); got != before+1 {
 				t.Fatalf("version %d -> %d, want the one applied write", before, got)
 			}
 		})
@@ -272,9 +272,9 @@ func TestWholeDocumentWriteUnconfirmed(t *testing.T) {
 		t.Run(command, func(t *testing.T) {
 			dir := t.TempDir()
 			keyPath, pub := newOperatorKeypair(t, dir, "op.key")
-			srv, cds := cdsTestServer(t, []*ecdsa.PublicKey{pub})
-			cds.fail500 = 1
-			version := strconv.Itoa(cds.currentVersion())
+			srv, ta := taTestServer(t, []*ecdsa.PublicKey{pub})
+			ta.fail500 = 1
+			version := strconv.Itoa(ta.currentVersion())
 
 			_, _, err := runCmd(append(wholeDocArgs(t, command), "--url", srv.URL, "--insecure", "--operator-key", keyPath)...)
 			if err == nil || !strings.Contains(err.Error(), "not confirmed") ||
@@ -292,23 +292,23 @@ func TestWholeDocumentWriteUnconfirmed(t *testing.T) {
 func TestApplyUnconfirmedWriteThatLandedUnderAnother(t *testing.T) {
 	dir := t.TempDir()
 	keyPath, pub := newOperatorKeypair(t, dir, "op.key")
-	srv, cds := cdsTestServer(t, []*ecdsa.PublicKey{pub})
-	cds.lost500 = 1
-	cds.afterReplace = func() {
-		cds.afterReplace = nil
-		cds.put("racer", workloadOf(t, 6))
+	srv, ta := taTestServer(t, []*ecdsa.PublicKey{pub})
+	ta.lost500 = 1
+	ta.afterReplace = func() {
+		ta.afterReplace = nil
+		ta.put("racer", workloadOf(t, 6))
 	}
-	before := cds.currentVersion()
+	before := ta.currentVersion()
 
 	file := writeFile(t, "doc.json", entryMap("web"))
 	if _, _, err := runCmd("apply", file, "--url", srv.URL, "--insecure", "--operator-key", keyPath); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
-	if got := cds.currentVersion(); got != before+2 {
+	if got := ta.currentVersion(); got != before+2 {
 		t.Fatalf("version %d -> %d, want apply's one write and the racing one", before, got)
 	}
 	for _, name := range []string{"web", "racer"} {
-		if _, ok := cds.workload(name); !ok {
+		if _, ok := ta.workload(name); !ok {
 			t.Fatalf("entry %q missing", name)
 		}
 	}

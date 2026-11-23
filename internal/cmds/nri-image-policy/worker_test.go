@@ -41,7 +41,7 @@ mesh:
 worker: true
 `
 
-// stagedWorker is workerDocument as stage completes it: pulling from its CDS
+// stagedWorker is workerDocument as stage completes it: pulling from its Trust Authority
 // and measuring each served allowlist.
 var stagedWorker = strings.Replace(workerDocument, "\npolicy:\n", `
   pull:
