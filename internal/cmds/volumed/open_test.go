@@ -29,8 +29,11 @@ type fakeOps struct {
 
 	// honorCtx makes every op fail once its context is done.
 	honorCtx bool
-	// afterCryptOpen fires once the first privileged step has landed.
-	afterCryptOpen func()
+	// afterCryptOpen fires once the first privileged step has landed, and
+	// afterCryptClose once a teardown has removed the key, so an open can be
+	// raced against either.
+	afterCryptOpen  func()
+	afterCryptClose func()
 }
 
 // mountCall records what one Mount was asked to do.
@@ -96,8 +99,11 @@ func (f *fakeOps) CryptClose(ctx context.Context, mapper string) error {
 		return err
 	}
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	delete(f.cryptOpen, mapper)
+	f.mu.Unlock()
+	if f.afterCryptClose != nil {
+		f.afterCryptClose()
+	}
 	return nil
 }
 
@@ -763,15 +769,15 @@ func TestAdoptClosesAMappingNoRecordCovers(t *testing.T) {
 
 	o := testOpener(t, ops)
 	o.Records = newRecords()
-	adopted, closed, stuck := o.Adopt(context.Background(), livenessFor{live: map[string]bool{"podA": true}})
-	if adopted != 0 {
-		t.Errorf("adopted %d unrecorded mappings", adopted)
+	got := o.Adopt(context.Background(), livenessFor{live: map[string]bool{"podA": true}})
+	if got.Adopted != 0 {
+		t.Errorf("adopted %d unrecorded mappings", got.Adopted)
 	}
-	if closed != 2 {
-		t.Errorf("closed %d mappings, want the crypt and verity pair", closed)
+	if got.Closed != 2 {
+		t.Errorf("closed %d mappings, want the crypt and verity pair", got.Closed)
 	}
-	if len(stuck) != 0 {
-		t.Errorf("reported %v as still in use", stuck)
+	if len(got.Stuck) != 0 {
+		t.Errorf("reported %v as still in use", got.Stuck)
 	}
 	if len(ops.cryptOpen) != 0 || len(ops.verityOpen) != 0 {
 		t.Errorf("mappings survived: crypt=%v verity=%v", ops.cryptOpen, ops.verityOpen)
@@ -801,12 +807,12 @@ func TestAdoptReportsAMappingThatRefusesToClose(t *testing.T) {
 	ops.failOn = "VerityClose"
 
 	o := testOpener(t, ops)
-	_, closed, stuck := o.Adopt(context.Background(), livenessFor{})
-	if closed != 1 {
-		t.Errorf("closed %d, want only the crypt mapping", closed)
+	got := o.Adopt(context.Background(), livenessFor{})
+	if got.Closed != 1 {
+		t.Errorf("closed %d, want only the crypt mapping", got.Closed)
 	}
-	if len(stuck) != 1 || stuck[0] != "c8s-verity-podA-weights" {
-		t.Errorf("stuck = %v, want the verity mapping that refused", stuck)
+	if len(got.Stuck) != 1 || got.Stuck[0] != "c8s-verity-podA-weights" {
+		t.Errorf("stuck = %v, want the verity mapping that refused", got.Stuck)
 	}
 	if !ops.verityOpen["c8s-verity-podA-weights"] {
 		t.Error("a mapping that refused to close was reported as gone")
@@ -821,9 +827,9 @@ func TestAdoptTouchesOnlyC8sMappings(t *testing.T) {
 	ops.verityOpen["c8s-verity-podA-weights"] = true
 
 	o := testOpener(t, ops)
-	_, closed, _ := o.Adopt(context.Background(), livenessFor{})
-	if closed != 1 {
-		t.Errorf("closed %d, want only the c8s mapping", closed)
+	got := o.Adopt(context.Background(), livenessFor{})
+	if got.Closed != 1 {
+		t.Errorf("closed %d, want only the c8s mapping", got.Closed)
 	}
 	if !ops.cryptOpen["luks-tenant-disk"] {
 		t.Error("closed a device-mapper target this platform did not open")
@@ -847,9 +853,9 @@ func TestAdoptKeepsARecordedVolumeWhosePodIsStillThere(t *testing.T) {
 	}
 
 	restarted := restart(first, ops)
-	adopted, closed, stuck := restarted.Adopt(t.Context(), livenessFor{live: map[string]bool{testPodUID: true}})
-	if adopted != 1 || closed != 0 || len(stuck) != 0 {
-		t.Fatalf("adopted %d, closed %d, stuck %v; want the recorded volume kept", adopted, closed, stuck)
+	got := restarted.Adopt(t.Context(), livenessFor{live: map[string]bool{testPodUID: true}})
+	if got.Adopted != 1 || got.Closed != 0 || len(got.Stuck) != 0 {
+		t.Fatalf("adopted %d, closed %d, stuck %v; want the recorded volume kept", got.Adopted, got.Closed, got.Stuck)
 	}
 	if c, v, m := ops.leaked(); c != 1 || v != 1 || m != 1 {
 		t.Fatalf("a live pod's volume was torn down: crypt=%d verity=%d mounts=%d", c, v, m)
@@ -881,9 +887,9 @@ func TestAdoptClosesARecordedVolumeWhosePodHasGone(t *testing.T) {
 	}
 
 	restarted := restart(first, ops)
-	adopted, closed, stuck := restarted.Adopt(t.Context(), livenessFor{})
-	if adopted != 0 || closed != 1 || len(stuck) != 0 {
-		t.Fatalf("adopted %d, closed %d, stuck %v; want the volume closed", adopted, closed, stuck)
+	got := restarted.Adopt(t.Context(), livenessFor{})
+	if got.Adopted != 0 || got.Closed != 1 || len(got.Stuck) != 0 {
+		t.Fatalf("adopted %d, closed %d, stuck %v; want the volume closed", got.Adopted, got.Closed, got.Stuck)
 	}
 	if c, v, m := ops.leaked(); c != 0 || v != 0 || m != 0 {
 		t.Errorf("leaked crypt=%d verity=%d mounts=%d", c, v, m)
@@ -905,9 +911,9 @@ func TestAdoptRemovesARecordNoMappingCovers(t *testing.T) {
 	}
 	o := testOpener(t, newOps())
 	o.Records = recs
-	adopted, closed, stuck := o.Adopt(context.Background(), livenessFor{live: map[string]bool{testPodUID: true}})
-	if adopted != 0 || closed != 0 || len(stuck) != 0 {
-		t.Fatalf("adopted %d, closed %d, stuck %v", adopted, closed, stuck)
+	got := o.Adopt(context.Background(), livenessFor{live: map[string]bool{testPodUID: true}})
+	if got.Adopted != 0 || got.Closed != 0 || len(got.Stuck) != 0 {
+		t.Fatalf("adopted %d, closed %d, stuck %v", got.Adopted, got.Closed, got.Stuck)
 	}
 	if left := recs.all(); len(left) != 0 {
 		t.Errorf("records %+v name no mapping and were kept", left)
@@ -925,9 +931,9 @@ func TestAdoptKeepsAVolumeWhosePodLivenessIsUnknown(t *testing.T) {
 	}
 
 	restarted := restart(first, ops)
-	adopted, closed, _ := restarted.Adopt(t.Context(), livenessFor{err: errors.New("cgroup root unreadable")})
-	if adopted != 1 || closed != 0 {
-		t.Fatalf("adopted %d, closed %d; want the volume kept", adopted, closed)
+	got := restarted.Adopt(t.Context(), livenessFor{err: errors.New("cgroup root unreadable")})
+	if got.Adopted != 1 || got.Closed != 0 {
+		t.Fatalf("adopted %d, closed %d; want the volume kept", got.Adopted, got.Closed)
 	}
 }
 
@@ -948,8 +954,8 @@ func TestAdoptedVolumeStillGuardsItsDevice(t *testing.T) {
 	}
 
 	restarted := restart(first, ops)
-	if adopted, _, _ := restarted.Adopt(t.Context(), livenessFor{live: map[string]bool{testPodUID: true}}); adopted != 1 {
-		t.Fatalf("adopted %d volumes", adopted)
+	if got := restarted.Adopt(t.Context(), livenessFor{live: map[string]bool{testPodUID: true}}); got.Adopted != 1 {
+		t.Fatalf("adopted %d volumes", got.Adopted)
 	}
 
 	// The same device under a second name: one writer per device, or the
@@ -1069,12 +1075,12 @@ func TestAdoptReportsUnreadableRecords(t *testing.T) {
 	first.Records.(*fakeRecords).listErr = errors.New("state directory is unreadable")
 
 	restarted := restart(first, ops)
-	adopted, closed, stuck := restarted.Adopt(t.Context(), livenessFor{live: map[string]bool{testPodUID: true}})
-	if adopted != 0 || closed != 2 {
-		t.Errorf("adopted %d, closed %d; want both uncovered mappings closed", adopted, closed)
+	got := restarted.Adopt(t.Context(), livenessFor{live: map[string]bool{testPodUID: true}})
+	if got.Adopted != 0 || got.Closed != 2 {
+		t.Errorf("adopted %d, closed %d; want both uncovered mappings closed", got.Adopted, got.Closed)
 	}
-	if len(stuck) != 1 || !strings.Contains(stuck[0], "unreadable") {
-		t.Errorf("stuck = %v, want the record failure reported", stuck)
+	if len(got.Stuck) != 1 || !strings.Contains(got.Stuck[0], "unreadable") {
+		t.Errorf("stuck = %v, want the record failure reported", got.Stuck)
 	}
 }
 
@@ -1121,6 +1127,71 @@ func TestCloseKeepsTheRecordOfAStuckMapping(t *testing.T) {
 	}
 	if o.Len() != 0 {
 		t.Fatalf("opener holds %d mounts, want 0", o.Len())
+	}
+}
+
+// kubelet restarts the sidecar of a pod the reaper is collecting, so an open
+// of the same volume can land the moment its teardown finishes. The record of
+// the mapping that is now published must survive the close, or the next
+// volumed finds a live volume unrecorded and closes it under the pod.
+func TestCloseKeepsTheRecordOfAVolumeReopenedUnderIt(t *testing.T) {
+	ops := newOps()
+	recs := newRecords()
+	o := testOpener(t, ops)
+	o.Records = recs
+	req := testRequest(t)
+	if err := o.Open(t.Context(), req); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	var once sync.Once
+	ops.afterCryptClose = func() {
+		once.Do(func() {
+			if err := o.Open(t.Context(), req); err != nil {
+				t.Errorf("open racing the close: %v", err)
+			}
+		})
+	}
+	o.Close(t.Context(), req.Pod.UID, req.Name)
+
+	if o.Len() != 1 {
+		t.Fatalf("opener holds %d mounts, want the volume opened under the close", o.Len())
+	}
+	if left := recs.all(); len(left) != 1 {
+		t.Fatalf("records = %+v, want the one for the published mapping", left)
+	}
+	if c, v, m := ops.leaked(); c != 1 || v != 1 || m != 1 {
+		t.Fatalf("the reopened volume is crypt=%d verity=%d mounts=%d, want all held", c, v, m)
+	}
+}
+
+// The sidecar's close and the reaper's collection of the same volume arrive
+// together. Only one may run the teardown: the second would remove a mapping
+// name the kernel no longer has, or one a later open has republished.
+func TestConcurrentClosesTearDownOnce(t *testing.T) {
+	ops := newOps()
+	o := testOpener(t, ops)
+	o.Records = newRecords()
+	req := testRequest(t)
+	if err := o.Open(t.Context(), req); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	var closers sync.WaitGroup
+	for range 4 {
+		closers.Add(1)
+		go func() {
+			defer closers.Done()
+			o.Close(context.Background(), req.Pod.UID, req.Name)
+		}()
+	}
+	closers.Wait()
+
+	if n := strings.Count(ops.sequence(), "CryptClose"); n != 1 {
+		t.Fatalf("the mapping was closed %d times, want once", n)
+	}
+	if o.Len() != 0 {
+		t.Fatalf("opener holds %d mounts after the closes", o.Len())
 	}
 }
 

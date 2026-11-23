@@ -283,19 +283,20 @@ func (o *Opener) open(ctx context.Context, req Request, key []byte, commitment [
 // Close tears down one volume. Idempotent: a volume already gone is not an
 // error, because teardown races kubelet removing the pod directory.
 func (o *Opener) Close(ctx context.Context, podUID, name string) {
-	o.mu.Lock()
-	m, ok := o.mounts[mountKey(podUID, name)]
-	o.mu.Unlock()
-	if ok {
-		o.closeVolume(ctx, m)
-	}
+	o.closeVolume(ctx, mountKey(podUID, name))
 }
 
-func (o *Opener) closeVolume(ctx context.Context, m *mount) bool {
-	key := mountKey(m.pod.UID, m.name)
+// closeVolume takes the volume at key and tears it down, reporting whether it
+// closed. Taking it is one critical section, so two closers of one volume
+// cannot both run its teardown.
+func (o *Opener) closeVolume(ctx context.Context, key string) bool {
 	o.mu.Lock()
+	m, ok := o.mounts[key]
 	delete(o.mounts, key)
 	o.mu.Unlock()
+	if !ok {
+		return false
+	}
 	return o.closeMount(ctx, key, m)
 }
 
@@ -327,17 +328,23 @@ func (o *Opener) ClosePod(ctx context.Context, podUID string) int {
 // closeMount tears m down and reports success. A mapping that refuses to close
 // keeps its record: it still holds the key and the device, so it must stay
 // visible to deviceConflict and to the reaper, which retries it each sweep.
+//
+// INVARIANT: a published mount has a record. An Open of the same pod and
+// volume racing this teardown publishes its own mapping under key, with the
+// record this one must not then remove.
 func (o *Opener) closeMount(ctx context.Context, key string, m *mount) bool {
-	if o.teardown(ctx, m) {
-		o.removeRecord(m.pod.UID, m.name)
-		return true
-	}
+	closed := o.teardown(ctx, m)
 	o.mu.Lock()
-	if _, taken := o.mounts[key]; !taken {
-		o.mounts[key] = m
+	defer o.mu.Unlock()
+	if _, taken := o.mounts[key]; taken {
+		return closed
 	}
-	o.mu.Unlock()
-	return false
+	if !closed {
+		o.mounts[key] = m
+		return false
+	}
+	o.removeRecord(m.pod.UID, m.name)
+	return true
 }
 
 // teardown unwinds in reverse and does not stop at the first failure: the
@@ -351,9 +358,17 @@ func (o *Opener) teardown(ctx context.Context, m *mount) bool {
 	return o.Ops.CryptClose(cleanup, m.cryptDev) == nil
 }
 
+// Reconciliation is what Adopt did to this node's C8s mappings: the volumes it
+// kept, the volumes and stray mappings it closed, and what refused to close or
+// could not be read.
+type Reconciliation struct {
+	Adopted int
+	Closed  int
+	Stuck   []string
+}
+
 // Adopt reconciles the C8s mappings on this node with the records of the
-// volumed that opened them. It reports how many volumes it kept, how many
-// volumes and stray mappings it closed, and what refused to close.
+// volumed that opened them.
 //
 // A recorded mapping whose pod is still on the node is kept, and from here on
 // held and reaped exactly as if this process had opened it. Everything else
@@ -365,39 +380,50 @@ func (o *Opener) teardown(ctx context.Context, m *mount) bool {
 // INVARIANT: the kernel has the last word. A mapping something still has
 // mounted refuses to close, so a workload's volume cannot be pulled out from
 // under it even when the records say it should go.
-func (o *Opener) Adopt(ctx context.Context, live PodLiveness) (adopted, closed int, stuck []string) {
+func (o *Opener) Adopt(ctx context.Context, live PodLiveness) Reconciliation {
 	mappings, err := o.Ops.ListMappings(ctx)
 	if err != nil {
-		return 0, 0, []string{fmt.Sprintf("unreadable %s: %v", mapperDir, err)}
+		return Reconciliation{Stuck: []string{fmt.Sprintf("unreadable %s: %v", mapperDir, err)}}
 	}
+	var out Reconciliation
 	records, err := o.listRecords()
 	if err != nil {
-		stuck = append(stuck, fmt.Sprintf("unreadable mount records: %v", err))
+		out.Stuck = append(out.Stuck, fmt.Sprintf("unreadable mount records: %v", err))
 	}
 
-	ours, held, gone := o.takeRecorded(records, mappings, live)
+	taken := o.takeRecorded(records, mappings, live)
+	out.Adopted = len(taken.held)
 	// Closing an adopted volume is the same teardown a pod that goes now gets.
-	for _, m := range gone {
-		if !o.closeVolume(ctx, m) {
-			stuck = append(stuck, m.cryptDev)
+	for _, m := range taken.gone {
+		if !o.closeVolume(ctx, mountKey(m.pod.UID, m.name)) {
+			out.Stuck = append(out.Stuck, m.cryptDev)
 			continue
 		}
-		closed++
+		out.Closed++
 	}
-	strayClosed, strayStuck := o.closeStray(ctx, mappings, ours)
-	return len(held), closed + strayClosed, append(stuck, strayStuck...)
+	strayClosed, strayStuck := o.closeStray(ctx, mappings, taken.ours)
+	out.Closed += strayClosed
+	out.Stuck = append(out.Stuck, strayStuck...)
+	return out
+}
+
+// recorded is what the records said about this node's mappings: the mapper
+// names this Opener now owns, the volumes whose pod is still there and the
+// volumes to close.
+type recorded struct {
+	ours map[string]bool
+	held []*mount
+	gone []*mount
 }
 
 // takeRecorded holds every recorded volume whose mapping is still published,
-// dropping the records that cover nothing. It returns the mapper names this
-// Opener now owns, the volumes whose pod is still there and the volumes to
-// close.
-func (o *Opener) takeRecorded(records []Record, mappings []string, live PodLiveness) (ours map[string]bool, held, gone []*mount) {
+// dropping the records that cover nothing.
+func (o *Opener) takeRecorded(records []Record, mappings []string, live PodLiveness) recorded {
 	published := map[string]bool{}
 	for _, name := range mappings {
 		published[name] = true
 	}
-	ours = map[string]bool{}
+	taken := recorded{ours: map[string]bool{}}
 	for _, rec := range records {
 		m, err := rec.mount()
 		if err != nil || !published[m.cryptDev] {
@@ -405,19 +431,21 @@ func (o *Opener) takeRecorded(records []Record, mappings []string, live PodLiven
 			continue
 		}
 		o.adopt(m)
-		ours[m.cryptDev] = true
-		ours[mapperName(verityKind, m.pod.UID, m.name)] = true
-		if heldByALivePod(m, live) {
-			held = append(held, m)
+		taken.ours[m.cryptDev] = true
+		taken.ours[mapperName(verityKind, m.pod.UID, m.name)] = true
+		if heldByLivePod(m, live) {
+			taken.held = append(taken.held, m)
 			continue
 		}
-		gone = append(gone, m)
+		taken.gone = append(taken.gone, m)
 	}
-	return ours, held, gone
+	return taken
 }
 
 // closeStray closes the C8s mappings this Opener does not own.
-func (o *Opener) closeStray(ctx context.Context, mappings []string, ours map[string]bool) (closed int, stuck []string) {
+func (o *Opener) closeStray(ctx context.Context, mappings []string, ours map[string]bool) (int, []string) {
+	closed := 0
+	var stuck []string
 	// verity is stacked on crypt and holds it open, so it goes first.
 	for _, kind := range []string{verityKind, cryptKind} {
 		prefix := "c8s-" + kind + "-"
@@ -435,11 +463,11 @@ func (o *Opener) closeStray(ctx context.Context, mappings []string, ours map[str
 	return closed, stuck
 }
 
-// heldByALivePod reports whether a recorded volume's pod is still on the node.
+// heldByLivePod reports whether a recorded volume's pod is still on the node.
 // A pod whose liveness cannot be determined counts as there: the reaper asks
 // again every sweep, while a volume torn down under a running workload does not
 // come back.
-func heldByALivePod(m *mount, live PodLiveness) bool {
+func heldByLivePod(m *mount, live PodLiveness) bool {
 	alive, err := live.Live(m.pod)
 	return alive || err != nil
 }

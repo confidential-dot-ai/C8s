@@ -178,6 +178,17 @@ or from a volumed that could not record its open. A record naming no mapping is
 removed. An open that cannot be recorded fails, because the next volumed would
 close it under a running pod.
 
+On a worker running the C8s node image, both lanes land in `/var`, a writable
+overlay the measured initrd backs with the dm-crypt `scratch` mapping over the
+`confai-scratch` disk, keyed inside the CVM at boot
+([images/node-guest/README.md](../images/node-guest/README.md)). So the records
+are empty at boot, encrypted at rest, neither readable nor writable by the host,
+and gone with the CVM. A record is not a trust input either: it carries no key
+material — only a hash of the key and mode its open was bound to — and every
+field is re-checked against the node's live mappings before anything is kept or
+closed, so the worst a tampered record can do is cost a volume its mapping, the
+same thing the host can do by stopping the pod.
+
 ### Teardown
 
 Releasing the volumes is the sidecar's last act: the kubelet stops sidecars only

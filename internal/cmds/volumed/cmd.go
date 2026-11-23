@@ -80,12 +80,12 @@ func runDaemon(ctx context.Context, cfg config) error {
 func runNode(ctx context.Context, cfg config) error {
 	// A running kubelet creates <root>/pods before it starts any pod, so its
 	// absence means the flag does not name this node's kubelet root dir.
-	if err := dirExists(filepath.Join(cfg.kubeletRoot, "pods")); err != nil {
+	if err := requireDir(filepath.Join(cfg.kubeletRoot, "pods")); err != nil {
 		return fmt.Errorf("--kubelet-root %q is not the kubelet's root dir on this node: %v", cfg.kubeletRoot, err)
 	}
 	// The records outlive the daemon, so the directory is one the deployment
 	// provides, not one this process can create where it happens to run.
-	if err := dirExists(cfg.stateDir); err != nil {
+	if err := requireDir(cfg.stateDir); err != nil {
 		return fmt.Errorf("--state-dir %q is not a directory on this node: %v", cfg.stateDir, err)
 	}
 
@@ -112,9 +112,9 @@ func runNode(ctx context.Context, cfg config) error {
 	// Volumes an earlier volumed opened are still mounted, and the mappings of
 	// pods that have gone hold their backing disks open. Reconcile both against
 	// the records before serving.
-	if adopted, closed, stuck := opener.Adopt(ctx, liveness); adopted > 0 || closed > 0 || len(stuck) > 0 {
+	if r := opener.Adopt(ctx, liveness); r.Adopted > 0 || r.Closed > 0 || len(r.Stuck) > 0 {
 		slog.Info("reconciled the mappings of an earlier volumed",
-			"adopted", adopted, "closed", closed, "still_in_use", stuck)
+			"adopted", r.Adopted, "closed", r.Closed, "still_in_use", r.Stuck)
 	}
 
 	reaper := &Reaper{
@@ -138,15 +138,14 @@ func listen(dir string, gid int) (net.Listener, error) {
 	return workloadclaims.ListenUnix(filepath.Join(dir, SocketName), gid)
 }
 
-func dirExists(path string) error {
-	fi, err := os.Stat(path)
+// requireDir refuses a path that is not a directory on this node: os.OpenRoot
+// fails with ENOTDIR for anything else.
+func requireDir(path string) error {
+	root, err := os.OpenRoot(path)
 	if err != nil {
 		return err
 	}
-	if !fi.IsDir() {
-		return fmt.Errorf("%s is not a directory", path)
-	}
-	return nil
+	return root.Close()
 }
 
 func validate(cfg config) error {

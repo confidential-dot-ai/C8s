@@ -64,7 +64,8 @@ func kubeletRootWithPods(t *testing.T) string {
 // on its socket and unwinds when its context goes.
 func TestRunDaemonServesUntilItsContextIsDone(t *testing.T) {
 	cfg := goodConfig(t, t.TempDir())
-	cfg.kubeletRoot, cfg.cgroupRoot = kubeletRootWithPods(t), t.TempDir()
+	cfg.kubeletRoot = kubeletRootWithPods(t)
+	cfg.cgroupRoot = t.TempDir()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -103,7 +104,8 @@ func TestRunDaemonRejectsAnIncompleteConfig(t *testing.T) {
 
 func TestRunDaemonReportsAnUnusableSocketDir(t *testing.T) {
 	cfg := goodConfig(t, filepath.Join(t.TempDir(), "absent"))
-	cfg.kubeletRoot, cfg.cgroupRoot = kubeletRootWithPods(t), t.TempDir()
+	cfg.kubeletRoot = kubeletRootWithPods(t)
+	cfg.cgroupRoot = t.TempDir()
 	if err := runDaemon(context.Background(), cfg); err == nil {
 		t.Fatal("ran with a socket directory that does not exist")
 	}
@@ -122,7 +124,8 @@ func TestRunDaemonRejectsAKubeletRootWithoutPods(t *testing.T) {
 		"pods is a file": withPodsFile,
 	} {
 		cfg := goodConfig(t, t.TempDir())
-		cfg.kubeletRoot, cfg.cgroupRoot = root, t.TempDir()
+		cfg.kubeletRoot = root
+		cfg.cgroupRoot = t.TempDir()
 		err := runDaemon(context.Background(), cfg)
 		if err == nil {
 			t.Fatalf("%s: served without a pods directory", name)
