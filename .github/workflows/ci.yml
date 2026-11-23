@@ -400,6 +400,7 @@ jobs:
             });
             const prev = comments.find(c => c.body && c.body.includes(marker));
             // A clean run only refreshes an earlier report, so a fixed PR does not keep stale mutants.
+            // A report left in place by an unfinished run is as old as the commit and run it names.
             if (process.env.REPORT === 'clean' && !prev) return;
             // A comment holds 65536 characters; cut a longer report before a mutant and say so.
             let summary = fs.readFileSync('mutation-summary.md', 'utf8');

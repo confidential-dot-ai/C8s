@@ -405,7 +405,9 @@ make install
 make test
 
 # Mutation-test the changes vs origin/main (BASE=<ref> to override); lists
-# each changed operator the tests of its package do not notice being replaced
+# each changed operator whose replacement the tests of its own package miss.
+# .gremlins.yaml names the paths it leaves out; on a fork PR, CI puts the
+# result in the run summary, not in a PR comment.
 make mutation-check
 
 # Lint (format check + vet)

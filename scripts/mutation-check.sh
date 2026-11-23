@@ -52,8 +52,9 @@ summary() { # $1=out-prefix $2=source-root (default .)
   echo
   echo "### Lived mutants"
   echo
-  echo "The tests of each line's package still pass with the operator replaced as shown."
-  echo "Add a test that fails on it, or say in the PR why it stays."
+  echo "The tests of each line's own package still pass with the operator replaced as shown;"
+  echo "tests in other packages were not run against it. Add a test that fails on it, or say"
+  echo "in the PR why it stays."
   echo
   local file line col type
   while IFS=$'\t' read -r file line col type; do
@@ -61,8 +62,10 @@ summary() { # $1=out-prefix $2=source-root (default .)
   done <<< "$lived"
 }
 
-# The operator gremlins puts in place of $2 for mutant type $1 (its enabled
-# mutators only); empty when $2 is not an operator that type mutates.
+# The operator gremlins puts in place of $2 for mutant type $1; empty when $2
+# is not an operator that type mutates. Copied from the mutators .gremlins.yaml
+# leaves enabled, as gremlins v0.6.0 (the go.mod pin) defines them in
+# internal/engine/mappings.go: check it against that file when the pin moves.
 replacement() {
   case "$1 $2" in
   "CONDITIONALS_NEGATION ==") echo "!=" ;;
