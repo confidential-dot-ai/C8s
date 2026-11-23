@@ -53,7 +53,7 @@ func TestHTTPClientRefusesPlaintextWithoutInsecure(t *testing.T) {
 	}
 }
 
-// A target that serves no discovery document is a direct CDS URL, which is
+// A target that serves no discovery document is a direct Trust Authority URL, which is
 // verified by armTLS on its serving certificate rather than through a front
 // door. Nothing is dialled until a request is made, so the fallback yields a
 // client rather than an error.
@@ -75,7 +75,7 @@ func TestHTTPClientFallsBackToARMTLS(t *testing.T) {
 	}
 }
 
-// armTLS proves the peer is a TEE, not that it is the CDS this operator meant,
+// armTLS proves the peer is a TEE, not that it is the Trust Authority this operator meant,
 // so an https endpoint with no pin is refused before any request.
 func TestHTTPClientRefusesAnUnpinnedEndpoint(t *testing.T) {
 	o := Options{URL: "https://" + closedAddr(t), Timeout: time.Second}
@@ -284,8 +284,8 @@ func TestSignerRefusesAnUnpinnedEndpoint(t *testing.T) {
 	}
 }
 
-// A command that only ever reaches CDS holds it to the configuration it runs
-// on, before any network: its image alone would admit any CDS VM, and a flat
+// A command that only ever reaches Trust Authority holds it to the configuration it runs
+// on, before any network: its image alone would admit any Trust Authority VM, and a flat
 // digest names only an image.
 func TestHTTPClientRequiresALaunchBoundPinForADirectCDS(t *testing.T) {
 	unbound := filepath.Join(t.TempDir(), "unbound.json")
@@ -301,24 +301,24 @@ func TestHTTPClientRequiresALaunchBoundPinForADirectCDS(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			o.Timeout = time.Second
 			if err := o.CheckEndpoint(); err == nil {
-				t.Fatal("a pin that is not one CDS VM's identity was accepted")
+				t.Fatal("a pin that is not one Trust Authority VM's identity was accepted")
 			}
 		})
 	}
 }
 
-// A command that only ever reaches CDS takes the pin document and nothing
-// else: a flat digest names an image, and CDS is not pinned by one.
+// A command that only ever reaches Trust Authority takes the pin document and nothing
+// else: a flat digest names an image, and Trust Authority is not pinned by one.
 func TestDirectCDSTakesNoFlatPins(t *testing.T) {
 	fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
 	BindFlags(fs, &Options{DirectCDS: true})
 	for _, name := range []string{"measurements", "measurements-file"} {
 		if fs.Lookup(name) != nil {
-			t.Errorf("a direct-CDS command exposes --%s", name)
+			t.Errorf("a direct-Trust Authority command exposes --%s", name)
 		}
 	}
 	if fs.Lookup("image-policy-file") == nil {
-		t.Error("a direct-CDS command exposes no pin document flag")
+		t.Error("a direct-Trust Authority command exposes no pin document flag")
 	}
 }
 

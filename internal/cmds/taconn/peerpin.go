@@ -10,7 +10,7 @@ import (
 
 // pinFirstPeer makes every connection hc dials present the leaf certificate its
 // first connection presented. Attestation verification on each handshake proves
-// only an attested build at a pinned measurement, which other CDS instances
+// only an attested build at a pinned measurement, which other Trust Authority instances
 // share; without the pin, a redial after the connection the mesh CA was checked
 // on drops (idle timeout, reset, Go's transparent retry) could hand the write to
 // one of them. A matching leaf proves the same peer, since the handshake proves
@@ -37,8 +37,8 @@ func pinFirstPeer(hc *http.Client) (*http.Client, error) {
 			return nil
 		}
 		if !bytes.Equal(pinned, leaf) {
-			return fmt.Errorf("cdsconn: the connection to CDS was re-established and the peer presented a different serving certificate " +
-				"than the one this command already verified; it may not be the same CDS. Nothing was sent to it. Re-run the command")
+			return fmt.Errorf("cdsconn: the connection to the Trust Authority was re-established and the peer presented a different serving certificate " +
+				"than the one this command already verified; it may not be the same Trust Authority. Nothing was sent to it. Re-run the command")
 		}
 		return nil
 	}

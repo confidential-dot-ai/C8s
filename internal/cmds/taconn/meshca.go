@@ -17,9 +17,9 @@ import (
 )
 
 // MeshCAGate is the --mesh-ca / --force pair every command that writes a value
-// into the CDS secret store carries. armTLS proves the peer is a TEE running a
+// into the Trust Authority secret store carries. armTLS proves the peer is a TEE running a
 // pinned build; a launch measurement does not distinguish instances running the
-// same node image. The mesh CA key is generated per CDS and is the anchor that
+// same node image. The mesh CA key is generated per Trust Authority and is the anchor that
 // `c8s verify --mesh-ca` and every workload already hold.
 type MeshCAGate struct {
 	// What names the value being written ("secret", "volume key") in the
@@ -32,21 +32,21 @@ type MeshCAGate struct {
 	Force  bool
 }
 
-// ErrMeshCAMismatch marks a refusal because CDS served a mesh CA outside the
+// ErrMeshCAMismatch marks a refusal because Trust Authority served a mesh CA outside the
 // pinned bundle, as opposed to one where the CA could not be read or checked.
-var ErrMeshCAMismatch = errors.New("the CDS serves a mesh CA that is not in --mesh-ca")
+var ErrMeshCAMismatch = errors.New("the Trust Authority serves a mesh CA that is not in --mesh-ca")
 
 // BindFlags registers --mesh-ca and --force on a write subcommand.
 func (g *MeshCAGate) BindFlags(f *pflag.FlagSet) {
-	force := "write the " + g.what() + " without checking the CDS mesh CA against --mesh-ca"
+	force := "write the " + g.what() + " without checking the Trust Authority mesh CA against --mesh-ca"
 	if g.ForceNote != "" {
 		force += ". " + g.ForceNote
 	}
-	f.StringVar(&g.Bundle, "mesh-ca", "", "PEM bundle of the mesh CA this CDS must serve; the same anchor 'c8s verify --mesh-ca' takes. Required unless --force")
+	f.StringVar(&g.Bundle, "mesh-ca", "", "PEM bundle of the mesh CA this Trust Authority must serve; the same anchor 'c8s verify --mesh-ca' takes. Required unless --force")
 	f.BoolVar(&g.Force, "force", false, force)
 }
 
-// Precheck runs the part of the gate that needs no CDS: the flags name a bundle
+// Precheck runs the part of the gate that needs no Trust Authority: the flags name a bundle
 // (or --force), and the bundle holds certificates. A command with expensive work
 // before its write runs this first, so a missing flag costs nothing.
 func (g *MeshCAGate) Precheck(rawURL string) error {
@@ -57,14 +57,14 @@ func (g *MeshCAGate) Precheck(rawURL string) error {
 	return err
 }
 
-// Check refuses a write whose CDS is not pinned to an operator-held mesh CA.
+// Check refuses a write whose Trust Authority is not pinned to an operator-held mesh CA.
 // A plaintext endpoint is exempt for the same reason it is exempt from the
 // measurement pin: --insecure has already announced that nothing about the peer
 // is authenticated, and /ca fetched over it would be the host's answer anyway.
 //
 // INVARIANT: hc is the client from Options.HTTPClient that then carries the
-// write. Every request on it reaches one CDS (see the package doc), so the CA
-// compared is the CA of the CDS that receives the value, not of whatever
+// write. Every request on it reaches one Trust Authority (see the package doc), so the CA
+// compared is the CA of the Trust Authority that receives the value, not of whatever
 // answered an earlier connection.
 func (g *MeshCAGate) Check(ctx context.Context, stderr io.Writer, hc *http.Client, rawURL string) error {
 	if exempt(rawURL) {
@@ -72,7 +72,7 @@ func (g *MeshCAGate) Check(ctx context.Context, stderr io.Writer, hc *http.Clien
 	}
 	if g.Force {
 		fmt.Fprintf(stderr,
-			"warning: --force: writing this %s without checking the CDS mesh CA. An attested peer at this address that is not your CDS receives the value.\n", g.what())
+			"warning: --force: writing this %s without checking the Trust Authority mesh CA. An attested peer at this address that is not your Trust Authority receives the value.\n", g.what())
 		return nil
 	}
 	pinned, err := g.pinned()
@@ -89,7 +89,7 @@ func (g *MeshCAGate) Check(ctx context.Context, stderr io.Writer, hc *http.Clien
 	for _, der := range served {
 		if !pinned[string(der)] {
 			return fmt.Errorf(
-				"%w: the CDS at %s is not the CDS that issued your workloads' certificates (--mesh-ca %s), "+
+				"%w: the Trust Authority at %s is not the Trust Authority that issued your workloads' certificates (--mesh-ca %s), "+
 					"and a %s written here would be released to whatever it admits", ErrMeshCAMismatch, rawURL, g.Bundle, g.what())
 		}
 	}
@@ -99,8 +99,8 @@ func (g *MeshCAGate) Check(ctx context.Context, stderr io.Writer, hc *http.Clien
 func (g *MeshCAGate) pinned() (map[string]bool, error) {
 	if g.Bundle == "" {
 		return nil, fmt.Errorf(
-			"refusing to write a %s to a CDS whose mesh CA is not pinned: --measurements proves the peer is an attested build, "+
-				"but nodes can boot that same build, so it does not prove the peer is your CDS. "+
+			"refusing to write a %s to a Trust Authority whose mesh CA is not pinned: --measurements proves the peer is an attested build, "+
+				"but nodes can boot that same build, so it does not prove the peer is your Trust Authority. "+
 				"Pass --mesh-ca <bundle.pem> (the anchor you pass to 'c8s verify --mesh-ca'), or --force to write without it", g.what())
 	}
 	return pinnedCerts(g.Bundle)
@@ -140,7 +140,7 @@ func pinnedCerts(path string) (map[string]bool, error) {
 	return out, nil
 }
 
-// fetchCA reads CDS's mesh CA chain over hc with the client `c8s cds ca` uses,
+// fetchCA reads Trust Authority's mesh CA chain over hc with the client `c8s ta ca` uses,
 // so the two read /ca alike.
 func fetchCA(ctx context.Context, hc *http.Client, baseURL string) ([][]byte, error) {
 	raw, err := attestclient.NewClientWithHTTP(baseURL, hc).MeshCA(ctx)
@@ -149,7 +149,7 @@ func fetchCA(ctx context.Context, hc *http.Client, baseURL string) ([][]byte, er
 	case errors.As(err, &status):
 		return nil, fmt.Errorf("cds returned %d for /ca, so its mesh CA cannot be checked against --mesh-ca", status.Status)
 	case err != nil:
-		return nil, fmt.Errorf("fetch the CDS mesh CA: %w", err)
+		return nil, fmt.Errorf("fetch the Trust Authority mesh CA: %w", err)
 	}
 	certs, err := parseCertsPEM(raw)
 	if err != nil {

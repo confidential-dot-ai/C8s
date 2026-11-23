@@ -18,23 +18,23 @@ func TestHTTPClientRouterFrontDoor(t *testing.T) {
 		return nil, localverify.ErrMeasurementNotAllowed
 	})
 	for _, tc := range []struct {
-		name      string
-		directCDS bool
-		verifier  PinVerifier
-		wantErr   string
+		name     string
+		directTA bool
+		verifier PinVerifier
+		wantErr  string
 	}{
 		{name: "allowlist", verifier: testutil.ApproveAll()},
-		{name: "direct CDS", directCDS: true, verifier: testutil.ApproveAll(), wantErr: "--ta-address"},
-		{name: "direct CDS pinned to CDS", directCDS: true, verifier: reject, wantErr: "--ta-address"},
+		{name: "direct Trust Authority", directTA: true, verifier: testutil.ApproveAll(), wantErr: "--ta-address"},
+		{name: "direct Trust Authority pinned to the Trust Authority", directTA: true, verifier: reject, wantErr: "--ta-address"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			o := Options{
 				URL:       router.URL,
 				Timeout:   5 * time.Second,
 				Verifier:  tc.verifier,
-				DirectCDS: tc.directCDS,
+				DirectCDS: tc.directTA,
 			}
-			if tc.directCDS {
+			if tc.directTA {
 				o.MeasurementsConfig = testutil.CDSPinFile(t)
 			} else {
 				o.Measurements = []string{testutil.TestMeasurement}

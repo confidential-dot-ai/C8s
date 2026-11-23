@@ -1,15 +1,15 @@
-// Package cdsconn builds what an operator CLI needs to reach CDS: an HTTP
+// Package cdsconn builds what an operator CLI needs to reach Trust Authority: an HTTP
 // client that has verified the endpoint's attestation, and the operator
 // credential that signs a write.
 //
-// It is shared by `c8s allowlist`, `c8s secrets`, `c8s volume` and `c8s cds ca`,
-// which reach CDS the same way and, for writes, authorize against the same
+// It is shared by `c8s allowlist`, `c8s secrets`, `c8s volume` and `c8s ta ca`,
+// which reach Trust Authority the same way and, for writes, authorize against the same
 // pinned operator keys. The attestation decisions — that plaintext http needs --insecure, that a
 // router front door is trusted through its discovery document, that a direct
 // URL is verified by armTLS — belong in one place, since each is a way to talk
 // to an unattested endpoint by mistake.
 //
-// Every request one HTTPClient sends reaches one CDS: a router front door
+// Every request one HTTPClient sends reaches one Trust Authority: a router front door
 // client uses only router certificates issued under the mesh CA key of the
 // first one it attested, and a direct armTLS URL is pinned to the serving
 // certificate its first handshake presented. MeshCAGate depends on that: it
@@ -56,32 +56,32 @@ type Options struct {
 	// Verifier verifies endpoint evidence. Nil defaults to LocalVerifier.
 	Verifier PinVerifier
 
-	// DirectCDS refuses a router front door, for commands that call CDS's
+	// DirectCDS refuses a router front door, for commands that call Trust Authority's
 	// /ca or /secrets: the router relays /allowlist, not those. Such a command
-	// pins CDS by its configuration, so it takes no flat measurements.
+	// pins Trust Authority by its configuration, so it takes no flat measurements.
 	DirectCDS bool
 }
 
 // BindFlags registers the connection and credential flags on a command's
 // persistent flag set, so every operator CLI spells them the same way.
 //
-// A router front door is one build, pinned by its launch digest; CDS is a VM
+// A router front door is one build, pinned by its launch digest; Trust Authority is a VM
 // pinned to the configuration it runs on, so a command that only ever reaches
-// CDS takes the pin document and nothing else.
+// Trust Authority takes the pin document and nothing else.
 func BindFlags(pf *pflag.FlagSet, o *Options) {
 	if o.DirectCDS {
 		pf.StringVar(&o.URL, "ta-url", "", "direct Trust Authority base URL, https://<host>:<port> using the install's --ta-address (required)")
 		cmdsutil.AliasFlag(pf, "ta-url", "url")
 		cmdsutil.BindTAImagePolicyFlags(pf, &o.MeasurementsConfig, nil, "pins the launch file the Trust Authority runs on")
 	} else {
-		pf.StringSliceVar(&o.Measurements, "measurements", nil, "trusted router launch digest(s) (repeatable/comma-separated) for a CDS-issued public TLS front door; an https --url requires a pin, and a TDX endpoint needs --image-policy-file with RTMR[1] and RTMR[2]")
+		pf.StringSliceVar(&o.Measurements, "measurements", nil, "trusted router launch digest(s) (repeatable/comma-separated) for a Trust Authority-issued public TLS front door; an https --url requires a pin, and a TDX endpoint needs --image-policy-file with RTMR[1] and RTMR[2]")
 		pf.StringVar(&o.MeasurementsFile, "measurements-file", "", "text file of trusted router SHA-384 hex digests, one per line; use --image-policy-file for complete JSON policies")
-		pf.StringVar(&o.URL, "url", "", "Trust Authority or attested router base URL (required)")
+		pf.StringVar(&o.URL, "url", "", "Base URL of the Trust Authority or a router with Trust Authority-issued public TLS (required). WebPKI router URLs lack an attestation binding")
 		cmdsutil.BindImagePolicyFlags(pf, &o.MeasurementsConfig, nil, "pins the endpoint; a direct Trust Authority URL requires binding its launch file")
 	}
 	pf.DurationVar(&o.Timeout, "timeout", 15*time.Second, "per-request timeout")
-	pf.StringVar(&o.OperatorKey, "operator-key", "", "operator EC private key PEM file, whose public key is pinned on CDS via --operator-keys (env "+EnvOperatorKey+"); required for writes")
-	pf.BoolVar(&o.Insecure, "insecure", false, "dev/test only: allow a plaintext http:// CDS URL, skipping armTLS attestation of CDS")
+	pf.StringVar(&o.OperatorKey, "operator-key", "", "operator EC private key PEM file, whose public key is pinned on the Trust Authority via --operator-keys (env "+EnvOperatorKey+"); required for writes")
+	pf.BoolVar(&o.Insecure, "insecure", false, "dev/test only: allow a plaintext http:// Trust Authority URL, skipping armTLS attestation of Trust Authority")
 }
 
 // Validate checks the flags every subcommand needs.
@@ -95,7 +95,7 @@ func (o *Options) Validate() error {
 	return nil
 }
 
-// HTTPClient builds a client for CDS. An https URL is verified via armTLS (CDS
+// HTTPClient builds a client for Trust Authority. An https URL is verified via armTLS (Trust Authority
 // proves its TEE attestation). Plaintext http is refused unless Insecure is
 // set, so a typo'd or downgraded URL never silently writes to an
 // unauthenticated endpoint.
@@ -105,7 +105,7 @@ func (o *Options) HTTPClient(ctx context.Context) (*http.Client, error) {
 		return nil, err
 	}
 	if u.Scheme == "http" {
-		fmt.Fprintln(os.Stderr, "warning: --url is http:// with --insecure; CDS attestation is NOT verified (dev/test only)")
+		fmt.Fprintln(os.Stderr, "warning: --url is http:// with --insecure; Trust Authority attestation is NOT verified (dev/test only)")
 		return &http.Client{Timeout: o.Timeout}, nil
 	}
 	pins, err := o.loadPins()
@@ -138,7 +138,7 @@ func (o *Options) endpoint() (*url.URL, error) {
 			return nil, fmt.Errorf("--image-policy-file requires https; plaintext cannot enforce its endpoint identity")
 		}
 		if !o.Insecure {
-			return nil, fmt.Errorf("refusing plaintext http:// for CDS (no attestation): use https:// (armTLS), or pass --insecure for a dev/test endpoint")
+			return nil, fmt.Errorf("refusing plaintext http:// for Trust Authority (no attestation): use https:// (armTLS), or pass --insecure for a dev/test endpoint")
 		}
 	case "https":
 		pins, err := o.loadPins()
@@ -148,7 +148,7 @@ func (o *Options) endpoint() (*url.URL, error) {
 		if pins.Empty() {
 			return nil, fmt.Errorf("%w. Pass %s", ErrUnpinnedEndpoint, o.pinFlags())
 		}
-		// --url reaches CDS itself, which is pinned to the configuration it
+		// --url reaches Trust Authority itself, which is pinned to the configuration it
 		// runs on rather than to its image.
 		if o.DirectCDS {
 			if _, err := cmdsutil.CDSLaunchFile(pins); err != nil {
@@ -162,9 +162,9 @@ func (o *Options) endpoint() (*url.URL, error) {
 }
 
 // httpsClient builds the attestation-verifying client. A router front door
-// serves a CDS-issued cert with no armTLS extension; its trust path is the
+// serves a Trust Authority-issued cert with no armTLS extension; its trust path is the
 // discovery document, so probe for that first and fall back to direct armTLS
-// serving-cert verification (a port-forwarded CDS) when the target serves none
+// serving-cert verification (a port-forwarded Trust Authority) when the target serves none
 // — the same routing `c8s verify` uses in auto mode. A discovery document that
 // fails verification is a hard error, never a fallback.
 func (o *Options) httpsClient(ctx context.Context, pins refvalues.ReferenceValues) (*http.Client, error) {
@@ -175,15 +175,15 @@ func (o *Options) httpsClient(ctx context.Context, pins refvalues.ReferenceValue
 	switch {
 	case o.DirectCDS && !errors.Is(err, routerdiscovery.ErrNoDiscovery):
 		// A discovery document marks a router even when it does not verify:
-		// pins for CDS reject the router's evidence.
+		// pins for Trust Authority reject the router's evidence.
 		if hc != nil {
 			hc.CloseIdleConnections()
 		}
-		return nil, fmt.Errorf("--url %s serves a router discovery document; a router front door does not relay CDS's /ca or /secrets. "+
-			"Use the CDS URL directly, the <host>:<port> the install was given as --ta-address, "+
-			"and pin the CDS launch file instead of the router's launch digest", o.URL)
+		return nil, fmt.Errorf("--url %s serves a router discovery document; a router front door does not relay Trust Authority's /ca or /secrets. "+
+			"Use the Trust Authority URL directly, the <host>:<port> the install was given as --ta-address, "+
+			"and pin the Trust Authority launch file instead of the router's launch digest", o.URL)
 	case err == nil:
-		fmt.Fprintln(os.Stderr, "note: target is a router front door; verified its discovery attestation and bound this session to its CDS")
+		fmt.Fprintln(os.Stderr, "note: target is a router front door; verified its discovery attestation and bound this session to its Trust Authority")
 		return hc, nil
 	case errors.Is(err, routerdiscovery.ErrNoDiscovery):
 		return pinFirstPeer(localverify.NewARMTLSHTTPClient(pins.Digests(), verify.Verify, o.Timeout))
@@ -205,7 +205,7 @@ func (o *Options) loadPins() (refvalues.ReferenceValues, error) {
 	pins := cmdsutil.MeasurementPins{Measurements: o.Measurements, MeasurementsFile: o.MeasurementsFile}
 	if o.DirectCDS {
 		if flags := pins.Flags(); len(flags) != 0 {
-			return refvalues.ReferenceValues{}, fmt.Errorf("%s pins a build, and this command only ever reaches CDS, which is pinned to the configuration it runs on: pass --ta-image-policy-file", strings.Join(flags, " and "))
+			return refvalues.ReferenceValues{}, fmt.Errorf("%s pins a build, and this command only ever reaches Trust Authority, which is pinned to the configuration it runs on: pass --ta-image-policy-file", strings.Join(flags, " and "))
 		}
 		return (cmdsutil.ImagePolicySource{File: o.MeasurementsConfig}).Values()
 	}
@@ -260,7 +260,7 @@ func (o *Options) Signer() (*operatorauth.Signer, error) {
 }
 
 // RequirePinnedEndpoint refuses to mint an operator token for an endpoint whose
-// build is not pinned. armTLS proves the peer is *a* TEE, not that it is the CDS
+// build is not pinned. armTLS proves the peer is *a* TEE, not that it is the Trust Authority
 // this operator meant; unpinned, `c8s secrets put` hands a secret, and
 // `c8s allowlist` a policy change, to whatever attested thing answered the
 // URL. It refuses before the command builds its payload; HTTPClient refuses

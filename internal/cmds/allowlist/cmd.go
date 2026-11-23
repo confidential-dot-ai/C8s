@@ -1,11 +1,11 @@
 // Package allowlist implements the `c8s allowlist` operator CLI for reading and
-// mutating the CDS-served image allowlist that nri-image-policy enforces on
+// mutating the Trust Authority-served image allowlist that nri-image-policy enforces on
 // every node: named workload entries, each pinning an init/main container set
 // with per-container argv and path policy, looked up by container digest.
 //
 // Reads (list, get, export, diff, lint, inspect-image) are unauthenticated.
 // Writes (add, apply, edit, delete, upload) are authorized by an operator EC
-// private key whose public key CDS pins ('c8s cds config new --operator-keys');
+// private key whose public key Trust Authority pins ('c8s ta config new --operator-keys');
 // the CLI mints a short-lived, body-bound token per write via pkg/operatorauth.
 package allowlist
 
@@ -25,7 +25,7 @@ import (
 )
 
 // Required image-label substrings for deployments with a chart-managed
-// attestation API. CDS is not among them: it runs outside the cluster, so no
+// attestation API. Trust Authority is not among them: it runs outside the cluster, so no
 // entry of the cluster's allowlist admits it.
 var defaultRequiredComponents = []string{
 	"armtls-mesh",
@@ -51,8 +51,8 @@ func newCmd(verifier taconn.PinVerifier) *cobra.Command {
 	o := &options{Options: taconn.Options{Verifier: verifier}}
 	cmd := &cobra.Command{
 		Use:   "allowlist",
-		Short: "Manage the CDS image allowlist",
-		Long: `Read and mutate the image allowlist that CDS serves and nri-image-policy
+		Short: "Manage the Trust Authority image allowlist",
+		Long: `Read and mutate the image allowlist that Trust Authority serves and nri-image-policy
 enforces on every node: named workload entries, each pinning an init/main
 container set with per-container argv and path policy. An image that may run
 with any command line is an entry whose command and args policy are both "any";
@@ -62,16 +62,16 @@ Reads (list, get, export, diff, lint, inspect-image) are unauthenticated. Writes
 (add, apply, edit, delete, upload) are signed with an operator EC private key
 you supply to THIS CLI via --operator-key
 (or C8S_OPERATOR_KEY). The private key never leaves the CLI — it signs a
-short-lived token that CDS verifies against the operator public keys it
-pins in its measured launch configuration ('c8s cds config new
+short-lived token that Trust Authority verifies against the operator public keys it
+pins in its measured launch configuration ('c8s ta config new
 --operator-keys').
 
 The default chart publishes /allowlist through router. Point --url at that
-front door only when it uses CDS-issued public TLS (discovery reports
+front door only when it uses Trust Authority-issued public TLS (discovery reports
 public_tls.mode=cds), and use the router launch digest with --measurements. A
 WebPKI front door cannot yet bind its public certificate to the attestation
-evidence, so this CLI refuses it; use a direct CDS armTLS URL instead (for
-example through a port-forward) and pin the CDS launch digest. To generate an
+evidence, so this CLI refuses it; use a direct Trust Authority armTLS URL instead (for
+example through a port-forward) and pin the Trust Authority launch digest. To generate an
 operator key and pin its public half, see the c8s README ("Managing the image
 allowlist").`,
 		SilenceUsage: true,
@@ -114,7 +114,7 @@ func (o *options) validate() error {
 	return nil
 }
 
-// client builds the allowlist API client over the attested channel to CDS.
+// client builds the allowlist API client over the attested channel to the Trust Authority.
 func (o *options) client(ctx context.Context) (allowlistclient.Client, error) {
 	hc, err := o.HTTPClient(ctx)
 	if err != nil {

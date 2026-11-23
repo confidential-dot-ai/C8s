@@ -71,7 +71,7 @@ func TestDeriveCoversInitContainers(t *testing.T) {
 	if !ok {
 		t.Fatalf("entry not keyed by name: %v", got)
 	}
-	// CDS matches the whole candidate set, so an undeclared init container
+	// Trust Authority matches the whole candidate set, so an undeclared init container
 	// refuses every release with "no workload entry matches the running
 	// containers".
 	if len(w.InitContainers) != 1 {

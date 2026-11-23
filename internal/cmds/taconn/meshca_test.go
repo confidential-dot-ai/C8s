@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// The parts of the gate that decide without CDS. The CA comparison itself is
+// The parts of the gate that decide without Trust Authority. The CA comparison itself is
 // exercised end to end by the secrets and volume command tests.
 func TestMeshCAGateWithoutCDS(t *testing.T) {
 	ctx := context.Background()

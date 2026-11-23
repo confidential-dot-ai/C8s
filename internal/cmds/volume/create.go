@@ -43,7 +43,7 @@ func newCreateCmd(o *options) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "create",
 		Short: "Build an encrypted volume and store its key",
-		Long: `Build an encrypted image at --out and store its key at --path in the CDS
+		Long: `Build an encrypted image at --out and store its key at --path in the Trust Authority
 secret store.
 
 By default the volume is immutable: --source is packaged into an erofs image
@@ -61,11 +61,11 @@ or hot-attach scsi-hd on a virtio-scsi controller provisioned at launch.
 'c8s volume attach' requires a Linux node with LIO support and is unsupported
 on the c8s node image. See docs/volumes.md for attachment recipes.
 
-The key is generated here and exists in exactly two places: the CDS process, and
-the escrow file. A CDS restart empties the store, and without the escrow file
+The key is generated here and exists in exactly two places: the Trust Authority process, and
+the escrow file. A Trust Authority restart empties the store, and without the escrow file
 the volume is unopenable — keep it somewhere durable and access-controlled.
 
-The write names the CDS it trusts with --mesh-ca: the mesh CA CDS serves must be
+The write names the Trust Authority it trusts with --mesh-ca: the mesh CA Trust Authority serves must be
 one you pinned, or the key is refused. --force writes without that check.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -83,7 +83,7 @@ one you pinned, or the key is refused. --force writes without that check.`,
 	f.StringVar(&cfg.size, "size", "", "mutable filesystem size, e.g. 50Gi (default: inferred from --source; required without one)")
 	f.StringVar(&cfg.workDir, "work-dir", "", "directory for build intermediates (default: a temp dir); they are removed either way")
 	f.IntVar(&cfg.jobs, "jobs", 0, "goroutines encrypting the image (default 0: one per CPU, at most 16)")
-	f.BoolVar(&cfg.dryRun, "dry-run", false, "build the image and write escrow, but do not call CDS")
+	f.BoolVar(&cfg.dryRun, "dry-run", false, "build the image and write escrow, but do not call Trust Authority")
 	cfg.gate.BindFlags(f)
 	return cmd
 }
@@ -93,9 +93,9 @@ func runCreate(cmd *cobra.Command, o *options, cfg createConfig) error {
 	if err != nil {
 		return err
 	}
-	// Every refusal that needs no CDS response, a router front door included,
+	// Every refusal that needs no Trust Authority response, a router front door included,
 	// runs before the build, so it leaves no image or escrow behind. The mesh CA
-	// check waits until the write, so the CA compared is the one CDS serves when
+	// check waits until the write, so the CA compared is the one Trust Authority serves when
 	// the key is sent.
 	var signer authorizer
 	var hc *http.Client
@@ -147,7 +147,7 @@ func runCreate(cmd *cobra.Command, o *options, cfg createConfig) error {
 		return err
 	}
 
-	// Escrow before CDS. The image already exists at this point, so a key that
+	// Escrow before Trust Authority. The image already exists at this point, so a key that
 	// reached neither the operator's disk nor the store would leave ciphertext
 	// nothing can ever open.
 	if err := writeEscrow(cfg.escrowOut, blob); err != nil {
@@ -156,14 +156,14 @@ func runCreate(cmd *cobra.Command, o *options, cfg createConfig) error {
 
 	out := cmd.OutOrStdout()
 	if cfg.dryRun {
-		fmt.Fprintf(out, "built %s (%s); key escrowed to %s; CDS not called\n",
+		fmt.Fprintf(out, "built %s (%s); key escrowed to %s; Trust Authority not called\n",
 			cfg.out, buildSummary(cfg.mutable, size, verity), cfg.escrowOut)
 		return nil
 	}
 
 	if err := cfg.gate.Check(cmd.Context(), cmd.ErrOrStderr(), hc, o.URL); err != nil {
 		if errors.Is(err, taconn.ErrMeshCAMismatch) {
-			return notStored(err, cfg, path, "once you reach the CDS your bundle names, store it with")
+			return notStored(err, cfg, path, "once you reach the Trust Authority your bundle names, store it with")
 		}
 		return notStored(err, cfg, path, "retry with")
 	}
@@ -189,7 +189,7 @@ func validateCreate(cfg *createConfig) (string, error) {
 	case cfg.out == "":
 		return "", fmt.Errorf("--out is required")
 	case cfg.escrowOut == "":
-		return "", fmt.Errorf("--escrow-out is required: it is the only copy of the key outside CDS")
+		return "", fmt.Errorf("--escrow-out is required: it is the only copy of the key outside Trust Authority")
 	}
 	if cfg.jobs < 0 {
 		return "", fmt.Errorf("--jobs must not be negative")
@@ -236,7 +236,7 @@ func parseSize(s string) (uint64, error) {
 }
 
 // writeEscrow saves the blob, O_EXCL and 0600. It is the whole key: an operator
-// who loses it and restarts CDS has ciphertext and nothing that opens it.
+// who loses it and restarts Trust Authority has ciphertext and nothing that opens it.
 func writeEscrow(dest string, blob Blob) error {
 	raw, err := blob.Marshal()
 	if err != nil {
@@ -268,7 +268,7 @@ func printResult(w io.Writer, cfg createConfig, path string, size uint64, v Veri
 		fmt.Fprintf(w, "  mutable volumes have no integrity protection: the host can flip bits or roll back undetected\n")
 	}
 	fmt.Fprintf(w, "+ key stored at %s\n", path)
-	fmt.Fprintf(w, "+ key escrowed to %s — keep it; a CDS restart needs it\n\n", cfg.escrowOut)
+	fmt.Fprintf(w, "+ key escrowed to %s — keep it; a Trust Authority restart needs it\n\n", cfg.escrowOut)
 
 	fmt.Fprintf(w, "Attach %s to the node as a raw block device with serial %s%s.\n\n", cfg.out, SerialPrefix, cfg.name)
 
