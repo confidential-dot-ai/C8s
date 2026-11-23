@@ -97,7 +97,7 @@ describe() { # $1=source-root $2=file $3=line $4=column $5=type; one markdown li
   root="${root%$'\n'x}"
   dir="${dir%$'\n'x}"
   src="$dir/${2##*/}"
-  if [[ "$3" =~ ^[1-9][0-9]*$ && "$4" =~ ^[1-9][0-9]*$ && -n "$root" && "$dir/" == "$root/"* \
+  if [[ "$3" =~ ^[1-9][0-9]*$ && "$4" =~ ^[1-9][0-9]*$ && -n "$root" && "$dir/" == "${root%/}/"* \
     && -f "$src" && ! -L "$src" && -r "$src" ]]; then
     text="$(sed -n "${3}p" "$src" 2>/dev/null)" || text=""
     # Go columns count bytes; try the two-byte operator before the one-byte one.

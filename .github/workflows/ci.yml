@@ -382,6 +382,17 @@ jobs:
           if [ "$status" -eq 0 ] && [ "$lived" -gt 0 ] 2>/dev/null; then report=lived; fi
           echo "report=$report" >> "$GITHUB_OUTPUT"
 
+      # The whole report, whatever the step summary and the comment can hold.
+      - name: Keep the mutation report
+        if: steps.mutation.outputs.report == 'lived'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mutation-report
+          path: |
+            mutation-summary.md
+            mutation.json
+          retention-days: 14
+
       # Fork PRs get a read-only token; their results stay in the step summary.
       - name: Comment mutation results on the PR
         # An unfinished run says nothing, and leaves an earlier report as it is.
@@ -403,7 +414,7 @@ jobs:
             // A comment holds 65536 characters; cut a longer report before a mutant and say so.
             let summary = fs.readFileSync('mutation-summary.md', 'utf8');
             if (summary.length > 60000) {
-              summary = summary.slice(0, summary.lastIndexOf('\n- `', 60000)) + '\n\nCut short here; the log of the run linked below names every lived mutant.';
+              summary = summary.slice(0, summary.lastIndexOf('\n- `', 60000)) + '\n\nCut short here; the mutation-report artifact of the run linked below has every lived mutant.';
             }
             const body = [
               marker,
