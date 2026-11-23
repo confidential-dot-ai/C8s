@@ -1,4 +1,5 @@
 {{- define "router.podSpec" -}}
+{{- $ta := include "c8s.trustAuthority" . | fromJson -}}
 # Keeps the env names fixed for the allowlist's env match (c8s.componentEnv).
 enableServiceLinks: false
 serviceAccountName: {{ include "router.fullname" . }}
@@ -46,7 +47,7 @@ volumes:
       sources:
         - configMap:
             name: {{ include "c8s.fullname" . }}-measurements
-  {{- if .Values.cds.operatorKeys }}
+  {{- if $ta.operatorKeys }}
   - name: operator-keys
     projected:
       sources:
@@ -95,6 +96,7 @@ securityContext:
     type: RuntimeDefault
 {{- end -}}
 
+{{- $ta := include "c8s.trustAuthority" . | fromJson }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -118,8 +120,8 @@ spec:
       annotations:
         {{- /* A ConfigMap edit alone leaves the pod template unchanged. */}}
         checksum/nginx-config: {{ include (print $.Template.BasePath "/router-configmap.yaml") . | sha256sum }}
-        checksum/measurements-config: {{ .Values.cds.measurementsConfig | sha256sum }}
-        {{- with .Values.cds.operatorKeys }}
+        checksum/measurements-config: {{ $ta.measurementsConfig | sha256sum }}
+        {{- with $ta.operatorKeys }}
         checksum/operator-keys: {{ . | sha256sum }}
         {{- end }}
     spec:

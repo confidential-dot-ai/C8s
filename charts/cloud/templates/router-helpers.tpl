@@ -36,10 +36,11 @@
 {{/* The front door's mounts of the CDS pin and, where set, the operator
      keys; cds-attest reads both. */}}
 {{- define "router.cdsAttestMounts" -}}
+{{- $ta := include "c8s.trustAuthority" . | fromJson -}}
 - name: measurements-config
   mountPath: /mnt/c8s-data/measurements
   readOnly: true
-{{- if .Values.cds.operatorKeys }}
+{{- if $ta.operatorKeys }}
 - name: operator-keys
   mountPath: /mnt/c8s-data/operator-keys
   readOnly: true
@@ -50,6 +51,7 @@
      keys from values. Loopback only: nginx proxies /readyz, the attest routes
      and /tunnel to it. */}}
 {{- define "router.cdsAttestArgs" -}}
+{{- $ta := include "c8s.trustAuthority" . | fromJson -}}
 {{- $args := list
   "cds-attest"
   "--host=127.0.0.1"
@@ -61,7 +63,7 @@
   (printf "--serving-cert-file=%s" (include "c8s.certFile" .))
   (printf "--measured-policies-file=%s/measured-policies" (include "nri-image-policy.runtimeDir" .))
   "--image-policy-file=/mnt/c8s-data/measurements/cds.json" -}}
-{{- if .Values.cds.operatorKeys -}}
+{{- if $ta.operatorKeys -}}
 {{- $args = append $args "--operator-keys-file=/mnt/c8s-data/operator-keys/keys.pem" -}}
 {{- end -}}
 {{- $args = concat $args (list
