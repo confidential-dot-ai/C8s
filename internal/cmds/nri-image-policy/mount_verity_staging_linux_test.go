@@ -1133,6 +1133,56 @@ func TestRestoreReturnsWithinBudget(t *testing.T) {
 	waitFor(t, "background restore", func() bool { return slices.Equal(registeredMounts(f.ctr.Id), []string{path}) })
 }
 
+func TestSlowRestoreSkipsContainersGoneMeanwhile(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		gone func(f verityFixture)
+	}{
+		{"removed", func(f verityFixture) {
+			if err := f.p.RemoveContainer(t.Context(), f.pod, f.ctr); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"unlisted at the next Synchronize", func(f verityFixture) {
+			releaseUnlistedMounts(discardLogger(), []*api.PodSandbox{f.pod}, nil)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newVerityFixture(t, ModeFailClosed, false, nil)
+			setStagingRoot(t)
+			original := restoreBudget
+			restoreBudget = 10 * time.Millisecond
+			t.Cleanup(func() { restoreBudget = original })
+			hung := make(chan struct{})
+			var unhang sync.Once
+			t.Cleanup(func() { unhang.Do(func() { close(hung) }) })
+			originalMeasure := measureStaged
+			measureStaged = func(string) string {
+				<-hung
+				return testVerityDigest
+			}
+			t.Cleanup(func() { measureStaged = originalMeasure })
+			path := stageOnDisk(t, f.stagedEntry(f.ctr.Id))
+			f.useStaging(path)
+
+			restoreVerifiedMounts(discardLogger(), []*api.PodSandbox{f.pod}, []*api.Container{f.ctr})
+			tc.gone(f)
+			unhang.Do(func() { close(hung) })
+			waitFor(t, "background restore", func() bool {
+				verifiedMountRegistry.Lock()
+				defer verifiedMountRegistry.Unlock()
+				return verifiedMountRegistry.restore == nil
+			})
+			if got := registeredMounts(f.ctr.Id); len(got) != 0 {
+				t.Fatalf("restore registered %v for a container %s meanwhile, want none", got, tc.name)
+			}
+			if fileExists(filepath.Dir(path)) {
+				t.Fatalf("staging %s of a container %s meanwhile not released", path, tc.name)
+			}
+		})
+	}
+}
+
 func TestRestoreRefusesUntrustedRoot(t *testing.T) {
 	for _, tc := range []struct {
 		name  string

@@ -58,13 +58,30 @@ type verifiedMount struct {
 // new pins private, covered by a reservation, until it commits or discards
 // them all at once; so no validation can see a pin from an abandoned call.
 // Each committed pin also has a record on disk, from which a restarted
-// enforcer rebuilds the registry (restoreVerifiedMounts). The lock is never held across filesystem or mount
-// syscalls, so a hung source filesystem cannot stall every NRI callback.
+// enforcer rebuilds the registry (restoreVerifiedMounts). The lock is never
+// held across filesystem or mount syscalls, so a hung source filesystem cannot
+// stall every NRI callback.
 var verifiedMountRegistry = struct {
 	sync.Mutex
 	mounts   map[string]verifiedMount
 	reserved int
+	// restore is non-nil while restoreVerifiedMounts runs. It collects what
+	// the runtime reports meanwhile, which the restore's own listing predates.
+	restore *restoreProgress
 }{mounts: make(map[string]verifiedMount)}
+
+// restoreProgress is what the runtime reported since a restore read its
+// listing: the containers whose staging was released, and a newer listing.
+type restoreProgress struct {
+	released map[string]bool
+	relisted *listing
+}
+
+// outdated reports whether the container that entry names has gone since the
+// restore read its listing.
+func (r *restoreProgress) outdated(path string, entry verifiedMount) bool {
+	return r != nil && (r.released[entry.containerID] || r.relisted != nil && !r.relisted.uses(path, entry))
+}
 
 // verityStagingBudget bounds the staging work in one CreateContainer call,
 // inside containerd's per-request NRI timeout. Syscalls on a hung filesystem
@@ -287,6 +304,11 @@ func verifiedHostMount(ctx MountContext, mount *api.Mount) (allowlist.ObservedMo
 // releaseVerifiedMounts unpins the container's staging mounts and retries
 // stale pins left by earlier failed unmounts.
 func releaseVerifiedMounts(logger *slog.Logger, containerID string) {
+	verifiedMountRegistry.Lock()
+	if restore := verifiedMountRegistry.restore; restore != nil {
+		restore.released[containerID] = true
+	}
+	verifiedMountRegistry.Unlock()
 	releaseVerifiedPaths(logger, func(_ string, entry verifiedMount) bool { return entry.containerID == containerID || entry.stale })
 }
 
@@ -295,6 +317,11 @@ func releaseVerifiedMounts(logger *slog.Logger, containerID string) {
 // connection was down never reports its removal.
 func releaseUnlistedMounts(logger *slog.Logger, pods []*api.PodSandbox, ctrs []*api.Container) {
 	listed := newListing(pods, ctrs)
+	verifiedMountRegistry.Lock()
+	if restore := verifiedMountRegistry.restore; restore != nil {
+		restore.relisted = &listed
+	}
+	verifiedMountRegistry.Unlock()
 	releaseVerifiedPaths(logger, func(path string, entry verifiedMount) bool { return entry.stale || !listed.uses(path, entry) })
 }
 
@@ -382,7 +409,8 @@ func removeStaging(path string) error {
 // restoreBudget bounds how long Synchronize waits for restoreVerifiedMounts,
 // inside containerd's plugin registration timeout. Measuring an inode on a
 // hung filesystem cannot be cancelled, so a restore that overruns finishes in
-// the background.
+// the background, where it skips the containers removed or no longer listed
+// since.
 var restoreBudget = 5 * time.Second
 
 // restoreVerifiedMounts rebuilds the registry from the staging that an earlier
@@ -406,12 +434,18 @@ func restoreVerifiedMounts(logger *slog.Logger, pods []*api.PodSandbox, ctrs []*
 		return
 	}
 	listed := newListing(pods, ctrs)
+	verifiedMountRegistry.Lock()
+	verifiedMountRegistry.restore = &restoreProgress{released: map[string]bool{}}
+	verifiedMountRegistry.Unlock()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		for _, dir := range dirs {
 			restoreStaging(logger, filepath.Join(dir, "inode"), listed)
 		}
+		verifiedMountRegistry.Lock()
+		verifiedMountRegistry.restore = nil
+		verifiedMountRegistry.Unlock()
 	}()
 	timer := time.NewTimer(restoreBudget)
 	defer timer.Stop()
@@ -426,8 +460,14 @@ func restoreStaging(logger *slog.Logger, path string, listed listing) {
 	entry, err := restoredEntry(path, listed)
 	if err == nil {
 		verifiedMountRegistry.Lock()
-		verifiedMountRegistry.mounts[path] = entry
+		if verifiedMountRegistry.restore.outdated(path, entry) {
+			err = errStagingOrphaned
+		} else {
+			verifiedMountRegistry.mounts[path] = entry
+		}
 		verifiedMountRegistry.Unlock()
+	}
+	if err == nil {
 		logger.Info("fs-verity staging restored", "container", entry.containerID, "path", path)
 		return
 	}
