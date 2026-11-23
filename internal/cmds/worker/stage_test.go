@@ -258,11 +258,11 @@ func TestStagePublishesTheDocumentsFloor(t *testing.T) {
 	}
 	pull := floor.Allowlist.Pull
 	if pull.URL != "https://cds.acme.example:8443" || pull.PinFloor != doc.CDS.PinFloor {
-		t.Errorf("pull = %+v, want the document's CDS and pin floor %d", pull, doc.CDS.PinFloor)
+		t.Errorf("pull = %+v, want the document's Trust Authority and pin floor %d", pull, doc.CDS.PinFloor)
 	}
 	roles := floor.Mesh.Roles
 	if i := slices.IndexFunc(roles, func(r stagedRole) bool { return r.Name == nriimagepolicy.CredentialRole }); i < 0 || roles[i].Port != 8443 {
-		t.Errorf("mesh roles = %+v, want the credential role on the document's CDS port", roles)
+		t.Errorf("mesh roles = %+v, want the credential role on the document's Trust Authority port", roles)
 	}
 
 	pins, err := refvalues.Parse([]byte(doc.CDS.Measurements))
@@ -274,21 +274,21 @@ func TestStagePublishesTheDocumentsFloor(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got, err := os.ReadFile(filepath.Join(root, nodeservices.PublicDir, "cds.json")); err != nil || string(got) != string(wantPin) {
-		t.Errorf("cds.json = %s, %v; want the document's CDS pin", got, err)
+		t.Errorf("cds.json = %s, %v; want the document's Trust Authority pin", got, err)
 	}
 	if got, err := os.ReadFile(filepath.Join(root, nodeservices.PublicDir, "router/hostnames")); err != nil || string(got) != "api.acme.example\n" {
 		t.Errorf("router/hostnames = %q, %v; want the document's router hostname", got, err)
 	}
-	cds, err := doc.CDS.Parse()
+	ta, err := doc.CDS.Parse()
 	if err != nil {
 		t.Fatal(err)
 	}
-	pinned, err := taconfig.Parse(cds.LaunchFile)
+	pinned, err := taconfig.Parse(ta.LaunchFile)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got, err := os.ReadFile(filepath.Join(root, nodeservices.PublicDir, "operator-pubkey")); err != nil || !bytes.Equal(got, pinned.OperatorKeys.PEM()) {
-		t.Errorf("operator-pubkey = %q, %v; want the pinned CDS configuration's operator keys", got, err)
+		t.Errorf("operator-pubkey = %q, %v; want the pinned Trust Authority configuration's operator keys", got, err)
 	}
 	if got, err := os.ReadFile(filepath.Join(root, nodeservices.PublicDir, "tls-san")); err != nil || string(got) != doc.TLSSAN+"\n" {
 		t.Errorf("tls-san = %q, %v; want the document's tlsSAN", got, err)
@@ -377,7 +377,7 @@ func TestStageRemovesAFailedPreparationsOutputs(t *testing.T) {
 }
 
 // A worker without a router block still publishes what the router reads: it
-// fronts the cluster in the CDS's mode, under the document's tlsSAN.
+// fronts the cluster in the Trust Authority's mode, under the document's tlsSAN.
 func TestStagePublishesTheRoutersFilesWithoutARouterBlock(t *testing.T) {
 	doc := testDocument(t)
 	doc.Router = nil

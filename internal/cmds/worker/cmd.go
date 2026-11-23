@@ -22,12 +22,12 @@ func NewCmd() *cobra.Command {
 }
 
 // draft is a worker document as `worker new` takes it: the blocks from flags,
-// and the CDS pin and the API server's CA from the files they name.
+// and the Trust Authority pin and the API server's CA from the files they name.
 type draft struct {
 	out               string
-	cds               cmdsutil.CDS
-	cdsPinFloor       uint64
-	cdsPinPath        string
+	ta                cmdsutil.CDS
+	taPinFloor        uint64
+	taPinPath         string
 	tlsSAN            string
 	router            nodeservices.Router
 	kubernetes        Kubernetes
@@ -40,7 +40,7 @@ func NewNewCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "new",
 		Short: "Write a worker document",
-		Long: `Write a worker document: the CDS a worker pins, the router's settings, and the
+		Long: `Write a worker document: the Trust Authority a worker pins, the router's settings, and the
 API server, CA, pod and Service ranges and cluster DNS address it joins its
 Kubernetes cluster with. The document is checked under the rules a worker
 parses it with, then written to --out, or to stdout without one.`,
@@ -64,13 +64,13 @@ parses it with, then written to --out, or to stdout without one.`,
 	}
 	f := cmd.Flags()
 	f.StringVar(&d.out, "out", "", "file to write the document to, which must not exist (default stdout)")
-	f.StringVar(&d.cds.Address, "ta-address", "", "<host>:<port> the cluster's CDS serves on, the host a DNS name its clients resolve or an IPv4 address")
+	f.StringVar(&d.ta.Address, "ta-address", "", "<host>:<port> the cluster's Trust Authority serves on, the host a DNS name its clients resolve or an IPv4 address")
 	cmdsutil.AliasFlag(f, "ta-address", "cds-address")
-	f.StringVar(&d.cdsPinPath, "ta-pin", "", "measurements document pinning the cluster's CDS VM to its configuration, as 'c8s ta config new' writes it")
+	f.StringVar(&d.taPinPath, "ta-pin", "", "measurements document pinning the cluster's Trust Authority VM to its configuration, as 'c8s ta config new' writes it")
 	cmdsutil.AliasFlag(f, "ta-pin", "cds-pin")
-	f.Uint64Var(&d.cdsPinFloor, "ta-pin-floor", 0, "lowest cluster version a worker takes a CDS pin decree at")
+	f.Uint64Var(&d.taPinFloor, "ta-pin-floor", 0, "lowest cluster version a worker takes a Trust Authority pin decree at")
 	cmdsutil.AliasFlag(f, "ta-pin-floor", "cds-pin-floor")
-	f.StringVar(&d.tlsSAN, "tls-san", "", "DNS name of the router's front-door certificate, one the pinned CDS configuration lets a leaf carry")
+	f.StringVar(&d.tlsSAN, "tls-san", "", "DNS name of the router's front-door certificate, one the pinned Trust Authority configuration lets a leaf carry")
 	nodeservices.BindRouterFlags(f, &d.router)
 	f.StringVar(&d.kubernetes.APIServer, "api-server", "", "<host>:<port> of the cluster's Kubernetes API server, the host a DNS name or an IPv4 address")
 	f.StringVar(&d.caCertificatePath, "ca-certificate", "", "PEM file holding the one CA certificate the API server's serving certificate chains to")
@@ -92,7 +92,7 @@ parses it with, then written to --out, or to stdout without one.`,
 
 // render returns the document's YAML, which Parse accepts.
 func (d draft) render() ([]byte, error) {
-	pin, err := os.ReadFile(d.cdsPinPath)
+	pin, err := os.ReadFile(d.taPinPath)
 	if err != nil {
 		return nil, fmt.Errorf("--ta-pin: %w", err)
 	}
@@ -102,12 +102,12 @@ func (d draft) render() ([]byte, error) {
 	}
 	doc := Document{
 		SchemaVersion: SchemaVersion,
-		CDS:           d.cds,
+		CDS:           d.ta,
 		TLSSAN:        d.tlsSAN,
 		Kubernetes:    d.kubernetes,
 	}
 	doc.CDS.Measurements = string(pin)
-	doc.CDS.PinFloor = cmdsutil.ClusterVersion(d.cdsPinFloor)
+	doc.CDS.PinFloor = cmdsutil.ClusterVersion(d.taPinFloor)
 	if !d.router.Empty() {
 		doc.Router = &d.router
 	}

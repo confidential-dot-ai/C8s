@@ -23,7 +23,7 @@ import (
 // FloorInputs are what Prepare completes the measured NRI floor with, and the
 // public files it publishes beside it.
 type FloorInputs struct {
-	// CDS is where the plugin pulls from and the credential role dials; its
+	// Trust Authority is where the plugin pulls from and the credential role dials; its
 	// pin is published as cds.json.
 	CDS cmdsutil.CDS
 	// ClusterRanges, when given, are the cluster's pod and Service ranges,
@@ -39,7 +39,7 @@ type FloorInputs struct {
 	Outputs map[string][]byte
 }
 
-// Prepare publishes the CDS pin as cds.json, in.Outputs and the measured NRI
+// Prepare publishes the Trust Authority pin as cds.json, in.Outputs and the measured NRI
 // floor completed with in, and removes every other public output. rootDir
 // rebases paths for tests. The root bootstrap service owns these files; pods
 // mount them read-only.
@@ -49,11 +49,11 @@ func Prepare(rootDir string, in FloorInputs) error {
 	if err != nil {
 		return err
 	}
-	cds, err := endpoint.Policy()
+	ta, err := endpoint.Policy()
 	if err != nil {
 		return err
 	}
-	outputs := map[string][]byte{CDSOutput: cds}
+	outputs := map[string][]byte{CDSOutput: ta}
 	for name, data := range in.Outputs {
 		if err := refuseReservedOutput(name); err != nil {
 			return err
@@ -73,7 +73,7 @@ func Prepare(rootDir string, in FloorInputs) error {
 	if err != nil {
 		return err
 	}
-	if _, err := bindCDSPull(a, in.CDS); err != nil {
+	if _, err := bindTAPull(a, in.CDS); err != nil {
 		return err
 	}
 	base, err := bakedBase(a["base"])
@@ -135,19 +135,19 @@ func loadFloor(rootDir string) (floor, allowlistSection map[string]any, err erro
 	return floor, allowlistSection, nil
 }
 
-// bindCDSPull points the floor's pull at the document's CDS and its
+// bindTAPull points the floor's pull at the document's Trust Authority and its
 // launch-file-bound pins.
-func bindCDSPull(a map[string]any, cds cmdsutil.CDS) (map[string]any, error) {
+func bindTAPull(a map[string]any, ta cmdsutil.CDS) (map[string]any, error) {
 	pull, ok := a["pull"].(map[string]any)
 	if !ok {
 		return nil, fmt.Errorf("baked NRI policy missing pull")
 	}
-	if _, err := cds.Parse(); err != nil {
+	if _, err := ta.Parse(); err != nil {
 		return nil, err
 	}
-	pull["url"] = cmdsutil.CDSURL(cds.Address)
+	pull["url"] = cmdsutil.CDSURL(ta.Address)
 	pull["cds_measurements_config"] = PublicDir + "/" + CDSOutput
-	pull["cds_pin_floor"] = cds.PinFloor
+	pull["cds_pin_floor"] = ta.PinFloor
 	return pull, nil
 }
 
@@ -192,15 +192,15 @@ func Clear(rootDir string) error {
 
 // The outputs a caller may not hand Prepare.
 var (
-	errOutputIsCDSPin   = errors.New("is the CDS pin staging writes itself")
+	errOutputIsTAPin    = errors.New("is the Trust Authority pin staging writes itself")
 	errOutputNotCleared = errors.New("is not a public output staging clears")
 )
 
-// refuseReservedOutput refuses a caller's output that is Prepare's own CDS
+// refuseReservedOutput refuses a caller's output that is Prepare's own Trust Authority
 // pin, or one Prepare does not clear.
 func refuseReservedOutput(name string) error {
 	if name == CDSOutput {
-		return fmt.Errorf("output %q %w", name, errOutputIsCDSPin)
+		return fmt.Errorf("output %q %w", name, errOutputIsTAPin)
 	}
 	if !slices.Contains(publicOutputNames, name) {
 		return fmt.Errorf("output %q %w", name, errOutputNotCleared)
@@ -280,7 +280,7 @@ func sameSet(a, b []string) bool {
 
 // bakedBase decodes the measured base out of the boot config it is written in.
 // It is read as YAML, not through the JSON ingest, because a declared platform
-// role is a YAML-only field: the JSON path refuses it so that a document CDS
+// role is a YAML-only field: the JSON path refuses it so that a document Trust Authority
 // serves can never claim a role.
 func bakedBase(declared any) (*allowlist.Allowlist, error) {
 	data, err := yaml.Marshal(declared)
@@ -403,7 +403,7 @@ func namesFloorPlaceholder(
 
 // appendCredentialRole completes the measured mesh policy with the one binding
 // only a launched node can know: the injected credential clients reach the
-// port this cluster's CDS serves on, outside the cluster, and nothing else. A
+// port this cluster's Trust Authority serves on, outside the cluster, and nothing else. A
 // policy that already names that role, or its reserved identity, is a measured
 // policy this step would contradict.
 func appendCredentialRole(policy map[string]any, port uint16) error {
@@ -440,7 +440,7 @@ func appendCredentialRole(policy map[string]any, port uint16) error {
 // that wrote it.
 var publicOutputNames = append([]string{CDSOutput, "operator-pubkey", "tls-san"}, routerOutputNames...)
 
-// CDSOutput is the CDS pin Prepare publishes under PublicDir.
+// CDSOutput is the Trust Authority pin Prepare publishes under PublicDir.
 const CDSOutput = "cds.json"
 
 // removeOutputs removes the named outputs from the public directory, trying

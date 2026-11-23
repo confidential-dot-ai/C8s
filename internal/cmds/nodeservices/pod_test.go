@@ -82,7 +82,7 @@ func podDocument(t *testing.T) *podlaunch.Document {
 	image := pins.Images[0]
 	return &podlaunch.Document{
 		SchemaVersion: podlaunch.SchemaVersion, ClusterID: "demo", Role: podlaunch.Pod,
-		CDS: testCDS(t),
+		CDS: testTA(t),
 		Image: podlaunch.Image{
 			Platform:    "tdx",
 			Measurement: hex.EncodeToString(image.Digest),
@@ -151,14 +151,14 @@ func TestRenderPodRuntimeBindsCDSPullAndKeepsOnlyMeasuredMeshAndSignedBase(t *te
 	a := got["allowlist"].(map[string]any)
 	pull, ok := a["pull"].(map[string]any)
 	if !ok || pull["url"] != cmdsutil.CDSURL(assigned.CDS.Address) || pull["cds_measurements_config"] != PublicDir+"/cds.json" || pull["timeout"] != "30s" || pull["interval"] != "7s" || pull["measure_policies"] != false {
-		t.Fatalf("pod CDS pull = %v", pull)
+		t.Fatalf("pod Trust Authority pull = %v", pull)
 	}
 	if floor := publishedPinFloor(t, pull); floor != assigned.CDS.PinFloor {
-		t.Fatalf("pod CDS pin floor = %d, want signed floor %d", floor, assigned.CDS.PinFloor)
+		t.Fatalf("pod Trust Authority pin floor = %d, want signed floor %d", floor, assigned.CDS.PinFloor)
 	}
 	for _, legacy := range []string{"cds_measurements", "cds_rtmrs"} {
 		if _, exists := pull[legacy]; exists {
-			t.Fatalf("pod CDS pull kept competing %s", legacy)
+			t.Fatalf("pod Trust Authority pull kept competing %s", legacy)
 		}
 	}
 	writeInput(t, root, floorConfigPath, runtime.Policy)
@@ -343,7 +343,7 @@ func TestRenderPodRuntimeFailsClosed(t *testing.T) {
 		change func(*podlaunch.AssignedPod)
 		want   string
 	}{
-		{"no CDS address", podFloor, func(a *podlaunch.AssignedPod) { a.CDS.Address = "" }, "cds.address"},
+		{"no Trust Authority address", podFloor, func(a *podlaunch.AssignedPod) { a.CDS.Address = "" }, "cds.address"},
 		{"bad entries", podFloor, func(a *podlaunch.AssignedPod) { a.Entries = "{" }, "assignment entries"},
 		{"bad manifest", podFloor, func(a *podlaunch.AssignedPod) { a.Pod.Manifest = "kind: Deployment" }, "pod.manifest"},
 		{"no endpoint", meshFloor, func(*podlaunch.AssignedPod) {}, "no mesh endpoint"},

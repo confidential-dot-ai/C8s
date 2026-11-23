@@ -32,7 +32,7 @@ launch key:
 The document names no pod and carries no allowlist entries: the guest boots
 generic, serves its status service and waits for one authenticated assignment
 signed with the pod launch key, which delivers the pod, its entries and its
-mesh peers. The guest polls CDS at --ta-address, authenticated with the
+mesh peers. The guest polls Trust Authority at --ta-address, authenticated with the
 launch-file-bound --ta-image-policy-file.`,
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
@@ -50,9 +50,9 @@ launch-file-bound --ta-image-policy-file.`,
 	f.StringVar(&opts.ManifestPath, "image-manifest", "", "manifest.json published with the exact TDX node image to boot")
 	f.StringVar(&opts.NodeName, "name", "", "node name of this pod CVM, an RFC1123 label")
 	f.StringVar(&opts.LaunchKeyPath, "launch-key", "", "existing pod launch key PEM (default: generate <out>/pod.key)")
-	f.StringVar(&opts.CDSAddress, "ta-address", "", "external CDS host:port")
+	f.StringVar(&opts.CDSAddress, "ta-address", "", "external Trust Authority host:port")
 	cmdsutil.AliasFlag(f, "ta-address", "cds-address")
-	f.StringVar(&opts.CDSImagePolicyPath, "ta-image-policy-file", "", "measurements document binding the external CDS image to its exact launch file")
+	f.StringVar(&opts.CDSImagePolicyPath, "ta-image-policy-file", "", "measurements document binding the external Trust Authority image to its exact launch file")
 	cmdsutil.AliasFlag(f, "ta-image-policy-file", "cds-image-policy-file")
 	cmdsutil.RequireFlags(cmd, "out", "cluster-id", "image-manifest", "name", "ta-address", "ta-image-policy-file")
 	return cmd

@@ -19,7 +19,7 @@ func podBundleOptions(t *testing.T) PodBundleOptions {
 		ManifestPath:       writeManifest(t, "tdx"),
 		NodeName:           "p-1",
 		CDSAddress:         "cds.example.org:8443",
-		CDSImagePolicyPath: writePodCDSPin(t),
+		CDSImagePolicyPath: writePodTAPin(t),
 	}
 }
 
@@ -32,10 +32,10 @@ func TestNewPodBundleRefuses(t *testing.T) {
 		want   string
 	}{
 		{"no node name", func(_ *testing.T, o *PodBundleOptions) { o.NodeName = "" }, "are required"},
-		{"missing CDS policy", func(t *testing.T, o *PodBundleOptions) {
+		{"missing Trust Authority policy", func(t *testing.T, o *PodBundleOptions) {
 			o.CDSImagePolicyPath = filepath.Join(t.TempDir(), "absent.json")
 		}, "--cds-image-policy-file"},
-		{"CDS policy is not a pin document", func(t *testing.T, o *PodBundleOptions) {
+		{"Trust Authority policy is not a pin document", func(t *testing.T, o *PodBundleOptions) {
 			o.CDSImagePolicyPath = writeFile(t, "cds.json", "not a policy")
 		}, "cds.measurements"},
 		{"missing image manifest", func(t *testing.T, o *PodBundleOptions) {

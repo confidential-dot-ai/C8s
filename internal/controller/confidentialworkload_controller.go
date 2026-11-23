@@ -125,7 +125,7 @@ func summarizeWorkloadAttestation(pods []corev1.Pod, matchID string) v1alpha2.At
 
 // isPodReady is the heuristic for "this pod has attested": the kubelet has
 // reported PodReady, which means the c8s-cert-wait gate init container exited
-// — and that only happens after a successful attestation round-trip with CDS
+// — and that only happens after a successful attestation round-trip with the Trust Authority
 // wrote the issued cert to disk (the gate blocks on the cert file).
 func isPodReady(pod *corev1.Pod) bool {
 	for _, c := range pod.Status.Conditions {

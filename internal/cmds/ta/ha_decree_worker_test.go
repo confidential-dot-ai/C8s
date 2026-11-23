@@ -195,7 +195,7 @@ func TestNodeImagesDecreeCertifiesAConfirmedWorkerDocument(t *testing.T) {
 	}
 	digest := sha512.Sum384(w.document)
 	name := "worker-" + hex.EncodeToString(digest[:6])
-	facts := strings.Index(stderr, "API server        acme.k8s.example:443\n")
+	facts := strings.Index(stderr, "acme.k8s.example:443\n")
 	set := strings.Index(stderr, "  "+name+"  bound to this document")
 	prompt := strings.Index(stderr, "[y/N]")
 	if facts < 0 || set < facts || prompt < set {

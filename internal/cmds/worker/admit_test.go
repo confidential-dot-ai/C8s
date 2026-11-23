@@ -34,7 +34,7 @@ var (
 	workerFamilies = []teetypes.Family{teetypes.FamilySNP, teetypes.FamilyTDX}
 )
 
-// admitFixture is a worker document and what Admit checks it against: the CDS
+// admitFixture is a worker document and what Admit checks it against: the Trust Authority
 // pin it carries, the worker image, and a cluster certifying one anchored
 // server image.
 type admitFixture struct {
@@ -153,16 +153,16 @@ func TestAdmitPrintsTheFactsTheDocumentCarries(t *testing.T) {
 	block, _ := pem.Decode([]byte(f.doc.Kubernetes.CACertificate))
 	fingerprint := sha256.Sum256(block.Bytes)
 	for _, fact := range []string{
-		"API server        acme.k8s.example:443\n",
-		"CA subject        \"CN=kubernetes\"\n",
-		"CA SHA-256        " + hex.EncodeToString(fingerprint[:]) + "\n",
-		"pod range         10.52.0.0/16\n",
-		"Service range     10.53.0.0/16\n",
-		"cluster DNS       10.53.0.10\n",
-		"CDS address       cds.acme.example:8443\n",
-		"CDS pin floor     1\n",
-		"router TLS SAN    c8s.acme.example\n",
-		"router hostnames  api.acme.example\n",
+		"API server                    acme.k8s.example:443\n",
+		"CA subject                    \"CN=kubernetes\"\n",
+		"CA SHA-256                    " + hex.EncodeToString(fingerprint[:]) + "\n",
+		"pod range                     10.52.0.0/16\n",
+		"Service range                 10.53.0.0/16\n",
+		"cluster DNS                   10.53.0.10\n",
+		"Trust Authority address       cds.acme.example:8443\n",
+		"Trust Authority pin floor     1\n",
+		"router TLS SAN                c8s.acme.example\n",
+		"router hostnames              api.acme.example\n",
 		"Signing certifies these node images:\n  server\n",
 		"  worker-" + hex.EncodeToString(independentDigest(f.family, f.document)[:6]) + "  bound to this document, launch_file_digest " + hex.EncodeToString(independentDigest(f.family, f.document)) + "\n",
 	} {
@@ -216,14 +216,14 @@ func TestAdmitRefusesWhatTheCustomerCannotAdmit(t *testing.T) {
 			doc.Kubernetes.ClusterDNS = "10.52.0.10"
 			f.document = marshalDocument(t, doc)
 		}, "must be inside kubernetes.serviceCIDR"},
-		{"a CDS pin of another family", func(t *testing.T, f *admitFixture) {
+		{"a Trust Authority pin of another family", func(t *testing.T, f *admitFixture) {
 			pins, _ := refvalues.Parse(f.in.CDSPin)
 			pins.Family = teetypes.FamilyTDX
 			f.in.CDSPin = formatPins(t, pins.Family, pins.Images...)
-		}, "cds.measurements pins a sev-snp CDS and --ta-pin a tdx one"},
-		{"another CDS pin", func(t *testing.T, f *admitFixture) {
-			f.in.CDSPin = []byte(testCDSPin(t, cdsConfig(t, "192.168.0.0/16")))
-		}, "pins another CDS than --ta-pin"},
+		}, "cds.measurements pins a sev-snp Trust Authority and --ta-pin a tdx one"},
+		{"another Trust Authority pin", func(t *testing.T, f *admitFixture) {
+			f.in.CDSPin = []byte(testTAPin(t, taConfig(t, "192.168.0.0/16")))
+		}, "pins another Trust Authority than --ta-pin"},
 		{"a worker image bound already", func(t *testing.T, f *admitFixture) {
 			pin := remote.ImagePin{Name: "worker", Digest: workerDigest, Anchor: []byte(publicKeyPEM(t))}
 			f.in.WorkerImage = formatPins(t, f.family, pin)
@@ -255,17 +255,17 @@ func TestAdmitRefusesWhatTheCustomerCannotAdmit(t *testing.T) {
 	}
 }
 
-// Diff matches on the launch binding too, so a pin of the same CDS image bound
-// to another configuration is another CDS.
+// Diff matches on the launch binding too, so a pin of the same Trust Authority image bound
+// to another configuration is another Trust Authority.
 func TestAdmitRefusesACDSPinBoundToAnotherConfiguration(t *testing.T) {
 	f := newAdmitFixture(t, teetypes.FamilySNP)
 	pins, _ := refvalues.Parse(f.in.CDSPin)
-	otherConfiguration := []byte(cdsConfig(t, "192.168.0.0/16"))
+	otherConfiguration := []byte(taConfig(t, "192.168.0.0/16"))
 	for i := range pins.Images {
 		pins.Images[i].LaunchFile = otherConfiguration
 	}
 	f.in.CDSPin = formatPins(t, pins.Family, pins.Images...)
-	if _, err := Admit(bytes.NewReader(f.document), f.in); err == nil || !strings.Contains(err.Error(), "pins another CDS") {
+	if _, err := Admit(bytes.NewReader(f.document), f.in); err == nil || !strings.Contains(err.Error(), "pins another Trust Authority") {
 		t.Fatalf("got %v, want the pin bound to another configuration refused", err)
 	}
 }
@@ -408,9 +408,9 @@ func TestAdmittedEntriesAdmitTheWorkerImageWithThatDocumentOnly(t *testing.T) {
 				t.Fatalf("the worker launched with the admitted document was refused: %v", err)
 			}
 			for name, change := range map[string]func(*Document){
-				"CA":          func(d *Document) { d.Kubernetes.CACertificate = selfSigned(t, caTemplate()) },
-				"CDS address": func(d *Document) { d.CDS.Address = "cds2.acme.example:8443" },
-				"pod range":   func(d *Document) { d.Kubernetes.PodCIDR = "10.54.0.0/16" },
+				"CA":                      func(d *Document) { d.Kubernetes.CACertificate = selfSigned(t, caTemplate()) },
+				"Trust Authority address": func(d *Document) { d.CDS.Address = "cds2.acme.example:8443" },
+				"pod range":               func(d *Document) { d.Kubernetes.PodCIDR = "10.54.0.0/16" },
 			} {
 				doc := f.doc
 				change(&doc)

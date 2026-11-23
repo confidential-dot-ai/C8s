@@ -57,7 +57,7 @@ type Document struct {
 	// PodOperatorPublicKey is the pod launch key: the exact PEM bytes the
 	// launch bound and assignments are signed with.
 	PodOperatorPublicKey string `yaml:"podOperatorPublicKey" json:"pod_operator_public_key"`
-	// CDS is the confidential data service the guest's credential broker
+	// CDS names the Trust Authority the guest's credential broker
 	// reaches, outside the pod network.
 	CDS cmdsutil.CDS `yaml:"cds" json:"cds"`
 }

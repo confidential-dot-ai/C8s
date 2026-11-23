@@ -10,13 +10,13 @@ import (
 	"testing"
 )
 
-// newFiles writes the CDS pin and CA files `worker new` reads.
+// newFiles writes the Trust Authority pin and CA files `worker new` reads.
 func newFiles(t *testing.T, nodeSubnet string) (pinPath, caPath string) {
 	t.Helper()
 	dir := t.TempDir()
 	pinPath = filepath.Join(dir, "cds-pin.json")
 	caPath = filepath.Join(dir, "ca.crt")
-	if err := os.WriteFile(pinPath, []byte(testCDSPin(t, cdsConfig(t, nodeSubnet))), 0o600); err != nil {
+	if err := os.WriteFile(pinPath, []byte(testTAPin(t, taConfig(t, nodeSubnet))), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(caPath, []byte(selfSigned(t, caTemplate())), 0o600); err != nil {

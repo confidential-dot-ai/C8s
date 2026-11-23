@@ -11,7 +11,7 @@ import (
 )
 
 // write renders both outputs before it creates anything, so a refused input
-// leaves no half-built directory to launch a CDS VM from.
+// leaves no half-built directory to launch a Trust Authority VM from.
 func write(opts options) error {
 	family, err := taconfig.ParsePlatform(opts.platform)
 	if err != nil {

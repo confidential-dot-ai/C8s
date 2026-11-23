@@ -66,7 +66,7 @@ func assignmentFixture(t *testing.T) (*assignmentService, *ecdsa.PrivateKey, *ec
 		func(context.Context) (*ecdsa.PublicKey, error) { return &key.PublicKey, nil },
 		func(d *podlaunch.AssignedPod) (nodeservices.PodRuntime, error) {
 			if d.CDS != doc.CDS {
-				return nodeservices.PodRuntime{}, errors.New("assignment changed authenticated CDS trust")
+				return nodeservices.PodRuntime{}, errors.New("assignment changed authenticated Trust Authority trust")
 			}
 			return nodeservices.PodRuntime{UID: d.Pod.UID, Policy: []byte(d.Entries), Manifest: []byte(d.Pod.Manifest)}, nil
 		},

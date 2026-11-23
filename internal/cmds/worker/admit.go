@@ -23,7 +23,7 @@ import (
 )
 
 // AdmitInputs are what a worker document is admitted against: the customer's
-// CDS pin, the worker image's measurements, and the node images the cluster
+// Trust Authority pin, the worker image's measurements, and the node images the cluster
 // certifies now, as the node-images decree's --cds-pin, --worker-image and
 // --nodes carry them.
 type AdmitInputs struct {
@@ -65,21 +65,21 @@ func Admit(document io.Reader, in AdmitInputs) (Admission, error) {
 // a cluster of workers: the workers launched with it, alone.
 func AdmitFirst(
 	document io.Reader,
-	cdsPin []byte,
+	taPin []byte,
 	workerImage []byte,
 ) (Admission, error) {
 	image, err := parseWorkerImage(workerImage)
 	if err != nil {
 		return Admission{}, err
 	}
-	return admit(document, cdsPin, image, refvalues.ReferenceValues{Family: image.Family})
+	return admit(document, taPin, image, refvalues.ReferenceValues{Family: image.Family})
 }
 
 // admit adds the worker image, bound to the document, to nodes. It reads the
 // document once, so the entries it adds bind the bytes Parse checked.
 func admit(
 	document io.Reader,
-	cdsPin []byte,
+	taPin []byte,
 	image refvalues.ReferenceValues,
 	nodes refvalues.ReferenceValues,
 ) (Admission, error) {
@@ -95,7 +95,7 @@ func admit(
 	if err != nil {
 		return Admission{}, err
 	}
-	if err := checkCDSPin(doc.CDS, cdsPin); err != nil {
+	if err := checkTAPin(doc.CDS, taPin); err != nil {
 		return Admission{}, err
 	}
 	digest, err := runtimemeasure.LaunchFileDigest(nodes.Family, data)
@@ -196,23 +196,23 @@ func admittedSet(nodes refvalues.ReferenceValues) ([]byte, error) {
 	return set, nil
 }
 
-// checkCDSPin requires the document to pin the CDS the customer pins: the
-// same images, each bound to the same configuration. The CDS VM's family need
+// checkTAPin requires the document to pin the Trust Authority the customer pins: the
+// same images, each bound to the same configuration. The Trust Authority VM's family need
 // not be the workers'.
-func checkCDSPin(cds cmdsutil.CDS, own []byte) error {
+func checkTAPin(ta cmdsutil.CDS, own []byte) error {
 	mine, err := refvalues.Parse(own)
 	if err != nil {
 		return fmt.Errorf("--ta-pin: %w", err)
 	}
-	theirs, err := refvalues.Parse([]byte(cds.Measurements))
+	theirs, err := refvalues.Parse([]byte(ta.Measurements))
 	if err != nil {
 		return fmt.Errorf("cds.measurements: %w", err)
 	}
 	if theirs.Family != mine.Family {
-		return fmt.Errorf("cds.measurements pins a %s CDS and --ta-pin a %s one", theirs.Family, mine.Family)
+		return fmt.Errorf("cds.measurements pins a %s Trust Authority and --ta-pin a %s one", theirs.Family, mine.Family)
 	}
 	if missing, extra := refvalues.Diff(mine, theirs); len(missing) > 0 || len(extra) > 0 {
-		return errors.New("cds.measurements pins another CDS than --ta-pin: a worker launched with this document would trust it")
+		return errors.New("cds.measurements pins another Trust Authority than --ta-pin: a worker launched with this document would trust it")
 	}
 	return nil
 }
@@ -223,7 +223,7 @@ func checkCDSPin(cds cmdsutil.CDS, own []byte) error {
 func (a Admission) Report(w io.Writer) error {
 	var b strings.Builder
 	fact := func(name string, value any) {
-		fmt.Fprintf(&b, "  %-18s%v\n", name, value)
+		fmt.Fprintf(&b, "  %-30s%v\n", name, value)
 	}
 	hostnames := "none"
 	if r := a.document.Router; r != nil && len(r.Hostnames) > 0 {
@@ -237,8 +237,8 @@ func (a Admission) Report(w io.Writer) error {
 	fact("pod range", k.PodCIDR)
 	fact("Service range", k.ServiceCIDR)
 	fact("cluster DNS", k.ClusterDNS)
-	fact("CDS address", a.document.CDS.Address)
-	fact("CDS pin floor", a.document.CDS.PinFloor)
+	fact("Trust Authority address", a.document.CDS.Address)
+	fact("Trust Authority pin floor", a.document.CDS.PinFloor)
 	fact("router TLS SAN", a.document.TLSSAN)
 	fact("router hostnames", hostnames)
 	set, err := refvalues.Parse(a.Nodes)

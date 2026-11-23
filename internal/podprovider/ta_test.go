@@ -9,7 +9,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/remote"
 )
 
-func providerCDSPolicy(t *testing.T, launch []byte) []byte {
+func providerTAPolicy(t *testing.T, launch []byte) []byte {
 	t.Helper()
 	policy, err := refvalues.Format(refvalues.ReferenceValues{Family: teetypes.FamilySNP,
 		Images: []remote.ImagePin{{Name: "independent-cds", Digest: bytes.Repeat([]byte{0x88}, 48), LaunchFile: launch}}})

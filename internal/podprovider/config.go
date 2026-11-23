@@ -65,7 +65,7 @@ type Config struct {
 	manifest  []byte
 	workloads string
 	image     podlaunch.Image
-	cds       cmdsutil.CDS
+	ta        cmdsutil.CDS
 }
 
 // LoadConfig loads the trusted configuration and the launch inputs it names.
@@ -83,7 +83,7 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	for _, p := range []*string{&cfg.CloudTokenFile, &cfg.ImageManifestFile, &cfg.LaunchKeyFile, &cfg.CDSImagePolicyFile, &cfg.WorkloadsFile} {
 		if *p == "" {
-			return nil, errors.New("pod CVM provider requires token, image manifest, launch key, CDS image policy and workloads files")
+			return nil, errors.New("pod CVM provider requires token, image manifest, launch key, Trust Authority image policy and workloads files")
 		}
 		if !filepath.IsAbs(*p) {
 			*p = filepath.Join(filepath.Dir(path), *p)
@@ -159,20 +159,20 @@ func (c *Config) loadTrust() error {
 		return err
 	}
 	c.pub = string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pub}))
-	cdsPolicy, err := readFile(c.CDSImagePolicyFile)
+	taPolicy, err := readFile(c.CDSImagePolicyFile)
 	if err != nil {
 		return err
 	}
-	// The policy must bind the CDS image to its exact launch file, or the
-	// guest could not authenticate the CDS it polls.
-	pins, err := refvalues.Parse(cdsPolicy)
+	// The policy must bind the Trust Authority image to its exact launch file, or the
+	// guest could not authenticate the Trust Authority it polls.
+	pins, err := refvalues.Parse(taPolicy)
 	if err != nil {
-		return fmt.Errorf("CDS image policy: %w", err)
+		return fmt.Errorf("Trust Authority image policy: %w", err)
 	}
 	if _, err := cmdsutil.CDSLaunchFile(pins); err != nil {
-		return fmt.Errorf("CDS image policy: %w", err)
+		return fmt.Errorf("Trust Authority image policy: %w", err)
 	}
-	c.cds = cmdsutil.CDS{Address: c.CDSAddress, Measurements: string(cdsPolicy)}
+	c.ta = cmdsutil.CDS{Address: c.CDSAddress, Measurements: string(taPolicy)}
 	workloads, err := readFile(c.WorkloadsFile)
 	if err != nil {
 		return err

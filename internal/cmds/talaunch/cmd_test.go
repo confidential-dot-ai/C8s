@@ -104,7 +104,7 @@ func run(t *testing.T, args ...string) error {
 	return cmd.Execute()
 }
 
-// The pin is only an identity for this CDS if it binds the configuration the
+// The pin is only an identity for this Trust Authority if it binds the configuration the
 // VM boots on byte for byte.
 func TestNewWritesAConfigurationItsPinBinds(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "cds")
@@ -140,7 +140,7 @@ func TestNewWritesAConfigurationItsPinBinds(t *testing.T) {
 	if _, ok := cfg.Workloads.Workloads["tenant-app"]; !ok {
 		t.Fatalf("workloads lost the tenant entries: %v", cfg.Workloads.Workloads)
 	}
-	// The CDS image passes no DNS SAN pattern, so mesh CSRs validate against
+	// The Trust Authority image passes no DNS SAN pattern, so mesh CSRs validate against
 	// what the configuration carries.
 	if len(cfg.DNSSANPatterns) != 1 || !cfg.DNSSANPatterns[0].MatchString("mesh.c8s.svc") {
 		t.Fatalf("DNS SAN rules = %v", cfg.DNSSANPatterns)
@@ -188,7 +188,7 @@ func TestNewLeafDNSPatternReplacesTheDefault(t *testing.T) {
 }
 
 // The generator embeds a complete Pod policy in the measured
-// configuration the CDS pin binds, and writes nothing for an invalid one.
+// configuration the Trust Authority pin binds, and writes nothing for an invalid one.
 func TestNewEmbedsPodAuthorityInTheBoundConfiguration(t *testing.T) {
 	podKey := publicKeyPEM(t)
 	policy, err := refvalues.Format(refvalues.ReferenceValues{
@@ -241,7 +241,7 @@ func TestNewEmbedsPodAuthorityInTheBoundConfiguration(t *testing.T) {
 				t.Fatal(err)
 			}
 			if len(pin.Images) != 1 || !bytes.Equal(pin.Images[0].LaunchFile, configuration) {
-				t.Fatal("CDS pin does not bind Pod policy")
+				t.Fatal("Trust Authority pin does not bind Pod policy")
 			}
 		})
 	}
@@ -261,14 +261,14 @@ func TestNewWritesTheReplicaSetOfACluster(t *testing.T) {
 	}
 	cfg := parseWritten(t, out)
 	if cfg.HA == nil {
-		t.Fatal("the configuration runs the singleton CDS, want the replica set")
+		t.Fatal("the configuration runs the singleton Trust Authority, want the replica set")
 	}
 	if len(cfg.HA.Replicas) != 3 || cfg.HA.Voters != 3 {
 		t.Fatalf("replica set = %+v", cfg.HA)
 	}
 }
 
-// A cluster named with no replica runs one CDS, and its configuration says so
+// A cluster named with no replica runs one Trust Authority, and its configuration says so
 // by carrying no replica set at all.
 func TestNewWritesNoReplicaSetByDefault(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "cds")
@@ -276,16 +276,16 @@ func TestNewWritesNoReplicaSetByDefault(t *testing.T) {
 		t.Fatal(err)
 	}
 	if cfg := parseWritten(t, out); cfg.HA != nil {
-		t.Fatalf("replica set = %+v, want the singleton CDS", cfg.HA)
+		t.Fatalf("replica set = %+v, want the singleton Trust Authority", cfg.HA)
 	}
 }
 
-// A replica set's Genesis may name its first node set; a single CDS has no
+// A replica set's Genesis may name its first node set; a single Trust Authority has no
 // Genesis.
 func TestNewNeedsNodePinsOnlyForASingleCDS(t *testing.T) {
 	single := filepath.Join(t.TempDir(), "cds")
 	if err := run(t, withoutNodePins(inputs(t, single))...); err == nil {
-		t.Fatal("a single CDS naming no nodes was written")
+		t.Fatal("a single Trust Authority naming no nodes was written")
 	}
 	if _, err := os.Stat(single); !os.IsNotExist(err) {
 		t.Fatal("the refused run still wrote its outputs")

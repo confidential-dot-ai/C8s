@@ -17,13 +17,13 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
-// testCDS is the CDS block a staged document carries: the cluster's CDS on
+// testTA is the Trust Authority block a staged document carries: the cluster's Trust Authority on
 // another TEE family than this node's, at the pin floor its launch named.
-func testCDS(t *testing.T) cmdsutil.CDS {
+func testTA(t *testing.T) cmdsutil.CDS {
 	t.Helper()
 	return cmdsutil.CDS{
 		Address:      "cds.example.org:8443",
-		Measurements: string(externalCDSPin(t)),
+		Measurements: string(externalTAPin(t)),
 		PinFloor:     9,
 	}
 }
@@ -66,11 +66,11 @@ func basePolicy(t *testing.T, v any) *allowlist.Allowlist {
 
 // Staging completes the measured floor: the baked enforcement policy and
 // system workload stay as they are, the chart's components join the base, and
-// the pull section names the CDS the document carries.
+// the pull section names the Trust Authority the document carries.
 func TestPreparePreservesTheMeasuredFloor(t *testing.T) {
 	root := prepareRoot(t)
-	cds := testCDS(t)
-	if err := Prepare(root, FloorInputs{CDS: cds}); err != nil {
+	ta := testTA(t)
+	if err := Prepare(root, FloorInputs{CDS: ta}); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(filepath.Join(root, "etc/nri/conf.d/image-policy.yaml"))
@@ -97,12 +97,12 @@ func TestPreparePreservesTheMeasuredFloor(t *testing.T) {
 		t.Fatalf("chart components missing from bootstrap base: %v", base.Workloads)
 	}
 	pull := ga["pull"].(map[string]any)
-	if pull["url"] != cmdsutil.CDSURL(cds.Address) || pull["cds_measurements_config"] != PublicDir+"/cds.json" || pull["timeout"] != "30s" {
+	if pull["url"] != cmdsutil.CDSURL(ta.Address) || pull["cds_measurements_config"] != PublicDir+"/cds.json" || pull["timeout"] != "30s" {
 		t.Fatalf("bad pull config: %v", pull)
 	}
 	// The floor must arrive as the number the enforcer reads.
-	if floor := publishedPinFloor(t, pull); floor != cds.PinFloor {
-		t.Fatalf("pull cds_pin_floor = %d, want the document's %d", floor, cds.PinFloor)
+	if floor := publishedPinFloor(t, pull); floor != ta.PinFloor {
+		t.Fatalf("pull cds_pin_floor = %d, want the document's %d", floor, ta.PinFloor)
 	}
 }
 
@@ -139,7 +139,7 @@ func TestPreparePublishesWorldReadableOutputsAndClearsTheRest(t *testing.T) {
 	if len(router) != len(routerOutputNames) {
 		t.Fatalf("the router inputs are %d files, want the %d staging clears", len(router), len(routerOutputNames))
 	}
-	if err := Prepare(root, FloorInputs{CDS: testCDS(t), Outputs: router}); err != nil {
+	if err := Prepare(root, FloorInputs{CDS: testTA(t), Outputs: router}); err != nil {
 		t.Fatal(err)
 	}
 	for _, name := range routerOutputNames {
@@ -152,7 +152,7 @@ func TestPreparePublishesWorldReadableOutputsAndClearsTheRest(t *testing.T) {
 		t.Fatalf("public %s mode = %v, %v, want 0644", CDSOutput, info, err)
 	}
 
-	if err := Prepare(root, FloorInputs{CDS: testCDS(t)}); err != nil {
+	if err := Prepare(root, FloorInputs{CDS: testTA(t)}); err != nil {
 		t.Fatal(err)
 	}
 	for _, name := range routerOutputNames {
@@ -172,7 +172,7 @@ func TestPrepareRejectsChartFloorNameCollision(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			root := prepareRoot(t)
 			writeInput(t, root, "/usr/lib/c8s/allowlist-seed.json", []byte(incoming))
-			if err := Prepare(root, FloorInputs{CDS: testCDS(t)}); err == nil || !strings.Contains(err.Error(), "replaces a baked component") {
+			if err := Prepare(root, FloorInputs{CDS: testTA(t)}); err == nil || !strings.Contains(err.Error(), "replaces a baked component") {
 				t.Fatalf("accepted chart replacing system floor: %v", err)
 			}
 		})
@@ -182,7 +182,7 @@ func TestPrepareRejectsChartFloorNameCollision(t *testing.T) {
 func TestPrepareAllowsIdenticalMeasuredFloorEntry(t *testing.T) {
 	root := prepareRoot(t)
 	writeInput(t, root, "/usr/lib/c8s/allowlist-seed.json", []byte(strings.ReplaceAll(seed, "operator", "system")))
-	if err := Prepare(root, FloorInputs{CDS: testCDS(t)}); err != nil {
+	if err := Prepare(root, FloorInputs{CDS: testTA(t)}); err != nil {
 		t.Fatalf("identical measured floor entry: %v", err)
 	}
 	data, err := os.ReadFile(filepath.Join(root, "/etc/nri/conf.d/image-policy.yaml"))
@@ -237,7 +237,7 @@ func TestPrepareWritesRouterInputs(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := Prepare(root, FloorInputs{CDS: testCDS(t), Outputs: outputs}); err != nil {
+			if err := Prepare(root, FloorInputs{CDS: testTA(t), Outputs: outputs}); err != nil {
 				t.Fatal(err)
 			}
 			for name, want := range tc.want {
@@ -260,12 +260,12 @@ func TestPrepareWritesRouterInputs(t *testing.T) {
 }
 
 // A launched node completes its measured mesh policy with the one binding only
-// a launch knows: the injected credential clients reach this cluster's CDS. The
+// a launch knows: the injected credential clients reach this cluster's Trust Authority. The
 // measured parts are untouched, so staging cannot widen them.
 func TestPrepareBindsTheCredentialRoleToTheStagedCDS(t *testing.T) {
 	root := prepareRoot(t)
 	writeInput(t, root, "/usr/lib/c8s/image-policy.yaml", []byte(meshFloor))
-	if err := Prepare(root, FloorInputs{CDS: testCDS(t)}); err != nil {
+	if err := Prepare(root, FloorInputs{CDS: testTA(t)}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -292,7 +292,7 @@ func TestPrepareBindsTheCredentialRoleToTheStagedCDS(t *testing.T) {
 		t.Errorf("credential role = %+v, want %s on the reserved uid %d", credentials, nriimagepolicy.CredentialRole, workloadclaims.CredentialsUID)
 	}
 	if credentials.Port != 8443 {
-		t.Errorf("credential role port = %d, want the port this cluster's CDS serves on", credentials.Port)
+		t.Errorf("credential role port = %d, want the port this cluster's Trust Authority serves on", credentials.Port)
 	}
 }
 
@@ -301,7 +301,7 @@ func TestPrepareRefusesABakedConfigWithoutAMeshPolicy(t *testing.T) {
 	root := prepareRoot(t)
 	writeInput(t, root, "/usr/lib/c8s/image-policy.yaml", []byte(floor))
 
-	if err := Prepare(root, FloorInputs{CDS: testCDS(t)}); err == nil {
+	if err := Prepare(root, FloorInputs{CDS: testTA(t)}); err == nil {
 		t.Fatal("staging completed a baked config with no mesh policy")
 	}
 }
@@ -320,7 +320,7 @@ func TestPrepareRefusesToRebindTheCredentialRole(t *testing.T) {
 			root := prepareRoot(t)
 			writeInput(t, root, "/usr/lib/c8s/image-policy.yaml", []byte(meshFloor+tc.role))
 
-			if err := Prepare(root, FloorInputs{CDS: testCDS(t)}); err == nil {
+			if err := Prepare(root, FloorInputs{CDS: testTA(t)}); err == nil {
 				t.Fatal("staging completed a policy that already binds the credential role")
 			}
 		})
@@ -333,7 +333,7 @@ func TestPrepareKeepsTheMeasuredRoles(t *testing.T) {
 	root := prepareRoot(t)
 	writeInput(t, root, "/usr/lib/c8s/image-policy.yaml", []byte(roleFloor))
 
-	if err := Prepare(root, FloorInputs{CDS: testCDS(t)}); err != nil {
+	if err := Prepare(root, FloorInputs{CDS: testTA(t)}); err != nil {
 		t.Fatal(err)
 	}
 

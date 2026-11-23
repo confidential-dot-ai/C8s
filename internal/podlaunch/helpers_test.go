@@ -26,7 +26,7 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
 )
 
-const cdsLaunchFile = "schemaVersion: c8s-cds/v1\nclusterID: cluster-one\n"
+const taLaunchFile = "schemaVersion: c8s-cds/v1\nclusterID: cluster-one\n"
 
 func testKey(t *testing.T) (*ecdsa.PrivateKey, string) {
 	t.Helper()
@@ -52,7 +52,7 @@ func testPodDocument(t *testing.T, platform string) (Document, *ecdsa.PrivateKey
 		PodOperatorPublicKey: pub,
 		CDS: cmdsutil.CDS{
 			Address:      "cds.example.org:8443",
-			Measurements: testCDSPin(t, teetypes.FamilySNP, 2),
+			Measurements: testTAPin(t, teetypes.FamilySNP, 2),
 			PinFloor:     9,
 		},
 	}
@@ -62,14 +62,14 @@ func testPodDocument(t *testing.T, platform string) (Document, *ecdsa.PrivateKey
 	return doc, key, pub
 }
 
-func testCDSPin(t *testing.T, family teetypes.Family, digests int) string {
+func testTAPin(t *testing.T, family teetypes.Family, digests int) string {
 	t.Helper()
 	pins := refvalues.ReferenceValues{Family: family}
 	for i := range digests {
 		image := remote.ImagePin{
 			Name:       fmt.Sprintf("cds-smp%d", 4*(i+1)),
 			Digest:     mustDecodeHex(strings.Repeat(fmt.Sprintf("%02x", 0x50+i), 48)),
-			LaunchFile: []byte(cdsLaunchFile),
+			LaunchFile: []byte(taLaunchFile),
 		}
 		if family == teetypes.FamilyTDX {
 			image.Registers = map[int][]byte{
@@ -86,7 +86,7 @@ func testCDSPin(t *testing.T, family teetypes.Family, digests int) string {
 	return string(data)
 }
 
-func stagedCDSPolicy(t *testing.T, d *Document) refvalues.ReferenceValues {
+func stagedTAPolicy(t *testing.T, d *Document) refvalues.ReferenceValues {
 	t.Helper()
 	endpoint, err := d.CDS.Parse()
 	if err != nil {

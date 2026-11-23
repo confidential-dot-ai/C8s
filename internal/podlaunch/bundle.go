@@ -52,12 +52,12 @@ func NewPodBundle(opts PodBundleOptions) (err error) {
 	if opts.Dir == "" || opts.ClusterID == "" || opts.ManifestPath == "" || opts.NodeName == "" || opts.CDSAddress == "" || opts.CDSImagePolicyPath == "" {
 		return errors.New("--out, --cluster-id, --image-manifest, --name, --ta-address and --ta-image-policy-file are required")
 	}
-	cdsPolicy, err := readBounded(opts.CDSImagePolicyPath, MaxDocumentSize)
+	taPolicy, err := readBounded(opts.CDSImagePolicyPath, MaxDocumentSize)
 	if err != nil {
 		return fmt.Errorf("--cds-image-policy-file: %w", err)
 	}
-	cds := cmdsutil.CDS{Address: opts.CDSAddress, Measurements: string(cdsPolicy)}
-	if _, err := cds.Parse(); err != nil {
+	ta := cmdsutil.CDS{Address: opts.CDSAddress, Measurements: string(taPolicy)}
+	if _, err := ta.Parse(); err != nil {
 		return err
 	}
 	identity, err := runtimemeasure.LoadImageManifest(opts.ManifestPath)
@@ -90,7 +90,7 @@ func NewPodBundle(opts PodBundleOptions) (err error) {
 		Image:                image,
 		Node:                 Node{Name: opts.NodeName},
 		PodOperatorPublicKey: pub,
-		CDS:                  cds,
+		CDS:                  ta,
 	}
 	return writeSignedDocument(filepath.Join(opts.Dir, podDir), doc, key, pub)
 }
