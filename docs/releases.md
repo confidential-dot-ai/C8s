@@ -57,7 +57,7 @@ TA serves for a cluster of workers booted from this release's worker image,
 the input of `c8s ta config new --allowlist-seed`
 ([allowlist-and-capabilities.md](allowlist-and-capabilities.md#bootstrap)). A
 component set holds the entries of this release's own components, the input of
-`c8s allowlist components add --set-file`
+`c8s allowlist components add`
 ([allowlist-and-capabilities.md](allowlist-and-capabilities.md#component-sets)).
 The release's CLI renders both from the release's image digests with the
 kubelet and Helm versions of the worker image build.
@@ -68,8 +68,46 @@ Each release from `v0.36.0` on has a GitHub release carrying
 `release-statement.json`:
 
 ```json
-{"allowlistSeeds":{"sev-snp":{"asset":"allowlist-seed-sev-snp.json","sha256":"<HEX>"},"tdx":{"asset":"allowlist-seed-tdx.json","sha256":"<HEX>"}},"chart":"ghcr.io/confidential-dot-ai/charts/c8s-cloud@sha256:<DIGEST>","cli":{"darwin-arm64":{"asset":"c8s-darwin-arm64","sha256":"<HEX>"},"linux-amd64":{"asset":"c8s-linux-amd64","sha256":"<HEX>"}},"commit":"<SHA>","componentSets":{"sev-snp":{"asset":"component-set-sev-snp.json","sha256":"<HEX>"},"tdx":{"asset":"component-set-tdx.json","sha256":"<HEX>"}},"repository":"confidential-dot-ai/confidential-kubernetes","tag":"vX.Y.Z"}
+{
+  "allowlistSeeds": {
+    "sev-snp": {
+      "asset": "allowlist-seed-sev-snp.json",
+      "sha256": "<HEX>"
+    },
+    "tdx": {
+      "asset": "allowlist-seed-tdx.json",
+      "sha256": "<HEX>"
+    }
+  },
+  "chart": "ghcr.io/confidential-dot-ai/charts/c8s-cloud@sha256:<DIGEST>",
+  "cli": {
+    "darwin-arm64": {
+      "asset": "c8s-darwin-arm64",
+      "sha256": "<HEX>"
+    },
+    "linux-amd64": {
+      "asset": "c8s-linux-amd64",
+      "sha256": "<HEX>"
+    }
+  },
+  "commit": "<SHA>",
+  "componentSets": {
+    "sev-snp": {
+      "asset": "component-set-sev-snp.json",
+      "sha256": "<HEX>"
+    },
+    "tdx": {
+      "asset": "component-set-tdx.json",
+      "sha256": "<HEX>"
+    }
+  },
+  "repository": "confidential-dot-ai/confidential-kubernetes",
+  "tag": "vX.Y.Z"
+}
 ```
+
+The published file is compact, key-sorted JSON (`jq -cnS`) and the signature
+covers its bytes, so the formatting above carries no meaning.
 
 `chart` names the published chart by its manifest digest, which a Flux
 `OCIRepository` can pin. `cli` names each CLI asset and its SHA-256, keyed by
@@ -98,8 +136,10 @@ TAG=<RELEASE_TAG>
 statement and its bundle, then verify the signature:
 
 ```sh
-gh release download "$TAG" --repo confidential-dot-ai/confidential-kubernetes \
-  --pattern release-statement.json --pattern release-statement.sigstore.json
+gh release download "$TAG" \
+  --repo confidential-dot-ai/confidential-kubernetes \
+  --pattern release-statement.json \
+  --pattern release-statement.sigstore.json
 cosign verify-blob \
   --bundle release-statement.sigstore.json \
   --certificate-identity https://github.com/confidential-dot-ai/confidential-kubernetes/.github/workflows/semver-tag.yml@refs/heads/main \
@@ -123,7 +163,9 @@ file bytes:
 
 ```sh
 COMMIT=$(gh api "repos/confidential-dot-ai/confidential-kubernetes/commits/$TAG" --jq .sha)
-jq -e --arg tag "$TAG" --arg commit "$COMMIT" \
+jq -e \
+  --arg tag "$TAG" \
+  --arg commit "$COMMIT" \
   '.repository == "confidential-dot-ai/confidential-kubernetes" and .tag == $tag and .commit == $commit' \
   release-statement.json
 ```
@@ -140,7 +182,9 @@ it with the digest the statement lists. `PLATFORM` is `linux-amd64` or
 
 ```sh
 PLATFORM=linux-amd64
-gh release download "$TAG" --repo confidential-dot-ai/confidential-kubernetes --pattern "c8s-$PLATFORM"
+gh release download "$TAG" \
+  --repo confidential-dot-ai/confidential-kubernetes \
+  --pattern "c8s-$PLATFORM"
 jq -r --arg p "$PLATFORM" '.cli[$p] | "\(.sha256)  \(.asset)"' release-statement.json \
   | sha256sum -c -
 chmod +x "c8s-$PLATFORM"
@@ -175,8 +219,10 @@ statement lists. `PLATFORM` is `tdx` or `sev-snp`:
 
 ```sh
 PLATFORM=tdx
-gh release download "$TAG" --repo confidential-dot-ai/confidential-kubernetes \
-  --pattern "allowlist-seed-$PLATFORM.json" --pattern "component-set-$PLATFORM.json"
+gh release download "$TAG" \
+  --repo confidential-dot-ai/confidential-kubernetes \
+  --pattern "allowlist-seed-$PLATFORM.json" \
+  --pattern "component-set-$PLATFORM.json"
 jq -r --arg p "$PLATFORM" '.allowlistSeeds[$p], .componentSets[$p] | "\(.sha256)  \(.asset)"' release-statement.json \
   | sha256sum -c -
 ```

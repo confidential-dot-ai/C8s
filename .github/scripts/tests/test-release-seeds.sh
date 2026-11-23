@@ -46,9 +46,8 @@ for platform in tdx sev-snp; do
 done
 pass
 
-template="$test_dir/../../../images/node-guest/worker/image-policy.yaml.in"
 for platform in tdx sev-snp; do
-  args="--hardware-platform $platform --kube-version $kube --image-digest $operator --armtls-mesh-image-digest $mesh --floor-template $template --output-dir "
+  args="--hardware-platform $platform --kube-version $kube --image-digest $operator --armtls-mesh-image-digest $mesh --output-dir "
   grep -Fq "args $args" "$work/c8s.log" ||
     fail "$platform did not render with the worker image's inputs: $(cat "$work/c8s.log")"
   grep -Fq "seed of $args" "$work/out/allowlist-seed-$platform.json" ||

@@ -488,7 +488,7 @@ A cluster of workers runs no chart install, so it has no `--allowlist-seed-out` 
 take the seed from. The worker image's release publishes the seed instead, as
 `allowlist-seed-tdx.json` and `allowlist-seed-sev-snp.json`, listed by SHA-256
 in its signed statement
-([releases.md](releases.md#verify-an-allowlist-seed)):
+([releases.md](releases.md#verify-an-allowlist-seed-and-component-set)):
 
 ```sh
 c8s ta config new --allowlist-seed allowlist-seed-sev-snp.json ...
@@ -499,11 +499,12 @@ render` of that commit writes the same document, given the digests the image
 was built with:
 
 ```sh
-c8s node-image render --output-dir seed \
-    --hardware-platform sev-snp --kube-version v1.36.6 \
+c8s node-image render \
+    --output-dir seed \
+    --hardware-platform sev-snp \
+    --kube-version v1.36.6 \
     --image-digest sha256:<operator/get-cert digest> \
-    --armtls-mesh-image-digest sha256:<armTLS mesh digest> \
-    --floor-template images/node-guest/worker/image-policy.yaml.in
+    --armtls-mesh-image-digest sha256:<armTLS mesh digest>
 c8s ta config new --allowlist-seed seed/allowlist-seed.json ...
 ```
 

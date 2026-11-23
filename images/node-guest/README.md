@@ -369,8 +369,14 @@ checkout, after builds named `C8S_NAME=worker-tdx` and `C8S_NAME=worker-snp`
 (for a downloaded image, pass its own directory):
 
 ```sh
-c8s measurements derive --tee tdx --out measurements-tdx.json output/worker-tdx
-c8s measurements derive --tee sev-snp --out measurements-snp.json output/worker-snp
+c8s measurements derive \
+    --tee tdx \
+    --out measurements-tdx.json \
+    output/worker-tdx
+c8s measurements derive \
+    --tee sev-snp \
+    --out measurements-snp.json \
+    output/worker-snp
 ```
 
 The input can also be a manifest path. Keep one configuration per platform:

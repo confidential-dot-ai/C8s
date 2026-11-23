@@ -28,7 +28,6 @@ for platform in "$@"; do
     --kube-version "$kube_version" \
     --image-digest "$operator" \
     --armtls-mesh-image-digest "$mesh" \
-    --floor-template "$worker/image-policy.yaml.in" \
     --output-dir "$render/$platform"
   cp "$render/$platform/allowlist-seed.json" "$out/allowlist-seed-$platform.json"
   cp "$render/$platform/component-set.json" "$out/component-set-$platform.json"

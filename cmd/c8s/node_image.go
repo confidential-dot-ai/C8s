@@ -20,6 +20,7 @@ import (
 	k8sversion "k8s.io/apimachinery/pkg/util/version"
 	"sigs.k8s.io/yaml"
 
+	workerprofile "github.com/confidential-dot-ai/confidential-kubernetes/images/node-guest/worker"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/worker"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/helmchart"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/version"
@@ -40,7 +41,6 @@ type nodeImageRenderConfig struct {
 	imageRepository           string
 	armtlsMeshImageDigest     string
 	armtlsMeshImageRepository string
-	floorTemplate             string
 	chartDir                  string
 	outputDir                 string
 }
@@ -68,7 +68,6 @@ func newNodeImageCmd() *cobra.Command {
 	f.StringVar(&cfg.imageRepository, "image-repository", "", "operator/get-cert container repository; empty uses the chart default")
 	f.StringVar(&cfg.armtlsMeshImageDigest, "armtls-mesh-image-digest", "", "digest of the armTLS mesh container image (sha256:..., required)")
 	f.StringVar(&cfg.armtlsMeshImageRepository, "armtls-mesh-image-repository", "", "armTLS mesh container repository; empty uses the chart default")
-	f.StringVar(&cfg.floorTemplate, "floor-template", "", "the worker image's NRI floor template, placeholders unfilled (required)")
 	f.StringVar(&cfg.chartDir, "chart-dir", "", "c8s-worker chart directory; empty uses the chart bundled in this binary")
 	f.StringVar(&cfg.outputDir, "output-dir", "", "directory for allowlist-seed.json, component-set.json, router-image.txt, router-nginx/ and static-pods/ (required)")
 	cmd.AddCommand(render)
@@ -128,9 +127,6 @@ func renderNodeImage(ctx context.Context, cfg nodeImageRenderConfig, log io.Writ
 	if err := cfg.validate(); err != nil {
 		return err
 	}
-	if cfg.floorTemplate == "" {
-		return fmt.Errorf("--floor-template is required")
-	}
 	cfg, cleanup, err := cfg.resolveWorkerChart()
 	if err != nil {
 		return err
@@ -177,10 +173,6 @@ func componentSetVersion() (string, error) {
 // placeholders of this render substituted, as the image build substitutes them
 // before `c8s worker floor` reads it.
 func (cfg nodeImageRenderConfig) fillFloorTemplate(ctx context.Context, routerImage string) ([]byte, error) {
-	body, err := os.ReadFile(cfg.floorTemplate)
-	if err != nil {
-		return nil, fmt.Errorf("--floor-template: %w", err)
-	}
 	values, err := chartValues(ctx, cfg.chartDir)
 	if err != nil {
 		return nil, err
@@ -200,7 +192,7 @@ func (cfg nodeImageRenderConfig) fillFloorTemplate(ctx context.Context, routerIm
 			"@"+input.placeholder+"_DIGEST@", input.digest,
 		)
 	}
-	return []byte(strings.NewReplacer(filled...).Replace(string(body))), nil
+	return []byte(strings.NewReplacer(filled...).Replace(string(workerprofile.FloorTemplate))), nil
 }
 
 // resolveWorkerChart is cfg with chartDir naming a chart directory on disk:
@@ -298,12 +290,7 @@ func runHelm(ctx context.Context, args ...string) ([]byte, error) {
 
 // writeNodeImageFiles writes what mkosi.sync installs or reads: the seed, the
 // router's nginx image, and the chart's router nginx files and static pods.
-func writeNodeImageFiles(
-	outputDir string,
-	chartDir string,
-	seed []byte,
-	routerImage string,
-) error {
+func writeNodeImageFiles(outputDir, chartDir string, seed []byte, routerImage string) error {
 	if err := os.MkdirAll(outputDir, 0o755); err != nil {
 		return err
 	}

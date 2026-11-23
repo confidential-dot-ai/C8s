@@ -82,6 +82,7 @@ case "$BINARY_INPUT" in
         C8S_SOURCE=plugin ;;
     *)  fail "c8s-binary sync-input must be 1 or empty, got '$BINARY_INPUT'" ;;
 esac
+# The same bytes the c8s binary embeds for the release's component set.
 FLOOR_TEMPLATE="$SRCDIR/mkosi.profiles/worker/image-policy.yaml.in"
 [ -f "$FLOOR_TEMPLATE" ] || fail "no floor template at $FLOOR_TEMPLATE"
 
@@ -282,7 +283,6 @@ PATH="$TMP/linux-amd64:$PATH" "$C8S" node-image render \
     --image-digest "$OPERATOR_DIGEST" \
     --armtls-mesh-image-repository "$MESH_REPO" \
     --armtls-mesh-image-digest "$MESH_DIGEST" \
-    --floor-template "$FLOOR_TEMPLATE" \
     --output-dir "$RENDER"
 STATIC_PODS="$RENDER/static-pods"
 [ -d "$STATIC_PODS" ] || fail "the render wrote no static pod templates at $STATIC_PODS"

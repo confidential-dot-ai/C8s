@@ -29,6 +29,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/confidential-kubernetes/charts"
+	workerprofile "github.com/confidential-dot-ai/confidential-kubernetes/images/node-guest/worker"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/nodeservices"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/taconfig"
@@ -39,8 +40,21 @@ import (
 var nodeImageTestMeshDigest = "sha256:" + strings.Repeat("d", 64)
 
 // floorTemplateFile is the worker image's floor template, as the image build
-// and the render read it.
+// reads it from the checkout.
 const floorTemplateFile = "../../images/node-guest/worker/image-policy.yaml.in"
+
+// The image build fills and bakes the template from the checkout while the
+// release's render fills the one this binary embeds, so the two must be the
+// same bytes.
+func TestEmbeddedFloorTemplateIsTheImageBuildsFile(t *testing.T) {
+	file, err := os.ReadFile(floorTemplateFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(workerprofile.FloorTemplate, file) {
+		t.Errorf("the embedded floor template differs from %s", floorTemplateFile)
+	}
+}
 
 // nodeImageTestSetVersion is the release the stamped render publishes its
 // component set under.
@@ -60,7 +74,6 @@ func TestNodeImageRender(t *testing.T) {
 				"render", "--hardware-platform", platform, "--kube-version", "v1.36.6",
 				"--image-digest", testDigest, "--image-repository", "registry.example.com/c8s-operator",
 				"--armtls-mesh-image-digest", nodeImageTestMeshDigest, "--armtls-mesh-image-repository", "registry.example.com/armtls-mesh",
-				"--floor-template", floorTemplateFile,
 				"--output-dir", out,
 			})
 			if err := cmd.Execute(); err != nil {
@@ -178,7 +191,7 @@ func TestNodeImageRenderPublishesNoSetForADevBuild(t *testing.T) {
 	cmd.SetArgs([]string{
 		"render", "--hardware-platform", "tdx", "--kube-version", "v1.36.6",
 		"--image-digest", testDigest, "--armtls-mesh-image-digest", nodeImageTestMeshDigest,
-		"--floor-template", floorTemplateFile, "--output-dir", out,
+		"--output-dir", out,
 	})
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
@@ -356,12 +369,11 @@ func TestNodeImageRenderRejectsBadInputsBeforeHelm(t *testing.T) {
 		{"tag as digest", func(c *nodeImageRenderConfig) { c.imageDigest = "main" }},
 		{"tagged repository", func(c *nodeImageRenderConfig) { c.imageRepository += ":main" }},
 		{"missing output", func(c *nodeImageRenderConfig) { c.outputDir = "" }},
-		{"missing floor template", func(c *nodeImageRenderConfig) { c.floorTemplate = "" }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFakeBin(t)
 			f.tool(t, "helm", "exit 99")
-			cfg := nodeImageRenderConfig{platform: "tdx", kubeVersion: "v1.34.5", imageDigest: testDigest, armtlsMeshImageDigest: nodeImageTestMeshDigest, imageRepository: "ghcr.io/confidential-dot-ai/c8s-operator", floorTemplate: floorTemplateFile, outputDir: t.TempDir()}
+			cfg := nodeImageRenderConfig{platform: "tdx", kubeVersion: "v1.34.5", imageDigest: testDigest, armtlsMeshImageDigest: nodeImageTestMeshDigest, imageRepository: "ghcr.io/confidential-dot-ai/c8s-operator", outputDir: t.TempDir()}
 			tc.change(&cfg)
 			if err := renderNodeImage(context.Background(), cfg, io.Discard); err == nil {
 				t.Fatal("accepted invalid build inputs")

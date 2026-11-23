@@ -257,8 +257,9 @@ set, which carries the entries of the injected sidecars and the router
 ([allowlist-and-capabilities.md](allowlist-and-capabilities.md#component-sets)).
 
 ```sh
-c8s allowlist components add --set-file component-set-<PLATFORM>.json \
-  --url https://<TA_ADDRESS> --image-policy-file cds-pin.json \
+c8s allowlist components add component-set-<PLATFORM>.json \
+  --url https://<TA_ADDRESS> \
+  --image-policy-file cds-pin.json \
   --operator-key operator.key
 ```
 
