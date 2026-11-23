@@ -22,10 +22,10 @@ var (
 	errVerityBusy        = errors.New("every measurement worker is busy")
 )
 
-// verityBudget bounds the fs-verity measurements of one check, inside
-// containerd's per-request NRI timeout. A syscall on a hung filesystem cannot
-// be cancelled, so a measurement that overruns finishes in the background and
-// gives no evidence; verityWorkers bounds those stragglers.
+// verityBudget bounds the time the fs-verity measurements of one check take,
+// inside containerd's per-request NRI timeout. A syscall on a hung filesystem
+// cannot be cancelled, so a measurement that overruns finishes in the
+// background and gives no evidence; verityWorkers bounds those stragglers.
 var (
 	verityBudget  = time.Second
 	verityWorkers = make(chan struct{}, 16)
@@ -42,10 +42,16 @@ type verityCheck struct {
 	logger *slog.Logger
 	// declared reports whether an fsVerityFile rule names a bind.
 	declared func(source, destination string) bool
-	deadline time.Time
+	// deferUnmeasured has a check of running containers judge, as the
+	// validation check does, the fsVerityFile rules of a container whose file
+	// it could not measure (deferred): a file is only denied for what a
+	// measurement found. The start check refuses such a container.
+	deferUnmeasured bool
 
-	mu      sync.Mutex
-	digests map[verityTarget]string
+	mu         sync.Mutex
+	budget     time.Duration
+	digests    map[verityTarget]string
+	unmeasured map[string]bool
 }
 
 type verityTarget struct {
@@ -56,16 +62,28 @@ type verityTarget struct {
 
 type verityCheckKey struct{}
 
-// withVerityCheck starts the fs-verity measurements of one check: one
-// container start, or the whole recovery and startup check of a Synchronize.
+// withVerityCheck starts the fs-verity measurements of one container start.
 // Mounts observed under a context without one carry no fs-verity evidence.
 func (p *plugin) withVerityCheck(ctx context.Context) context.Context {
-	return context.WithValue(ctx, verityCheckKey{}, &verityCheck{
-		logger:   p.logger,
-		declared: p.policy.declaresFSVerityFile,
-		deadline: time.Now().Add(verityBudget),
-		digests:  map[verityTarget]string{},
-	})
+	return context.WithValue(ctx, verityCheckKey{}, p.newVerityCheck(false))
+}
+
+// withExistingVerityCheck starts the fs-verity measurements of one check of
+// containers already running: the whole recovery and startup check of a
+// Synchronize, or one container's revocation recheck.
+func (p *plugin) withExistingVerityCheck(ctx context.Context) context.Context {
+	return context.WithValue(ctx, verityCheckKey{}, p.newVerityCheck(true))
+}
+
+func (p *plugin) newVerityCheck(deferUnmeasured bool) *verityCheck {
+	return &verityCheck{
+		logger:          p.logger,
+		declared:        p.policy.declaresFSVerityFile,
+		deferUnmeasured: deferUnmeasured,
+		budget:          verityBudget,
+		digests:         map[verityTarget]string{},
+		unmeasured:      map[string]bool{},
+	}
 }
 
 func verityCheckOf(ctx context.Context) *verityCheck {
@@ -77,7 +95,11 @@ func verityCheckOf(ctx context.Context) *verityCheck {
 // the file ctr sees at m's destination has a measured digest. A node-root
 // file keeps its own provenance.
 func (c *verityCheck) attach(ctr *api.Container, m *api.Mount, mount allowlist.ObservedMount) allowlist.ObservedMount {
-	if c == nil || ctr.GetPid() == 0 || mount.Provenance != "" || !mount.ReadOnly || mount.HostSourceDigest == "" || !fileBind(m) || !c.declared(m.GetSource(), m.GetDestination()) {
+	if c == nil || mount.Provenance != "" || !mount.ReadOnly || mount.HostSourceDigest == "" || !fileBind(m) || !c.declared(m.GetSource(), m.GetDestination()) {
+		return mount
+	}
+	if ctr.GetPid() == 0 {
+		c.noteUnmeasured(ctr.GetId())
 		return mount
 	}
 	if digest := c.digest(verityTarget{container: ctr.GetId(), pid: ctr.GetPid(), destination: m.GetDestination()}); digest != "" {
@@ -96,13 +118,36 @@ func (c *verityCheck) digest(target verityTarget) string {
 	if err != nil {
 		c.logger.Warn("fs-verity digest not measured", "container", target.container, "destination", target.destination, "reason", err)
 	}
+	// A process that is gone, or a measurement that never ran to its end,
+	// says nothing about the file.
+	if errors.Is(err, errNotContainerInit) || errors.Is(err, errVerityOverrun) || errors.Is(err, errVerityBusy) {
+		c.unmeasured[target.container] = true
+	}
 	c.digests[target] = digest
 	return digest
 }
 
+func (c *verityCheck) noteUnmeasured(container string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.unmeasured[container] = true
+}
+
+// deferred reports whether the check judges container's fsVerityFile rules
+// without a digest (deferUnmeasured).
+func (c *verityCheck) deferred(container string) bool {
+	if c == nil || !c.deferUnmeasured {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.unmeasured[container]
+}
+
+// measure charges the budget only with the time it measures, so the other
+// work of a check does not use it up.
 func (c *verityCheck) measure(target verityTarget) (string, error) {
-	remaining := time.Until(c.deadline)
-	if remaining <= 0 {
+	if c.budget <= 0 {
 		return "", errVerityOverrun
 	}
 	select {
@@ -120,7 +165,9 @@ func (c *verityCheck) measure(target verityTarget) (string, error) {
 		digest, err := measureContainerFile(target.pid, target.container, target.destination)
 		result <- measured{digest, err}
 	}()
-	timer := time.NewTimer(remaining)
+	start := time.Now()
+	defer func() { c.budget -= time.Since(start) }()
+	timer := time.NewTimer(c.budget)
 	defer timer.Stop()
 	select {
 	case r := <-result:

@@ -262,7 +262,8 @@ type observedContainer struct {
 	env      *allowlist.EnvObservation
 	mounts   []allowlist.ObservedMount
 	// deferVerity is set at the validation check, before the container has a
-	// root to measure (allowlist.RunningContainer.DeferVerity).
+	// root to measure, and for a running container whose file could not be
+	// measured (verityCheck.deferred, allowlist.RunningContainer.DeferVerity).
 	deferVerity bool
 	// lookup resolves imageRef once for every check of one admission
 	// (plugin.digestLookup); nil resolves it on each read.
@@ -272,12 +273,14 @@ type observedContainer struct {
 // observeContainer reads the launch evidence of a container from the spec the
 // runtime reports for it, mounts classified as the final check classifies them.
 func (p *plugin) observeContainer(ctx context.Context, pod *api.PodSandbox, ctr *api.Container, imageRef string) observedContainer {
+	mounts := p.observedMounts(ctx, pod, ctr)
 	return observedContainer{
-		pod:      pod,
-		ctr:      ctr,
-		imageRef: imageRef,
-		env:      containerEnv(ctr),
-		mounts:   p.observedMounts(ctx, pod, ctr),
+		pod:         pod,
+		ctr:         ctr,
+		imageRef:    imageRef,
+		env:         containerEnv(ctr),
+		mounts:      mounts,
+		deferVerity: verityCheckOf(ctx).deferred(ctr.GetId()),
 	}
 }
 
@@ -326,6 +329,7 @@ func (p *plugin) checkContainerPhase(ctx context.Context, cfg *config, pod *api.
 	}
 	if phase == launchFinal {
 		observed.mounts = p.observedMounts(ctx, pod, ctr)
+		observed.deferVerity = verityCheckOf(ctx).deferred(ctr.GetId())
 	}
 	snap := p.policy.current()
 	verdict, reason := p.checkContainerObserved(ctx, cfg, snap, observed, phase)

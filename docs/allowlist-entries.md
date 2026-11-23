@@ -142,15 +142,19 @@ regular file mounted on its own, on a read-only mount, on ext4, f2fs or btrfs,
 whose drivers verify every read; a file on FUSE, overlayfs, tmpfs or a network
 filesystem gives no evidence. Replacing the host file after the runtime bound
 it changes nothing the container sees. The measurements of one check share a
-one-second budget, and a measurement that fails or overruns gives no evidence,
-so the start is refused unless another rule admits the bind. The validation
+one-second budget of measuring time, and a measurement that fails or overruns
+gives no evidence, so the start is refused unless another rule admits the bind. The validation
 check at create time runs before the container has a root: there an
 `fsVerityFile` rule admits a read-only bind of its source without a digest.
 That judgement is never evidence: the inventory, admission history and the TA
 only ever see a measured digest. A node-root file matches no `fsVerityFile`
-rule. Nothing is kept between checks: after an enforcer restart, the check of
-existing containers measures each running container again and, where
-`enforce_existing` applies, stops one whose digest no longer matches.
+rule. Nothing is kept between checks: after an enforcer restart, and at each
+allowlist apply, the check of existing containers measures each running
+container again and, where `enforce_existing` applies, stops one whose file no
+longer qualifies. A file that check cannot measure, because the container has
+no live process, no measurement worker is free, or the budget ran out, is
+judged on its source alone, as at create time: the container is left running,
+but its inventory record carries no fs-verity evidence.
 
 Lint allows a `nodeRootFile` or `fsVerityFile` rule on a pinned search path,
 where a `data` or `host` rule is an error.

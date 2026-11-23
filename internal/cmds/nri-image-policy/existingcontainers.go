@@ -71,7 +71,7 @@ func (p *plugin) Synchronize(ctx context.Context, pods []*api.PodSandbox, ctrs [
 
 	// One budget for the whole request: containerd's timeout bounds it, not
 	// each container.
-	ctx = p.withVerityCheck(ctx)
+	ctx = p.withExistingVerityCheck(ctx)
 	p.recoverExisting(ctx, pods, ctrs)
 	// Recovery has run: a container create from here finds its pod on record or
 	// is refused for its sandbox's life, no longer transiently.
@@ -294,7 +294,7 @@ func (p *plugin) KillRevoked(ctx context.Context) {
 		if cfg.isExemptNamespace(c.pod.GetNamespace()) {
 			continue
 		}
-		ctx := p.withVerityCheck(ctx)
+		ctx := p.withExistingVerityCheck(ctx)
 		// The same image admission matched: on a Pod guest the staged pin,
 		// not an alias the CRI annotation may have moved since.
 		imageRef, err := p.cvm().imageOf(c.pod, c.ctr)
@@ -367,7 +367,7 @@ func (p *plugin) RunDeferredCheck(ctx context.Context) {
 
 	// Recovery runs even with the check off: a pod off the gate's record is
 	// refused for its life.
-	ctx = p.withVerityCheck(ctx)
+	ctx = p.withExistingVerityCheck(ctx)
 	p.recoverExisting(ctx, pods, ctrs)
 	// Recovery has run: a container create from here finds its pod on record or
 	// is refused for its sandbox's life, no longer transiently.
