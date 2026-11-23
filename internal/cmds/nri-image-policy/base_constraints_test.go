@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
 func TestBaseAllowlistEnforcesFinalEnvAndMounts(t *testing.T) {

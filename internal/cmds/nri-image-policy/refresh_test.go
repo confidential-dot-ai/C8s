@@ -22,11 +22,11 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
-	"github.com/confidential-dot-ai/c8s/internal/launchbinding"
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
-	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/launchbinding"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlistclient"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
 )
 
 const (

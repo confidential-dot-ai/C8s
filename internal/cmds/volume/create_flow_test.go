@@ -20,8 +20,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/cdsconn"
-	intsecrets "github.com/confidential-dot-ai/c8s/internal/secrets"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cdsconn"
+	intsecrets "github.com/confidential-dot-ai/confidential-kubernetes/internal/secrets"
 )
 
 // flowFixture is a source directory, an output path, and an escrow path.

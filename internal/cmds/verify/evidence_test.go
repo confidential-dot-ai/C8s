@@ -18,8 +18,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
-	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
 )
 
 func discoveryDocWith(t *testing.T, certPEM string, challenge []byte, evidence string) []byte {

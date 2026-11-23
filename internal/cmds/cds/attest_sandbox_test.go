@@ -14,10 +14,10 @@ import (
 	"testing"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
-	"github.com/confidential-dot-ai/c8s/pkg/certutil"
-	"github.com/confidential-dot-ai/c8s/pkg/types"
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 const testSandboxID = "8d9f6c2b1a0e8d9f6c2b1a0e8d9f6c2b1a0e8d9f6c2b1a0e8d9f6c2b1a0e8d9f"

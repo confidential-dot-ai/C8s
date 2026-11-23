@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
 const testDigest = "sha256:effd250754b8a70517c27eab8f18463b395a7b2a8e868fd919226c3180636939"

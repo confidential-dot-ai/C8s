@@ -22,9 +22,9 @@ import (
 
 	"github.com/containerd/nri/pkg/api"
 
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/certutil"
-	"github.com/confidential-dot-ai/c8s/pkg/secretbroker"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/secretbroker"
 )
 
 func secretPlugin(pod *api.PodSandbox) *plugin {

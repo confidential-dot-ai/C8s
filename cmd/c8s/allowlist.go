@@ -1,6 +1,6 @@
 package main
 
-import "github.com/confidential-dot-ai/c8s/internal/cmds/allowlist"
+import "github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/allowlist"
 
 func init() {
 	rootCmd.AddCommand(allowlist.NewCmd())

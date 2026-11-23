@@ -9,7 +9,7 @@ import (
 
 	"github.com/containerd/nri/pkg/api"
 
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 // nodeDir is a plugin runtime directory with this node's own address in it,

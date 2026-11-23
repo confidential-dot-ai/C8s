@@ -15,10 +15,10 @@ import (
 	"testing"
 
 	"github.com/confidential-dot-ai/attestation-go/remote"
-	"github.com/confidential-dot-ai/c8s/internal/readutil"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
-	"github.com/confidential-dot-ai/c8s/pkg/certutil"
-	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/readutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
 )
 
 // unreachableURL points at a port nothing is listening on, to exercise

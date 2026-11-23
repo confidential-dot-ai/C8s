@@ -9,8 +9,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/yaml"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/nodeservices"
-	"github.com/confidential-dot-ai/c8s/internal/fileutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/nodeservices"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/fileutil"
 )
 
 // staticPodTemplates holds the measured static-pod manifests.

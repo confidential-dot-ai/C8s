@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	intsecrets "github.com/confidential-dot-ai/c8s/internal/secrets"
+	intsecrets "github.com/confidential-dot-ai/confidential-kubernetes/internal/secrets"
 )
 
 type fakeSigner struct {

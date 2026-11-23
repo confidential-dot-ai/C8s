@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
+	nriimagepolicy "github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/nri-image-policy"
 )
 
 // nodeFixture is a node the NRI installer and its removers run against: /host

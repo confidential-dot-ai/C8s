@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsdecree"
 )
 
 // The leader applies the decrees an operator posts to any replica of the

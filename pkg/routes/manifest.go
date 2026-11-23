@@ -17,8 +17,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/internal/strictjson"
-	"github.com/confidential-dot-ai/c8s/pkg/workloadname"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/strictjson"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadname"
 )
 
 // Schema identifies the manifest format (D1).

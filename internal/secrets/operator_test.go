@@ -16,8 +16,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
-	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
 )
 
 // operatorHarness wires the handler to a real store and a recording authorizer,

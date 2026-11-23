@@ -10,8 +10,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/confidential-dot-ai/c8s/pkg/overenc"
-	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/overenc"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
 )
 
 // An acme front door (TEE-held in-guest ACME serving key) serves attest-lb,

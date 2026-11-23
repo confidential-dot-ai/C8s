@@ -10,8 +10,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/internal/readutil"
-	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/readutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
 )
 
 // fetchOperatorKeyFingerprints GETs <base>/operator-keys and returns a hex

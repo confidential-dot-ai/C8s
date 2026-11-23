@@ -11,7 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/confidential-dot-ai/c8s/pkg/certutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
 )
 
 // newKeygenCmd returns the `c8s keys new` subcommand.

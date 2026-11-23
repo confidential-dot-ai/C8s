@@ -9,13 +9,13 @@ import (
 	"testing"
 
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/nodeservices"
-	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
-	"github.com/confidential-dot-ai/c8s/internal/podlaunch"
-	"github.com/confidential-dot-ai/c8s/internal/testutil"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/nodeservices"
+	nriimagepolicy "github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/nri-image-policy"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/podlaunch"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 // The assignment rewrites the baked config for the assigned pod

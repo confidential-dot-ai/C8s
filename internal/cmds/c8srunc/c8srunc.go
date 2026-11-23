@@ -27,8 +27,8 @@ import (
 
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 
-	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
-	"github.com/confidential-dot-ai/c8s/internal/podstart"
+	nriimagepolicy "github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/nri-image-policy"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/podstart"
 )
 
 // Enforcement postures. The posture is a build-time constant so no file,

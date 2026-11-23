@@ -12,8 +12,8 @@ import (
 
 	"golang.org/x/time/rate"
 
-	"github.com/confidential-dot-ai/c8s/internal/issuer"
-	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/issuer"
+	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
 // rateLimitedCDS is the fake CDS behind the limiter CDS meters allowlist

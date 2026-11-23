@@ -20,12 +20,12 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/sidecar"
-	"github.com/confidential-dot-ai/c8s/internal/fileutil"
-	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
-	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/sidecar"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/fileutil"
+	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
 )
 
 // config is everything the sidecar needs. The webhook renders all of it.

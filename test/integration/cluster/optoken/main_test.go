@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
 )
 
 // The header optoken prints must satisfy CDS's server-side check: the

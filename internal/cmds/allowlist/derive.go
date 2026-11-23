@@ -11,10 +11,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/confidential-dot-ai/c8s/internal/crane"
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/types"
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/crane"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 // podTemplate is the slice of a Deployment/StatefulSet/DaemonSet/Pod we need.

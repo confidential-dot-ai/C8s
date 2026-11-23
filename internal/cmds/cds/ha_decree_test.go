@@ -21,14 +21,14 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
-	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
-	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
-	"github.com/confidential-dot-ai/c8s/internal/cdsha"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/cdsconn"
-	"github.com/confidential-dot-ai/c8s/internal/localverify"
-	"github.com/confidential-dot-ai/c8s/internal/testutil"
-	"github.com/confidential-dot-ai/c8s/pkg/certutil"
-	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsconfig"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsdecree"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsha"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cdsconn"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/localverify"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
 )
 
 // The launch digests of two CDS images: the one the cluster runs, and the one

@@ -8,9 +8,9 @@ import (
 	"net/url"
 
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
-	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
-	"github.com/confidential-dot-ai/c8s/internal/readutil"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsdecree"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/readutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 )
 
 // pinDecreePath answers 404 while the cluster has applied no decree.

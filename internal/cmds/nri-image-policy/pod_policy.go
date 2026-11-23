@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
 // applyPodPolicy installs a pulled policy on a Pod guest under admission's

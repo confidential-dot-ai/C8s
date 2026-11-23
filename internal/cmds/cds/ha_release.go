@@ -2,7 +2,7 @@
 
 package cds
 
-import "github.com/confidential-dot-ai/c8s/internal/cdsha"
+import "github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsha"
 
 // haTimingOverride is empty, so a replica runs on cdsha's own timers.
 var haTimingOverride cdsha.Timing

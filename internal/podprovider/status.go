@@ -21,10 +21,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/podstatus"
-	"github.com/confidential-dot-ai/c8s/internal/podlaunch"
-	"github.com/confidential-dot-ai/c8s/internal/readutil"
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/podstatus"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/podlaunch"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/readutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 type guestReader func(context.Context, *record, string) (podstatus.PodProjection, error)

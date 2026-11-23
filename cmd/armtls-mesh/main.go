@@ -5,8 +5,8 @@
 package main
 
 import (
-	"github.com/confidential-dot-ai/c8s/internal/cmds/armtlsmesh"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/armtlsmesh"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
 )
 
 func main() { cmdsutil.RunMain(armtlsmesh.Run) }

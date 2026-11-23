@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
 func TestTrustedC8sCryptDeviceThroughVerity(t *testing.T) {

@@ -15,10 +15,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/volume"
-	"github.com/confidential-dot-ai/c8s/internal/secrets"
-	"github.com/confidential-dot-ai/c8s/internal/testutil"
-	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/volume"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/secrets"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
 )
 
 // fakeCDS records what it was asked and answers from a scripted sequence.

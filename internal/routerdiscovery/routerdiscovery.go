@@ -42,12 +42,12 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-	"github.com/confidential-dot-ai/c8s/internal/localverify"
-	"github.com/confidential-dot-ai/c8s/internal/pendingattestation"
-	"github.com/confidential-dot-ai/c8s/internal/readutil"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
-	"github.com/confidential-dot-ai/c8s/pkg/certutil"
-	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/localverify"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/pendingattestation"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/readutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
 )
 
 // DefaultPath is the path the router serves its discovery document on.

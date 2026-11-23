@@ -20,7 +20,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	sigsyaml "sigs.k8s.io/yaml"
 
-	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
 // componentsFile is c8s-lib's component table and image pins.

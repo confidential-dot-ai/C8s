@@ -15,10 +15,10 @@ import (
 
 	"github.com/containerd/nri/pkg/api"
 
-	"github.com/confidential-dot-ai/c8s/internal/fileutil"
-	"github.com/confidential-dot-ai/c8s/internal/readutil"
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/secretbroker"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/fileutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/readutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/secretbroker"
 )
 
 // Pod secret delivery (docs/pod-secrets.md). The signed pod manifest names

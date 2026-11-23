@@ -9,7 +9,7 @@ import (
 
 	"github.com/containerd/nri/pkg/api"
 
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
 const grantContainerID = "4a2dbd89094511041afa94178b0fdcc06e40ab3b44c014a89d84ce9c13367c27"

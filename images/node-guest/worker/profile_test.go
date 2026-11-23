@@ -17,9 +17,9 @@ import (
 	"github.com/pelletier/go-toml/v2"
 	"sigs.k8s.io/yaml"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/c8srunc"
-	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
-	"github.com/confidential-dot-ai/c8s/internal/testutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/c8srunc"
+	nriimagepolicy "github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/nri-image-policy"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
 )
 
 // lines are path's lines, without comments and blanks.

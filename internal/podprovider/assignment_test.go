@@ -23,9 +23,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/podstatus"
-	"github.com/confidential-dot-ai/c8s/internal/podassign"
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/podstatus"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/podassign"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 func runToAssignmentAttempt(t *testing.T, r *Reconciler, pod *corev1.Pod, guest *fakeGuest) {

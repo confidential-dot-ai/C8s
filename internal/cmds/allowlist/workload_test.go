@@ -12,8 +12,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/cdsconn"
-	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cdsconn"
+	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
 // servingAllowlistCDS serves an arbitrary parsed allowlist document on GET and

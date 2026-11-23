@@ -22,13 +22,13 @@ import (
 	"github.com/containerd/nri/pkg/api"
 	"github.com/containerd/nri/pkg/stub"
 
-	"github.com/confidential-dot-ai/c8s/internal/audit"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
-	ctrdresolver "github.com/confidential-dot-ai/c8s/internal/containerd"
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/audit"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
+	ctrdresolver "github.com/confidential-dot-ai/confidential-kubernetes/internal/containerd"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlistclient"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 // bindDeadResolver points the plugin at a real *ctrdresolver.Resolver on a socket

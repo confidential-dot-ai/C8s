@@ -6,7 +6,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/confidential-dot-ai/c8s/internal/podlaunch"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/podlaunch"
 )
 
 func TestRenderPodRuntimeRefusesInvalidInputs(t *testing.T) {

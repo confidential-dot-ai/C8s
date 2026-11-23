@@ -1,4 +1,4 @@
-module github.com/confidential-dot-ai/c8s
+module github.com/confidential-dot-ai/confidential-kubernetes
 
 go 1.27.3
 

@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/confidential-dot-ai/c8s/internal/allowlist"
-	"github.com/confidential-dot-ai/c8s/internal/sandboxledger"
-	"github.com/confidential-dot-ai/c8s/internal/secrets"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/sandboxledger"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/secrets"
 )
 
 // committer writes one store of this replica through the cluster's log.

@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/internal/pendingattestation"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/pendingattestation"
 )
 
 // fetchAttested gets an HTTPS response bound to the previously attested leaf.

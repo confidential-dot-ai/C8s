@@ -22,8 +22,8 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
-	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsdecree"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 )
 
 // The worker image's measurements: its launch digest, and on TDX its kernel

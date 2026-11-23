@@ -5,9 +5,9 @@ package nriimagepolicy
 import (
 	"fmt"
 
-	"github.com/confidential-dot-ai/c8s/internal/podmesh"
-	"github.com/confidential-dot-ai/c8s/internal/podmesh/ruleset"
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/podmesh"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/podmesh/ruleset"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 var guestNetworkNamespace = "/proc/1/ns/net"

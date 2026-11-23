@@ -28,10 +28,10 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 
-	"github.com/confidential-dot-ai/c8s/internal/allowlist"
-	"github.com/confidential-dot-ai/c8s/internal/issuer"
-	"github.com/confidential-dot-ai/c8s/internal/sandboxledger"
-	"github.com/confidential-dot-ai/c8s/internal/secrets"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/issuer"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/sandboxledger"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/secrets"
 )
 
 // snapshot is a snapshot's header and the database image that follows it.

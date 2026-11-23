@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
 )
 
 func TestRefuseOperatorToken(t *testing.T) {

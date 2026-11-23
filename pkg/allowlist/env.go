@@ -11,7 +11,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/confidential-dot-ai/c8s/internal/strictjson"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/strictjson"
 )
 
 // EnvObservation commits to the complete OCI launch environment. Nil means

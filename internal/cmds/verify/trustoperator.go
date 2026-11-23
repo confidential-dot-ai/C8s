@@ -16,7 +16,7 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
-	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
 )
 
 // policyDigestRE is the form of an allowlist policy digest.

@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
 )
 
 // CloseEveryResponse wraps h like an nginx location with keepalive_timeout 0:

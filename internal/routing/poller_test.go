@@ -11,8 +11,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
-	"github.com/confidential-dot-ai/c8s/pkg/routes"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/routes"
 )
 
 // testCDS serves GET /routes and GET /operator-keys like the CDS (C1).

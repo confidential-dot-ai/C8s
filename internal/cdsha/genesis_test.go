@@ -10,8 +10,8 @@ import (
 
 	"github.com/hashicorp/raft"
 
-	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
-	"github.com/confidential-dot-ai/c8s/pkg/certutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsdecree"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
 )
 
 // The replica the operator's Genesis decree names starts the cluster as its

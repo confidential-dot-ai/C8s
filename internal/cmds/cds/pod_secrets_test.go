@@ -20,12 +20,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
-	"github.com/confidential-dot-ai/c8s/internal/issuer"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
-	"github.com/confidential-dot-ai/c8s/pkg/certutil"
-	"github.com/confidential-dot-ai/c8s/pkg/secretbroker"
-	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsconfig"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/issuer"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/secretbroker"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
 )
 
 const podSecretValue = "plaintext-agent-secret"

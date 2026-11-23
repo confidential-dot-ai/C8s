@@ -11,7 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/pkg/certutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
 )
 
 // MeshCA holds one mesh CA key for the lifetime of the process and publishes

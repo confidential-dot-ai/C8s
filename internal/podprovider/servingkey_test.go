@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 )
 
 // The guest status server renews its certificate long before a Pod's lifetime

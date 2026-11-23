@@ -11,7 +11,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 )
 
 func TestNodePolicyPinsActualEvidence(t *testing.T) {

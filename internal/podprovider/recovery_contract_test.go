@@ -11,7 +11,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/podstatus"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/podstatus"
 )
 
 func TestPersistedIntentCorruptionNeverReachesCloud(t *testing.T) {

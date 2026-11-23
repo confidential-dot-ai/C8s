@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/confidential-dot-ai/c8s/internal/helmchart"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/helmchart"
 )
 
 func TestInstallFromAnUnreleasedBuildNeedsChart(t *testing.T) {

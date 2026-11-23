@@ -10,11 +10,11 @@ import (
 	"net/url"
 	"os"
 
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
-	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
-	"github.com/confidential-dot-ai/c8s/pkg/routes"
-	"github.com/confidential-dot-ai/c8s/pkg/routesclient"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlistclient"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/routes"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/routesclient"
 )
 
 // errNoManifest reports that the CDS stores no manifest (C1, 404).

@@ -10,8 +10,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/podstatus"
-	"github.com/confidential-dot-ai/c8s/internal/podlaunch"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/podstatus"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/podlaunch"
 )
 
 type assignmentSession interface {

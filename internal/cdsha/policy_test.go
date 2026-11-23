@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/internal/allowlist"
-	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
-	"github.com/confidential-dot-ai/c8s/internal/sandboxledger"
-	"github.com/confidential-dot-ai/c8s/internal/secrets"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsdecree"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/sandboxledger"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/secrets"
 )
 
 // A Genesis fixes the limits the cluster applies commands under. A replica

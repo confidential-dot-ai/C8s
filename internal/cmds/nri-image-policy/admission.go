@@ -11,8 +11,8 @@ import (
 	"github.com/containerd/nri/pkg/api"
 	"k8s.io/apimachinery/pkg/labels"
 
-	"github.com/confidential-dot-ai/c8s/internal/audit"
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/audit"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
 // imageVerdict is the result of checking an image against the allowlist.

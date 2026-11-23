@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/confidential-dot-ai/c8s/internal/testutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
 )
 
 // ignoredFlagArgs sets every volume flag to a value attach and detach could

@@ -3,7 +3,7 @@ package nodeservices
 import (
 	"testing"
 
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
 // floorValues are the placeholder values a staging gives a floor: this node's

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
 )
 
 // Cross-language contract: c8s-verify-js/test/identity.test.ts must reproduce

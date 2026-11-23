@@ -24,12 +24,12 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/cdsconn"
-	"github.com/confidential-dot-ai/c8s/internal/crane/cranetest"
-	"github.com/confidential-dot-ai/c8s/internal/localverify"
-	"github.com/confidential-dot-ai/c8s/internal/testutil"
-	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cdsconn"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/crane/cranetest"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/localverify"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
+	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
 )
 
 const (

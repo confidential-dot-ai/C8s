@@ -8,10 +8,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
-	intsecrets "github.com/confidential-dot-ai/c8s/internal/secrets"
-	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
+	intsecrets "github.com/confidential-dot-ai/confidential-kubernetes/internal/secrets"
+	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 )
 
 // envEvidenceReason explains an allowlist.EnvEvidence diagnosis and how to

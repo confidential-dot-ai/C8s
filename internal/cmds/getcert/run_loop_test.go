@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/attestclient"
 )
 
 // unreachableRenewalConfig is a config whose certificate requests always fail

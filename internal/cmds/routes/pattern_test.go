@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	pkgroutes "github.com/confidential-dot-ai/c8s/pkg/routes"
+	pkgroutes "github.com/confidential-dot-ai/confidential-kubernetes/pkg/routes"
 )
 
 // add-pattern and rm-pattern edit the patterns and keep the exact routes,

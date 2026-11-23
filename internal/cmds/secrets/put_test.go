@@ -19,10 +19,10 @@ import (
 	"testing"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-	"github.com/confidential-dot-ai/c8s/internal/localverify"
-	intsecrets "github.com/confidential-dot-ai/c8s/internal/secrets"
-	"github.com/confidential-dot-ai/c8s/internal/testutil"
-	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/localverify"
+	intsecrets "github.com/confidential-dot-ai/confidential-kubernetes/internal/secrets"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
+	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
 // fakeCDS serves PUT /secrets/* with the create-safe semantics the real handler

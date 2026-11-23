@@ -1,6 +1,6 @@
 [Unit]
 Description=C8s Certificate Distribution Service
-Documentation=https://github.com/confidential-dot-ai/c8s
+Documentation=https://github.com/confidential-dot-ai/confidential-kubernetes
 # The CDS config is this VM's launch file: the confos initrd binds it to the
 # attestation (SNP HOST_DATA, TDX RTMR[3]) and stages it read-only here.
 # Without it the unit is skipped and nothing listens.

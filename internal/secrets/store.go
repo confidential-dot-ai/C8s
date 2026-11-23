@@ -11,7 +11,7 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/confidential-dot-ai/c8s/internal/lthash"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/lthash"
 )
 
 // ErrNotFound reports a path the store does not hold.

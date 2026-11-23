@@ -14,8 +14,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/cdsconn"
-	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cdsconn"
+	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
 // servingCDS is an httptest server that serves the given digests on GET (as a

@@ -16,9 +16,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
-	"github.com/confidential-dot-ai/c8s/pkg/overenc"
-	"github.com/confidential-dot-ai/c8s/pkg/routes"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/overenc"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/routes"
 )
 
 // routeCheck is how a run checks the route digest an attested transcript

@@ -6,8 +6,8 @@ import (
 
 	"sigs.k8s.io/yaml"
 
-	"github.com/confidential-dot-ai/c8s/internal/testutil"
-	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
+	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
 // The entry docs/DEMO.md step 1 writes for the sample workload must pass the

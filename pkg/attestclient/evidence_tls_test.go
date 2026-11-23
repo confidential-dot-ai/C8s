@@ -11,7 +11,7 @@ import (
 	"testing"
 
 	"github.com/confidential-dot-ai/attestation-go/remote"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 )
 
 // An attestation-api with a certificate the system roots trust verifies even

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/confidential-dot-ai/c8s/internal/testutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
 )
 
 // boundPin is the document `c8s cds config new` writes.

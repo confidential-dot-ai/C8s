@@ -8,8 +8,8 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/confidential-dot-ai/c8s/internal/httputil"
-	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/httputil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
 )
 
 // DefaultMaxOperatorBodyBytes caps a PUT body when OperatorHandler.MaxBodyBytes

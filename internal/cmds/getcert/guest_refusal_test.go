@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
-	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlistclient"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/attestclient"
 )
 
 func TestGuestRenewalKeepsFatalWithdrawalSeparateFromRefusalBackoff(t *testing.T) {

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/internal/testutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
 )
 
 // mountPins writes the policy an enforcer mounts for its credential clients.

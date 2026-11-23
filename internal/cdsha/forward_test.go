@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/confidential-dot-ai/c8s/internal/sandboxledger"
-	"github.com/confidential-dot-ai/c8s/internal/secrets"
-	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/sandboxledger"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/secrets"
+	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
 // A client's write at a replica that does not lead is committed by the leader

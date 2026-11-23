@@ -12,7 +12,7 @@ import (
 	"modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
 
-	"github.com/confidential-dot-ai/c8s/internal/lthash"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/lthash"
 )
 
 // The content digest names what the database holds: a multiset hash over

@@ -3,7 +3,7 @@ package nriimagepolicy
 import (
 	"github.com/containerd/nri/pkg/api"
 
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
 // ClassifyBundleMount classifies one mount of a container's OCI bundle as

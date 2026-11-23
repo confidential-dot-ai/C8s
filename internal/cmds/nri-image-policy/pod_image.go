@@ -6,8 +6,8 @@ import (
 
 	"k8s.io/apimachinery/pkg/util/validation"
 
-	"github.com/confidential-dot-ai/c8s/pkg/types"
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 func (c *config) validatePodImages() error {

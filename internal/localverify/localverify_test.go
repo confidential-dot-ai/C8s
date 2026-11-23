@@ -17,7 +17,7 @@ import (
 
 	"github.com/google/go-sev-guest/verify/trust"
 
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 )
 
 // envelopeFixture loads a real captured {platform, evidence} fixture (vendored

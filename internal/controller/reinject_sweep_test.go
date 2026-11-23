@@ -18,7 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	"github.com/confidential-dot-ai/c8s/internal/webhook"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/webhook"
 )
 
 // pod builds a test pod. ownerKind == "" means a bare (unowned) pod.

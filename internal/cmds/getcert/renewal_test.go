@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/internal/issuer"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/issuer"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 )
 
 func namedLeaf(t *testing.T) *x509.Certificate {

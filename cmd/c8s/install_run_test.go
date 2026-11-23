@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
 // mustRunNoMutation asserts the run left the cluster as it found it.

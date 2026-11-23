@@ -22,9 +22,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/cdsconn"
-	"github.com/confidential-dot-ai/c8s/internal/fileutil"
-	"github.com/confidential-dot-ai/c8s/internal/helmchart"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cdsconn"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/fileutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/helmchart"
 )
 
 var (

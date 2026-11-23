@@ -28,8 +28,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/internal/readutil"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/readutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 )
 
 // DigestsPort is the port every inventory serves its digests endpoint on, and

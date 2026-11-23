@@ -41,7 +41,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 
-	"github.com/confidential-dot-ai/c8s/pkg/certutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
 )
 
 // claimPayloadBodyHash binds a token to a specific request body using

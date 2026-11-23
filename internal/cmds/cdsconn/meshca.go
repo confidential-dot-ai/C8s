@@ -13,7 +13,7 @@ import (
 
 	"github.com/spf13/pflag"
 
-	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/attestclient"
 )
 
 // MeshCAGate is the --mesh-ca / --force pair every command that writes a value

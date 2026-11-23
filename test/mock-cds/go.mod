@@ -1,10 +1,10 @@
-module github.com/confidential-dot-ai/c8s/test/mock-cds
+module github.com/confidential-dot-ai/confidential-kubernetes/test/mock-cds
 
 go 1.27.3
 
 require (
 	github.com/confidential-dot-ai/attestation-go v0.8.3
-	github.com/confidential-dot-ai/c8s v0.0.0
+	github.com/confidential-dot-ai/confidential-kubernetes v0.0.0
 )
 
 require (
@@ -40,4 +40,4 @@ require (
 	sigs.k8s.io/structured-merge-diff/v6 v6.4.2 // indirect
 )
 
-replace github.com/confidential-dot-ai/c8s => ../..
+replace github.com/confidential-dot-ai/confidential-kubernetes => ../..

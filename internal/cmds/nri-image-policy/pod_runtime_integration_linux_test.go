@@ -25,11 +25,11 @@ import (
 	"gopkg.in/yaml.v3"
 	cri "k8s.io/cri-api/pkg/apis/runtime/v1"
 
-	imageverifier "github.com/confidential-dot-ai/c8s/internal/containerd"
-	"github.com/confidential-dot-ai/c8s/internal/podstart"
-	"github.com/confidential-dot-ai/c8s/internal/testutil"
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	imageverifier "github.com/confidential-dot-ai/confidential-kubernetes/internal/containerd"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/podstart"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 type runtimeFixture struct{ Tag, Pin, Reference string }
