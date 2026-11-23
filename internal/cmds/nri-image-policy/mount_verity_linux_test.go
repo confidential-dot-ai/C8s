@@ -195,13 +195,13 @@ func TestFSVerityContainerRootIntegration(t *testing.T) {
 			if err := al.Normalize(); err != nil {
 				t.Fatal(err)
 			}
-			p, _ := newCachedPlugin(&config{Policy: policyConfig{Mode: ModeFailClosed, Sandbox: SandboxEnforce}, Allowlist: allowlistConfig{Pull: pullConfig{URL: "https://cds"}}}, al)
+			p, _ := newCachedPlugin(&config{Policy: policyConfig{Mode: ModeFailClosed}, Allowlist: allowlistConfig{Pull: pullConfig{URL: "https://cds"}}}, al)
 			p.inventory = newAdmissionInventory(t.TempDir())
 			p.SetReady()
-			pod := sandboxedPod()
-			ctr := sandboxedContainer()
-			ctr.Id, ctr.PodSandboxId = id, pod.Id
-			ctr.Annotations = map[string]string{annotationImageName: "registry/repo@" + pushDigestB}
+			pod := makePod("default", "pod")
+			pod.Uid = "pod-uid"
+			ctr := makeCtrWithImage(pod.Id, "app", "registry/repo@"+pushDigestB)
+			ctr.Id = id
 			ctr.Args = []string{"/bin/app"}
 			ctr.Mounts = []*api.Mount{{Type: "bind", Source: source, Destination: "/opt/tool", Options: []string{"rbind", "rprivate", "ro"}}}
 			if err := p.ValidateContainerAdjustment(t.Context(), &api.ValidateContainerAdjustmentRequest{Pod: pod, Container: ctr}); err != nil {
