@@ -84,6 +84,7 @@ replacement() {
   esac
 }
 
+# shellcheck disable=SC2016  # the markdown formats hold literal backticks
 describe() { # $1=source-root $2=file $3=line $4=column $5=type; one markdown list item
   local text="" op="" new="" width root dir src
   # The report's path and position go into a file read, sed and arithmetic:
@@ -107,7 +108,7 @@ describe() { # $1=source-root $2=file $3=line $4=column $5=type; one markdown li
     done
   fi
   if [[ -z "$new" ]]; then
-    echo "- \`$2:$3:$4\` $5"
+    printf -- '- `%s:%s:%s` %s\n' "$2" "$3" "$4" "$5"
     return 0
   fi
   # Drop the indent; of a long line keep the 160 characters around the operator.
@@ -124,11 +125,8 @@ describe() { # $1=source-root $2=file $3=line $4=column $5=type; one markdown li
     text="${text:from:160}$tail"
     [[ "$from" -gt 0 ]] && text="...$text"
   fi
-  echo "- \`$2:$3:$4\`: \`$op\` replaced with \`$new\`"
-  echo
-  echo "  \`\`\`go"
-  echo "  $text"
-  echo "  \`\`\`"
+  # printf, not echo: a backslash in the source line stays as written.
+  printf -- '- `%s:%s:%s`: `%s` replaced with `%s`\n\n  ```go\n  %s\n  ```\n' "$2" "$3" "$4" "$op" "$new" "$text"
 }
 
 # shellcheck disable=SC2016  # the expected markdown holds literal backticks

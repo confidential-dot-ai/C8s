@@ -403,7 +403,7 @@ jobs:
             // A comment holds 65536 characters; cut a longer report before a mutant and say so.
             let summary = fs.readFileSync('mutation-summary.md', 'utf8');
             if (summary.length > 60000) {
-              summary = summary.slice(0, summary.lastIndexOf('\n- `', 60000)) + '\n\nCut short here; the run linked below lists every lived mutant.';
+              summary = summary.slice(0, summary.lastIndexOf('\n- `', 60000)) + '\n\nCut short here; the log of the run linked below names every lived mutant.';
             }
             const body = [
               marker,
