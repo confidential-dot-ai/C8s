@@ -121,7 +121,7 @@ the same path with very different authority. The classes are `platform` (the
 node's own, admitted without a rule), `emptyDir`, `data`, `host`,
 `nodeRootFile`, a read-only file the node proves came from the measured
 dm-verity root, and `fsVerityFile`, a read-only file whose kernel fs-verity
-digest the node measured. The destination still participates: a platform mount is
+digest the node measures through the container's root at its start check. The destination still participates: a platform mount is
 recognized by destination and source together, and a `data` rule only under
 `/mnt/c8s-data/`, where operator-supplied content must sit, on storage the node
 proves memory-backed or encrypted — which no persistent volume is
@@ -151,7 +151,8 @@ A host bind is set aside when an allowlist declaration hands it to that launch:
 one that pins the launch (command, args and mounts not `any`, the environment
 constrained), admits that launch whole, and names the bind in its `exact` mount
 policy — a `host` rule by source and access mode, a `nodeRootFile` rule also by
-node-root provenance, an `fsVerityFile` rule also by its fs-verity digest. The base and a served document both grant, and one
+node-root provenance, an `fsVerityFile` rule also by the fs-verity digest the
+start check measures. The base and a served document both grant, and one
 declaration has to grant the bind on its own; `mounts: any` grants nothing.
 Only that bind is set aside: every other violation still denies the container,
 and a writable `host` rule grants write access to the node path it names.

@@ -131,33 +131,35 @@ logs `node-root provenance unavailable` at startup.
 
 `verityDigest` is the kernel's SHA-256 fs-verity digest of the file, as 64
 lowercase hexadecimal digits: the hex digest `fsverity measure` prints, not the
-file's `sha256sum`. Other kinds refuse it. Fs-verity provenance holds only on
-ext4, f2fs or btrfs, whose drivers verify every read; a file on FUSE, overlayfs,
-tmpfs or a network filesystem gets none. At create time the node opens the
-source without following symlinks, measures it with `FS_IOC_MEASURE_VERITY`,
-binds the opened inode read-only into private staging under
-`/run/c8s/verity-mounts`, and hands the container that path, so replacing the
-original file substitutes nothing. The start check measures the staged inode
-again. Staging is bounded: one second per create, 16 creates at once, 1024
-staging mounts per node. Removing the container, or refusing its validation or
-start, releases them. A file not staged, including one a later plugin adds and
-a node-root file, matches no `fsVerityFile` rule. An enforcer restart keeps the
-staging whose inode still has its recorded digest and is still mounted by the
-container its record names, and releases the rest.
+file's `sha256sum`. Other kinds refuse it.
+
+The node decides the digest at the start check, the last check before the
+container runs. There it opens the container's root through its init process,
+after confirming that process is still the container's, resolves the
+destination with `openat2` and `RESOLVE_IN_ROOT`, so the path cannot leave that
+root, and measures the file with `FS_IOC_MEASURE_VERITY`. The file must be a
+regular file mounted on its own, on a read-only mount, on ext4, f2fs or btrfs,
+whose drivers verify every read; a file on FUSE, overlayfs, tmpfs or a network
+filesystem gives no evidence. Replacing the host file after the runtime bound
+it changes nothing the container sees. The measurements of one check share a
+one-second budget, and a measurement that fails or overruns gives no evidence,
+so the start is refused unless another rule admits the bind. The validation
+check at create time runs before the container has a root: there an
+`fsVerityFile` rule admits a read-only bind of its source without a digest.
+That judgement is never evidence: the inventory, admission history and the TA
+only ever see a measured digest. A node-root file matches no `fsVerityFile`
+rule. Nothing is kept between checks: after an enforcer restart, the check of
+existing containers measures each running container again and, where
+`enforce_existing` applies, stops one whose digest no longer matches.
 
 Lint allows a `nodeRootFile` or `fsVerityFile` rule on a pinned search path,
-where a `data` or `host` rule is an error. An enforcer that predates a kind
-refuses the served document that carries it, so upgrade every node enforcer
-before publishing `nodeRootFile` or `fsVerityFile` rules.
+where a `data` or `host` rule is an error.
 
-Mixed versions: a rule's `verityDigest` field is reserved for fs-verity and
-refused today. An enforcer predating node-root provenance decodes a served
-document leniently and ignores the field, so on such a node an fs-verity rollout
-keyed on `verityDigest` degrades to a plain `host` rule. The same enforcer
-refuses a served document that carries a `nodeRootFile` rule, so roll out such
-a rule only once every node enforces it. An upgraded node keeps working with an
-older TA: the TA decodes the node's inventory leniently and drops the provenance,
-which none of its rules asks for.
+Mixed versions: an enforcer that predates a kind refuses the served document
+that carries it, so publish `nodeRootFile` or `fsVerityFile` rules only once
+every node enforcer supports them. An upgraded node keeps working with an older
+TA: the TA decodes the node's inventory leniently and drops the provenance and
+digest, which none of its rules asks for.
 
 ## `capabilities`
 

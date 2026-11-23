@@ -27,6 +27,7 @@ CVM mode is [overview.md](overview.md#cvm-modes-and-hardware-platforms).
 | allowlist | The operator policy of workload entries the Trust Authority (TA) serves and every node enforces. | [allowlist-and-capabilities.md](allowlist-and-capabilities.md) |
 | base allowlist | Entries the node plugin holds itself — measured in the image or chart-rendered — admitted without the TA. | [allowlist-and-capabilities.md](allowlist-and-capabilities.md#bootstrap) |
 | egress | A workload entry's egress entries: the CIDR and port pairs its pods may dial outside the mesh. | [allowlist-entries.md](allowlist-entries.md) |
+| fs-verity provenance | Mount evidence that a read-only file bind has a pinned kernel fs-verity digest, measured through the container's root at its start check. | [allowlist-entries.md](allowlist-entries.md) |
 | grant | The secret paths a workload entry may read or write. | [allowlist-entries.md](allowlist-entries.md) |
 | host privilege | Host namespaces, binds, devices, hooks, or sysctls; only measured node components may hold them. | [allowlist-and-capabilities.md](allowlist-and-capabilities.md#host-privilege) |
 | mount class | A mount rule's `kind`: `emptyDir`, `data`, `host`, `nodeRootFile`, or `fsVerityFile`; `platform` is the class the node assigns its own mounts, which no rule names. | [allowlist-entries.md](allowlist-entries.md) |
