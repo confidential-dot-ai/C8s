@@ -112,7 +112,7 @@ func checkSignedEnvelope(url string, body []byte) error {
 	strictErrs, err := sigsjson.UnmarshalStrict(body, &members)
 	if err != nil || len(strictErrs) != 0 || len(members) != 2 ||
 		members[signed] == nil || members["signature"] == nil {
-		return fmt.Errorf("intel PCS response %s must contain exactly %q and %q once each", url, signed, "signature")
+		return fmt.Errorf("response %s from Intel PCS must contain exactly %q and %q once each", url, signed, "signature")
 	}
 	return nil
 }
