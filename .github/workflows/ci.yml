@@ -382,18 +382,6 @@ jobs:
           if [ "$status" -eq 0 ] && [ "$lived" -gt 0 ] 2>/dev/null; then report=lived; fi
           echo "report=$report" >> "$GITHUB_OUTPUT"
 
-      # The whole report, whatever the step summary and the comment can hold.
-      - name: Keep the mutation report
-        if: steps.mutation.outputs.report == 'lived'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          # One per attempt: a rerun cannot upload under a name the run already holds.
-          name: mutation-report-${{ github.run_attempt }}
-          path: |
-            mutation-summary.md
-            mutation.json
-          retention-days: 14
-
       # Fork PRs get a read-only token; their results stay in the step summary.
       - name: Comment mutation results on the PR
         # An unfinished run says nothing, and leaves an earlier report as it is.
@@ -401,6 +389,7 @@ jobs:
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           REPORT: ${{ steps.mutation.outputs.report }}
+          ATTEMPT: ${{ github.run_attempt }}
         with:
           script: |
             const fs = require('fs');
@@ -415,7 +404,7 @@ jobs:
             // A comment holds 65536 characters; cut a longer report before a mutant and say so.
             let summary = fs.readFileSync('mutation-summary.md', 'utf8');
             if (summary.length > 60000) {
-              summary = summary.slice(0, summary.lastIndexOf('\n- `', 60000)) + '\n\nCut short here; the mutation-report artifact of the run linked below has every lived mutant.';
+              summary = summary.slice(0, summary.lastIndexOf('\n- `', 60000)) + `\n\nCut short here; the mutation-report-${process.env.ATTEMPT} artifact of the run linked below has every lived mutant.`;
             }
             const body = [
               marker,
@@ -428,6 +417,19 @@ jobs:
             } else {
               await github.rest.issues.createComment({...context.repo, issue_number: pr.number, body});
             }
+
+      # The whole report, whatever the step summary and the comment can hold.
+      - name: Keep the mutation report
+        # After the comment, and whether or not it was written: neither depends on the other.
+        if: ${{ !cancelled() && steps.mutation.outputs.report != 'none' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          # One per attempt: a rerun cannot upload under a name the run already holds.
+          name: mutation-report-${{ github.run_attempt }}
+          path: |
+            mutation-summary.md
+            mutation.json
+          retention-days: 14
 
   result:
     name: CI result
