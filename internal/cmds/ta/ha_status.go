@@ -15,7 +15,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsha"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/taha"
 )
 
 type statusOptions struct {
@@ -62,9 +62,9 @@ func (o statusOptions) report(cmd *cobra.Command, c decreeConfig, replicas []rep
 }
 
 type replicaReport struct {
-	Address string        `json:"address"`
-	Status  *cdsha.Status `json:"status,omitempty"`
-	Error   string        `json:"error,omitempty"`
+	Address string       `json:"address"`
+	Status  *taha.Status `json:"status,omitempty"`
+	Error   string       `json:"error,omitempty"`
 }
 
 // One attested client verifies and reaches one replica.
@@ -155,7 +155,7 @@ func rowOf(report replicaReport) replicaRow {
 }
 
 // Whether this replica leads, follows, or knows no leader at all.
-func reportedRole(reported cdsha.Status) string {
+func reportedRole(reported taha.Status) string {
 	switch reported.Leader {
 	case "":
 		return "-"
@@ -167,7 +167,7 @@ func reportedRole(reported cdsha.Status) string {
 
 // Whether this replica fills one of the voter seats it names, and none from
 // one that names no seats at all.
-func reportedVote(reported cdsha.Status) string {
+func reportedVote(reported taha.Status) string {
 	if len(reported.Voters) == 0 {
 		return "-"
 	}
@@ -179,7 +179,7 @@ func reportedVote(reported cdsha.Status) string {
 
 // What the replica says of its own service, in its words where it serves
 // nothing.
-func reportedHealth(reported cdsha.Status) string {
+func reportedHealth(reported taha.Status) string {
 	if reported.Serving.OK {
 		return "serving"
 	}
@@ -227,8 +227,8 @@ func clusterLine(reports []replicaReport) string {
 }
 
 // The statuses of every replica, and whether each of them answered one.
-func everyReplicaAnswered(reports []replicaReport) ([]cdsha.Status, bool) {
-	answered := make([]cdsha.Status, 0, len(reports))
+func everyReplicaAnswered(reports []replicaReport) ([]taha.Status, bool) {
+	answered := make([]taha.Status, 0, len(reports))
 	for _, report := range reports {
 		if report.Status == nil {
 			return nil, false
@@ -239,7 +239,7 @@ func everyReplicaAnswered(reports []replicaReport) ([]cdsha.Status, bool) {
 }
 
 // One member every replica follows, and one replica that is it.
-func oneOfThemLeads(answered []cdsha.Status) bool {
+func oneOfThemLeads(answered []taha.Status) bool {
 	leader := answered[0].Leader
 	if leader == "" {
 		return false
@@ -254,9 +254,9 @@ func oneOfThemLeads(answered []cdsha.Status) bool {
 	return led
 }
 
-func theyNameOneVoterSet(answered []cdsha.Status) bool {
+func theyNameOneVoterSet(answered []taha.Status) bool {
 	seats := answered[0].Voters
-	return !slices.ContainsFunc(answered, func(reported cdsha.Status) bool {
+	return !slices.ContainsFunc(answered, func(reported taha.Status) bool {
 		return !sameMembers(reported.Voters, seats)
 	})
 }
@@ -265,9 +265,9 @@ func sameMembers(members, others []string) bool {
 	return slices.Equal(slices.Sorted(slices.Values(members)), slices.Sorted(slices.Values(others)))
 }
 
-func theyHoldOneVersion(answered []cdsha.Status) bool {
+func theyHoldOneVersion(answered []taha.Status) bool {
 	version := answered[0].Version
-	return !slices.ContainsFunc(answered, func(reported cdsha.Status) bool {
+	return !slices.ContainsFunc(answered, func(reported taha.Status) bool {
 		return reported.Version != version
 	})
 }

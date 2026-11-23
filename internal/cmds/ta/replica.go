@@ -1,5 +1,5 @@
 // This process as one replica of its cluster's CDS: the Raft member over the
-// replicated state internal/cdsha keeps, the stores that member's log writes,
+// replicated state internal/taha keeps, the stores that member's log writes,
 // and the mesh CA its cluster minted. Every setting comes from the ha block of
 // the measured configuration every replica of the cluster boots.
 
@@ -23,8 +23,8 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/allowlist"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/attestation"
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsha"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/issuer"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/taha"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
 )
@@ -53,7 +53,7 @@ const (
 type clusterCDS struct {
 	handles
 	challengePools
-	node *cdsha.Node
+	node *taha.Node
 	// stopNode ends the member's loop and waits for it; ended is closed when
 	// that loop is gone, whether it was stopped or it failed.
 	stopNode func()
@@ -107,7 +107,7 @@ func newReplica(ctx context.Context, cfg config, st stores) (backend, error) {
 	return joining, nil
 }
 
-func newMember(cfg config, st stores) (*cdsha.Node, error) {
+func newMember(cfg config, st stores) (*taha.Node, error) {
 	if cfg.jwtClockSkew < 0 || cfg.jwtClockSkew > math.MaxInt64/int64(time.Second) {
 		return nil, fmt.Errorf("--jwt-clock-skew must be between 0 and %d seconds", math.MaxInt64/int64(time.Second))
 	}
@@ -117,8 +117,8 @@ func newMember(cfg config, st stores) (*cdsha.Node, error) {
 		return nil, err
 	}
 	launchFile := sha256.Sum256(cfg.measuredFile)
-	return cdsha.NewNode(cdsha.Config{
-		Launch: cdsha.Launch{
+	return taha.NewNode(taha.Config{
+		Launch: taha.Launch{
 			ClusterID:    cfg.measured.ClusterID,
 			OperatorKeys: cfg.measured.OperatorKeys.Keys(),
 			ConfigSHA256: hex.EncodeToString(launchFile[:]),
@@ -164,14 +164,14 @@ func emptyAllowlist(store *allowlist.Store) error {
 // A loop that ended because the replica left its cluster ends the process
 // (images/cds-guest). A replica whose loop waits behind the fault is ended by
 // the watchdog beside it.
-func runMember(ctx context.Context, node *cdsha.Node) (stop func(), ended <-chan struct{}) {
+func runMember(ctx context.Context, node *taha.Node) (stop func(), ended <-chan struct{}) {
 	running, cancel := context.WithCancel(ctx)
 	gone := make(chan struct{})
 	go func() {
 		defer close(gone)
 		err := node.Run(running)
 		switch {
-		case errors.Is(err, cdsha.ErrLeftItsCluster):
+		case errors.Is(err, taha.ErrLeftItsCluster):
 			exitToRestart(err.Error())
 		case err != nil:
 			slog.Error("cds-ha: this replica's loop ended", "error", err)
@@ -186,7 +186,7 @@ const stuckLook = time.Second
 // A replica's own loop ends it on a fault, and that loop can be waiting
 // behind the very fault it would end on. A replica that serves nothing must
 // hold no open port for a prober to find.
-func watchStuck(ctx context.Context, node *cdsha.Node) {
+func watchStuck(ctx context.Context, node *taha.Node) {
 	look := time.NewTicker(stuckLook)
 	defer look.Stop()
 	for {
@@ -318,7 +318,7 @@ func (r *clusterCDS) Stop() {
 }
 
 type clusterCA struct {
-	node *cdsha.Node
+	node *taha.Node
 }
 
 func (c clusterCA) Current() (issuer.CurrentCA, bool) {
@@ -335,7 +335,7 @@ func (c clusterCA) Current() (issuer.CurrentCA, bool) {
 // INVARIANT: haGate answers nothing from this replica while it may not serve
 // its cluster, so a set read here is one the cluster has not moved past.
 type clusterNodeImages struct {
-	node *cdsha.Node
+	node *taha.Node
 }
 
 // None while this replica holds no cluster; a set naming no image certifies
@@ -367,7 +367,7 @@ func (c clusterNodeImages) Refresh() error {
 // clusterKey derives one pool's challenge key from the cluster's mesh CA
 // private key, so a nonce one replica minted is redeemable at every other. A
 // key rotation invalidates the nonces outstanding under the old one.
-func clusterKey(node *cdsha.Node, purpose string) attestation.ClusterKey {
+func clusterKey(node *taha.Node, purpose string) attestation.ClusterKey {
 	return func() []byte {
 		ca, issuing := node.CA()
 		if !issuing {

@@ -8,13 +8,13 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsha"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tadecree"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/taha"
 )
 
 // One decree as a replica serves its record of them.
-func recordOf(signed tadecree.Signed, version uint64) cdsha.DecreeRecord {
-	return cdsha.DecreeRecord{
+func recordOf(signed tadecree.Signed, version uint64) taha.DecreeRecord {
+	return taha.DecreeRecord{
 		Decree:  signed,
 		AtMS:    time.Date(2026, time.October, 30, 12, 0, 0, 0, time.UTC).UnixMilli(),
 		Version: version,
@@ -25,7 +25,7 @@ func TestDecreesPrintsEveryDecreeTheClusterApplied(t *testing.T) {
 	c := newReplicatedCluster(t)
 	o := decreesOptions{}
 	replicas := c.replicasServing(t, map[string]any{
-		decreesPath: []cdsha.DecreeRecord{recordOf(c.pinDecree(t, smp2Digest), 4)},
+		decreesPath: []taha.DecreeRecord{recordOf(c.pinDecree(t, smp2Digest), 4)},
 	})
 
 	printed, err := reading(t, func(cmd *cobra.Command) error { return o.report(cmd, c.decreed(t), replicas) })
@@ -50,7 +50,7 @@ func TestDecreesRefusesARecordWithoutAnOperatorSignature(t *testing.T) {
 	tampered.Decree.BaseVersion = 99
 	o := decreesOptions{}
 	replicas := c.replicasServing(t, map[string]any{
-		decreesPath: []cdsha.DecreeRecord{recordOf(tampered, 4)},
+		decreesPath: []taha.DecreeRecord{recordOf(tampered, 4)},
 	})
 
 	printed, err := reading(t, func(cmd *cobra.Command) error { return o.report(cmd, c.decreed(t), replicas) })
@@ -68,7 +68,7 @@ func TestDecreesJSONCarriesTheSignatureCheckOfEveryRecord(t *testing.T) {
 	tampered.Decree.BaseVersion = 99
 	o := decreesOptions{asJSON: true}
 	replicas := c.replicasServing(t, map[string]any{
-		decreesPath: []cdsha.DecreeRecord{
+		decreesPath: []taha.DecreeRecord{
 			recordOf(c.pinDecree(t, smp2Digest), 4),
 			recordOf(tampered, 5),
 		},
@@ -92,7 +92,7 @@ func TestDecreesReadsTheFirstReplicaThatAnswers(t *testing.T) {
 	o := decreesOptions{}
 	replicas := c.replicasServing(t,
 		map[string]any{statusPath: c.serving("first", 4)},
-		map[string]any{decreesPath: []cdsha.DecreeRecord{recordOf(c.pinDecree(t, smp2Digest), 4)}},
+		map[string]any{decreesPath: []taha.DecreeRecord{recordOf(c.pinDecree(t, smp2Digest), 4)}},
 	)
 
 	printed, err := reading(t, func(cmd *cobra.Command) error { return o.report(cmd, c.decreed(t), replicas) })

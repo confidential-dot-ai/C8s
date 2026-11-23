@@ -1,6 +1,6 @@
 //go:build integration && linux
 
-package cdsha_test
+package taha_test
 
 import (
 	"bytes"

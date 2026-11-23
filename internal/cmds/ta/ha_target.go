@@ -15,11 +15,11 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsha"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/taconn"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/readutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tadecree"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/taha"
 )
 
 // A replica serves its clients and the operator on one port.
@@ -72,25 +72,25 @@ func bindDeliveryFlags(cmd *cobra.Command, to *replica) {
 	cmdsutil.RequireFlags(cmd, "to", "cds-pin")
 }
 
-func (r replica) status(ctx context.Context) (cdsha.Status, error) {
+func (r replica) status(ctx context.Context) (taha.Status, error) {
 	reported, _, err := r.statusAtAddress(ctx)
 	return reported, err
 }
 
 // The address a decree binding one process records.
-func (r replica) statusAtAddress(ctx context.Context) (cdsha.Status, netip.AddrPort, error) {
+func (r replica) statusAtAddress(ctx context.Context) (taha.Status, netip.AddrPort, error) {
 	body, address, err := r.answer(ctx, statusPath, maxReplicaReport)
 	if err != nil {
-		return cdsha.Status{}, netip.AddrPort{}, err
+		return taha.Status{}, netip.AddrPort{}, err
 	}
-	var reported cdsha.Status
+	var reported taha.Status
 	if err := json.Unmarshal(body, &reported); err != nil {
-		return cdsha.Status{}, netip.AddrPort{}, fmt.Errorf("GET %s: %w", statusPath, err)
+		return taha.Status{}, netip.AddrPort{}, fmt.Errorf("GET %s: %w", statusPath, err)
 	}
 	return reported, address, nil
 }
 
-func holdsAVote(reported cdsha.Status) bool {
+func holdsAVote(reported taha.Status) bool {
 	return slices.Contains(reported.Voters, reported.ID)
 }
 
@@ -202,18 +202,18 @@ func splitReplicaAddress(address string) (string, uint16, error) {
 
 // postDecree hands one signed decree to this replica over the attested
 // channel. A decree the cluster refused is an answer, not an error.
-func (r replica) postDecree(ctx context.Context, signed tadecree.Signed) (cdsha.Delivered, string, error) {
+func (r replica) postDecree(ctx context.Context, signed tadecree.Signed) (taha.Delivered, string, error) {
 	object, err := json.Marshal(signed)
 	if err != nil {
-		return cdsha.Delivered{}, "", err
+		return taha.Delivered{}, "", err
 	}
 	client, address, base, err := r.dial(ctx)
 	if err != nil {
-		return cdsha.Delivered{}, "", err
+		return taha.Delivered{}, "", err
 	}
 	delivered, err := postedDecree(ctx, client, base, object)
 	if err != nil {
-		return cdsha.Delivered{}, "", fmt.Errorf("%s: %w", address, err)
+		return taha.Delivered{}, "", fmt.Errorf("%s: %w", address, err)
 	}
 	return delivered, address.String(), nil
 }
@@ -223,7 +223,7 @@ func postedDecree(
 	client *http.Client,
 	base string,
 	object []byte,
-) (cdsha.Delivered, error) {
+) (taha.Delivered, error) {
 	request, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodPost,
@@ -231,24 +231,24 @@ func postedDecree(
 		bytes.NewReader(object),
 	)
 	if err != nil {
-		return cdsha.Delivered{}, err
+		return taha.Delivered{}, err
 	}
 	request.Header.Set("Content-Type", "application/json")
 	response, err := client.Do(request)
 	if err != nil {
-		return cdsha.Delivered{}, err
+		return taha.Delivered{}, err
 	}
 	defer response.Body.Close()
 	answer, err := readutil.ReadAll(response.Body, maxReplicaReport)
 	if err != nil {
-		return cdsha.Delivered{}, fmt.Errorf("POST %s: %w", decreesPath, err)
+		return taha.Delivered{}, fmt.Errorf("POST %s: %w", decreesPath, err)
 	}
 	if response.StatusCode != http.StatusOK {
-		return cdsha.Delivered{}, fmt.Errorf("POST %s: %s: %s", decreesPath, response.Status, bytes.TrimSpace(answer))
+		return taha.Delivered{}, fmt.Errorf("POST %s: %s: %s", decreesPath, response.Status, bytes.TrimSpace(answer))
 	}
-	var delivered cdsha.Delivered
+	var delivered taha.Delivered
 	if err := json.Unmarshal(answer, &delivered); err != nil {
-		return cdsha.Delivered{}, fmt.Errorf("POST %s: %w", decreesPath, err)
+		return taha.Delivered{}, fmt.Errorf("POST %s: %w", decreesPath, err)
 	}
 	return delivered, nil
 }

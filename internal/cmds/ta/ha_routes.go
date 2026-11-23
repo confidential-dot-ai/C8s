@@ -20,15 +20,15 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsha"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/readutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tadecree"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/taha"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 )
 
 // clusterRoutes are answered to a caller with no client certificate, each
 // named by its method and path.
-func clusterRoutes(node *cdsha.Node) map[string]http.HandlerFunc {
+func clusterRoutes(node *taha.Node) map[string]http.HandlerFunc {
 	return map[string]http.HandlerFunc{
 		"GET /ha/status":   reportJSON(node.Status),
 		"GET /ha/pins":     reportPinDecree(node),
@@ -43,7 +43,7 @@ const maxDecreeBody = 1 << 20
 
 // takeDecree hands the decree an operator posts to this replica to the
 // cluster, and answers what the cluster made of it.
-func takeDecree(node *cdsha.Node) http.HandlerFunc {
+func takeDecree(node *taha.Node) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if err := node.ClockError(); err != nil {
 			http.Error(w, err.Error(), http.StatusServiceUnavailable)
@@ -81,7 +81,7 @@ func reportJSON[T any](read func() T) http.HandlerFunc {
 
 // reportPinDecree serves the pin decree the cluster applied, as the operator
 // signed it, and nothing while it applied none.
-func reportPinDecree(node *cdsha.Node) http.HandlerFunc {
+func reportPinDecree(node *taha.Node) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		applied := node.ClusterState().PinsDecree
 		if applied == nil {
@@ -113,7 +113,7 @@ func writeJSON(w http.ResponseWriter, report any) {
 // committed watermark, through the leader's barrier and this replica's
 // application of it, before its handler runs.
 func haGate(
-	serving func() cdsha.Serving,
+	serving func() taha.Serving,
 	clockError func() error,
 	confirmRead func() error,
 	next http.Handler,

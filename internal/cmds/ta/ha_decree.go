@@ -15,12 +15,12 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsha"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/worker"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/fileutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/taconfig"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tadecree"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/taha"
 )
 
 // defaultDecreeValidity is how long a cluster may adopt a decree for. A
@@ -188,7 +188,7 @@ func (o decreeOptions) deliverIssued(cmd *cobra.Command, c decreeConfig, to repl
 	return o.deliver(cmd, c, to, d)
 }
 
-func reportDelivered(cmd *cobra.Command, address string, d tadecree.Decree, delivered cdsha.Delivered) error {
+func reportDelivered(cmd *cobra.Command, address string, d tadecree.Decree, delivered taha.Delivered) error {
 	if delivered.Refused != "" {
 		return fmt.Errorf("%s refused the %s decree %s: %s", address, d.Kind, delivered.Intent, delivered.Refused)
 	}
@@ -552,7 +552,7 @@ func (o nodeImagesOptions) run(cmd *cobra.Command) error {
 
 // checkGenesisTarget requires a replica of this cluster that holds none, and
 // that reports the mesh CA it would install.
-func checkGenesisTarget(target cdsha.Status, clusterID string) error {
+func checkGenesisTarget(target taha.Status, clusterID string) error {
 	if err := checkTargetCluster(target, clusterID); err != nil {
 		return err
 	}
@@ -565,7 +565,7 @@ func checkGenesisTarget(target cdsha.Status, clusterID string) error {
 	return nil
 }
 
-func checkTargetCluster(target cdsha.Status, clusterID string) error {
+func checkTargetCluster(target taha.Status, clusterID string) error {
 	if target.ClusterID != clusterID {
 		return fmt.Errorf("the target replica serves cluster %q, not %q", target.ClusterID, clusterID)
 	}
@@ -731,7 +731,7 @@ func (o recoverOptions) run(cmd *cobra.Command) error {
 
 // checkRecoverTarget requires a surviving voter: a member without a vote may
 // be missing writes the cluster committed.
-func checkRecoverTarget(target cdsha.Status, clusterID string) error {
+func checkRecoverTarget(target taha.Status, clusterID string) error {
 	if err := checkTargetCluster(target, clusterID); err != nil {
 		return err
 	}
@@ -843,7 +843,7 @@ func (o admitOptions) servingReplica() replica {
 
 // checkAdmitTarget requires a replica of this cluster that holds none: a
 // joined replica admits by the cluster's own image set.
-func checkAdmitTarget(target cdsha.Status, clusterID string) error {
+func checkAdmitTarget(target taha.Status, clusterID string) error {
 	if err := checkTargetCluster(target, clusterID); err != nil {
 		return err
 	}

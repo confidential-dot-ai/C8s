@@ -18,7 +18,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/allowlist"
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsha"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/taha"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
 )
 
@@ -31,7 +31,7 @@ func TestClockQuarantineHTTPOnExistingConnection(t *testing.T) {
 		}
 		return nil
 	}
-	serving := func() cdsha.Serving { return cdsha.Serving{OK: !fault.Load(), Reason: reason.Error()} }
+	serving := func() taha.Serving { return taha.Serving{OK: !fault.Load(), Reason: reason.Error()} }
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	var connections atomic.Int32
 	server := httptest.NewUnstartedServer(haGate(serving, clock, confirmed, next))
@@ -103,7 +103,7 @@ func TestClockBeforeObservationFutureTokenStillGetsUnauthorized(t *testing.T) {
 }
 
 func TestClockGateDiagnosticsDoNotConsultServing(t *testing.T) {
-	gated := haGate(func() cdsha.Serving { t.Error("exempt route consulted Serving"); return cdsha.Serving{} },
+	gated := haGate(func() taha.Serving { t.Error("exempt route consulted Serving"); return taha.Serving{} },
 		noClockError, confirmed, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
 	for _, path := range []string{"/healthz", "/metrics", "/ha/status", "/ha/pins", "/ha/decrees"} {
 		response := httptest.NewRecorder()

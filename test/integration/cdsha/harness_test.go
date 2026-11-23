@@ -7,7 +7,7 @@
 //
 // Run it with test/integration/cdsha/run.sh. Linux only: the replicas answer
 // at 127.0.77.0/24.
-package cdsha_test
+package taha_test
 
 import (
 	"bytes"
@@ -43,9 +43,9 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsha"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/taconfig"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tadecree"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/taha"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
@@ -570,7 +570,7 @@ func (c *cluster) genesisCertifying(r *replica, nodeImages string, resumeVersion
 
 // decree signs one decree and posts it to a replica, as the operator's CLI
 // does over the attested channel.
-func (c *cluster) decree(to *replica, d tadecree.Decree) cdsha.Delivered {
+func (c *cluster) decree(to *replica, d tadecree.Decree) taha.Delivered {
 	c.t.Helper()
 	signed, err := tadecree.Sign(d, c.operator)
 	if err != nil {
@@ -584,7 +584,7 @@ func (c *cluster) decree(to *replica, d tadecree.Decree) cdsha.Delivered {
 	if code != http.StatusOK {
 		c.t.Fatalf("posting the %s decree to replica %d: %d %s", d.Kind, to.index, code, bytes.TrimSpace(answer))
 	}
-	var delivered cdsha.Delivered
+	var delivered taha.Delivered
 	if err := json.Unmarshal(answer, &delivered); err != nil {
 		c.t.Fatalf("what replica %d made of the %s decree: %v", to.index, d.Kind, err)
 	}
@@ -592,7 +592,7 @@ func (c *cluster) decree(to *replica, d tadecree.Decree) cdsha.Delivered {
 }
 
 // Names the CDS images a replica of the cluster may run from then on.
-func (c *cluster) decreePins(to *replica, version uint64, measurements ...string) (string, cdsha.Delivered) {
+func (c *cluster) decreePins(to *replica, version uint64, measurements ...string) (string, taha.Delivered) {
 	c.t.Helper()
 	decree := tadecree.Decree{
 		ClusterID:   clusterID,
@@ -607,7 +607,7 @@ func (c *cluster) decreePins(to *replica, version uint64, measurements ...string
 
 // The Admit decree a replica holding no cluster acts on, so a replica of a
 // new image reaches a leader still running the old one.
-func (c *cluster) decreeAdmit(to *replica, measurements ...string) cdsha.Delivered {
+func (c *cluster) decreeAdmit(to *replica, measurements ...string) taha.Delivered {
 	c.t.Helper()
 	return c.decree(to, tadecree.Decree{
 		ClusterID:    clusterID,
@@ -620,7 +620,7 @@ func (c *cluster) decreeAdmit(to *replica, measurements ...string) cdsha.Deliver
 }
 
 // Carries the whole set of node images the cluster is to certify.
-func (c *cluster) decreeNodeImages(to *replica, version uint64, document string) (string, cdsha.Delivered) {
+func (c *cluster) decreeNodeImages(to *replica, version uint64, document string) (string, taha.Delivered) {
 	c.t.Helper()
 	nodes, err := tadecree.NewNodeImages([]byte(document))
 	if err != nil {
@@ -685,7 +685,7 @@ func (c *cluster) allAtNodeImagesVersion(version uint64) bool {
 }
 
 // decreeRotateKey posts a RotateKey decree to a replica.
-func (c *cluster) decreeRotateKey(to *replica, version uint64) (string, cdsha.Delivered) {
+func (c *cluster) decreeRotateKey(to *replica, version uint64) (string, taha.Delivered) {
 	c.t.Helper()
 	decree := tadecree.Decree{
 		ClusterID:   clusterID,
@@ -754,10 +754,10 @@ func (c *cluster) withoutAVote() []string {
 }
 
 // An empty report while no replica leads.
-func (c *cluster) leaderReport() cdsha.Status {
+func (c *cluster) leaderReport() taha.Status {
 	leading := c.leader()
 	if leading == nil {
-		return cdsha.Status{}
+		return taha.Status{}
 	}
 	reported, _ := c.status(leading)
 	return reported
@@ -795,7 +795,7 @@ func (c *cluster) waitEveryReplicaJoined(within time.Duration) {
 	})
 }
 
-func (c *cluster) decreeVoters(to *replica, version uint64, seats int) (string, cdsha.Delivered) {
+func (c *cluster) decreeVoters(to *replica, version uint64, seats int) (string, taha.Delivered) {
 	c.t.Helper()
 	decree := tadecree.Decree{
 		ClusterID:   clusterID,
@@ -828,11 +828,11 @@ func (c *cluster) recorded(r *replica, intent string, version uint64) bool {
 	if code != http.StatusOK {
 		return false
 	}
-	var applied []cdsha.DecreeRecord
+	var applied []taha.DecreeRecord
 	if json.Unmarshal(body, &applied) != nil {
 		return false
 	}
-	return slices.ContainsFunc(applied, func(record cdsha.DecreeRecord) bool {
+	return slices.ContainsFunc(applied, func(record taha.DecreeRecord) bool {
 		return record.Decree.Decree.IntentID == intent && record.Version == version
 	})
 }
@@ -852,8 +852,8 @@ func (c *cluster) servedCA(r *replica) string {
 }
 
 // status is what a replica reports about its cluster, and whether it answered.
-func (c *cluster) status(r *replica) (cdsha.Status, bool) {
-	var reported cdsha.Status
+func (c *cluster) status(r *replica) (taha.Status, bool) {
+	var reported taha.Status
 	code, body := c.get(r, "/ha/status")
 	if code != http.StatusOK || json.Unmarshal(body, &reported) != nil {
 		return reported, false
@@ -862,9 +862,9 @@ func (c *cluster) status(r *replica) (cdsha.Status, bool) {
 }
 
 // awaitStatus is the first report a starting replica answers with.
-func (c *cluster) awaitStatus(r *replica) cdsha.Status {
+func (c *cluster) awaitStatus(r *replica) taha.Status {
 	c.t.Helper()
-	var reported cdsha.Status
+	var reported taha.Status
 	c.waitFor(fmt.Sprintf("replica %d to report itself", r.index), 30*time.Second, func() bool {
 		var answered bool
 		reported, answered = c.status(r)

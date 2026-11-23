@@ -14,7 +14,7 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsha"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/taha"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
 )
 
@@ -85,7 +85,7 @@ func TestAReplicaReportsItselfWhileItJoins(t *testing.T) {
 		}
 	}
 
-	var reported cdsha.Status
+	var reported taha.Status
 	if err := json.Unmarshal(fetch(t, client, base+"/ha/status"), &reported); err != nil {
 		t.Fatalf("decode /ha/status: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestTheGateRefusesWhatAReplicaMayNotServe(t *testing.T) {
 		"/secrets/a/secret": http.StatusServiceUnavailable,
 	} {
 		for serving, want := range map[bool]int{true: answered, false: unserved} {
-			gated := haGate(func() cdsha.Serving { return cdsha.Serving{OK: serving} }, noClockError, confirmed, routed)
+			gated := haGate(func() taha.Serving { return taha.Serving{OK: serving} }, noClockError, confirmed, routed)
 			w := httptest.NewRecorder()
 			gated.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
 			if w.Code != want {
@@ -319,7 +319,7 @@ func statusOf(t *testing.T, client *http.Client, url string) int {
 	return resp.StatusCode
 }
 
-func alwaysServing() cdsha.Serving { return cdsha.Serving{OK: true} }
+func alwaysServing() taha.Serving { return taha.Serving{OK: true} }
 
 func noClockError() error { return nil }
 

@@ -12,7 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsha"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/taha"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
 )
 
@@ -55,12 +55,12 @@ func (c operatorCluster) unreachable() replica {
 }
 
 // Every replica of the fixture follows "first", the leader of its cluster.
-func (c operatorCluster) serving(member string, version uint64) cdsha.Status {
-	return cdsha.Status{
+func (c operatorCluster) serving(member string, version uint64) taha.Status {
+	return taha.Status{
 		ClusterID:         c.clusterID,
 		ID:                member,
 		Joined:            true,
-		Serving:           cdsha.Serving{OK: true},
+		Serving:           taha.Serving{OK: true},
 		Version:           version,
 		NodeImagesVersion: version - 1,
 		State:             "Follower",
@@ -132,7 +132,7 @@ func TestStatusPrintsARowPerReplicaThenTheClusterLine(t *testing.T) {
 func TestStatusRowCarriesWhyAReplicaServesNothing(t *testing.T) {
 	c := newReplicatedCluster(t)
 	stuck := c.serving("second", 7)
-	stuck.Serving = cdsha.Serving{
+	stuck.Serving = taha.Serving{
 		OK:     false,
 		Reason: "this replica stopped following the log",
 	}
@@ -172,10 +172,10 @@ func TestStatusQuotesWhatAReplicaReports(t *testing.T) {
 
 func TestStatusReportsNoVoteFromAReplicaThatNamesNoSeats(t *testing.T) {
 	c := newReplicatedCluster(t)
-	unjoined := cdsha.Status{
+	unjoined := taha.Status{
 		ClusterID: c.clusterID,
 		ID:        "first",
-		Serving: cdsha.Serving{
+		Serving: taha.Serving{
 			OK:     false,
 			Reason: "this replica holds no cluster",
 		},
@@ -324,11 +324,11 @@ func TestStatusRefusesReplicasThatHoldDifferentState(t *testing.T) {
 		},
 		"another cluster": {
 			{statusPath: c.serving("first", 7)},
-			{statusPath: cdsha.Status{
+			{statusPath: taha.Status{
 				ClusterID: "elsewhere",
 				ID:        "second",
 				Joined:    true,
-				Serving:   cdsha.Serving{OK: true},
+				Serving:   taha.Serving{OK: true},
 			}},
 		},
 	} {

@@ -12,8 +12,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsha"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tadecree"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/taha"
 )
 
 type decreesOptions struct {
@@ -54,7 +54,7 @@ func (o decreesOptions) report(cmd *cobra.Command, c decreeConfig, replicas []re
 	if err != nil {
 		return err
 	}
-	var records []cdsha.DecreeRecord
+	var records []taha.DecreeRecord
 	if err := json.Unmarshal(body, &records); err != nil {
 		return fmt.Errorf("the record replica %s serves: %w", address, err)
 	}
@@ -66,12 +66,12 @@ func (o decreesOptions) report(cmd *cobra.Command, c decreeConfig, replicas []re
 }
 
 type appliedDecree struct {
-	cdsha.DecreeRecord
+	taha.DecreeRecord
 	Unverified string `json:"unverified,omitempty"`
 }
 
 // Each record carries the result, so no verdict is printed beside it.
-func checkRecords(records []cdsha.DecreeRecord, c decreeConfig) []appliedDecree {
+func checkRecords(records []taha.DecreeRecord, c decreeConfig) []appliedDecree {
 	checked := make([]appliedDecree, 0, len(records))
 	for _, record := range records {
 		applied := appliedDecree{DecreeRecord: record}

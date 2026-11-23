@@ -14,9 +14,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsha"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/readutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tadecree"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/taha"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
 )
 
@@ -32,7 +32,7 @@ func TestAReplicaNamedByDNSIsReachedWithItsNameAsSNI(t *testing.T) {
 		mu.Lock()
 		served = append(served, r.TLS.ServerName)
 		mu.Unlock()
-		_ = json.NewEncoder(w).Encode(cdsha.Status{ID: "member"})
+		_ = json.NewEncoder(w).Encode(taha.Status{ID: "member"})
 	})
 	server := testutil.NewARMTLSServer(t, handler)
 	at, err := url.Parse(server.URL)

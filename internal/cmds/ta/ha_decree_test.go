@@ -21,11 +21,11 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsha"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/taconn"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/localverify"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/taconfig"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tadecree"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/taha"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
@@ -156,12 +156,12 @@ func (c operatorCluster) replicaServing(t *testing.T, routes map[string]any) rep
 }
 
 // answerFor holds the kinds a replica acts on itself, and applies the rest.
-func answerFor(d tadecree.Decree) cdsha.Delivered {
+func answerFor(d tadecree.Decree) taha.Delivered {
 	switch d.Kind {
 	case tadecree.Genesis, tadecree.Recover, tadecree.Admit:
-		return cdsha.Delivered{Intent: d.IntentID, Held: true}
+		return taha.Delivered{Intent: d.IntentID, Held: true}
 	}
-	return cdsha.Delivered{Intent: d.IntentID, Version: d.BaseVersion + 1}
+	return taha.Delivered{Intent: d.IntentID, Version: d.BaseVersion + 1}
 }
 
 // pinDecree is a pin decree the cluster has applied, as a replica serves it.
@@ -211,8 +211,8 @@ func (c operatorCluster) signed(t *testing.T, out string) tadecree.Signed {
 }
 
 // unjoined is what a replica of this cluster holding no cluster reports.
-func (c operatorCluster) unjoined() cdsha.Status {
-	return cdsha.Status{
+func (c operatorCluster) unjoined() taha.Status {
+	return taha.Status{
 		ClusterID: c.clusterID,
 		ID:        targetMember,
 		GenesisCA: targetGenesis,
@@ -536,16 +536,16 @@ func TestNodeImagesDecreeRefusesAnEntryBindingNoLaunch(t *testing.T) {
 // a voter's state, so each refuses a target in the other's state.
 func TestOneShotDecreesRefuseTheWrongTarget(t *testing.T) {
 	c := newOperatorCluster(t)
-	joined := cdsha.Status{ClusterID: c.clusterID, ID: targetMember, Joined: true, Voters: []string{targetMember}}
+	joined := taha.Status{ClusterID: c.clusterID, ID: targetMember, Joined: true, Voters: []string{targetMember}}
 	for _, tc := range []struct {
 		name   string
-		status cdsha.Status
-		check  func(cdsha.Status, string) error
+		status taha.Status
+		check  func(taha.Status, string) error
 	}{
 		{"a Genesis on a replica holding a cluster", joined, checkGenesisTarget},
 		{
 			"a Genesis on a replica of another cluster",
-			cdsha.Status{
+			taha.Status{
 				ClusterID: "other",
 				ID:        targetMember,
 				GenesisCA: targetGenesis,
@@ -554,7 +554,7 @@ func TestOneShotDecreesRefuseTheWrongTarget(t *testing.T) {
 		},
 		{
 			"a Genesis on a replica reporting no mesh CA",
-			cdsha.Status{
+			taha.Status{
 				ClusterID: c.clusterID,
 				ID:        targetMember,
 			},
@@ -563,7 +563,7 @@ func TestOneShotDecreesRefuseTheWrongTarget(t *testing.T) {
 		{"a Recover on a replica holding no cluster", c.unjoined(), checkRecoverTarget},
 		{
 			"a Recover on a replica holding no vote",
-			cdsha.Status{
+			taha.Status{
 				ClusterID: c.clusterID,
 				ID:        targetMember,
 				Joined:    true,
