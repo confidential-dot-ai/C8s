@@ -94,7 +94,7 @@ func buildComputedValues(imagePins map[string]any) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	overrides, err := cdsInstallValues(installCDSAddress, installCDSPin)
+	overrides, err := taInstallValues(installTAAddress, installTAPin)
 	if err != nil {
 		return nil, err
 	}

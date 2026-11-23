@@ -18,7 +18,7 @@ import (
 	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
-// A component entry the CDS does not serve is a component no node would admit.
+// A component entry the Trust Authority does not serve is a component no node would admit.
 func TestCheckSeedServed(t *testing.T) {
 	seed, err := pkgallowlist.ParseJSON([]byte(testSeedDocument("app")))
 	if err != nil {
@@ -78,18 +78,18 @@ func TestCheckSeedServed(t *testing.T) {
 // An unattested endpoint serves this install nothing, however good the allowlist it answers with.
 func TestServedAllowlistRefusesAnUnattestedEndpoint(t *testing.T) {
 	resetCLIState(t)
-	installCDS = &cdsPin{path: cdsPinFile(t, []string{installSeedEntryName}, "192.0.2.0/24")}
-	cds := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	installTA = &taPin{path: taPinFile(t, []string{installSeedEntryName}, "192.0.2.0/24")}
+	ta := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, testSeedDocument(installSeedEntryName))
 	}))
-	t.Cleanup(cds.Close)
-	if al, err := servedAllowlist(context.Background(), cds.URL); err == nil || al != nil {
+	t.Cleanup(ta.Close)
+	if al, err := servedAllowlist(context.Background(), ta.URL); err == nil || al != nil {
 		t.Fatalf("servedAllowlist = (%v, %v), want no policy from an unattested endpoint", al, err)
 	}
 }
 
-// An unreachable CDS warns and installs, naming the publish command.
+// An unreachable Trust Authority warns and installs, naming the publish command.
 func TestInstallWarnsWhenTheServedAllowlistIsUnreadable(t *testing.T) {
 	var s *installStubs
 	var err error
@@ -101,9 +101,9 @@ func TestInstallWarnsWhenTheServedAllowlistIsUnreadable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("install: %v\nstderr:\n%s", err, stderr)
 	}
-	if !strings.Contains(stderr, "cannot read the allowlist https://"+installCDSAddressUnreachable+" serves") ||
+	if !strings.Contains(stderr, "cannot read the allowlist https://"+installTAAddressUnreachable+" serves") ||
 		!strings.Contains(stderr, "c8s allowlist apply") {
-		t.Fatalf("stderr = %q, want the warning naming the CDS and the publish command", stderr)
+		t.Fatalf("stderr = %q, want the warning naming the Trust Authority and the publish command", stderr)
 	}
 	if lineIndex(s.f.calls(t), "helm upgrade ") < 0 {
 		t.Fatalf("no helm upgrade logged:\n%s", strings.Join(s.f.calls(t), "\n"))
@@ -114,20 +114,20 @@ func TestCheckNamedCDSReturnsUnknownPolicyWhenUnreadable(t *testing.T) {
 	resetCLIState(t)
 	s := newInstallStubs(t, "", false)
 	s.f.tool(t, "kubectl", clusterKubectl(t, s.applied, ""))
-	document := cdsPinDocument(t, []string{installSeedEntryName}, "192.0.2.0/24")
-	config, err := cdsPinConfig(document)
+	document := taPinDocument(t, []string{installSeedEntryName}, "192.0.2.0/24")
+	config, err := taPinConfig(document)
 	if err != nil {
 		t.Fatal(err)
 	}
-	installCDS = &cdsPin{path: cdsPinFile(t, []string{installSeedEntryName}, "192.0.2.0/24"), config: config}
-	values := map[string]any{"cds": map[string]any{"address": installCDSAddressUnreachable}}
-	served, warn, err := checkNamedCDS(context.Background(), seedRender{chart: s.release}, installCDS, values)
+	installTA = &taPin{path: taPinFile(t, []string{installSeedEntryName}, "192.0.2.0/24"), config: config}
+	values := map[string]any{"cds": map[string]any{"address": installTAAddressUnreachable}}
+	served, warn, err := checkNamedTA(context.Background(), seedRender{chart: s.release}, installTA, values)
 	if err != nil || served != nil || !strings.Contains(warn, "cannot read the allowlist") {
 		t.Fatalf("checkNamedCDS = (%v, %q, %v), want unknown policy and a warning", served, warn, err)
 	}
 }
 
-// --allowlist-seed-out is the render an operator needs before the CDS exists.
+// --allowlist-seed-out is the render an operator needs before the Trust Authority exists.
 func TestInstallWritesTheAllowlistSeedAndStops(t *testing.T) {
 	s := newInstallStubs(t, "", false)
 	s.f.tool(t, "kubectl", clusterKubectl(t, s.applied, ""))
@@ -161,16 +161,16 @@ func TestInstallWritesTheAllowlistSeedAndStops(t *testing.T) {
 	mustNotContainPrefix(t, calls, "helm upgrade")
 	mustNotContainPrefix(t, calls, "kubectl apply")
 
-	// The render precedes the CDS it is configured into, so it names none.
+	// The render precedes the Trust Authority it is configured into, so it names none.
 	err = runC8s(t, "install", "--platform=aks-snp", "--force", flagArg(flagSeedOut), out,
-		flagArg(flagCDSAddress), installCDSAddressUnreachable,
-		flagArg(flagCDSPin), cdsPinFile(t, []string{installSeedEntryName}, "192.0.2.0/24"))
+		flagArg(flagTAAddress), installTAAddressUnreachable,
+		flagArg(flagTAPin), taPinFile(t, []string{installSeedEntryName}, "192.0.2.0/24"))
 	if err == nil || !strings.Contains(err.Error(), "runs before") {
-		t.Fatalf("install = %v, want the refusal to name a CDS while writing its seed", err)
+		t.Fatalf("install = %v, want the refusal to name a Trust Authority while writing its seed", err)
 	}
 }
 
-// The CDS dials a node's admission inventory inside its configured subnets, so
+// The Trust Authority dials a node's admission inventory inside its configured subnets, so
 // a subnet holding pod addresses would let a pod answer as that inventory.
 func TestInstallRefusesNodeSubnetsHoldingPodAddresses(t *testing.T) {
 	s := newInstallStubs(t, "", false)
@@ -178,8 +178,8 @@ func TestInstallRefusesNodeSubnetsHoldingPodAddresses(t *testing.T) {
 
 	// The stubbed node assigns pod addresses from 10.42.0.0/24.
 	err := runC8s(t, "install", "--platform=aks-snp", "--wait=false", "--force",
-		flagArg(flagCDSAddress), installCDSAddressUnreachable,
-		flagArg(flagCDSPin), cdsPinFile(t, []string{installSeedEntryName}, "10.42.0.0/16"))
+		flagArg(flagTAAddress), installTAAddressUnreachable,
+		flagArg(flagTAPin), taPinFile(t, []string{installSeedEntryName}, "10.42.0.0/16"))
 	if err == nil || !strings.Contains(err.Error(), "where this cluster's pods answer") {
 		t.Fatalf("install = %v, want the overlapping node-subnet refusal", err)
 	}
@@ -187,7 +187,7 @@ func TestInstallRefusesNodeSubnetsHoldingPodAddresses(t *testing.T) {
 }
 
 // A CNI that owns IP allocation leaves spec.podCIDR empty, so nothing in the
-// cluster states the range the CDS's node subnets must stay out of: the
+// cluster states the range the Trust Authority's node subnets must stay out of: the
 // operator states it with --pod-cidr, and the pods answering check the claim.
 func TestInstallPodCIDRWhereNodesPublishNone(t *testing.T) {
 	t.Run("refused without --pod-cidr", func(t *testing.T) {
@@ -246,8 +246,8 @@ func TestInstallPodCIDRWhereNodesPublishNone(t *testing.T) {
 		s.f.tool(t, "kubectl", overlayKubectl(t, s.applied, podAt("ws", "app", "10.244.0.5")))
 		err := runC8s(t, "install", "--platform=aks-snp", "--wait=false", "--force",
 			flagArg(flagPodCIDR), "10.244.0.0/16",
-			flagArg(flagCDSAddress), installCDSAddressUnreachable,
-			flagArg(flagCDSPin), cdsPinFile(t, []string{installSeedEntryName}, "10.244.1.0/24"))
+			flagArg(flagTAAddress), installTAAddressUnreachable,
+			flagArg(flagTAPin), taPinFile(t, []string{installSeedEntryName}, "10.244.1.0/24"))
 		if err == nil || !strings.Contains(err.Error(), "where this cluster's pods answer") {
 			t.Fatalf("install = %v, want the overlapping node-subnet refusal", err)
 		}

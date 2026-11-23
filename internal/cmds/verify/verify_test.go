@@ -1286,8 +1286,8 @@ func TestNewCmdDefaults(t *testing.T) {
 	})
 
 	t.Run("preset", func(t *testing.T) {
-		cmd := NewCmd(Defaults{Use: "verify", Short: "Verify the CDS", Kind: "ta", Mode: "armtls-cert"})
-		if cmd.Use != "verify" || cmd.Short != "Verify the CDS" {
+		cmd := NewCmd(Defaults{Use: "verify", Short: "Verify the Trust Authority", Kind: "ta", Mode: "armtls-cert"})
+		if cmd.Use != "verify" || cmd.Short != "Verify the Trust Authority" {
 			t.Errorf("Use/Short = %q/%q, presets not applied", cmd.Use, cmd.Short)
 		}
 		if got := cmd.Flags().Lookup("kind").DefValue; got != "ta" {
@@ -1398,7 +1398,7 @@ func TestRenderTextSections(t *testing.T) {
 			"cert sha256:  cert-digest-hex",
 			"sandbox id:   sandbox-1",
 			"vouched by the mesh CA",
-			"operator keys (allowlist writes; CDS-reported config, NOT covered by the measurement):",
+			"operator keys (allowlist writes; Trust Authority-reported config, NOT covered by the measurement):",
 			"    sha256(SPKI DER):fp-one",
 		} {
 			if !strings.Contains(got, want) {
@@ -1716,7 +1716,7 @@ func TestRun_UsageAndGatherFailures(t *testing.T) {
 
 	t.Run("unknown kind is a usage error before evidence is read", func(t *testing.T) {
 		absent := filepath.Join(t.TempDir(), "absent")
-		for _, kind := range []string{"bogus", "CDS"} {
+		for _, kind := range []string{"bogus", "Trust Authority"} {
 			var out, errOut bytes.Buffer
 			code := run(context.Background(), config{fromFile: absent, kind: kind}, &out, &errOut)
 			if code != exitUsage {

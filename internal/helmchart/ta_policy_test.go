@@ -25,7 +25,7 @@ func TestChartComponentsCarryNoPolicyFlags(t *testing.T) {
 	}
 }
 
-// The ConfigMap the installer copies to each node carries the CDS endpoint
+// The ConfigMap the installer copies to each node carries the Trust Authority endpoint
 // beside its pin.
 func TestChartHandsTheNodeItsCDSAddress(t *testing.T) {
 	t.Parallel()
@@ -35,7 +35,7 @@ func TestChartHandsTheNodeItsCDSAddress(t *testing.T) {
 	}
 	data := renderedConfigMap(t, out, "c8s-measurements").Data
 	if data["cds.json"] == "" {
-		t.Fatal("the CDS pin reaches no node")
+		t.Fatal("the Trust Authority pin reaches no node")
 	}
 	if got := data["cds-address"]; got != baseCDSAddress {
 		t.Fatalf("cds-address = %q, want %q", got, baseCDSAddress)
@@ -43,10 +43,10 @@ func TestChartHandsTheNodeItsCDSAddress(t *testing.T) {
 }
 
 // A pin below schema 2 carries no launch file, which is the only thing
-// binding a CDS VM to the configuration it serves.
+// binding a Trust Authority VM to the configuration it serves.
 func TestChartRefusesACDSPinThatBindsNoLaunchFile(t *testing.T) {
 	t.Parallel()
-	flat := writeMeasurementsConfig(t, `{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"cds","measurement":"`+baseCDSDigest+`"}]}`)
+	flat := writeMeasurementsConfig(t, `{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"cds","measurement":"`+baseTADigest+`"}]}`)
 	out, err := helmTemplateUnpinned(t, cloudChartDir, "--set-string", "cds.address="+baseCDSAddress, "--set-file", "cds.measurementsConfig="+flat)
 	if err == nil {
 		t.Fatalf("helm template accepted a pin binding no launch file\n%s", out)
@@ -58,7 +58,7 @@ func TestChartRefusesACDSPinThatBindsNoLaunchFile(t *testing.T) {
 
 func TestChartTrustAuthorityValuesPreserveRenderedPolicy(t *testing.T) {
 	t.Parallel()
-	pin := baseCDSPin(t)
+	pin := baseTAPin(t)
 	keys := "-----BEGIN PUBLIC KEY-----\nMFkw\n-----END PUBLIC KEY-----\n"
 	legacy := []string{
 		"--set-string", "cds.address=" + baseCDSAddress,
@@ -87,9 +87,9 @@ func TestChartTrustAuthorityValuesPreserveRenderedPolicy(t *testing.T) {
 
 func TestChartRefusesConflictingTrustAuthorityValues(t *testing.T) {
 	t.Parallel()
-	pin := baseCDSPin(t)
-	otherPin := writeMeasurementsConfig(t, strings.ReplaceAll(baseCDSPinDocument(t), baseCDSDigest, strings.Repeat("cd", len(baseCDSDigest)/2)))
-	legacy := baseCDSPolicy(t)
+	pin := baseTAPin(t)
+	otherPin := writeMeasurementsConfig(t, strings.ReplaceAll(baseTAPinDocument(t), baseTADigest, strings.Repeat("cd", len(baseTADigest)/2)))
+	legacy := baseTAPolicy(t)
 	for _, tc := range []struct {
 		name string
 		args []string

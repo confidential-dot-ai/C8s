@@ -142,10 +142,10 @@ func TestImagePreflightUsesServedWorkloadAndInitDigests(t *testing.T) {
 	}
 	out.Reset()
 	if _, err := preflightImagePolicy(&out, values, nil, nil, "c8s-system", pods, false); err == nil || !strings.Contains(err.Error(), "cannot confirm coverage") {
-		t.Fatalf("unavailable CDS must preserve the platform guard: %v", err)
+		t.Fatalf("unavailable Trust Authority must preserve the platform guard: %v", err)
 	}
 	if !strings.Contains(out.String(), "served-workload") || !strings.Contains(out.String(), "served-router") {
-		t.Errorf("unavailable CDS must report uncertain coverage:\n%s", out.String())
+		t.Errorf("unavailable Trust Authority must report uncertain coverage:\n%s", out.String())
 	}
 }
 

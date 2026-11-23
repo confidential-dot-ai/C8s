@@ -69,7 +69,7 @@ func isSecurityError(err error) bool {
 }
 
 // Defaults preset a command's target shape so `c8s ta verify` is a thin
-// shorthand for `c8s verify` with CDS conventions, sharing one implementation.
+// shorthand for `c8s verify` with the Trust Authority conventions, sharing one implementation.
 type Defaults struct {
 	// Use is the command's name ("verify").
 	Use string
@@ -180,7 +180,7 @@ Evidence sources:
   c8s verify https://lb.example.com:443 --kind lb --measurements <sha384-hex> --mesh-ca mesh-ca.pem
 
 A front door serving a CA-issued leaf is verified only with its mesh anchor;
-'c8s cds ca --out mesh-ca.pem' writes that file.
+'c8s ta ca --out mesh-ca.pem' writes that file.
 
 --mode attest-pq and attest-lb evidence binds the digest of the route
 manifest the router applied. Check it with exactly one of:
@@ -229,17 +229,17 @@ responder chose).`,
 	f.StringVar(&cfg.expectedRTMR3Hex, "expected-rtmr3", "", "DEPRECATED, prefer --rtmr 3=<sha384-hex>: identical pin under identical rules, one flag for every register. Retained so existing invocations keep working")
 	f.StringVar(&cfg.operatorPubkey, "operator-pkey", "", "path to the launch PUBLIC key PEM (the verbatim file bytes the guest initrd hashed, as written by 'openssl ec -pubout') — derives and pins RTMR[3] as the bare launch-key seed, SHA-384(0x00*48 ‖ SHA-384(pubkey)), so the register need not be computed by hand. Mutually exclusive with --expected-rtmr3, and like it a deployment property, NOT a cluster identity, so it requires --image-manifest. A node that measures its allowlist policies reports the seed followed by them: verify then replays the list the evidence carries (an attest-pq or attest-lb bundle's measured_policies, or a TDX certificate's or discovery document's runtime extensions) and reports the longest prefix that matches as the node's policy history, which --pin-policy and --trust-operator check; without either, a non-empty history leaves the verdict partial. TDX evidence only — with SNP evidence this is a policy error")
 	f.StringSliceVar(&cfg.rtmrs, "rtmr", nil, "expected TDX runtime measurement register(s) as <index>=<sha384-hex> (repeatable). RTMR[1] pins the guest kernel and RTMR[2] the kernel command line carrying the dm-verity root hash: these ARE the image, so pinning them by hand cannot be combined with --image-manifest, which pins the same two plus the MRTD from one provenanced build. RTMR[3] is the operator-key/workload chain extended inside whatever image the host booted, so --rtmr 3= REQUIRES --image-manifest — alone it would read as proof of identity while proving none. RTMR[0] is not pinnable. TDX evidence only — with SNP evidence any pin here is a policy error")
-	cmdsutil.BindImagePolicyFlags(f, &cfg.measurementsConfig, nil, "pins complete target identities; required for kind=ta, where every entry must bind the launch file that CDS runs on; excludes --measurements, --measurements-file and --image-manifest")
+	cmdsutil.BindImagePolicyFlags(f, &cfg.measurementsConfig, nil, "pins complete target identities; required for kind=ta, where every entry must bind the launch file that Trust Authority runs on; excludes --measurements, --measurements-file and --image-manifest")
 	f.StringVar(&cfg.operatorKeys, "operator-keys", "", "PEM bundle of expected operator public keys. kind=ta: verification fails unless the key set the attested target serves at /operator-keys matches it. --mode attest-pq/attest-lb: the manifest the router publishes at /.well-known/c8s/routes must verify under these keys, and its digest must be the one the evidence binds; refused with --kind ta")
 	f.StringVar(&cfg.routesFloor, "routes-floor", "", "with --operator-keys in attest-pq/attest-lb: <revision>:<route digest hex> last accepted; a published manifest with a lower revision, or the same revision and another digest, fails (rollback)")
 	f.StringSliceVar(&cfg.routeDigests, "route-digest", nil, "expected route digest(s) (repeatable / comma-separated), the hex SHA-256 of the route manifest bytes as 'c8s routes show' prints it; attest-pq and attest-lb evidence binds one, so evidence binding any other digest fails verification. These modes require this or --operator-keys")
-	f.StringVar(&cfg.servedPolicyFile, "served-policy-file", "", "path to a complete JSON image policy naming the exact set the target must serve and enforce at /measurements (kind=ta targets): the node identities a CDS admits, which are not its own. It asks for the served-set equality check; --image-policy-file pins the target's own identity. For a singleton CDS this is the file given to 'c8s cds config new --node-pins'; a replicated CDS takes node identities by signed command, so take it from the decree in force (docs/cds-ha.md)")
-	const refusedWithKindCDS = ". Refused with --kind ta: CDS's serving certificate is self-signed"
-	f.StringVar(&cfg.sandboxID, "sandbox-id", "", "expected CRI pod sandbox ID on the target's leaf; requires --mesh-ca, since CDS's signature on the leaf is what vouches for the ID (docs/armtls.md)"+refusedWithKindCDS)
-	f.StringVar(&cfg.clientDocument, "client-document", "", "file holding the exact client document the target Pod CVM was assigned; the leaf's client document digest must equal SHA-256 of these bytes. Requires --mesh-ca, since CDS's signature on the leaf is what vouches for the digest"+refusedWithKindCDS)
-	f.StringVar(&cfg.workload, "workload", "", "expected matched-workload name on the target's leaf; requires --mesh-ca, since CDS's signature on the leaf is what vouches for the stamp (docs/armtls.md)"+refusedWithKindCDS)
-	f.StringVar(&cfg.allowlistFile, "allowlist", "", "file holding the exact canonical allowlist bytes (as served by GET /allowlist); the leaf's stamped policy digest must equal SHA-256 of these bytes and the stamped name must resolve in the document. Requires --mesh-ca"+refusedWithKindCDS)
-	f.StringVar(&cfg.meshCA, "mesh-ca", "", "PEM bundle of the CDS mesh CA; when set, the target's leaf must chain to it, which is what authenticates the reported sandbox ID. On attest-pq and attest-lb it is also what upgrades the chain anchor from responder-chosen (partial verdict) to verified"+refusedWithKindCDS)
+	f.StringVar(&cfg.servedPolicyFile, "served-policy-file", "", "path to a complete JSON image policy naming the exact set the target must serve and enforce at /measurements (kind=ta targets): the node identities a Trust Authority admits, which are not its own. It asks for the served-set equality check; --image-policy-file pins the target's own identity. For a singleton Trust Authority this is the file given to 'c8s ta config new --node-pins'; a replicated Trust Authority takes node identities by signed command, so take it from the decree in force (docs/ta-ha.md)")
+	const refusedWithKindTA = ". Refused with --kind ta: Trust Authority's serving certificate is self-signed"
+	f.StringVar(&cfg.sandboxID, "sandbox-id", "", "expected CRI pod sandbox ID on the target's leaf; requires --mesh-ca, since the Trust Authority's signature on the leaf is what vouches for the ID (docs/armtls.md)"+refusedWithKindTA)
+	f.StringVar(&cfg.clientDocument, "client-document", "", "file holding the exact client document the target Pod CVM was assigned; the leaf's client document digest must equal SHA-256 of these bytes. Requires --mesh-ca, since the Trust Authority's signature on the leaf is what vouches for the digest"+refusedWithKindTA)
+	f.StringVar(&cfg.workload, "workload", "", "expected matched-workload name on the target's leaf; requires --mesh-ca, since the Trust Authority's signature on the leaf is what vouches for the stamp (docs/armtls.md)"+refusedWithKindTA)
+	f.StringVar(&cfg.allowlistFile, "allowlist", "", "file holding the exact canonical allowlist bytes (as served by GET /allowlist); the leaf's stamped policy digest must equal SHA-256 of these bytes and the stamped name must resolve in the document. Requires --mesh-ca"+refusedWithKindTA)
+	f.StringVar(&cfg.meshCA, "mesh-ca", "", "PEM bundle of the Trust Authority mesh CA; when set, the target's leaf must chain to it, which is what authenticates the reported sandbox ID. On attest-pq and attest-lb it is also what upgrades the chain anchor from responder-chosen (partial verdict) to verified"+refusedWithKindTA)
 	f.StringVar(&cfg.initDataHex, "init-data", "", "expected init-data digest: SHA-256 hex of the init-data document the target guest must carry. Verification fails unless the evidence commits exactly this digest")
 	f.BoolVar(&cfg.allowDebug, "allow-debug", false, "accept debug-enabled guests")
 	const tcbSNPOnly = " (SEV-SNP evidence only — TDX carries no such component, so against TDX evidence this is a policy error rather than an ignored flag)"
@@ -331,8 +331,8 @@ func run(ctx context.Context, cfg config, out, errOut io.Writer) int {
 	var ev *evidence
 	fetch := attestedFetcher(fetchAttested)
 	if cfg.fromFile == "" && cfg.kind == "ta" && resolveMode(cfg) == "armtls-cert" {
-		var attempt *cdsAttempt
-		attempt, err = openCDSAttempt(ctx, cfg, leafTrust{meshCA: plan.meshCA})
+		var attempt *taAttempt
+		attempt, err = openTAAttempt(ctx, cfg, leafTrust{meshCA: plan.meshCA})
 		if err == nil {
 			defer attempt.close()
 			ev, fetch = attempt.evidence, attempt.fetch
@@ -376,7 +376,7 @@ func targetDescription(cfg config) string {
 }
 
 // operatorKeysReport is the pinned-operator-key section of the verdict. Keys
-// authorize allowlist writes on CDS. The list is CDS-reported config, fetched
+// authorize allowlist writes on the Trust Authority. The list is Trust Authority-reported config, fetched
 // over the attested serving cert; --operator-keys turns it into a check.
 type operatorKeysReport struct {
 	fingerprints []string
@@ -385,7 +385,7 @@ type operatorKeysReport struct {
 	fetchErr     error  // non-nil when the fetch was attempted and failed
 }
 
-// gatherOperatorKeys fetches the CDS-pinned operator key fingerprints for
+// gatherOperatorKeys fetches the Trust Authority-pinned operator key fingerprints for
 // kind=ta network targets. For any other kind (including the default auto)
 // the fetch is skipped, and the skip is announced via a note so the rendered
 // verdict never silently omits it. The fetch is bound to the attested serving

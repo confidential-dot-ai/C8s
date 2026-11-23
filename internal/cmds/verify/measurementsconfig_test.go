@@ -18,7 +18,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 )
 
-// loadNodeIdentities returns the testdata fixture as CDS serves it (server
+// loadNodeIdentities returns the testdata fixture as Trust Authority serves it (server
 // plus agent entries) and narrowed to the server entry a client pins.
 func loadNodeIdentities(t *testing.T) (serverOnly, serverAndAgent refvalues.ReferenceValues) {
 	t.Helper()
@@ -167,7 +167,7 @@ func TestCheckServedMeasurementsReportsPlatformMismatch(t *testing.T) {
 
 // End to end over HTTPS: the fetch must read a real served document, and must
 // refuse a server whose certificate is not the one that was attested — that
-// binding is what stops a substituted endpoint answering for CDS.
+// binding is what stops a substituted endpoint answering for Trust Authority.
 func TestFetchServedMeasurementsBindsToTheAttestedCert(t *testing.T) {
 	doc, err := refvalues.Format(mcSet(t, `{"name":"a","measurement":"00`+mcDigestA+`"}`))
 	if err != nil {
@@ -221,7 +221,7 @@ func TestFetchServedMeasurementsReportsAMissingEndpoint(t *testing.T) {
 	}
 }
 
-// A CDS serves the node identities it admits, which are not its own, so the
+// A Trust Authority serves the node identities it admits, which are not its own, so the
 // served-set check runs from --served-policy-file alone.
 func TestCheckServedPolicyUsesTheServedPolicyFile(t *testing.T) {
 	serverOnly, serverAndAgent := loadNodeIdentities(t)
@@ -272,7 +272,7 @@ func TestCheckServedPolicyNamesTheFlagOnAnUncheckedTarget(t *testing.T) {
 }
 
 // gatherMeasurements must run when --served-policy-file alone asked for the
-// check; a silent skip would let a substituted CDS policy pass.
+// check; a silent skip would let a substituted Trust Authority policy pass.
 func TestGatherMeasurementsRunsForServedPolicyFileAlone(t *testing.T) {
 	report := gatherMeasurements(context.Background(), config{kind: "lb"}, &verifyPlan{served: &refvalues.ReferenceValues{}}, &evidence{}, fetchAttested)
 	if report.note == "" {

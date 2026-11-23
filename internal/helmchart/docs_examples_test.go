@@ -32,11 +32,11 @@ func TestOperatorDocHelmTemplateExamples(t *testing.T) {
 	if len(examples) == 0 {
 		t.Fatal("docs/operator.md has no helm template example")
 	}
-	// The examples read the CDS pin an operator has beside them, and name the
+	// The examples read the Trust Authority pin an operator has beside them, and name the
 	// chart and its files relative to the repository, so they run in a
 	// directory holding that pin against the charts' absolute paths.
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "cds-pin.json"), []byte(baseCDSPinDocument(t)), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "cds-pin.json"), []byte(baseTAPinDocument(t)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	chart := "helm template c8s " + cloudChartDir

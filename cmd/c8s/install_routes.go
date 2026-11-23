@@ -115,10 +115,10 @@ func (u upstreamRoutes) apply(m *pkgroutes.Manifest, now time.Time) ([]byte, err
 	return manifest, nil
 }
 
-// installCDSURL is the CDS this release names, as its clients dial it: the
+// installTAURL is the Trust Authority this release names, as its clients dial it: the
 // <host>:<port> it serves on outside the cluster, which the install reaches
 // directly.
-func installCDSURL(values map[string]any) (string, error) {
+func installTAURL(values map[string]any) (string, error) {
 	ta, err := trustAuthorityValues(values)
 	if err != nil {
 		return "", err
@@ -142,12 +142,12 @@ func installOperatorKeyPath() string {
 	return os.Getenv(taconn.EnvOperatorKey)
 }
 
-// installCDSConn is how install reaches CDS: under the pin document the chart
+// installTAConn is how install reaches Trust Authority: under the pin document the chart
 // holds it to.
-func installCDSConn(url string) *taconn.Options {
+func installTAConn(url string) *taconn.Options {
 	pin := ""
-	if installCDS != nil {
-		pin = installCDS.path
+	if installTA != nil {
+		pin = installTA.path
 	}
 	return &taconn.Options{
 		URL:                url,
@@ -163,8 +163,8 @@ const maxManifestAge = (1<<31 - 1) * time.Second
 // preflightUpstreamRoutes fails before the cluster is touched when the
 // --upstream manifest could not be built or stored: a route flag without
 // --upstream, a --routes-max-age out of D4's range, or an --operator-key that
-// is unreadable, faces an unpinned CDS endpoint, or is not among the operator
-// keys this install gives CDS.
+// is unreadable, faces an unpinned Trust Authority endpoint, or is not among the operator
+// keys this install gives Trust Authority.
 func preflightUpstreamRoutes() error {
 	if installUpstream == "" {
 		for _, f := range []struct {
@@ -183,7 +183,7 @@ func preflightUpstreamRoutes() error {
 	if installOperatorKeyPath() == "" {
 		return nil
 	}
-	o := installCDSConn("https://cds")
+	o := installTAConn("https://cds")
 	signer, err := o.Signer()
 	if err != nil {
 		return err
@@ -197,7 +197,7 @@ func preflightUpstreamRoutes() error {
 		return err
 	}
 	if err := operatorauth.VerifyStored(keys, strings.TrimPrefix(token, "Bearer "), http.MethodPut, pkgroutes.Path, nil); err != nil {
-		return fmt.Errorf("--%s is not among the operator keys in %s, so CDS would refuse the route manifest it signs", flagOperatorKey, source)
+		return fmt.Errorf("--%s is not among the operator keys in %s, so the Trust Authority would refuse the route manifest it signs", flagOperatorKey, source)
 	}
 	return nil
 }
@@ -217,7 +217,7 @@ func installedOperatorKeys() (keys []*ecdsa.PublicKey, source string, err error)
 		pemBytes, source = []byte(values["operatorKeys"]), "ta.operatorKeys from the values files"
 	}
 	if len(bytes.TrimSpace(pemBytes)) == 0 {
-		return nil, "", fmt.Errorf("--%s needs CDS to trust its public key: pass --operator-keys", flagOperatorKey)
+		return nil, "", fmt.Errorf("--%s needs Trust Authority to trust its public key: pass --operator-keys", flagOperatorKey)
 	}
 	keys, err = operatorauth.ParsePublicKeysPEM(pemBytes)
 	if err != nil {
@@ -226,25 +226,25 @@ func installedOperatorKeys() (keys []*ecdsa.PublicKey, source string, err error)
 	return keys, source, nil
 }
 
-// deliverUpstreamRoutes stores the --upstream routes on CDS when an operator
+// deliverUpstreamRoutes stores the --upstream routes on the Trust Authority when an operator
 // key is available and returns the digest a client pins for what it stored.
 // Without a key, or when storing fails, it writes them to --routes-out and
 // prints how to store them. The router answers 503 until a manifest is stored.
-func deliverUpstreamRoutes(ctx context.Context, w io.Writer, u upstreamRoutes, cdsURL string, entries map[string]adoptedEntry) (string, error) {
+func deliverUpstreamRoutes(ctx context.Context, w io.Writer, u upstreamRoutes, taURL string, entries map[string]adoptedEntry) (string, error) {
 	if installOperatorKeyPath() == "" {
-		return "", writeUpstreamRoutes(w, u, cdsURL, entries, nil, nil)
+		return "", writeUpstreamRoutes(w, u, taURL, entries, nil, nil)
 	}
-	manifest, pin, err := storeUpstreamRoutes(ctx, w, u, cdsURL, entries)
+	manifest, pin, err := storeUpstreamRoutes(ctx, w, u, taURL, entries)
 	if err == nil {
 		return pin, nil
 	}
-	if werr := writeUpstreamRoutes(w, u, cdsURL, entries, manifest, err); werr != nil {
+	if werr := writeUpstreamRoutes(w, u, taURL, entries, manifest, err); werr != nil {
 		return "", fmt.Errorf("store the route manifest: %w; %w", err, werr)
 	}
 	return "", fmt.Errorf("store the route manifest: %w; after fixing the cause, add the route as printed above, or re-run install", err)
 }
 
-// storedManifestError is a failure to use the route manifest CDS stores, so
+// storedManifestError is a failure to use the route manifest Trust Authority stores, so
 // writing a new one in its place would drop its routes.
 type storedManifestError struct{ error }
 
@@ -255,11 +255,11 @@ type revisionError struct{ error }
 
 func (e revisionError) Unwrap() error { return e.error }
 
-// storeUpstreamRoutes dials the CDS, checks that it names the adopted pod
+// storeUpstreamRoutes dials the Trust Authority, checks that it names the adopted pod
 // after its entry, and stores the routes. It returns the manifest it built,
 // if it got that far, and the digest a client pins for it.
 func storeUpstreamRoutes(ctx context.Context, w io.Writer, u upstreamRoutes, url string, entries map[string]adoptedEntry) ([]byte, string, error) {
-	o := installCDSConn(url)
+	o := installTAConn(url)
 	hc, err := o.HTTPClient(ctx)
 	if err != nil {
 		return nil, "", err
@@ -284,7 +284,7 @@ func storeUpstreamRoutes(ctx context.Context, w io.Writer, u upstreamRoutes, url
 	return putUpstreamRoutes(ctx, w, c, signer, u)
 }
 
-// putUpstreamRoutes adds the routes to the manifest CDS stores and stores the
+// putUpstreamRoutes adds the routes to the manifest Trust Authority stores and stores the
 // next revision. It returns the manifest it built, stored or not, and the
 // digest a client pins for it: none while a staged notBefore holds the router
 // on the manifest it applied.
@@ -311,7 +311,7 @@ func putUpstreamRoutes(ctx context.Context, w io.Writer, c routesclient.Client, 
 	if m.NotBefore.After(now) {
 		pin, applies = "", ", applies at "+m.NotBefore.Format(time.RFC3339)
 	}
-	fmt.Fprintf(w, "+ stored route manifest revision %d on CDS (digest %s): %s%s\n", m.Revision, manifestDigest(manifest), u.describe(), applies)
+	fmt.Fprintf(w, "+ stored route manifest revision %d on the Trust Authority (digest %s): %s%s\n", m.Revision, manifestDigest(manifest), u.describe(), applies)
 	return manifest, pin, nil
 }
 
@@ -341,9 +341,9 @@ func anyProcess(w pkgallowlist.Workload) pkgallowlist.Workload {
 }
 
 // checkServedEntry fails unless the served allowlist names the adopted pod
-// after its own entry: CDS stamps that name on the pod's certificate only
+// after its own entry: Trust Authority stamps that name on the pod's certificate only
 // when exactly that entry describes its containers, and the router refuses
-// the backend otherwise. A persistent CDS keeps a stored entry by name over the
+// the backend otherwise. A persistent Trust Authority keeps a stored entry by name over the
 // seed, so an entry from an earlier install, or a leftover per-digest one, can
 // shadow the one this install wrote.
 func checkServedEntry(al *pkgallowlist.Allowlist, name string, pod []pkgallowlist.RunningContainer) error {
@@ -351,27 +351,27 @@ func checkServedEntry(al *pkgallowlist.Allowlist, name string, pod []pkgallowlis
 	// describers treats every entry as if it did.
 	own, ok := al.Workloads[name]
 	if ok && pinsProcess(own) {
-		return fmt.Errorf("CDS serves an allowlist entry %s that pins its containers' command, args or env, which install cannot check against the pod; make sure the pod satisfies them, or replace the entry with `c8s allowlist apply`, then re-run install", name)
+		return fmt.Errorf("Trust Authority serves an allowlist entry %s that pins its containers' command, args or env, which install cannot check against the pod; make sure the pod satisfies them, or replace the entry with `c8s allowlist apply`, then re-run install", name)
 	}
 	names := describers(al.Workloads, pod)
 	switch {
 	case len(names) > 1:
-		return fmt.Errorf("CDS serves allowlist entries %s that all describe the %s pod, so it stamps none on its certificate and the router refuses the backend; delete the stale ones with `c8s allowlist delete`, then re-run install", strings.Join(names, ", "), name)
+		return fmt.Errorf("Trust Authority serves allowlist entries %s that all describe the %s pod, so it stamps none on its certificate and the router refuses the backend; delete the stale ones with `c8s allowlist delete`, then re-run install", strings.Join(names, ", "), name)
 	case len(names) == 0 && ok:
-		return fmt.Errorf("CDS serves an allowlist entry %s that does not describe the pod install adopts (kept from an earlier install: a persistent CDS keeps stored entries over the seed); update it with `c8s allowlist apply`, then re-run install", name)
+		return fmt.Errorf("Trust Authority serves an allowlist entry %s that does not describe the pod install adopts (kept from an earlier install: a persistent Trust Authority keeps stored entries over the seed); update it with `c8s allowlist apply`, then re-run install", name)
 	case len(names) == 0:
-		return fmt.Errorf("CDS serves no allowlist entry describing the %s pod, so the router would refuse the backend; add one named %s with `c8s allowlist apply`, then re-run install", name, name)
+		return fmt.Errorf("Trust Authority serves no allowlist entry describing the %s pod, so the router would refuse the backend; add one named %s with `c8s allowlist apply`, then re-run install", name, name)
 	case names[0] != name:
-		return fmt.Errorf("CDS serves allowlist entry %s, not %s, as the one describing the %s pod, so the router would refuse the backend; delete or update %s, then re-run install", names[0], name, name, names[0])
+		return fmt.Errorf("Trust Authority serves allowlist entry %s, not %s, as the one describing the %s pod, so the router would refuse the backend; delete or update %s, then re-run install", names[0], name, name, names[0])
 	}
 	return nil
 }
 
-// storedManifest returns the manifest to add the routes to: a new one when CDS
+// storedManifest returns the manifest to add the routes to: a new one when the Trust Authority
 // stores none, else the stored one, verified first against the operator keys
-// this install gives CDS, since install re-signs every route in it. The
+// this install gives Trust Authority, since install re-signs every route in it. The
 // stored one keeps its maxAgeSeconds. ifMatch is the stored manifest's digest
-// for the If-Match of the write, empty when CDS stores none.
+// for the If-Match of the write, empty when the Trust Authority stores none.
 func storedManifest(ctx context.Context, c routesclient.Client) (m *pkgroutes.Manifest, ifMatch string, err error) {
 	env, err := c.Get(ctx)
 	if errors.Is(err, routesclient.ErrNotFound) {
@@ -382,7 +382,7 @@ func storedManifest(ctx context.Context, c routesclient.Client) (m *pkgroutes.Ma
 	}
 	keys, source, err := installedOperatorKeys()
 	if err != nil {
-		return nil, "", storedManifestError{fmt.Errorf("CDS already stores a route manifest, which install verifies before re-signing it: %w", err)}
+		return nil, "", storedManifestError{fmt.Errorf("Trust Authority already stores a route manifest, which install verifies before re-signing it: %w", err)}
 	}
 	// install holds no mesh CA set; the router refuses a mesh CA anchor itself.
 	signed, err := pkgroutes.VerifySigned(env, keys, nil)
@@ -399,7 +399,7 @@ func storedManifest(ctx context.Context, c routesclient.Client) (m *pkgroutes.Ma
 // preflightRoutesOut refuses, before the cluster is touched, to overwrite a
 // file at the default --routes-out.
 func preflightRoutesOut() error {
-	// With --operator-key the file is written only when CDS refuses the
+	// With --operator-key the file is written only when the Trust Authority refuses the
 	// manifest, after the install; refusing now keeps that manifest.
 	if installUpstream == "" || installRoutesOutSet {
 		return nil
@@ -433,9 +433,9 @@ func writeRoutesOut(manifest []byte) error {
 // `c8s routes add`, which re-reads and keeps any stored routes. cause is why
 // storing failed, nil when install did not try. It offers `c8s routes put`
 // only when install attempted no PUT (manifest is nil) and cause does not
-// show that CDS stores a manifest, since putting drops the stored routes. A
+// show that Trust Authority stores a manifest, since putting drops the stored routes. A
 // cause that refuses the revision drops --revision from the add commands.
-func writeUpstreamRoutes(w io.Writer, u upstreamRoutes, cdsURL string, entries map[string]adoptedEntry, manifest []byte, cause error) error {
+func writeUpstreamRoutes(w io.Writer, u upstreamRoutes, taURL string, entries map[string]adoptedEntry, manifest []byte, cause error) error {
 	var status *operatorauth.StatusError
 	badRevision := errors.As(cause, new(revisionError)) || errors.As(cause, &status) && status.Status == http.StatusConflict && !cliroutes.SpentToken(cause)
 	offerPut := manifest == nil && !errors.As(cause, new(storedManifestError))
@@ -450,9 +450,9 @@ func writeUpstreamRoutes(w io.Writer, u upstreamRoutes, cdsURL string, entries m
 		return err
 	}
 	operatorKey, operatorKeys := cmp.Or(installOperatorKeyPath(), "<operator-key.pem>"), installOperatorKeysFlag()
-	conn := "--url " + cdsURL + " " + installPinFlags() + " --operator-key " + operatorKey
+	conn := "--url " + taURL + " " + installPinFlags() + " --operator-key " + operatorKey
 	// Printed before the write, so a refused --routes-out still shows them.
-	fmt.Fprintf(w, "+ the router answers 503 until CDS stores a route manifest. Add the route with:\n")
+	fmt.Fprintf(w, "+ the router answers 503 until the Trust Authority stores a route manifest. Add the route with:\n")
 	for i, host := range u.hosts {
 		revision := ""
 		if installRoutesRevision != 0 && !badRevision {
@@ -465,28 +465,28 @@ func writeUpstreamRoutes(w io.Writer, u upstreamRoutes, cdsURL string, entries m
 	}
 	fmt.Fprintf(w, "+ wrote route manifest revision %d to %s (digest %s): %s\n", m.Revision, installRoutesOut, manifestDigest(manifest), u.describe())
 	if offerPut {
-		fmt.Fprintf(w, "  Or, only if CDS stores no route manifest, store %s; it replaces a stored one and drops its other routes:\n", installRoutesOut)
+		fmt.Fprintf(w, "  Or, only if the Trust Authority stores no route manifest, store %s; it replaces a stored one and drops its other routes:\n", installRoutesOut)
 		fmt.Fprintf(w, "    c8s routes put %s %s\n", installRoutesOut, conn)
 	}
 	if _, ok := entries[u.workload]; ok {
-		fmt.Fprintf(w, "  The router reaches the backend only if CDS names its pod %s. A persistent CDS keeps\n", u.workload)
+		fmt.Fprintf(w, "  The router reaches the backend only if the Trust Authority names its pod %s. A persistent Trust Authority keeps\n", u.workload)
 		fmt.Fprintf(w, "  stored entries over this install's: check that %s is the only entry admitting the pod's images:\n", u.workload)
-		fmt.Fprintf(w, "    c8s allowlist list --url %s %s\n", cdsURL, installPinFlags())
+		fmt.Fprintf(w, "    c8s allowlist list --url %s %s\n", taURL, installPinFlags())
 	}
 	return nil
 }
 
 // installOperatorKeysFlag is the --operator-keys value a printed command
-// takes: the public bundle this install gives CDS.
+// takes: the public bundle this install gives Trust Authority.
 func installOperatorKeysFlag() string {
 	return cmp.Or(installOperatorKeys, "<operator-pub.pem>")
 }
 
 func installPinFlags() string {
-	if installCDS == nil {
-		return "--image-policy-file <the CDS pin document>"
+	if installTA == nil {
+		return "--image-policy-file <the Trust Authority pin document>"
 	}
-	return "--image-policy-file " + installCDS.path
+	return "--image-policy-file " + installTA.path
 }
 
 func (u upstreamRoutes) describe() string {

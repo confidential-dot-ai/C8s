@@ -61,13 +61,13 @@ func TestCDSPinPreflight(t *testing.T) {
 		{name: "pin alone", pin: "cds-pin.json", wantErr: true},
 		{name: "cds.address and cds.measurementsConfig", values: []string{named}},
 		{name: "cds.address alone", values: []string{addressOnly}, wantErr: true},
-		{name: "later file keeps the CDS", values: []string{addressOnly, named}},
+		{name: "later file keeps the Trust Authority", values: []string{addressOnly, named}},
 		{name: "later file drops the address", values: []string{named, emptied}, wantErr: true},
-		{name: "cds.operatorKeys names no CDS", values: []string{file("k.yaml", "cds:\n  operatorKeys: pem\n")}, wantErr: true},
-		{name: "router disabled still needs a CDS", values: []string{file("r.yaml", "router:\n  enabled: false\n")}, wantErr: true},
+		{name: "cds.operatorKeys names no Trust Authority", values: []string{file("k.yaml", "cds:\n  operatorKeys: pem\n")}, wantErr: true},
+		{name: "router disabled still needs a Trust Authority", values: []string{file("r.yaml", "router:\n  enabled: false\n")}, wantErr: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := cdsPreflight(tc.address, tc.pin, tc.values)
+			err := taPreflight(tc.address, tc.pin, tc.values)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("cdsPreflight() = %v, want error %v", err, tc.wantErr)
 			}
@@ -607,7 +607,7 @@ func TestBuildWorkloadImageArgsWritesOneEntryPerWorkload(t *testing.T) {
 		t.Fatalf("buildWorkloadImageValues() = %#v, want %#v", got, want)
 	}
 	// install hands these values to helm as a values file, so the entry in
-	// them must be one CDS accepts.
+	// them must be one Trust Authority accepts.
 	workloads, _ := nestedMap(got, "nriImagePolicy", "bootstrapAllowlist", "workloads")
 	raw, err := json.Marshal(workloads["infer"])
 	if err != nil {
@@ -628,7 +628,7 @@ func TestBuildWorkloadImageArgsWritesOneEntryPerWorkload(t *testing.T) {
 	if got, want := normalized(t, e.workload), normalized(t, *w); got != want {
 		t.Fatalf("entries[infer].workload = %s, want the entry helm renders, %s", got, want)
 	}
-	// The pod CDS sees runs every main, router twice; the init has exited.
+	// The pod Trust Authority sees runs every main, router twice; the init has exited.
 	var running []string
 	for _, r := range e.pod {
 		running = append(running, r.Digest)
@@ -643,7 +643,7 @@ func TestBuildWorkloadImageArgsWritesOneEntryPerWorkload(t *testing.T) {
 
 // TestBuildWorkloadImageArgsKeepsRoles: one image under two mount sets is
 // two declarations, an init container keeps its role, and a native sidecar
-// runs in the pod CDS matches.
+// runs in the pod Trust Authority matches.
 func TestBuildWorkloadImageArgsKeepsRoles(t *testing.T) {
 	busybox := "busybox@sha256:" + strings.Repeat("b", 64)
 	proxy := "proxy@sha256:" + strings.Repeat("e", 64)
@@ -851,7 +851,7 @@ func TestCheckAdoptedEntries(t *testing.T) {
 	}{
 		{"multi-container pod beside per-digest entries", map[string]corev1.PodTemplateSpec{"web": pod(dA, dB)}, values(perDigest, nil), ""},
 		{"single image with an unconstrained per-digest entry", map[string]corev1.PodTemplateSpec{"web": pod(dA)}, values(perDigest, nil), "entries a also admit"},
-		{"argv-pinned -f entry counts, as on CDS", map[string]corev1.PodTemplateSpec{"web": pod(dA)},
+		{"argv-pinned -f entry counts, as on the Trust Authority", map[string]corev1.PodTemplateSpec{"web": pod(dA)},
 			values(map[string]any{"a": map[string]any{"containers": []any{map[string]any{"digest": dA, "command": map[string]any{"policy": "exact", "argv": []any{"/serve"}}, "mounts": map[string]any{"policy": "any"}}}}}, nil), "entries a also admit"},
 		{"own -f entry is replaced", map[string]corev1.PodTemplateSpec{"web": pod(dA)}, values(map[string]any{"web": map[string]any{"containers": []any{anyContainer(dA)}}}, nil), ""},
 		{"two adoptions, one image set", map[string]corev1.PodTemplateSpec{"web": pod(dA, dB), "api": pod(dA, dB)}, values(nil, nil), "entries web also admit"},
@@ -1654,15 +1654,15 @@ func TestExemptNamespaceImages(t *testing.T) {
 // digest.
 func TestVerifyHintPrintsRunnableCommands(t *testing.T) {
 	const (
-		cdsURL = "https://cds.example:8443"
-		cdsPin = "/run/c8s/cds-pin.json"
+		taURL = "https://cds.example:8443"
+		taPin = "/run/c8s/cds-pin.json"
 	)
 	var buf bytes.Buffer
-	printVerifyHint(&buf, cdsURL, cdsPin, "<operator-pub.pem>", "")
+	printVerifyHint(&buf, taURL, taPin, "<operator-pub.pem>", "")
 
 	verifyArgs := hintCommandArgs(t, buf.String(), "c8s verify")
-	if slices.Contains(verifyArgs, cdsPin) {
-		t.Errorf("the front-door check names the CDS pin, which carries no node measurement:\n%s", buf.String())
+	if slices.Contains(verifyArgs, taPin) {
+		t.Errorf("the front-door check names the Trust Authority pin, which carries no node measurement:\n%s", buf.String())
 	}
 	if !slices.Contains(verifyArgs, "--route-digest") {
 		t.Errorf("the front-door check passes no --route-digest, which attest-lb requires:\n%s", buf.String())
@@ -1675,7 +1675,7 @@ func TestVerifyHintPrintsRunnableCommands(t *testing.T) {
 	if err := taca.NewCmd().ParseFlags(anchorArgs); err != nil {
 		t.Errorf("c8s ta ca %s: %v", strings.Join(anchorArgs, " "), err)
 	}
-	for _, want := range []string{cdsURL, cdsPin} {
+	for _, want := range []string{taURL, taPin} {
 		if !slices.Contains(anchorArgs, want) {
 			t.Errorf("the anchor command omits %q, which this install named:\n%s", want, buf.String())
 		}

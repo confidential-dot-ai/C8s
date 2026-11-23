@@ -1,4 +1,4 @@
-// The mesh endpoint's seeded launch. CDS serves the chart's seed and the node
+// The mesh endpoint's seeded launch. Trust Authority serves the chart's seed and the node
 // image bakes it, and the enforcer admits a container that either the measured
 // base or the served document admits — so a seed entry wider than the measured
 // base (images/node-guest/worker/image-policy.yaml.in) is what the mesh image may
@@ -83,7 +83,7 @@ func TestChartSeedPinsTheMeshEndpointLaunch(t *testing.T) {
 		"@ROUTER_DIGEST@":   chartImageDigest(t, componentsFile, "routerNginx", "image", "digest"),
 	}).BuildIndex()
 
-	// CDS refuses to issue a certificate to a pod running a digest its
+	// Trust Authority refuses to issue a certificate to a pod running a digest its
 	// allowlist does not list, so the entry stays, pinned rather than absent.
 	if !seed.AdmitsDigest(meshSeedDigest) {
 		t.Fatal("the seed lists no mesh digest, so no member pod is issued a certificate")

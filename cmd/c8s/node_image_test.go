@@ -268,10 +268,10 @@ func TestNodeImageRenderRejectsBadInputsBeforeHelm(t *testing.T) {
 	}
 }
 
-// bootstrapCDSPin is the pin `c8s cds config new` writes, built the way that
-// command builds it: this cluster's CDS configuration, bound to the launch
+// bootstrapTAPin is the pin `c8s ta config new` writes, built the way that
+// command builds it: this cluster's Trust Authority configuration, bound to the launch
 // digests of the image its VM boots.
-func bootstrapCDSPin(t *testing.T) string {
+func bootstrapTAPin(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	manifest := filepath.Join(dir, "cds-manifest.json")
@@ -340,8 +340,8 @@ func testNodeImageBootstrap(t *testing.T, seed []byte, platform string) {
 			t.Fatal(err)
 		}
 	}
-	cds := cmdsutil.CDS{Address: "192.0.2.50:8443", Measurements: bootstrapCDSPin(t)}
-	if err := nodeservices.Prepare(root, nodeservices.FloorInputs{CDS: cds}); err != nil {
+	ta := cmdsutil.CDS{Address: "192.0.2.50:8443", Measurements: bootstrapTAPin(t)}
+	if err := nodeservices.Prepare(root, nodeservices.FloorInputs{CDS: ta}); err != nil {
 		t.Fatalf("actual chart seed and measured NRI floor cannot boot: %v", err)
 	}
 	prepared, err := os.ReadFile(filepath.Join(root, "etc/nri/conf.d/image-policy.yaml"))

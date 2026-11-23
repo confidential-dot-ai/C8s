@@ -35,8 +35,8 @@ const (
 // publishes, 10.42.0.0/24.
 const testPinNodeCIDR = "192.0.2.0/24"
 
-// pinnedCDSPinFile is cdsPinDocument with the operator key fixed.
-func pinnedCDSPinFile(t *testing.T) string {
+// pinnedTAPinFile is taPinDocument with the operator key fixed.
+func pinnedTAPinFile(t *testing.T) string {
 	t.Helper()
 	config := strings.Join([]string{
 		"schemaVersion: c8s-cds/v1",
@@ -106,7 +106,7 @@ func pinnedInstallStubs(t *testing.T) *installStubs {
 "get deployment vllm -n ws -o json") /bin/cat '`+vllm+`' ;;
 "get deployment edge -n ws -o json") /bin/cat '`+edge+`' ;;
 `))
-	// One digest per adopted image: two entries at one digest would leave CDS
+	// One digest per adopted image: two entries at one digest would leave Trust Authority
 	// unable to tell which names the pod.
 	s.f.tool(t, "crane", `case "$2" in
 *vllm*) echo `+testPinVLLMDigest+` ;;
@@ -116,7 +116,7 @@ esac`)
 }
 
 // pinnedInstallBuilderFlags are the flags of every value builder the install
-// has beyond the image pins and the CDS, which it always computes.
+// has beyond the image pins and the Trust Authority, which it always computes.
 func pinnedInstallBuilderFlags(t *testing.T) map[string][]string {
 	t.Helper()
 	return map[string][]string{
@@ -135,11 +135,11 @@ func pinnedInstallBuilderFlags(t *testing.T) map[string][]string {
 func installComputedValues(t *testing.T, extra ...string) (computed []byte, stderr string) {
 	t.Helper()
 	s := pinnedInstallStubs(t)
-	pin := pinnedCDSPinFile(t)
+	pin := pinnedTAPinFile(t)
 	args := append([]string{
 		"install", "--platform=aks-snp", "--force",
-		flagArg(flagCDSAddress), installCDSAddressUnreachable,
-		flagArg(flagCDSPin), pin,
+		flagArg(flagTAAddress), installTAAddressUnreachable,
+		flagArg(flagTAPin), pin,
 	}, extra...)
 	var err error
 	stderr = captureStderr(t, func() { err = runC8s(t, args...) })
@@ -221,7 +221,7 @@ func installValueLeaves(t *testing.T, document []byte) map[string]string {
 }
 
 // wantPinnedComputedValues is the whole document, as helm and the operator
-// read it: the image pins, the CDS address and pin content, volumed, the pull
+// read it: the image pins, the Trust Authority address and pin content, volumed, the pull
 // secret, the operator keys' content and one entry per adopted workload.
 const wantPinnedComputedValues = `armtlsMesh:
     image:

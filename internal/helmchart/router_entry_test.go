@@ -302,7 +302,7 @@ func TestChartRouterEntryPresence(t *testing.T) {
 	}
 }
 
-// A changed digest or argv must seed a new entry: CDS skips a name it holds.
+// A changed digest or argv must seed a new entry: Trust Authority skips a name it holds.
 func TestChartRouterEntryNameTracksContent(t *testing.T) {
 	t.Parallel()
 	name := func(args ...string) string {

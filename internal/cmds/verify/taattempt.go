@@ -12,7 +12,7 @@ import (
 
 type attestedFetcher func(context.Context, string, string, string, time.Duration) (*http.Response, error)
 
-type cdsAttempt struct {
+type taAttempt struct {
 	evidence  *evidence
 	conn      *tls.Conn
 	transport *http.Transport
@@ -20,7 +20,7 @@ type cdsAttempt struct {
 	stop      func() bool
 }
 
-func openCDSAttempt(ctx context.Context, cfg config, trust leafTrust) (*cdsAttempt, error) {
+func openTAAttempt(ctx context.Context, cfg config, trust leafTrust) (*taAttempt, error) {
 	addr, base, err := normalizeTarget(cfg.url, defaultPort(cfg))
 	if err != nil {
 		return nil, err
@@ -33,7 +33,7 @@ func openCDSAttempt(ctx context.Context, cfg config, trust leafTrust) (*cdsAttem
 		return nil, err
 	}
 	var handedOut atomic.Bool
-	a := &cdsAttempt{evidence: ev, conn: conn, authority: addr}
+	a := &taAttempt{evidence: ev, conn: conn, authority: addr}
 	a.transport = &http.Transport{
 		DialTLSContext: func(context.Context, string, string) (net.Conn, error) {
 			if handedOut.Swap(true) {
@@ -46,13 +46,13 @@ func openCDSAttempt(ctx context.Context, cfg config, trust leafTrust) (*cdsAttem
 	return a, nil
 }
 
-func (a *cdsAttempt) close() {
+func (a *taAttempt) close() {
 	a.stop()
 	a.transport.CloseIdleConnections()
 	a.conn.Close()
 }
 
-func (a *cdsAttempt) fetch(ctx context.Context, endpoint, _ string, certSHA256 string, timeout time.Duration) (*http.Response, error) {
+func (a *taAttempt) fetch(ctx context.Context, endpoint, _ string, certSHA256 string, timeout time.Duration) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err

@@ -77,8 +77,8 @@ func TestChartDefaultRendersReplacementStack(t *testing.T) {
 		"--key-path=/etc/c8s/certs/tls.key",
 		"--renew-interval=1h",
 		"--continue-on-initial-error",
-		// The CA watch keeps the served mesh CA tracking the live CDS CA: a
-		// CDS restart regenerates the mesh CA in-memory, and without the watch
+		// The CA watch keeps the served mesh CA tracking the live Trust Authority CA: a
+		// Trust Authority restart regenerates the mesh CA in-memory, and without the watch
 		// the /.well-known/mesh-ca.pem discovery endpoint serves the dead CA
 		// until the next scheduled renewal.
 		"--ca-watch-interval=1m",
@@ -218,7 +218,7 @@ func nodeAffinityHasKey(ds appsv1.DaemonSet, key string) bool {
 }
 
 // The chart renders exactly one pull-mode installer DaemonSet, `-worker`, that
-// targets every node — there is no CDS/worker partition. The old push archetype
+// targets every node — there is no Trust Authority/worker partition. The old push archetype
 // (a role=cds-pinned `-cds` installer) is gone; this guards against it coming
 // back.
 func TestChartNriInstallerRendersSinglePullDaemonSet(t *testing.T) {
@@ -436,7 +436,7 @@ func assertContainerArgs(t *testing.T, c corev1.Container, want ...string) {
 
 // TestChartRejectsOperatorKeysPath pins the path-vs-content guard: a
 // cds.operatorKeys value that is a filesystem path (or any non-PEM string)
-// must fail the render with an instructive message, not ship a ConfigMap CDS
+// must fail the render with an instructive message, not ship a ConfigMap Trust Authority
 // will refuse at startup.
 func TestChartRejectsOperatorKeysPath(t *testing.T) {
 	t.Parallel()
@@ -584,7 +584,7 @@ func TestChartReleaseCarriesTheWorkloadCRD(t *testing.T) {
 }
 
 // TestChartLeavesTheInjectedCDSEndpointToTheNode proves the chart hands the
-// injected credential clients no CDS URL: the node's plugin does, from the CDS
+// injected credential clients no Trust Authority URL: the node's plugin does, from the Trust Authority
 // node port rendered here and its own address, which is the one endpoint the
 // pod ruleset admits.
 func TestChartLeavesTheInjectedCDSEndpointToTheNode(t *testing.T) {
@@ -604,7 +604,7 @@ func TestChartLeavesTheInjectedCDSEndpointToTheNode(t *testing.T) {
 			t.Fatalf("decode rendered document: %v", err)
 		}
 		if strings.Contains(string(doc), baseCDSAddress) && meta.Metadata.Name != "c8s-measurements" {
-			t.Fatalf("%s %q names the CDS address; only the ConfigMap the installer mounts may\n%s", meta.Kind, meta.Metadata.Name, doc)
+			t.Fatalf("%s %q names the Trust Authority address; only the ConfigMap the installer mounts may\n%s", meta.Kind, meta.Metadata.Name, doc)
 		}
 		return false
 	})
@@ -618,16 +618,16 @@ func TestChartNRIImagePolicyUsesPullMode(t *testing.T) {
 	}
 
 	workerCfg := renderedNRIBootConfig(t, out, "c8s-nri-image-policy-worker")
-	// The CDS reaches the plugin as two paths beside its config: no argument
+	// The Trust Authority reaches the plugin as two paths beside its config: no argument
 	// of the installer names the address or the pin it is served by.
 	if got, want := workerCfg.Allowlist.Pull.CDSAddressFile, "/etc/nri/conf.d/cds-address"; got != want {
-		t.Fatalf("worker CDS address file = %q, want %q", got, want)
+		t.Fatalf("worker Trust Authority address file = %q, want %q", got, want)
 	}
 	if got, want := workerCfg.Allowlist.Pull.CDSMeasurementsConfig, "/etc/nri/conf.d/cds.json"; got != want {
-		t.Fatalf("worker CDS pin = %q, want %q", got, want)
+		t.Fatalf("worker Trust Authority pin = %q, want %q", got, want)
 	}
 	if workerCfg.Allowlist.Pull.URL != "" {
-		t.Fatalf("worker pull URL = %q, want none: the address file names the CDS", workerCfg.Allowlist.Pull.URL)
+		t.Fatalf("worker pull URL = %q, want none: the address file names the Trust Authority", workerCfg.Allowlist.Pull.URL)
 	}
 	if got, want := workerCfg.Allowlist.Pull.Interval, "5s"; got != want {
 		t.Fatalf("worker pull interval = %q, want %q", got, want)
@@ -1574,7 +1574,7 @@ func TestChartRendersRouterAttestSidecar(t *testing.T) {
 		"--generation=milan",
 	}, routerRoutingArgs...)...)
 	assertContainerHasArgPrefix(t, "cds-attest", sidecar.Args, "--attestation-api-url=unix:///run/nri-image-policy/attestation-api.sock")
-	// --cds-url among them: the enforcer mounts the one CDS endpoint this
+	// --cds-url among them: the enforcer mounts the one Trust Authority endpoint this
 	// node admits for the router role, and cds-attest reads it there.
 	for _, banned := range []string{"--upstream", "--attest-endpoints", "--operator-keys-file", "--cds-measurements", "--cds-rtmrs", "--publish-routes", "--cds-url", "--mesh-identity-"} {
 		assertContainerNoArgPrefix(t, "cds-attest", sidecar.Args, banned)
@@ -1653,7 +1653,7 @@ func TestChartRouterRoutePublication(t *testing.T) {
 }
 
 // TestChartRouterCDSPins pins that cds-attest and allowlist-proxy verify the
-// same CDS: both take their pins from router.cdsPinArgs.
+// same Trust Authority: both take their pins from router.cdsPinArgs.
 func TestChartRouterCDSPins(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -1661,7 +1661,7 @@ func TestChartRouterCDSPins(t *testing.T) {
 		want    string
 		mounted bool
 	}{
-		{name: "an external CDS", chart: chartRender{render: helmTemplate}, want: "--image-policy-file=/mnt/c8s-data/measurements/cds.json", mounted: true},
+		{name: "an external Trust Authority", chart: chartRender{render: helmTemplate}, want: "--image-policy-file=/mnt/c8s-data/measurements/cds.json", mounted: true},
 		{name: "a worker", chart: chartRender{render: helmTemplateWorker}, want: "--image-policy-file=/run/c8s-node/cds.json"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1683,7 +1683,7 @@ func TestChartRouterCDSPins(t *testing.T) {
 }
 
 // TestChartRouterOperatorKeySource pins the router's operator-key source:
-// cds.operatorKeys when set, else CDS itself.
+// cds.operatorKeys when set, else Trust Authority itself.
 func TestChartRouterOperatorKeySource(t *testing.T) {
 	t.Parallel()
 	keys := []string{"--set-string", "cds.operatorKeys=-----BEGIN PUBLIC KEY-----\nMFkw\n-----END PUBLIC KEY-----\n"}
@@ -1693,7 +1693,7 @@ func TestChartRouterOperatorKeySource(t *testing.T) {
 		args     []string
 		wantKeys bool
 	}{
-		{name: "pinned CDS"},
+		{name: "pinned Trust Authority"},
 		{name: "pinned keys", args: keys, wantKeys: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1712,7 +1712,7 @@ func TestChartRouterOperatorKeySource(t *testing.T) {
 	}
 }
 
-// TestChartRefusesUnpinnedCDS renders each way a release names its CDS, the
+// TestChartRefusesUnpinnedCDS renders each way a release names its Trust Authority, the
 // address and pin of a VM outside the cluster, and the inputs that name none.
 func TestChartRefusesUnpinnedCDS(t *testing.T) {
 	t.Parallel()
@@ -1720,10 +1720,10 @@ func TestChartRefusesUnpinnedCDS(t *testing.T) {
 		name string
 		args []string
 	}{
-		{name: "cds.address and cds.measurementsConfig", args: baseCDSPolicy(t)},
+		{name: "cds.address and cds.measurementsConfig", args: baseTAPolicy(t)},
 		{
-			name: "a CDS named by a DNS name",
-			args: []string{"--set-string", "cds.address=cds.example.com:8443", "--set-file", "cds.measurementsConfig=" + baseCDSPin(t)},
+			name: "a Trust Authority named by a DNS name",
+			args: []string{"--set-string", "cds.address=cds.example.com:8443", "--set-file", "cds.measurementsConfig=" + baseTAPin(t)},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1733,7 +1733,7 @@ func TestChartRefusesUnpinnedCDS(t *testing.T) {
 			}
 		})
 	}
-	pin := []string{"--set-file", "cds.measurementsConfig=" + baseCDSPin(t)}
+	pin := []string{"--set-file", "cds.measurementsConfig=" + baseTAPin(t)}
 	for _, tc := range []struct {
 		name string
 		args []string
@@ -1743,13 +1743,13 @@ func TestChartRefusesUnpinnedCDS(t *testing.T) {
 		{name: "no pin", args: []string{"--set-string", "cds.address=" + baseCDSAddress}, want: "cds_pins_required"},
 		{name: "no address", args: pin, want: "cds_address_required"},
 		{name: "no port", args: append(pin, "--set-string", "cds.address=10.9.9.9"), want: "cds_address_required"},
-		{name: "an uppercase name", args: append(pin, "--set-string", "cds.address=CDS.example.com:8443"), want: "cds_address_required"},
+		{name: "an uppercase name", args: append(pin, "--set-string", "cds.address=TA.example.com:8443"), want: "cds_address_required"},
 		{name: "a URL, not an endpoint", args: append(pin, "--set-string", "cds.address=https://cds.example.com:8443"), want: "cds_address_required"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out, err := helmTemplateUnpinned(t, cloudChartDir, tc.args...)
 			if err == nil {
-				t.Fatalf("helm template accepted a release that names no CDS\n%s", out)
+				t.Fatalf("helm template accepted a release that names no Trust Authority\n%s", out)
 			}
 			if got := parseValidationErrorKind(out); got != tc.want {
 				t.Fatalf("validation kind = %q, want %s\n%s", got, tc.want, out)
@@ -1886,7 +1886,7 @@ func sortedMountNames(c corev1.Container) []string {
 	return names
 }
 
-// Both lanes rate-limit /allowlist per client and in aggregate below CDS's
+// Both lanes rate-limit /allowlist per client and in aggregate below Trust Authority's
 // own per-source bucket, which the whole front door shares.
 func TestRouterAllowlistRateLimits(t *testing.T) {
 	t.Parallel()
@@ -1913,8 +1913,8 @@ func TestRouterAllowlistRateLimits(t *testing.T) {
 	}
 }
 
-// The node pins the CDS its credential clients reach, so the chart hands the
-// proxy no pin of its own while CDS still takes the operator's.
+// The node pins the Trust Authority its credential clients reach, so the chart hands the
+// proxy no pin of its own while the Trust Authority still takes the operator's.
 func TestRouterAllowlistProxyTakesItsCDSPinsFromTheNode(t *testing.T) {
 	out, err := helmTemplate(t)
 	if err != nil {
@@ -2299,7 +2299,7 @@ func TestChartOperatorRBACIsScoped(t *testing.T) {
 		t.Fatalf("operator services verbs = %v", got)
 	}
 	// No rendered Role/ClusterRole may grant any of these resources at all,
-	// and no rendered role grants nodes: only the CDS a baked image runs reads
+	// and no rendered role grants nodes: only the Trust Authority a baked image runs reads
 	// them, to keep its sandbox-digests bound current from the live node list.
 	banned := []string{"confidentialworkloads/finalizers", "replicasets", "secrets", "configmaps", "rolebindings"}
 	var nodesGrantors []string
@@ -2476,46 +2476,46 @@ func hostPathVolume(t *testing.T, ds appsv1.DaemonSet, name string) string {
 // the seed admits it argv-pinned, so the default fail-closed render is valid.
 const baseNRIDigest = "sha256:aaaa000000000000000000000000000000000000000000000000000000000000"
 
-// baseCDSDigest is the CDS launch digest testdata/cds-pin.json carries, and
+// baseTADigest is the Trust Authority launch digest testdata/cds-pin.json carries, and
 // baseCDSAddress the endpoint the shared harness points a release at: the
-// chart refuses a release naming no CDS (kind=cds_pins_required,
+// chart refuses a release naming no Trust Authority (kind=cds_pins_required,
 // kind=cds_address_required).
-var baseCDSDigest = strings.Repeat("ab", armtls.SNPMeasurementSize)
+var baseTADigest = strings.Repeat("ab", armtls.SNPMeasurementSize)
 
 const (
 	baseCDSAddress = "10.9.9.9:8443"
-	// baseCDSPinPath is that CDS as the pin document an operator passes: the
-	// image and the launch file its VM proves, schema 2 as every CDS pin is.
-	baseCDSPinPath = "../testdata/cds-pin.json"
+	// baseTAPinPath is that Trust Authority as the pin document an operator passes: the
+	// image and the launch file its VM proves, schema 2 as every Trust Authority pin is.
+	baseTAPinPath = "../testdata/cds-pin.json"
 )
 
-// baseCDSPin is that document where a render running in any directory reads
+// baseTAPin is that document where a render running in any directory reads
 // it, which the renders of a copied chart do.
-func baseCDSPin(t *testing.T) string {
+func baseTAPin(t *testing.T) string {
 	t.Helper()
-	path, err := filepath.Abs(baseCDSPinPath)
+	path, err := filepath.Abs(baseTAPinPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return path
 }
 
-// baseCDSPinDocument is that document's bytes, for a render that takes the
+// baseTAPinDocument is that document's bytes, for a render that takes the
 // content rather than the file.
-func baseCDSPinDocument(t *testing.T) string {
+func baseTAPinDocument(t *testing.T) string {
 	t.Helper()
-	document, err := os.ReadFile(baseCDSPinPath)
+	document, err := os.ReadFile(baseTAPinPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return string(document)
 }
 
-// baseCDSPolicy is that CDS as install arguments: one address and one pin
-// document, which is how every non-baked release names its CDS.
-func baseCDSPolicy(t *testing.T) []string {
+// baseTAPolicy is that Trust Authority as install arguments: one address and one pin
+// document, which is how every non-baked release names its Trust Authority.
+func baseTAPolicy(t *testing.T) []string {
 	t.Helper()
-	return []string{"--set-string", "cds.address=" + baseCDSAddress, "--set-file", "cds.measurementsConfig=" + baseCDSPin(t)}
+	return []string{"--set-string", "cds.address=" + baseCDSAddress, "--set-file", "cds.measurementsConfig=" + baseTAPin(t)}
 }
 
 // helmOutput keeps warnings outside the YAML. Failed commands keep diagnostics.
@@ -2555,20 +2555,20 @@ func helmTemplate(t *testing.T, args ...string) (string, error) {
 }
 
 // helmTemplateIn is helmTemplate on the chart at chartDir, under a
-// placeholder CDS unless the caller names its own: the chart refuses a release
-// naming no CDS (kind=cds_pins_required, kind=cds_address_required).
+// placeholder Trust Authority unless the caller names its own: the chart refuses a release
+// naming no Trust Authority (kind=cds_pins_required, kind=cds_address_required).
 func helmTemplateIn(t *testing.T, chartDir string, args ...string) (string, error) {
 	t.Helper()
 	pinned := slices.ContainsFunc(args, func(arg string) bool {
 		return strings.HasPrefix(arg, "cds.measurementsConfig") || strings.HasPrefix(arg, "cds.address")
 	})
 	if !pinned {
-		args = append(baseCDSPolicy(t), args...)
+		args = append(baseTAPolicy(t), args...)
 	}
 	return helmTemplateUnpinned(t, chartDir, args...)
 }
 
-// helmTemplateUnpinned is helmTemplateIn without the harness CDS pin, for the
+// helmTemplateUnpinned is helmTemplateIn without the harness Trust Authority pin, for the
 // tests that drive the chart's cds_pins_required refusal and the pin sources
 // that satisfy it.
 func helmTemplateUnpinned(t *testing.T, chartDir string, args ...string) (string, error) {
@@ -2581,7 +2581,7 @@ func helmTemplateUnpinned(t *testing.T, chartDir string, args ...string) (string
 func helmTemplatePlatform(t *testing.T, platform string, args ...string) (string, error) {
 	t.Helper()
 	stock := []string{"-f", filepath.Join(cloudChartDir, "values-"+platform+".yaml")}
-	return renderCloudChart(t, cloudChartDir, slices.Concat(stock, baseCDSPolicy(t), args)...)
+	return renderCloudChart(t, cloudChartDir, slices.Concat(stock, baseTAPolicy(t), args)...)
 }
 
 // cloudPlatforms name the cloud chart's stock values files.
@@ -3070,8 +3070,8 @@ func TestChartNoTeeProxyRemnants(t *testing.T) {
 }
 
 // TestChartGetCertRetriesInProcess proves the injected c8s-cert sidecar retries
-// CDS in-process (--initial-retry-timeout) on the bootstrap fetch instead of
-// exiting into kubelet CrashLoopBackOff on a transient CDS/mesh outage during
+// Trust Authority in-process (--initial-retry-timeout) on the bootstrap fetch instead of
+// exiting into kubelet CrashLoopBackOff on a transient Trust Authority/mesh outage during
 // a roll.
 func TestChartGetCertRetriesInProcess(t *testing.T) {
 	t.Parallel()
@@ -3244,7 +3244,7 @@ func helmTemplateRouter(t *testing.T, args ...string) (string, error) {
 		"--show-only", "templates/router-configmap.yaml",
 		"--show-only", "templates/router-deployment.yaml",
 	)
-	base = append(base, baseCDSPolicy(t)...)
+	base = append(base, baseTAPolicy(t)...)
 	cmd := exec.Command("helm", append(base, prefixRouterSetArgs(args)...)...)
 	out, err := helmOutput(cmd)
 	return string(out), err
@@ -3333,11 +3333,11 @@ func anyArgvEntryArgs(name, digest, image string) []string {
 }
 
 // TestChartSeedsCDSAllowlistFromBootstrapEntries proves a
-// bootstrapAllowlist.workloads entry and the CDS image self-entry are rendered
-// into CDS's --allowlist-seed ConfigMap, so CDS's served /allowlist is
+// bootstrapAllowlist.workloads entry and the Trust Authority image self-entry are rendered
+// into Trust Authority's --allowlist-seed ConfigMap, so the Trust Authority's served /allowlist is
 // non-empty on the first worker pull, and that an entry admitting its digest
 // under any argv also reaches every plugin's base allowlist. Decoded with the
-// same typed Allowlist shape CDS parses, not substring-matched.
+// same typed Allowlist shape Trust Authority parses, not substring-matched.
 func TestChartSeedsCDSAllowlistFromBootstrapEntries(t *testing.T) {
 	t.Parallel()
 	const bootDigest = "sha256:abcdef0000000000000000000000000000000000000000000000000000000000"
@@ -3354,7 +3354,7 @@ func TestChartSeedsCDSAllowlistFromBootstrapEntries(t *testing.T) {
 
 	seed, err := pkgallowlist.ParseJSON([]byte(raw))
 	if err != nil {
-		t.Fatalf("seed JSON does not parse as a Allowlist (CDS would fail closed): %v\n%s", err, raw)
+		t.Fatalf("seed JSON does not parse as a Allowlist (Trust Authority would fail closed): %v\n%s", err, raw)
 	}
 
 	w, ok := seed.Workloads["coredns"]
@@ -3371,14 +3371,14 @@ func TestChartSeedsCDSAllowlistFromBootstrapEntries(t *testing.T) {
 	if got := baseImages(worker.Allowlist.Base)[bootDigest]; got != "ghcr.io/x/coredns:v1" {
 		t.Errorf("base[%s] = %q, want the entry's image\nbase: %v", bootDigest, got, worker.Allowlist.Base.Workloads)
 	}
-	// No entry admits the CDS: it runs outside the cluster, and its image is
+	// No entry admits the Trust Authority: it runs outside the cluster, and its image is
 	// no workload of this one.
-	const cdsDigest = "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+	const taDigest = "sha256:0000000000000000000000000000000000000000000000000000000000000001"
 	for _, al := range []pkgallowlist.Allowlist{*seed, worker.Allowlist.Base} {
 		for name, entry := range al.Workloads {
 			for _, c := range entry.Containers {
-				if c.Digest.String() == cdsDigest {
-					t.Errorf("entry %s admits the CDS image: %+v", name, c)
+				if c.Digest.String() == taDigest {
+					t.Errorf("entry %s admits the Trust Authority image: %+v", name, c)
 				}
 			}
 		}
@@ -3794,7 +3794,7 @@ func TestChartBootConfigParsesAsPluginYAML(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	// The single installer is pull-mode: it names the CDS it pulls from and
+	// The single installer is pull-mode: it names the Trust Authority it pulls from and
 	// never a push block. Asserting both confirms the typed decode landed on
 	// the boot config document, not just that some YAML parsed.
 	if wl := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker").Allowlist; wl.Pull.CDSAddressFile == "" || wl.Push.PersistPath != "" {
@@ -3961,7 +3961,7 @@ func TestChartBootConfigLoadsInThePlugin(t *testing.T) {
 	})
 }
 
-// bootConfigAsStagedOnANode points the boot config at a CDS address file
+// bootConfigAsStagedOnANode points the boot config at a Trust Authority address file
 // holding what the installer mounts from the measurements ConfigMap, which is
 // the one input the plugin reads from the node rather than the config.
 func bootConfigAsStagedOnANode(t *testing.T, body []byte) []byte {
@@ -3972,11 +3972,11 @@ func bootConfigAsStagedOnANode(t *testing.T, body []byte) []byte {
 	}
 	named := cfg.Allowlist.Pull.CDSAddressFile
 	if named == "" {
-		t.Fatalf("boot config names no CDS address file\n%s", body)
+		t.Fatalf("boot config names no Trust Authority address file\n%s", body)
 	}
 	path := filepath.Join(t.TempDir(), "cds-address")
 	if err := os.WriteFile(path, []byte(baseCDSAddress), 0o600); err != nil {
-		t.Fatalf("stage the CDS address file: %v", err)
+		t.Fatalf("stage the Trust Authority address file: %v", err)
 	}
 	staged := strings.Replace(string(body), named, path, 1)
 	if staged == string(body) {
@@ -4292,7 +4292,7 @@ func TestAttestationApiSeccomp(t *testing.T) {
 	}
 }
 
-// The injected credential clients read the node's CDS policy from the mount
+// The injected credential clients read the node's Trust Authority policy from the mount
 // the enforcer gives them, so the operator renders no pins into their args: a
 // pin the control plane could pass is a pin the control plane could choose.
 // This asserts the chart end of that rule.
@@ -4835,7 +4835,7 @@ func TestChartRefusesARenderWithoutThePlatformKeys(t *testing.T) {
 		"router.attest.platform",
 	} {
 		t.Run(key, func(t *testing.T) {
-			args := slices.Concat(baseCDSPolicy(t), withoutPlatformKey(key))
+			args := slices.Concat(baseTAPolicy(t), withoutPlatformKey(key))
 			out, err := renderCloudChart(t, cloudChartDir, args...)
 			if err == nil {
 				t.Fatalf("helm template rendered without %s\n%s", key, out)
@@ -4854,7 +4854,7 @@ func TestChartRefusesARenderWithoutThePlatformKeys(t *testing.T) {
 // (TestChartRefusesARenderWithoutThePlatformKeys).
 func TestChartAcceptsAnEmptyAttestationDeviceList(t *testing.T) {
 	t.Parallel()
-	args := slices.Concat(baseCDSPolicy(t), withoutPlatformKey("attestationApi.devices"),
+	args := slices.Concat(baseTAPolicy(t), withoutPlatformKey("attestationApi.devices"),
 		[]string{"--set-json", "attestationApi.devices=[]"})
 	out, err := renderCloudChart(t, cloudChartDir, args...)
 	if err != nil {
@@ -4869,7 +4869,7 @@ func TestChartAcceptsAnEmptyAttestationDeviceList(t *testing.T) {
 // dash there while the mount and host paths keep it.
 func TestChartMountsTheTDXGuestDevice(t *testing.T) {
 	t.Parallel()
-	args := slices.Concat(baseCDSPolicy(t), withoutPlatformKey("attestationApi.devices"),
+	args := slices.Concat(baseTAPolicy(t), withoutPlatformKey("attestationApi.devices"),
 		[]string{"--set-string", "attestationApi.devices[0]=/dev/tdx_guest"})
 	out, err := renderCloudChart(t, cloudChartDir, args...)
 	if err != nil {
@@ -4889,7 +4889,7 @@ func TestChartMountsTheTDXGuestDevice(t *testing.T) {
 		`["/dev/config"]`,
 		`["/dev/socket-dir"]`,
 	} {
-		args := slices.Concat(baseCDSPolicy(t), withoutPlatformKey("attestationApi.devices"),
+		args := slices.Concat(baseTAPolicy(t), withoutPlatformKey("attestationApi.devices"),
 			[]string{"--set-json", "attestationApi.devices=" + devices})
 		if out, err := renderCloudChart(t, cloudChartDir, args...); err == nil || !strings.Contains(out, "kind=attestation_devices") {
 			t.Errorf("helm template of devices %s = %v, want a kind=attestation_devices refusal:\n%s", devices, err, out)
@@ -5222,7 +5222,7 @@ func TestChartBootConfigRendersTheMeshPolicy(t *testing.T) {
 		roles[role.Name] = role.UID
 	}
 	// The credential role is bound by the plugin, from the node's own address
-	// and the CDS node port, so the rendered policy names the mesh role alone.
+	// and the Trust Authority node port, so the rendered policy names the mesh role alone.
 	if len(roles) != 1 || roles["mesh"] != 1337 {
 		t.Errorf("mesh.roles = %+v, want the reserved mesh id alone", cfg.Mesh.Roles)
 	}

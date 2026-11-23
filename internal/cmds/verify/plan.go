@@ -64,7 +64,7 @@ func buildPolicy(cfg config) (*verifyPlan, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := refuseMeshLeafFlagsWithKindCDS(cfg); err != nil {
+	if err := refuseMeshLeafFlagsWithKindTA(cfg); err != nil {
 		return nil, err
 	}
 
@@ -104,7 +104,7 @@ func buildPolicy(cfg config) (*verifyPlan, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := requireCDSIdentity(cfg, refValues); err != nil {
+	if err := requireTAIdentity(cfg, refValues); err != nil {
 		return nil, err
 	}
 	measurements, err := cmdsutil.LoadMeasurements(cfg.measurements, cfg.measurementsFile)
@@ -159,12 +159,12 @@ func buildPolicy(cfg config) (*verifyPlan, error) {
 			// The ID lives in the leaf's signed area, not in REPORTDATA, so
 			// only the mesh CA signature authenticates it. Pinning without
 			// checking that signature would pin a string the presenter chose.
-			return nil, fmt.Errorf("--sandbox-id requires --mesh-ca: the sandbox ID is vouched by CDS's signature on the leaf, not by the hardware evidence")
+			return nil, fmt.Errorf("--sandbox-id requires --mesh-ca: the sandbox ID is vouched by the Trust Authority's signature on the leaf, not by the hardware evidence")
 		}
 	}
 
 	if cfg.clientDocument != "" && cfg.meshCA == "" {
-		return nil, fmt.Errorf("--client-document requires --mesh-ca: the client document digest is vouched by CDS's signature on the leaf, not by the hardware evidence")
+		return nil, fmt.Errorf("--client-document requires --mesh-ca: the client document digest is vouched by the Trust Authority's signature on the leaf, not by the hardware evidence")
 	}
 
 	// The matched-workload stamp is CA-vouched exactly like the sandbox ID, so
@@ -174,13 +174,13 @@ func buildPolicy(cfg config) (*verifyPlan, error) {
 			return nil, fmt.Errorf("--workload: %q is not a valid workload entry name (1..%d bytes, [A-Za-z0-9][A-Za-z0-9._-]*)", cfg.workload, workloadname.MaxLen)
 		}
 		if cfg.meshCA == "" {
-			return nil, fmt.Errorf("--workload requires --mesh-ca: the matched workload is vouched by CDS's signature on the leaf, not by the hardware evidence")
+			return nil, fmt.Errorf("--workload requires --mesh-ca: the matched workload is vouched by the Trust Authority's signature on the leaf, not by the hardware evidence")
 		}
 	}
 	// The file itself is read by run, once, and threaded through — see
 	// loadHeldAllowlist.
 	if cfg.allowlistFile != "" && cfg.meshCA == "" {
-		return nil, fmt.Errorf("--allowlist requires --mesh-ca: the stamped policy digest is vouched by CDS's signature on the leaf, not by the hardware evidence")
+		return nil, fmt.Errorf("--allowlist requires --mesh-ca: the stamped policy digest is vouched by the Trust Authority's signature on the leaf, not by the hardware evidence")
 	}
 
 	trustKeys, err := checkHistoryFlags(cfg, refValues)
@@ -287,19 +287,19 @@ func (p rtmrPins) any() bool {
 	return p.image != nil || p.rtmr3 != nil || len(p.manual) > 0
 }
 
-// requireCDSIdentity holds a kind=ta target to the identity of one CDS VM: a
-// pin document binding every entry to the launch file that CDS runs on. A
-// launch digest, with or without registers, names the CDS image, which says
+// requireTAIdentity holds a kind=ta target to the identity of one Trust Authority VM: a
+// pin document binding every entry to the launch file that Trust Authority runs on. A
+// launch digest, with or without registers, names the Trust Authority image, which says
 // nothing about the cluster the VM serves.
-func requireCDSIdentity(cfg config, refValues refvalues.ReferenceValues) error {
+func requireTAIdentity(cfg config, refValues refvalues.ReferenceValues) error {
 	if cfg.kind != "ta" {
 		return nil
 	}
 	if len(cfg.measurements) > 0 || cfg.measurementsFile != "" {
-		return fmt.Errorf("%s cannot pin a CDS, which is pinned to the configuration it runs on: pass --image-policy-file <cds-pin.json>", allowlistFlagsUsed(cfg))
+		return fmt.Errorf("%s cannot pin a Trust Authority, which is pinned to the configuration it runs on: pass --image-policy-file <cds-pin.json>", allowlistFlagsUsed(cfg))
 	}
 	if cfg.imageManifest != "" {
-		return fmt.Errorf("--image-manifest cannot pin a CDS, which is pinned to the configuration it runs on: pass --image-policy-file <cds-pin.json>")
+		return fmt.Errorf("--image-manifest cannot pin a Trust Authority, which is pinned to the configuration it runs on: pass --image-policy-file <cds-pin.json>")
 	}
 	if _, err := cmdsutil.CDSLaunchFile(refValues); err != nil {
 		return fmt.Errorf("--image-policy-file %w", err)
@@ -320,9 +320,9 @@ func allowlistFlagsUsed(cfg config) string {
 	}
 }
 
-// refuseMeshLeafFlagsWithKindCDS refuses, under --kind ta, the flags that
-// check a leaf the mesh CA issued: its chain and the stamps CDS signs into it.
-func refuseMeshLeafFlagsWithKindCDS(cfg config) error {
+// refuseMeshLeafFlagsWithKindTA refuses, under --kind ta, the flags that
+// check a leaf the mesh CA issued: its chain and the stamps Trust Authority signs into it.
+func refuseMeshLeafFlagsWithKindTA(cfg config) error {
 	if cfg.kind != "ta" {
 		return nil
 	}
@@ -345,7 +345,7 @@ func refuseMeshLeafFlagsWithKindCDS(cfg config) error {
 	if len(used) == 0 {
 		return nil
 	}
-	return fmt.Errorf("a CDS target (--kind ta) takes no %s: its serving certificate is self-signed, so it chains to no mesh CA and carries no sandbox ID or workload stamp. These flags check the certificates CDS issues to --kind lb and --kind workload targets", strings.Join(used, ", "))
+	return fmt.Errorf("a Trust Authority target (--kind ta) takes no %s: its serving certificate is self-signed, so it chains to no mesh CA and carries no sandbox ID or workload stamp. These flags check the certificates Trust Authority issues to --kind lb and --kind workload targets", strings.Join(used, ", "))
 }
 
 // rtmr3FlagUsed names whichever flag supplied the RTMR[3] pin. Both feed one

@@ -26,9 +26,9 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
 )
 
-// operatorCDS serves CDS's allowlist routes over store, writes gated by an
+// operatorTA serves Trust Authority's allowlist routes over store, writes gated by an
 // operator key it writes to dir, and returns its URL and that key's path.
-func operatorCDS(t *testing.T, store *allowlist.Handle, dir string) (url, keyPath string) {
+func operatorTA(t *testing.T, store *allowlist.Handle, dir string) (url, keyPath string) {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -182,7 +182,7 @@ func publishOverride(t *testing.T, repository string) {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
-	url, keyPath := operatorCDS(t, allowlistWrites, dir)
+	url, keyPath := operatorTA(t, allowlistWrites, dir)
 	n := &node{client: allowlistclient.NewClientWithHTTP(url, &http.Client{})}
 	n.pull(t)
 	served := n.version

@@ -23,8 +23,8 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
 )
 
-// alternatingCDS selects a distinct armTLS leaf on each TLS connection.
-func alternatingCDS(t *testing.T, handler http.HandlerFunc, closed ...chan struct{}) (*httptest.Server, *atomic.Int32) {
+// alternatingTA selects a distinct armTLS leaf on each TLS connection.
+func alternatingTA(t *testing.T, handler http.HandlerFunc, closed ...chan struct{}) (*httptest.Server, *atomic.Int32) {
 	t.Helper()
 	first := attestedTLSServer(t, http.NotFoundHandler()).TLS.Certificates[0]
 	second := attestedTLSServer(t, http.NotFoundHandler()).TLS.Certificates[0]
@@ -51,10 +51,10 @@ func TestCDSAttemptClosesOwnedSocket(t *testing.T) {
 	for _, cancelParent := range []bool{false, true} {
 		t.Run(fmt.Sprint(cancelParent), func(t *testing.T) {
 			closed := make(chan struct{}, 1)
-			srv, _ := alternatingCDS(t, func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("ok")) }, closed)
+			srv, _ := alternatingTA(t, func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("ok")) }, closed)
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			a, err := openCDSAttempt(ctx, config{url: srv.URL, timeout: time.Second}, leafTrust{})
+			a, err := openTAAttempt(ctx, config{url: srv.URL, timeout: time.Second}, leafTrust{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -89,7 +89,7 @@ func TestCDSAttemptBoundsHandshake(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	start := time.Now()
-	_, err = openCDSAttempt(ctx, config{url: "https://" + ln.Addr().String(), timeout: 100 * time.Millisecond}, leafTrust{})
+	_, err = openTAAttempt(ctx, config{url: "https://" + ln.Addr().String(), timeout: 100 * time.Millisecond}, leafTrust{})
 	if err == nil || !isConnectError(err) {
 		t.Fatalf("handshake error=%v", err)
 	}
@@ -131,7 +131,7 @@ func TestCDSAttemptCrosscheckVerdict(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var connections atomic.Pointer[atomic.Int32]
-			srv, count := alternatingCDS(t, func(w http.ResponseWriter, r *http.Request) {
+			srv, count := alternatingTA(t, func(w http.ResponseWriter, r *http.Request) {
 				if r.TLS.Version != tls.VersionTLS13 || r.ProtoMajor != 1 || r.TLS.ServerName != "cds.example" {
 					t.Errorf("unexpected transport: %s %+v", r.Proto, r.TLS)
 				}
@@ -168,7 +168,7 @@ func TestCDSAttemptCrosscheckVerdict(t *testing.T) {
 				cfg.servedPolicyFile = writeImagePolicy(t, "served.json", served)
 			}
 			plan := mustPlan(t, cfg)
-			a, err := openCDSAttempt(context.Background(), cfg, leafTrust{})
+			a, err := openTAAttempt(context.Background(), cfg, leafTrust{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -196,7 +196,7 @@ func TestCDSAttemptBoundsAndRejectsResponses(t *testing.T) {
 			// Keep the response incomplete until the client observes cancellation.
 			release := make(chan struct{})
 			defer close(release)
-			srv, connections := alternatingCDS(t, func(w http.ResponseWriter, r *http.Request) {
+			srv, connections := alternatingTA(t, func(w http.ResponseWriter, r *http.Request) {
 				switch tc {
 				case "redirect":
 					http.Redirect(w, r, target.URL, http.StatusFound)
@@ -217,7 +217,7 @@ func TestCDSAttemptBoundsAndRejectsResponses(t *testing.T) {
 			})
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			a, err := openCDSAttempt(ctx, config{url: srv.URL, timeout: time.Second}, leafTrust{})
+			a, err := openTAAttempt(ctx, config{url: srv.URL, timeout: time.Second}, leafTrust{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -250,11 +250,11 @@ func TestCDSAttemptBoundsAndRejectsResponses(t *testing.T) {
 func TestCDSAttemptRefusesReplacementConnection(t *testing.T) {
 	for _, closeAfterEvidence := range []bool{true, false} {
 		t.Run(fmt.Sprint(closeAfterEvidence), func(t *testing.T) {
-			srv, connections := alternatingCDS(t, func(w http.ResponseWriter, r *http.Request) {
+			srv, connections := alternatingTA(t, func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Connection", "close")
 				w.Write([]byte("first document"))
 			})
-			a, err := openCDSAttempt(context.Background(), config{url: srv.URL, timeout: time.Second}, leafTrust{})
+			a, err := openTAAttempt(context.Background(), config{url: srv.URL, timeout: time.Second}, leafTrust{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -296,7 +296,7 @@ func TestCDSRunKeepsEvidenceConnection(t *testing.T) {
 	for _, check := range []string{"policy", "keys", "both"} {
 		t.Run(check, func(t *testing.T) {
 			var requests atomic.Int32
-			srv, connections := alternatingCDS(t, func(w http.ResponseWriter, r *http.Request) {
+			srv, connections := alternatingTA(t, func(w http.ResponseWriter, r *http.Request) {
 				requests.Add(1)
 				switch r.URL.Path {
 				case "/operator-keys":

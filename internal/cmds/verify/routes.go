@@ -54,7 +54,7 @@ type boundRoute struct {
 }
 
 // maxPublicationBytes bounds a /.well-known/c8s/routes response, like the
-// CDS client's bound on GET /routes.
+// Trust Authority client's bound on GET /routes.
 const maxPublicationBytes = 4 << 20
 
 // attestedMode reports whether the run verifies an attested transcript, the

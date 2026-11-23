@@ -20,7 +20,7 @@ import (
 const testSeedContainers = `[{"digest":"sha256:` + testSeedDigest + `","image":"registry/app@sha256:` + testSeedDigest + `","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}]`
 
 // testSeedEntry is one component entry, in the form both the chart's seed and
-// a CDS configuration's workloads carry it.
+// a Trust Authority configuration's workloads carry it.
 const testSeedEntry = `{"label":"registry/app@sha256:` + testSeedDigest + `","containers":` + testSeedContainers + `}`
 
 const testSeedDigest = "1111111111111111111111111111111111111111111111111111111111111111"
@@ -34,10 +34,10 @@ func testSeedDocument(names ...string) string {
 	return `{"schema":"c8s.allowlist/v1","workloads":{` + strings.Join(entries, ",") + `}}`
 }
 
-// cdsPinDocument is the pin document `c8s cds config new` produces: the CDS
+// taPinDocument is the pin document `c8s ta config new` produces: the Trust Authority
 // image, and the configuration its VM proves, serving the entries named here
 // and dialling inventories in subnets.
-func cdsPinDocument(t *testing.T, entries []string, subnets string) []byte {
+func taPinDocument(t *testing.T, entries []string, subnets string) []byte {
 	t.Helper()
 	workloads := make([]string, 0, len(entries))
 	for _, name := range entries {
@@ -60,10 +60,10 @@ func cdsPinDocument(t *testing.T, entries []string, subnets string) []byte {
 		strings.Repeat("cd", 48) + `","launch_file":` + string(file) + `}]}`)
 }
 
-// cdsPinFile is that document where `--cds-pin` reads it.
-func cdsPinFile(t *testing.T, entries []string, subnets string) string {
+// taPinFile is that document where `--cds-pin` reads it.
+func taPinFile(t *testing.T, entries []string, subnets string) string {
 	t.Helper()
-	return writePin(t, string(cdsPinDocument(t, entries, subnets)))
+	return writePin(t, string(taPinDocument(t, entries, subnets)))
 }
 
 // writePin puts a pin document in a file of its own.
@@ -91,7 +91,7 @@ func testOperatorPublicKey(t *testing.T) string {
 }
 
 func TestCDSPinNamesOneConfiguration(t *testing.T) {
-	config, err := cdsPinConfig(cdsPinDocument(t, []string{"app"}, "192.0.2.0/24"))
+	config, err := taPinConfig(taPinDocument(t, []string{"app"}, "192.0.2.0/24"))
 	if err != nil {
 		t.Fatalf("cdsPinConfig: %v", err)
 	}
@@ -114,8 +114,8 @@ func TestCDSPinRefusesWhatNoClientCouldHold(t *testing.T) {
 			`{"name":"b","measurement":"` + strings.Repeat("ef", 48) + `","launch_file":"schemaVersion: c8s-cds/v2\n"}]}`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := cdsPinConfig([]byte(document)); err == nil {
-				t.Fatal("accepted a pin no client could hold a CDS to")
+			if _, err := taPinConfig([]byte(document)); err == nil {
+				t.Fatal("accepted a pin no client could hold a Trust Authority to")
 			}
 		})
 	}
@@ -124,12 +124,12 @@ func TestCDSPinRefusesWhatNoClientCouldHold(t *testing.T) {
 // The release carries the pin document itself, and the address must be the
 // literal endpoint a client's packet rules admit.
 func TestCDSInstallArgs(t *testing.T) {
-	pin := cdsPinFile(t, []string{"app"}, "192.0.2.0/24")
+	pin := taPinFile(t, []string{"app"}, "192.0.2.0/24")
 	document, err := os.ReadFile(pin)
 	if err != nil {
 		t.Fatal(err)
 	}
-	values, err := cdsInstallValues("10.9.9.9:8443", pin)
+	values, err := taInstallValues("10.9.9.9:8443", pin)
 	if err != nil {
 		t.Fatalf("cdsInstallValues: %v", err)
 	}
@@ -143,27 +143,27 @@ func TestCDSInstallArgs(t *testing.T) {
 		t.Fatalf("values = %#v, want the address and the pin document, %#v", values, want)
 	}
 
-	// A node-image render names no CDS: the image runs its own.
-	if values, err := cdsInstallValues("", ""); err != nil || values != nil {
+	// A node-image render names no Trust Authority: the image runs its own.
+	if values, err := taInstallValues("", ""); err != nil || values != nil {
 		t.Fatalf("cdsInstallValues() = %v, %v, want no values", values, err)
 	}
 
-	// A name is this cluster's CDS as much as an address is: its clients
+	// A name is this cluster's Trust Authority as much as an address is: its clients
 	// resolve it, and their packet rules admit the port.
-	if _, err := cdsInstallValues("cds.example.com:8443", pin); err != nil {
-		t.Fatalf("cdsInstallValues with a named CDS: %v", err)
+	if _, err := taInstallValues("cds.example.com:8443", pin); err != nil {
+		t.Fatalf("cdsInstallValues with a named Trust Authority: %v", err)
 	}
 
 	for _, tc := range []struct{ name, address, pin string }{
 		{name: "no port", address: "10.9.9.9", pin: pin},
-		{name: "an uppercase name", address: "CDS.example.com:8443", pin: pin},
+		{name: "an uppercase name", address: "TA.example.com:8443", pin: pin},
 		{name: "no pin", address: "10.9.9.9:8443"},
 		{name: "no address", pin: pin},
 		{name: "a pin that is not there", address: "10.9.9.9:8443", pin: filepath.Join(t.TempDir(), "absent.json")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := cdsInstallValues(tc.address, tc.pin); err == nil {
-				t.Fatal("accepted a CDS no client could reach or hold")
+			if _, err := taInstallValues(tc.address, tc.pin); err == nil {
+				t.Fatal("accepted a Trust Authority no client could reach or hold")
 			}
 		})
 	}
@@ -172,8 +172,8 @@ func TestCDSInstallArgs(t *testing.T) {
 // installSeedEntryName is the one entry the stubbed helm render seeds.
 const installSeedEntryName = "app"
 
-// installCDSAddressUnreachable is a CDS address nothing listens on, so a read of it is refused at once.
-const installCDSAddressUnreachable = "127.0.0.1:1"
+// installTAAddressUnreachable is a Trust Authority address nothing listens on, so a read of it is refused at once.
+const installTAAddressUnreachable = "127.0.0.1:1"
 
 // installSeedConfigMap is the seed ConfigMap a stubbed `helm template` answers
 // with, as the chart renders it.

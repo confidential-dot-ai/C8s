@@ -98,7 +98,7 @@ func computedValuesFile(t *testing.T, tree map[string]any) string {
 
 func TestInstallTrustAuthorityValuesMerge(t *testing.T) {
 	resetCLIState(t)
-	pin, err := os.ReadFile(pinnedCDSPinFile(t))
+	pin, err := os.ReadFile(pinnedTAPinFile(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,10 +107,10 @@ func TestInstallTrustAuthorityValuesMerge(t *testing.T) {
 		computedValuesFile(t, valuesAtPath("ta.measurementsConfig", string(pin))),
 		computedValuesFile(t, valuesAtPath("ta.address", "last.example:8443")),
 	}
-	if err := cdsPreflight("", "", installValues); err != nil {
+	if err := taPreflight("", "", installValues); err != nil {
 		t.Fatal(err)
 	}
-	resolved, cleanup, err := resolveCDSPin(installValues)
+	resolved, cleanup, err := resolveTAPin(installValues)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +122,7 @@ func TestInstallTrustAuthorityValuesMerge(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if url, err := installCDSURL(values); err != nil || url != "https://last.example:8443" {
+	if url, err := installTAURL(values); err != nil || url != "https://last.example:8443" {
 		t.Fatalf("resolved endpoint = %s, %v", url, err)
 	}
 }
@@ -134,8 +134,8 @@ func TestInstallTrustAuthorityOverridesLegacyValues(t *testing.T) {
 		computedValuesFile(t, valuesAtPath("cds.measurementsConfig", "legacy pin")),
 		computedValuesFile(t, valuesAtPath("cds.operatorKeys", "legacy keys")),
 	}
-	installCDSAddress = "replacement.example:8443"
-	installCDSPin = pinnedCDSPinFile(t)
+	installTAAddress = "replacement.example:8443"
+	installTAPin = pinnedTAPinFile(t)
 	values, err := buildComputedValues(nil)
 	if err != nil {
 		t.Fatal(err)
@@ -147,16 +147,16 @@ func TestInstallTrustAuthorityOverridesLegacyValues(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pin, err := os.ReadFile(installCDSPin)
+	pin, err := os.ReadFile(installTAPin)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ta["address"] != installCDSAddress || ta["measurementsConfig"] != string(pin) || ta["operatorKeys"] != "legacy keys" {
+	if ta["address"] != installTAAddress || ta["measurementsConfig"] != string(pin) || ta["operatorKeys"] != "legacy keys" {
 		t.Fatal("expected the explicit endpoint and pin together with the legacy operator keys")
 	}
 
 	installValues = append(installValues, computedValuesFile(t, valuesAtPath("ta.address", "ambiguous.example:8443")))
-	if err := cdsPreflight(installCDSAddress, installCDSPin, installValues); err == nil || !strings.Contains(err.Error(), "ta and cds contain different values") {
+	if err := taPreflight(installTAAddress, installTAPin, installValues); err == nil || !strings.Contains(err.Error(), "ta and cds contain different values") {
 		t.Fatalf("preflight must reject conflicts before applying explicit overrides, got %v", err)
 	}
 }

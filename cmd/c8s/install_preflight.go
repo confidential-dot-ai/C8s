@@ -19,15 +19,15 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
-func cdsPreflight(address string, pin string, valuesFiles []string) error {
+func taPreflight(address string, pin string, valuesFiles []string) error {
 	values, _, err := taValuesFromFiles(valuesFiles)
 	if err != nil {
 		return err
 	}
-	if cdsNamed(address, pin) || (address == "" && pin == "" && cdsNamed(values["address"], values["measurementsConfig"])) {
+	if taNamed(address, pin) || (address == "" && pin == "" && taNamed(values["address"], values["measurementsConfig"])) {
 		return nil
 	}
-	return fmt.Errorf("pass --%s <host:port> and --%s <pin.json> together, or set ta.address and ta.measurementsConfig in the values files", flagCDSAddress, flagCDSPin)
+	return fmt.Errorf("pass --%s <host:port> and --%s <pin.json> together, or set ta.address and ta.measurementsConfig in the values files", flagTAAddress, flagTAPin)
 }
 
 // confidentialNodeSelectorKey is the cloud value naming the labels this

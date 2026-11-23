@@ -26,8 +26,8 @@ import (
 // seedTemplate renders the component entries alone.
 const seedTemplate = "templates/allowlist-seed.yaml"
 
-// placeholderCDSPin is the pin document a render that names no CDS carries.
-const placeholderCDSPin = `{
+// placeholderTAPin is the pin document a render that names no Trust Authority carries.
+const placeholderTAPin = `{
   "schema_version": "2",
   "tee": "sev-snp",
   "measurements": [
@@ -40,7 +40,7 @@ const placeholderCDSPin = `{
 }`
 
 // documentationRangeCDSAddress is the RFC 5737 documentation address a render
-// that names no CDS carries.
+// that names no Trust Authority carries.
 const documentationRangeCDSAddress = "192.0.2.1:8443"
 
 // seedRender is one render of this release's component entries: the chart,
@@ -55,12 +55,12 @@ type seedRender struct {
 	// helm reads this last, as it does on the install itself.
 	computed string
 	legacyTA bool
-	// cds names a CDS the release itself does not, as --set arguments that
+	// cds names a Trust Authority the release itself does not, as --set arguments that
 	// outrank every file above.
-	cds []string
+	ta []string
 }
 
-// installSeed is the component entries this install needs its CDS to serve.
+// installSeed is the component entries this install needs its Trust Authority to serve.
 func installSeed(ctx context.Context, render seedRender) (*pkgallowlist.Allowlist, error) {
 	args := []string{
 		"template", render.release, render.chart,
@@ -72,7 +72,7 @@ func installSeed(ctx context.Context, render seedRender) (*pkgallowlist.Allowlis
 		args = append(args, "-f", vf)
 	}
 	args = append(args, "-f", render.computed)
-	args = append(args, render.cds...)
+	args = append(args, render.ta...)
 	out, err := exec.CommandContext(ctx, "helm", args...).Output()
 	if err != nil {
 		return nil, fmt.Errorf("render the allowlist seed: %w", withStderr(err))
@@ -89,20 +89,20 @@ func installSeed(ctx context.Context, render seedRender) (*pkgallowlist.Allowlis
 }
 
 // writeInstallSeed writes that seed as the document `c8s ta config new`
-// takes, under a CDS no rendered entry reaches: the chart requires an address
+// takes, under a Trust Authority no rendered entry reaches: the chart requires an address
 // and a pin, and no component's arguments or mounts carry either, which is
-// what lets an operator render the seed before the CDS that serves it exists.
+// what lets an operator render the seed before the Trust Authority that serves it exists.
 func writeInstallSeed(ctx context.Context, render seedRender, path string) error {
-	pin, err := fileutil.WriteTemp("c8s-placeholder-pin-*.json", []byte(placeholderCDSPin))
+	pin, err := fileutil.WriteTemp("c8s-placeholder-pin-*.json", []byte(placeholderTAPin))
 	if err != nil {
-		return fmt.Errorf("write the placeholder CDS pin: %w", err)
+		return fmt.Errorf("write the placeholder Trust Authority pin: %w", err)
 	}
 	defer os.Remove(pin)
 	key := "ta"
 	if render.legacyTA {
 		key = "cds"
 	}
-	render.cds = []string{
+	render.ta = []string{
 		"--set-string", key + ".address=" + documentationRangeCDSAddress,
 		"--set-file", key + ".measurementsConfig=" + pin,
 	}
@@ -118,7 +118,7 @@ func writeInstallSeed(ctx context.Context, render seedRender, path string) error
 		return fmt.Errorf("write %s: %w", path, err)
 	}
 	fmt.Fprintf(os.Stdout, "+ wrote %d component entries to %s\n", len(seed.Workloads), path)
-	fmt.Fprintf(os.Stdout, "  Pass it to `c8s ta config new --allowlist-seed %s`, then install with --%s and --%s.\n", path, flagCDSAddress, flagCDSPin)
+	fmt.Fprintf(os.Stdout, "  Pass it to `c8s ta config new --allowlist-seed %s`, then install with --%s and --%s.\n", path, flagTAAddress, flagTAPin)
 	return nil
 }
 
@@ -144,12 +144,12 @@ func clusterKubeVersion(ctx context.Context) (string, error) {
 	return version.ServerVersion.GitVersion, nil
 }
 
-// publishEntries names the command that makes CDS serve this release's entries.
+// publishEntries names the command that makes Trust Authority serve this release's entries.
 const publishEntries = "publish this release's entries with `c8s allowlist apply`, from the seed `c8s install --" + flagSeedOut + "` writes"
 
-// servedAllowlist reads the allowlist the named CDS serves now, over the attested channel the chart's pin binds it to.
+// servedAllowlist reads the allowlist the named Trust Authority serves now, over the attested channel the chart's pin binds it to.
 func servedAllowlist(ctx context.Context, url string) (*pkgallowlist.Allowlist, error) {
-	hc, err := installCDSConn(url).HTTPClient(ctx)
+	hc, err := installTAConn(url).HTTPClient(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -179,10 +179,10 @@ func checkSeedServed(seed, served *pkgallowlist.Allowlist) error {
 		rendered := seed.Workloads[name]
 		entry, ok := served.Workloads[name]
 		if !ok {
-			return fmt.Errorf("the CDS this install names serves no entry %q, so no node would admit that component: %s, then re-run install", name, publishEntries)
+			return fmt.Errorf("the Trust Authority this install names serves no entry %q, so no node would admit that component: %s, then re-run install", name, publishEntries)
 		}
 		if !declaresSameImages(rendered, entry) {
-			return fmt.Errorf("the CDS this install names serves an entry %q that does not declare this component's images, so no node would admit it as that component: %s, then re-run install", name, publishEntries)
+			return fmt.Errorf("the Trust Authority this install names serves an entry %q that does not declare this component's images, so no node would admit it as that component: %s, then re-run install", name, publishEntries)
 		}
 	}
 	return nil
@@ -231,7 +231,7 @@ func publishedPodRanges(nodes *corev1.NodeList) []string {
 func checkEveryNodePublishesPodRange(nodes *corev1.NodeList) error {
 	for _, node := range nodes.Items {
 		if len(workloadclaims.PodCIDRs(&node)) == 0 {
-			return fmt.Errorf("node %s publishes no podCIDR, so nothing says whether this CDS's node subnets reach its pods: pass --%s <cidr> once per range this cluster assigns pod addresses from. On AKS: az aks show -g <group> -n <cluster> --query networkProfile.podCidr", node.Name, flagPodCIDR)
+			return fmt.Errorf("node %s publishes no podCIDR, so nothing says whether this Trust Authority's node subnets reach its pods: pass --%s <cidr> once per range this cluster assigns pod addresses from. On AKS: az aks show -g <group> -n <cluster> --query networkProfile.podCidr", node.Name, flagPodCIDR)
 		}
 	}
 	return nil
@@ -282,13 +282,13 @@ func checkPodIPsInRanges(ctx context.Context, ranges []string) error {
 		checked += len(pod.Status.PodIPs)
 	}
 	if checked == 0 {
-		return fmt.Errorf("no pod in this cluster answers at an address of its own, so nothing confirms the pod ranges (%s) this CDS's node subnets are checked against", strings.Join(ranges, ", "))
+		return fmt.Errorf("no pod in this cluster answers at an address of its own, so nothing confirms the pod ranges (%s) this Trust Authority's node subnets are checked against", strings.Join(ranges, ", "))
 	}
 	return nil
 }
 
-// checkNodeSubnets refuses a CDS whose inventory bound reaches pod addresses:
-// inside it, a pod answering as a node's admission inventory would have CDS
+// checkNodeSubnets refuses a Trust Authority whose inventory bound reaches pod addresses:
+// inside it, a pod answering as a node's admission inventory would have Trust Authority
 // resolve its signing key, so the bound must hold node addresses alone.
 func checkNodeSubnets(ctx context.Context, config *taconfig.Config, declaredPodCIDRs []string) error {
 	nodes, err := clusterNodes(ctx)
@@ -313,16 +313,16 @@ func checkNodeSubnets(ctx context.Context, config *taconfig.Config, declaredPodC
 		inventoryBound = append(inventoryBound, subnet.String())
 	}
 	if err := taconfig.CheckNodeSubnets(inventoryBound, knownPodRanges); err != nil {
-		return fmt.Errorf("the CDS this install names dials sandbox inventories where this cluster's pods answer (%w): a pod there could answer as a node's inventory. Re-run `c8s ta config new` with node subnets outside the cluster's pod ranges", err)
+		return fmt.Errorf("the Trust Authority this install names dials sandbox inventories where this cluster's pods answer (%w): a pod there could answer as a node's inventory. Re-run `c8s ta config new` with node subnets outside the cluster's pod ranges", err)
 	}
 	return nil
 }
 
-// checkNamedCDS checks what the named CDS serves against what this release needs served, and where its inventory calls may land.
-func checkNamedCDS(
+// checkNamedTA checks what the named Trust Authority serves against what this release needs served, and where its inventory calls may land.
+func checkNamedTA(
 	ctx context.Context,
 	render seedRender,
-	pin *cdsPin,
+	pin *taPin,
 	values map[string]any,
 ) (servedDigests map[string]bool, warn string, err error) {
 	if pin == nil {
@@ -332,14 +332,14 @@ func checkNamedCDS(
 	if err != nil {
 		return nil, "", err
 	}
-	cdsURL, err := installCDSURL(values)
+	taURL, err := installTAURL(values)
 	if err != nil {
 		return nil, "", err
 	}
-	served, err := servedAllowlist(ctx, cdsURL)
+	served, err := servedAllowlist(ctx, taURL)
 	if err != nil {
 		served = nil
-		warn = fmt.Sprintf("cannot read the allowlist %s serves (%v), so nothing confirms this release's components are admitted: %s", cdsURL, err, publishEntries)
+		warn = fmt.Sprintf("cannot read the allowlist %s serves (%v), so nothing confirms this release's components are admitted: %s", taURL, err, publishEntries)
 	} else if err := checkSeedServed(seed, served); err != nil {
 		return nil, "", err
 	}

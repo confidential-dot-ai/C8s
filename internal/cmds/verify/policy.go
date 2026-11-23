@@ -36,7 +36,7 @@ func applyVerdictPolicies(oc *Outcome, cfg config, ev *evidence, held *heldAllow
 // identity and nothing about the node identities it admits.
 func applyServedSetNote(oc *Outcome, cfg config, plan *verifyPlan) {
 	if cfg.kind == "ta" && plan.served == nil {
-		oc.Warnings = append(oc.Warnings, "no --served-policy-file: the set this CDS reports enforcing at /measurements was not checked")
+		oc.Warnings = append(oc.Warnings, "no --served-policy-file: the set this Trust Authority reports enforcing at /measurements was not checked")
 	}
 }
 
@@ -197,8 +197,8 @@ func launchBindingPinned(platform string, images []remote.ImagePin) bool {
 // The notes applyFinalNotes recognises: the unverified ones survive a failed
 // verdict, the matched one does not.
 const (
-	sandboxIDUnverifiedNote = "not verified: CDS's signature on the leaf vouches for this ID; pass --mesh-ca to check it"
-	workloadUnverifiedNote  = "not verified: CDS's signature on the leaf vouches for this name; pass --mesh-ca to check it"
+	sandboxIDUnverifiedNote = "not verified: Trust Authority's signature on the leaf vouches for this ID; pass --mesh-ca to check it"
+	workloadUnverifiedNote  = "not verified: Trust Authority's signature on the leaf vouches for this name; pass --mesh-ca to check it"
 	operatorKeysMatchedNote = "matched: the set served over the attested cert equals --operator-keys"
 )
 
@@ -325,7 +325,7 @@ func applyClientDocumentPolicy(oc *Outcome, cfg config, ev *evidence) {
 		oc.ClientDocumentDigest = hex.EncodeToString(digest)
 		oc.AgentLabel = armtls.AgentLabel(digest)
 		if cfg.meshCA == "" {
-			oc.ClientDocumentNote = "not verified: CDS's signature on the leaf vouches for this digest; pass --mesh-ca to check it"
+			oc.ClientDocumentNote = "not verified: Trust Authority's signature on the leaf vouches for this digest; pass --mesh-ca to check it"
 		} else {
 			oc.ClientDocumentNote = "ca-vouched: the leaf chains to the supplied mesh CA"
 		}

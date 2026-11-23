@@ -12,7 +12,7 @@ import (
 // maxPolicyBytes bounds one fetched policy object or signature.
 const maxPolicyBytes = 16 << 20
 
-// errNotFound is a 404 from fetchPolicy: CDS holds no such object or signature.
+// errNotFound is a 404 from fetchPolicy: Trust Authority holds no such object or signature.
 var errNotFound = errors.New("not found")
 
 // policyClient returns the client for fetchPolicy, which takes a redirect as
