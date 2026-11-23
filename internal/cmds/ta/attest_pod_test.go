@@ -218,7 +218,7 @@ func TestPodAttestProfileRefusesEachConfusion(t *testing.T) {
 	}
 }
 
-// anyChallenge redeems a challenge of any length. CDS's own store mints the
+// anyChallenge redeems a challenge of any length. Trust Authority's own store mints the
 // 32 bytes the claims binding requires, so nothing else reaches it.
 type anyChallenge struct{}
 
@@ -294,7 +294,7 @@ func TestPodAttestRejectsExplicitNullNodeLog(t *testing.T) {
 
 // The leaf names the client document the claims carry, and only that one: a
 // requester that swaps the digest after the guest quoted its claims fails the
-// report-data binding, so CDS issues nothing.
+// report-data binding, so the Trust Authority issues nothing.
 func TestPodAttestStampsOnlyTheQuotedClientDocument(t *testing.T) {
 	document := sha256.Sum256([]byte("client document"))
 	p := podTestClaims(t, wlDigestA)
@@ -311,7 +311,7 @@ func TestPodAttestStampsOnlyTheQuotedClientDocument(t *testing.T) {
 
 	// The guest quoted the claims with the true digest; the request carries
 	// another. The verifier answers as the hardware does: the report data
-	// CDS expects is not the one in the quote.
+	// Trust Authority expects is not the one in the quote.
 	quoted := podRequest(t, h, p)
 	tampered := p
 	other := sha256.Sum256([]byte("another client document"))
@@ -338,7 +338,7 @@ func TestPodAttestStampsOnlyTheQuotedClientDocument(t *testing.T) {
 	v.ReportDataMatch = teetypes.Ptr(false)
 	stub.SetVerdict(v)
 	if w := postPodRequest(t, h, forged); w.Code == http.StatusOK {
-		t.Fatal("CDS issued for a client document digest the quote does not bind")
+		t.Fatal("Trust Authority issued for a client document digest the quote does not bind")
 	}
 }
 

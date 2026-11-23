@@ -40,13 +40,13 @@ const (
 	maxDecreeRecord  = 16 << 20
 )
 
-// replica is one CDS the operator reads over armTLS: it is verified against
-// the pin document naming this cluster's CDS, and a decree records the member
+// replica is one Trust Authority the operator reads over armTLS: it is verified against
+// the pin document naming this cluster's Trust Authority, and a decree records the member
 // id it reported and the address it answered at.
 type replica struct {
 	address string
-	cdsPin  string
-	// verifier decides whether the endpoint's evidence is a CDS of this
+	taPin   string
+	// verifier decides whether the endpoint's evidence is a Trust Authority of this
 	// cluster, and is chosen when the flags are bound.
 	verifier taconn.PinVerifier
 }
@@ -58,7 +58,7 @@ func bindTargetFlags(cmd *cobra.Command, target *replica) {
 	target.verifier = taconn.LocalVerifier{}
 	f := cmd.Flags()
 	f.StringVar(&target.address, "target", "", "<host>[:"+strconv.Itoa(replicaPort)+"] of the replica this decree is for (REQUIRED)")
-	f.StringVar(&target.cdsPin, "ta-pin", "", "measurements document pinning this cluster's CDS, which every replica read is verified against (REQUIRED)")
+	f.StringVar(&target.taPin, "ta-pin", "", "measurements document pinning this cluster's Trust Authority, which every replica read is verified against (REQUIRED)")
 	cmdsutil.AliasFlag(f, "ta-pin", "cds-pin")
 	cmdsutil.RequireFlags(cmd, "target", "ta-pin")
 }
@@ -69,7 +69,7 @@ func bindDeliveryFlags(cmd *cobra.Command, to *replica) {
 	to.verifier = taconn.LocalVerifier{}
 	f := cmd.Flags()
 	f.StringVar(&to.address, "to", "", "<host>[:"+strconv.Itoa(replicaPort)+"] of a replica of the cluster to post this decree to (REQUIRED)")
-	f.StringVar(&to.cdsPin, "ta-pin", "", "measurements document pinning this cluster's CDS, which the replica posted to is verified against (REQUIRED)")
+	f.StringVar(&to.taPin, "ta-pin", "", "measurements document pinning this cluster's Trust Authority, which the replica posted to is verified against (REQUIRED)")
 	cmdsutil.AliasFlag(f, "ta-pin", "cds-pin")
 	cmdsutil.RequireFlags(cmd, "to", "ta-pin")
 }
@@ -109,7 +109,7 @@ func (r replica) answer(ctx context.Context, path string, limit int64) ([]byte, 
 }
 
 // dial resolves a replica to the one address it answers at and builds a client
-// that has verified the endpoint is a CDS of the pinned launch file. base is
+// that has verified the endpoint is a Trust Authority of the pinned launch file. base is
 // the URL every request to the replica takes.
 func (r replica) dial(ctx context.Context) (*http.Client, netip.AddrPort, string, error) {
 	address, err := resolveReplica(ctx, r.address)
@@ -122,7 +122,7 @@ func (r replica) dial(ctx context.Context) (*http.Client, netip.AddrPort, string
 	}
 	options := taconn.Options{
 		URL:                base,
-		MeasurementsConfig: r.cdsPin,
+		MeasurementsConfig: r.taPin,
 		Timeout:            replicaTimeout,
 		Verifier:           r.verifier,
 		DirectCDS:          true,
@@ -185,7 +185,7 @@ func resolveReplicas(ctx context.Context, entry string) ([]netip.AddrPort, error
 	return addresses, nil
 }
 
-// splitReplicaAddress reads <host>[:port], where the port every CDS serves the
+// splitReplicaAddress reads <host>[:port], where the port every Trust Authority serves the
 // operator on is the default.
 func splitReplicaAddress(address string) (string, uint16, error) {
 	if !strings.Contains(address, ":") {

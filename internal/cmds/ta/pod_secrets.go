@@ -23,10 +23,10 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
 )
 
-// PodSecretHandler serves POST secretbroker.PodRoute: CDS as a broker of pod
+// PodSecretHandler serves POST secretbroker.PodRoute: Trust Authority as a broker of pod
 // secret release (docs/pod-secrets.md). The caller is the pod its
 // mesh-CA-verified leaf names, and its client document must hash to the
-// digest that leaf carries. CDS signs a statement saying so with its broker
+// digest that leaf carries. Trust Authority signs a statement saying so with its broker
 // key and forwards it to the KMS, which decides. The value passes through
 // this handler on its way to the pod and is kept nowhere.
 type PodSecretHandler struct {

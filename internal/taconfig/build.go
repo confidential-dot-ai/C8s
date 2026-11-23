@@ -5,7 +5,7 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
 )
 
-// Inputs is everything one cluster's CDS VM is configured with, as `c8s cds
+// Inputs is everything one cluster's Trust Authority VM is configured with, as `c8s cds
 // config new` fills it. Each embedded policy is the exact bytes its own parser
 // reads.
 type Inputs struct {
@@ -16,24 +16,24 @@ type Inputs struct {
 	// the operator's own, nil for a cluster running components only.
 	ComponentSeed   []byte
 	TenantWorkloads []byte
-	// Nodes is the measurements document pinning the nodes CDS admits; nil
+	// Nodes is the measurements document pinning the nodes Trust Authority admits; nil
 	// for a replica set whose Genesis names the first set.
 	Nodes []byte
 	// PodImagePolicy optionally pins Pod identities separately from Nodes.
 	// Empty disables Pod issuance; nonempty bytes must be a complete policy.
 	PodImagePolicy []byte
-	// NodeCIDRs are the subnets CDS may dial a sandbox inventory in;
+	// NodeCIDRs are the subnets Trust Authority may dial a sandbox inventory in;
 	// ClusterCIDRs are the pod and service ranges they may not reach into.
 	NodeCIDRs    []string
 	ClusterCIDRs []string
-	// LeafDNSNames and LeafDNSPatterns are the DNS SAN rules CDS issues under.
+	// LeafDNSNames and LeafDNSPatterns are the DNS SAN rules Trust Authority issues under.
 	LeafDNSNames    []string
 	LeafDNSPatterns []string
-	// HA is the replica set the cluster's CDS runs as; a zero one the singleton.
+	// HA is the replica set the cluster's Trust Authority runs as; a zero one the singleton.
 	HA HA
 	// KMS is where pod secret release is brokered to; nil serves no pod secrets.
 	KMS *KMS
-	// ManifestPath, Family and VCPUs select the CDS guest image the VM boots
+	// ManifestPath, Family and VCPUs select the Trust Authority guest image the VM boots
 	// and the launch digests its pin carries.
 	ManifestPath string
 	Family       teetypes.Family

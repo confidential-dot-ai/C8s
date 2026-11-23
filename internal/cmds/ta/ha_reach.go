@@ -1,6 +1,6 @@
 // What the operator's read commands share: the replicas of one cluster they
 // cover, and the JSON they print. Each replica is read over armTLS and
-// verified against the pin document naming this cluster's CDS, so what the
+// verified against the pin document naming this cluster's Trust Authority, so what the
 // operator sees is a replica's own word rather than the host's.
 
 package ta
@@ -25,14 +25,14 @@ import (
 type clusterReach struct {
 	config string
 	urls   []string
-	cdsPin string
+	taPin  string
 }
 
 func bindReachFlags(cmd *cobra.Command, reach *clusterReach) {
 	f := cmd.Flags()
-	f.StringVar(&reach.config, "config", "", "the configuration document the cluster's CDS VMs boot on (REQUIRED); its replica entries name the replicas to read")
+	f.StringVar(&reach.config, "config", "", "the configuration document the cluster's Trust Authority VMs boot on (REQUIRED); its replica entries name the replicas to read")
 	f.StringArrayVar(&reach.urls, "url", nil, "<host>[:"+strconv.Itoa(replicaPort)+"] of a replica to read instead of the configuration's replica entries; repeatable")
-	f.StringVar(&reach.cdsPin, "ta-pin", "", "measurements document pinning this cluster's CDS, which every replica read is verified against (REQUIRED); during an image roll the one naming both images")
+	f.StringVar(&reach.taPin, "ta-pin", "", "measurements document pinning this cluster's Trust Authority, which every replica read is verified against (REQUIRED); during an image roll the one naming both images")
 	cmdsutil.AliasFlag(f, "ta-pin", "cds-pin")
 	cmdsutil.RequireFlags(cmd, "config", "ta-pin")
 }
@@ -54,7 +54,7 @@ func (reach clusterReach) cluster(ctx context.Context) (decreeConfig, []replica,
 	for _, address := range addresses {
 		replicas = append(replicas, replica{
 			address:  address,
-			cdsPin:   reach.cdsPin,
+			taPin:    reach.taPin,
 			verifier: taconn.LocalVerifier{},
 		})
 	}
@@ -99,14 +99,14 @@ func reachedAs(entry string, answering []netip.AddrPort) []string {
 	return addresses
 }
 
-// A configuration that names no replica set runs a singleton CDS, which has
+// A configuration that names no replica set runs a singleton Trust Authority, which has
 // no replicas to compare.
 func (reach clusterReach) entries(c decreeConfig) ([]string, error) {
 	if len(reach.urls) > 0 {
 		return reach.urls, nil
 	}
 	if c.parsed.HA == nil {
-		return nil, errors.New("--config names no replica set: a CDS of this cluster runs as its singleton. Name a replica with --url")
+		return nil, errors.New("--config names no replica set: a Trust Authority of this cluster runs as its singleton. Name a replica with --url")
 	}
 	return c.parsed.HA.Replicas, nil
 }

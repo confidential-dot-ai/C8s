@@ -1,5 +1,5 @@
-// Package cdsdecree is the operator's signed instruction to a CDS cluster:
-// which images a CDS of this cluster may run, which node images it certifies,
+// Package cdsdecree is the operator's signed instruction to a Trust Authority cluster:
+// which images a Trust Authority of this cluster may run, which node images it certifies,
 // which process may start or carry on the cluster, and which unjoined replica
 // may admit an image beside its own.
 //
@@ -44,9 +44,9 @@ type Kind string
 
 const (
 	// Genesis starts a cluster: its target mints the mesh CA, and the decree
-	// carries the CDS and node image sets the cluster begins with.
+	// carries the Trust Authority and node image sets the cluster begins with.
 	Genesis Kind = "Genesis"
-	// UpdateMeasurements replaces the set of images a CDS of this cluster may
+	// UpdateMeasurements replaces the set of images a Trust Authority of this cluster may
 	// run, which is also the set its clients and nodes pin it by.
 	UpdateMeasurements Kind = "UpdateMeasurements"
 	// SetNodeImages replaces the set of node images the cluster certifies: a
@@ -82,7 +82,7 @@ type Decree struct {
 	// BaseVersion is the count of applied operator commands this decree
 	// applies on top of.
 	BaseVersion uint64 `json:"base_version,omitempty"`
-	// CDSPins is the image set a CDS of this cluster may run.
+	// CDSPins is the image set a Trust Authority of this cluster may run.
 	CDSPins *PinDocument `json:"cds_pins,omitempty"`
 	// NodePins is the full set of node images the cluster certifies.
 	NodePins *NodeImages `json:"node_pins,omitempty"`
@@ -209,7 +209,7 @@ func NewIntentID() string {
 // board object path can hold.
 func checkIntentID(id string) error {
 	if len(id) != intentIDSize {
-		return fmt.Errorf("intent_id is %d characters, want the %d c8s cds ha decree writes", len(id), intentIDSize)
+		return fmt.Errorf("intent_id is %d characters, want the %d c8s ta ha decree writes", len(id), intentIDSize)
 	}
 	for _, r := range id {
 		if !isIntentRune(r) {

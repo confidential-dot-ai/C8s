@@ -31,7 +31,7 @@ func TestGenesisStartsTheCluster(t *testing.T) {
 	case r.CA() == nil || !r.CA().Key.Equal(r.minted.Key):
 		t.Fatal("the replica cannot issue under the mesh CA")
 	case core.PinsDecree == nil || core.PinsDecree.Decree.IntentID != entry.Decree.Decree.IntentID:
-		t.Fatal("the cluster pins no CDS images")
+		t.Fatal("the cluster pins no Trust Authority images")
 	case core.NodeImages == nil:
 		t.Fatal("the cluster certifies no node images")
 	case core.Voters != r.cluster.launch.Voters:
@@ -80,7 +80,7 @@ func TestSetNodeImagesReplacesTheWholeSet(t *testing.T) {
 	case core.NodeImagesVersion != upgraded.Version:
 		t.Fatalf("the node image set is named by version %d, want the %d the decree reached", core.NodeImagesVersion, upgraded.Version)
 	case core.PinsDecree.Decree.Kind != tadecree.Genesis:
-		t.Fatal("a node image command changed the images a CDS of the cluster may run")
+		t.Fatal("a node image command changed the images a Trust Authority of the cluster may run")
 	}
 
 	// The nodes are relaunched, and the next command retires the old image.
@@ -163,7 +163,7 @@ func TestADecreeAppliesOnceAndOnTheStateItNames(t *testing.T) {
 }
 
 // Every replica checks that a pin decree pins images of the launch file it
-// boots itself: one for another file names a CDS of another cluster.
+// boots itself: one for another file names a Trust Authority of another cluster.
 func TestPinsOfAnotherLaunchFileAreRefused(t *testing.T) {
 	r := newReplica(t)
 	r.genesis()

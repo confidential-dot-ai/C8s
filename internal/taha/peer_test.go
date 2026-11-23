@@ -121,7 +121,7 @@ func TestPeerWithUnsignedEvidenceIsRefused(t *testing.T) {
 	}
 }
 
-// An image the admission set does not list is refused, which is what a CDS
+// An image the admission set does not list is refused, which is what a Trust Authority
 // image roll rests on.
 func TestPeerOutsideTheAdmissionSetIsRefused(t *testing.T) {
 	admitting := newSNPReplica(t, "member-a")
@@ -134,7 +134,7 @@ func TestPeerOutsideTheAdmissionSetIsRefused(t *testing.T) {
 	}
 }
 
-// The same image launched on another configuration is another cluster's CDS,
+// The same image launched on another configuration is another cluster's Trust Authority,
 // so every pin binds the launch file this replica booted.
 func TestPeerOnAnotherLaunchFileIsRefused(t *testing.T) {
 	admitting := newSNPReplica(t, "member-a")

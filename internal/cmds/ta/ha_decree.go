@@ -28,11 +28,11 @@ import (
 // the window is short.
 const defaultDecreeValidity = 10 * time.Minute
 
-// newHACmd groups the operator side of a highly available CDS.
+// newHACmd groups the operator side of a highly available Trust Authority.
 func newHACmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "ha",
-		Short: "Operate a highly available CDS",
+		Short: "Operate a highly available Trust Authority",
 	}
 	cmd.AddCommand(
 		newDecreeCmd(),
@@ -50,7 +50,7 @@ func newHACmd() *cobra.Command {
 func newDecreeCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "decree",
-		Short: "Sign an operator decree for a CDS cluster",
+		Short: "Sign an operator decree for a Trust Authority cluster",
 	}
 	cmd.AddCommand(
 		newGenesisCmd(),
@@ -88,7 +88,7 @@ func decreeCmd(use, short, long string, o *decreeOptions, run func(*cobra.Comman
 		},
 	}
 	f := cmd.Flags()
-	f.StringVar(&o.config, "config", "", "the configuration document the cluster's CDS VMs boot on (REQUIRED)")
+	f.StringVar(&o.config, "config", "", "the configuration document the cluster's Trust Authority VMs boot on (REQUIRED)")
 	f.StringVar(&o.operatorKey, "operator-key", "", "operator EC private key PEM file, whose public key the configuration pins (REQUIRED)")
 	f.StringVar(&o.out, "out", "", "file to write the signed decree to, beside posting it")
 	f.DurationVar(&o.expiresIn, "expires-in", defaultDecreeValidity, "how long the cluster may adopt this decree for")
@@ -105,7 +105,7 @@ func bindBaseVersionFlag(cmd *cobra.Command, o *decreeOptions) {
 
 // decreeConfig is the cluster a decree is for, as its measured configuration
 // describes it. The document is the launch file every replica of the cluster
-// boots, which the CDS pins bind, and it names the operator keys a decree may
+// boots, which the Trust Authority pins bind, and it names the operator keys a decree may
 // be signed with.
 type decreeConfig struct {
 	launchFile []byte
@@ -212,7 +212,7 @@ func acknowledged(confirmed bool, flag, consequence string) error {
 	return fmt.Errorf("%s. Pass --%s", consequence, flag)
 }
 
-// pinFlags name the CDS guest images a decree pins the cluster to: one
+// pinFlags name the Trust Authority guest images a decree pins the cluster to: one
 // manifest per image it accepts, and the VM shapes those images may boot in.
 type pinFlags struct {
 	platform  string
@@ -222,9 +222,9 @@ type pinFlags struct {
 
 func bindPinFlags(cmd *cobra.Command, p *pinFlags) {
 	f := cmd.Flags()
-	f.StringVar(&p.platform, "platform", "", "TEE platform the CDS VMs run on: sev-snp or tdx (REQUIRED)")
-	f.IntSliceVar(&p.vcpus, "vcpus", nil, "SEV-SNP only: a vCPU count a CDS VM may boot with, one pin entry each; repeatable")
-	f.StringArrayVar(&p.manifests, "image-manifest", nil, "manifest.json of a CDS guest image the cluster accepts; repeatable (REQUIRED)")
+	f.StringVar(&p.platform, "platform", "", "TEE platform the Trust Authority VMs run on: sev-snp or tdx (REQUIRED)")
+	f.IntSliceVar(&p.vcpus, "vcpus", nil, "SEV-SNP only: a vCPU count a Trust Authority VM may boot with, one pin entry each; repeatable")
+	f.StringArrayVar(&p.manifests, "image-manifest", nil, "manifest.json of a Trust Authority guest image the cluster accepts; repeatable (REQUIRED)")
 	cmdsutil.RequireFlags(cmd, "platform", "image-manifest")
 }
 
@@ -289,14 +289,14 @@ func (w workerFlags) given() bool {
 // operator confirms the cluster facts the document carries.
 func (w workerFlags) addTo(
 	cmd *cobra.Command,
-	cdsPinPath string,
+	taPinPath string,
 	nodes []byte,
 ) ([]byte, error) {
-	files, err := w.read(cdsPinPath)
+	files, err := w.read(taPinPath)
 	if err != nil {
 		return nil, err
 	}
-	a, err := worker.Admit(bytes.NewReader(files.document), worker.AdmitInputs{CDSPin: files.cdsPin, WorkerImage: files.image, Nodes: nodes})
+	a, err := worker.Admit(bytes.NewReader(files.document), worker.AdmitInputs{CDSPin: files.taPin, WorkerImage: files.image, Nodes: nodes})
 	if err != nil {
 		return nil, err
 	}
@@ -307,33 +307,33 @@ func (w workerFlags) addTo(
 // confirms the cluster facts the document carries.
 func (w workerFlags) firstSet(
 	cmd *cobra.Command,
-	cdsPinPath string,
+	taPinPath string,
 ) ([]byte, error) {
-	files, err := w.read(cdsPinPath)
+	files, err := w.read(taPinPath)
 	if err != nil {
 		return nil, err
 	}
-	a, err := worker.AdmitFirst(bytes.NewReader(files.document), files.cdsPin, files.image)
+	a, err := worker.AdmitFirst(bytes.NewReader(files.document), files.taPin, files.image)
 	if err != nil {
 		return nil, err
 	}
 	return confirmedSet(cmd, a)
 }
 
-// admissionFiles are the worker document, the CDS pin it must carry, and the
+// admissionFiles are the worker document, the Trust Authority pin it must carry, and the
 // worker image's measurements.
 type admissionFiles struct {
 	document []byte
-	cdsPin   []byte
+	taPin    []byte
 	image    []byte
 }
 
-func (w workerFlags) read(cdsPinPath string) (admissionFiles, error) {
+func (w workerFlags) read(taPinPath string) (admissionFiles, error) {
 	document, err := os.ReadFile(w.document)
 	if err != nil {
 		return admissionFiles{}, fmt.Errorf("--worker-document: %w", err)
 	}
-	cdsPin, err := os.ReadFile(cdsPinPath)
+	taPin, err := os.ReadFile(taPinPath)
 	if err != nil {
 		return admissionFiles{}, fmt.Errorf("--ta-pin: %w", err)
 	}
@@ -341,7 +341,7 @@ func (w workerFlags) read(cdsPinPath string) (admissionFiles, error) {
 	if err != nil {
 		return admissionFiles{}, fmt.Errorf("--worker-image: %w", err)
 	}
-	return admissionFiles{document: document, cdsPin: cdsPin, image: image}, nil
+	return admissionFiles{document: document, taPin: taPin, image: image}, nil
 }
 
 // confirmedSet is the set an admission certifies, once the operator confirms
@@ -371,7 +371,7 @@ func newGenesisCmd() *cobra.Command {
 	var o genesisOptions
 	cmd := decreeCmd("genesis", "Sign the decree that starts a cluster",
 		"The replica this decree names mints the mesh CA, seeds the allowlist from the configuration's\n"+
-			"workloads, and begins with the CDS and node image sets the decree carries. A cluster started\n"+
+			"workloads, and begins with the Trust Authority and node image sets the decree carries. A cluster started\n"+
 			"again under this cluster id resumes above --resume-version, so no decree of the old one applies\n"+
 			"a second time and nodes keep taking the newest pin decree.\n\n"+
 			"The cluster starts out certifying the node images --nodes names, else the configuration's\n"+
@@ -399,7 +399,7 @@ func (o genesisOptions) run(cmd *cobra.Command) error {
 	if err := o.checkAloneNamesTheOneReplica(c); err != nil {
 		return err
 	}
-	cdsPins, err := o.pins.document(c.launchFile)
+	taPins, err := o.pins.document(c.launchFile)
 	if err != nil {
 		return err
 	}
@@ -419,7 +419,7 @@ func (o genesisOptions) run(cmd *cobra.Command) error {
 	}
 	return o.deliverIssued(cmd, c, o.target, tadecree.Decree{
 		Kind:          tadecree.Genesis,
-		CDSPins:       cdsPins,
+		CDSPins:       taPins,
 		NodePins:      nodePins,
 		TargetMember:  target.ID,
 		TargetAddress: address.String(),
@@ -480,7 +480,7 @@ func (o genesisOptions) firstWorkers(cmd *cobra.Command, c decreeConfig) (*tadec
 	if !c.parsed.Nodes.Empty() {
 		return nil, errors.New("--worker-document starts a cluster of workers, and the configuration names nodes: pass --nodes, or admit the worker by a node-images decree after Genesis")
 	}
-	measurements, err := o.worker.firstSet(cmd, o.target.cdsPin)
+	measurements, err := o.worker.firstSet(cmd, o.target.taPin)
 	if err != nil {
 		return nil, err
 	}
@@ -509,7 +509,7 @@ func newNodeImagesCmd() *cobra.Command {
 			"the whole set: an upgrade signs the image being replaced and the one replacing it together,\n"+
 			"and a second decree then names the new image alone.\n\n"+
 			"With --worker-document, the decree also certifies the worker image launched with that exact\n"+
-			"document. The document must pin the CDS --ta-pin pins. The cluster facts it carries are\n"+
+			"document. The document must pin the Trust Authority --ta-pin pins. The cluster facts it carries are\n"+
 			"printed, and the decree is signed only once you confirm them.",
 		&o.decreeOptions, func(cmd *cobra.Command) error {
 			return o.run(cmd)
@@ -532,7 +532,7 @@ func (o nodeImagesOptions) run(cmd *cobra.Command) error {
 		return fmt.Errorf("--nodes: %w", err)
 	}
 	if o.worker.given() {
-		if measurements, err = o.worker.addTo(cmd, o.to.cdsPin, measurements); err != nil {
+		if measurements, err = o.worker.addTo(cmd, o.to.taPin, measurements); err != nil {
 			return err
 		}
 	}
@@ -575,7 +575,7 @@ func checkTargetCluster(target taha.Status, clusterID string) error {
 	return nil
 }
 
-// pinsOptions replace the images a CDS of the cluster may run.
+// pinsOptions replace the images a Trust Authority of the cluster may run.
 type pinsOptions struct {
 	decreeOptions
 	pins pinFlags
@@ -584,8 +584,8 @@ type pinsOptions struct {
 
 func newPinsCmd() *cobra.Command {
 	var o pinsOptions
-	cmd := decreeCmd("pins", "Sign the decree that replaces the images a CDS of the cluster may run",
-		"The cluster's replicas admit each other by this set, and its clients and nodes pin CDS by it. An\n"+
+	cmd := decreeCmd("pins", "Sign the decree that replaces the images a Trust Authority of the cluster may run",
+		"The cluster's replicas admit each other by this set, and its clients and nodes pin Trust Authority by it. An\n"+
 			"image roll signs the old and the new image together, and a second decree then names the new\n"+
 			"image alone.",
 		&o.decreeOptions, func(cmd *cobra.Command) error { return o.run(cmd) })
@@ -600,14 +600,14 @@ func (o pinsOptions) run(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	cdsPins, err := o.pins.document(c.launchFile)
+	taPins, err := o.pins.document(c.launchFile)
 	if err != nil {
 		return err
 	}
 	return o.deliver(cmd, c, o.to, tadecree.Decree{
 		Kind:        tadecree.UpdateMeasurements,
 		BaseVersion: o.baseVersion,
-		CDSPins:     cdsPins,
+		CDSPins:     taPins,
 	})
 }
 
@@ -797,7 +797,7 @@ func (o admitOptions) run(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	cdsPins, err := o.appliedPins(cmd.Context(), c)
+	taPins, err := o.appliedPins(cmd.Context(), c)
 	if err != nil {
 		return err
 	}
@@ -810,7 +810,7 @@ func (o admitOptions) run(cmd *cobra.Command) error {
 	}
 	return o.deliver(cmd, c, o.target, tadecree.Decree{
 		Kind:         tadecree.Admit,
-		CDSPins:      cdsPins,
+		CDSPins:      taPins,
 		TargetMember: target.ID,
 	})
 }
@@ -836,7 +836,7 @@ func (o admitOptions) appliedPins(ctx context.Context, c decreeConfig) (*tadecre
 func (o admitOptions) servingReplica() replica {
 	return replica{
 		address:  o.joined,
-		cdsPin:   o.target.cdsPin,
+		taPin:    o.target.taPin,
 		verifier: o.target.verifier,
 	}
 }

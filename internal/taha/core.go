@@ -30,7 +30,7 @@ type ClusterState struct {
 	Version uint64 `json:"version"`
 	// MeshCACert is the mesh CA certificate in DER; its key never enters ClusterState.
 	MeshCACert []byte `json:"mesh_ca_cert,omitempty"`
-	// PinsDecree is the applied decree naming the images a CDS of this
+	// PinsDecree is the applied decree naming the images a Trust Authority of this
 	// cluster may run, which peers, nodes and clients all pin it by.
 	PinsDecree *tadecree.Signed     `json:"pins_decree,omitempty"`
 	NodeImages *tadecree.NodeImages `json:"node_images,omitempty"`
@@ -253,7 +253,7 @@ func checkDecree(launch Launch, cur ClusterState, de DecreeEntry) error {
 	case cur.accountedFor(d.IntentID):
 		return fmt.Errorf("decree %s has applied before", d.IntentID)
 	case d.CDSPins != nil && d.CDSPins.LaunchFileSHA256 != launch.ConfigSHA256:
-		return fmt.Errorf("the decree pins CDS images of launch file %s, and this replica boots %s", d.CDSPins.LaunchFileSHA256, launch.ConfigSHA256)
+		return fmt.Errorf("the decree pins Trust Authority images of launch file %s, and this replica boots %s", d.CDSPins.LaunchFileSHA256, launch.ConfigSHA256)
 	}
 	return nil
 }

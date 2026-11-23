@@ -39,21 +39,21 @@ func NewCmd() *cobra.Command {
 
 	flags := cmd.Flags()
 
-	flags.StringVar(&cfg.configPath, "config", "", "path to the CDS configuration document (c8s-cds/v1) this VM was launched with (REQUIRED). CDS serves the cluster it describes only if a verified self-report binds the file byte for byte")
+	flags.StringVar(&cfg.configPath, "config", "", "path to the Trust Authority configuration document (c8s-cds/v1) this VM was launched with (REQUIRED). Trust Authority serves the cluster it describes only if a verified self-report binds the file byte for byte")
 	flags.StringVar(&cfg.host, "host", "0.0.0.0", "listen address; auto selects this VM's primary IPv4 address")
 	flags.IntVarP(&cfg.port, "port", "p", 8443, "listen port")
 	flags.StringVar(&cfg.logLevel, "log-level", "info", "log level: debug, info, warn, error")
 
 	flags.StringVar(&cfg.attestationApiURL, "attestation-api-url", "", "URL of this VM's own attestation-api (REQUIRED); it must name a loopback address")
 	flags.StringVar(&cfg.caCommonName, "ca-common-name", issuer.DefaultCACommonName, "common name for the in-memory generated mesh CA")
-	flags.DurationVar(&cfg.caCertValidity, "ca-cert-validity", 8760*time.Hour, "validity period of each in-memory mesh CA certificate; past half of it CDS renews the certificate under the same key")
+	flags.DurationVar(&cfg.caCertValidity, "ca-cert-validity", 8760*time.Hour, "validity period of each in-memory mesh CA certificate; past half of it Trust Authority renews the certificate under the same key")
 
-	flags.Int64Var(&cfg.jwtClockSkew, "jwt-clock-skew", 30, "operator JWT clock skew tolerance in seconds; without --allowlist-persistent, CDS also refuses operator-token requests (allowlist, routes, secrets) for this long after it starts")
+	flags.Int64Var(&cfg.jwtClockSkew, "jwt-clock-skew", 30, "operator JWT clock skew tolerance in seconds; without --allowlist-persistent, Trust Authority also refuses operator-token requests (allowlist, routes, secrets) for this long after it starts")
 	flags.DurationVar(&cfg.certTTL, "cert-ttl", 24*time.Hour, "TTL of an issued mesh leaf, capped at 24h; a named leaf is further capped by --named-cert-ttl")
 	flags.DurationVar(&cfg.namedCertTTL, "named-cert-ttl", issuer.MaxNamedLeafTTL, "upper bound on the TTL of a leaf carrying a matched-workload stamp — the documented stale-identity bound for a named leaf (never applied to membership-only leaves). Must be positive and may only shorten the built-in ceiling, never raise it")
 	flags.DurationVar(&cfg.routerCertTTL, "router-cert-ttl", 20*time.Second, "TTL of a leaf issued to a router sandbox; must be shorter than --allowlist-node-delay, so every router advertises an allowlist write before it takes effect")
 	flags.DurationVar(&cfg.allowlistNodeDelay, "allowlist-node-delay", 30*time.Second, "how long after it is written an allowlist write takes effect on nodes; a write replaced before then never does")
-	flags.DurationVar(&cfg.challengeTTL, "challenge-ttl", 60*time.Second, "how long an attestation nonce CDS hands out stays redeemable")
+	flags.DurationVar(&cfg.challengeTTL, "challenge-ttl", 60*time.Second, "how long an attestation nonce Trust Authority hands out stays redeemable")
 	flags.DurationVar(&cfg.requestTimeout, "request-timeout", 5*time.Second, "per-request /attest timeout (0 disables)")
 	flags.Int64Var(&cfg.maxRequestSize, "max-request-size", 65536, "max request body bytes on /attest, /authenticate and the workload secret routes")
 	flags.DurationVar(&cfg.readTimeout, "read-timeout", defaultHTTPReadTimeout, "HTTP server read timeout")
@@ -67,7 +67,7 @@ func NewCmd() *cobra.Command {
 	flags.DurationVar(&cfg.readinessInterval, "readiness-interval", 10*time.Second, "how often /readyz probes the attestation-api health; must be positive")
 	flags.DurationVar(&cfg.minCAValidity, "min-ca-validity", time.Hour, "/readyz fails when the current mesh CA certificate has less than this remaining lifetime")
 	flags.StringVar(&cfg.allowlistDB, "allowlist-db", "", "Path to the allowlist SQLite database")
-	flags.BoolVar(&cfg.allowlistPersistent, "allowlist-persistent", false, "whether --allowlist-db is on durable storage; false makes CDS warn at startup that operator-added digests, the allowlist history, spent operator tokens, the route manifest and the mesh CA do not survive a restart")
+	flags.BoolVar(&cfg.allowlistPersistent, "allowlist-persistent", false, "whether --allowlist-db is on durable storage; false makes Trust Authority warn at startup that operator-added digests, the allowlist history, spent operator tokens, the route manifest and the mesh CA do not survive a restart")
 
 	flags.Float64Var(&cfg.rateLimit, "rate-limit", 10, "max requests per second per source IP on attestation endpoints")
 	flags.IntVar(&cfg.rateBurst, "rate-burst", 20, "max burst size per source IP")
@@ -80,12 +80,12 @@ func NewCmd() *cobra.Command {
 	flags.IntVar(&cfg.secretsMaxValueBytes, "secrets-max-value-bytes", 4096, "max bytes in one secret value")
 	flags.IntVar(&cfg.sandboxLedgerMax, "sandbox-ledger-max-entries", 10000, "max sandbox-to-inventory bindings held in memory")
 
-	flags.DurationVar(&cfg.armtlsCertTTL, "armtls-cert-ttl", 24*time.Hour, "lifetime of CDS's self-attested armTLS serving certificate")
+	flags.DurationVar(&cfg.armtlsCertTTL, "armtls-cert-ttl", 24*time.Hour, "lifetime of Trust Authority's self-attested armTLS serving certificate")
 
 	cmdsutil.RequireFlags(cmd, "config", "attestation-api-url", "allowlist-db")
 
 	// `c8s ta verify` — a shorthand for `c8s verify --kind ta`, sharing the
-	// same implementation. Running CDS (the server) stays `c8s ta`.
+	// same implementation. Running Trust Authority (the server) stays `c8s ta`.
 	//
 	// Mode is intentionally left at auto: resolveMode derives it from --kind
 	// (ta → armtls-cert, lb → discovery), so `c8s ta verify --kind lb` targets

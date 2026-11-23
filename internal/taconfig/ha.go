@@ -1,4 +1,4 @@
-// The ha block runs CDS as a replica set instead of a singleton. Three of the
+// The ha block runs Trust Authority as a replica set instead of a singleton. Three of the
 // document's fields bootstrap the replicated log and then follow it: `nodes`,
 // `workloads` and `ha.voters` seed the node images, the allowlist and the
 // voter count at Genesis, and signed commands change them while the cluster
@@ -18,7 +18,7 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tadecree"
 )
 
-// HA is the replica set one cluster's CDS runs as.
+// HA is the replica set one cluster's Trust Authority runs as.
 type HA struct {
 	// Replicas are the DNS names and IPv4 addresses discovery resolves to the
 	// replicas' own addresses, never to a load-balanced address; one name may
@@ -34,13 +34,13 @@ type haWire struct {
 	Voters   int      `yaml:"voters"`
 }
 
-// runsASingleCDS reports whether a document's ha block, nil when it has none,
-// runs one CDS rather than a replica set.
-func runsASingleCDS(ha *HA) bool {
+// runsASingleTA reports whether a document's ha block, nil when it has none,
+// runs one Trust Authority rather than a replica set.
+func runsASingleTA(ha *HA) bool {
 	return ha == nil
 }
 
-// parse reads the block; a document without one runs the singleton CDS.
+// parse reads the block; a document without one runs the singleton Trust Authority.
 func (w *haWire) parse() (*HA, error) {
 	if w == nil {
 		return nil, nil
@@ -59,7 +59,7 @@ func (w *haWire) parse() (*HA, error) {
 }
 
 // wire renders the block; a document naming no replica set renders no ha
-// block at all, and Parse reads that document back as the singleton CDS.
+// block at all, and Parse reads that document back as the singleton Trust Authority.
 func (h HA) wire() *haWire {
 	if h.namesNoReplicaSet() {
 		return nil

@@ -21,7 +21,7 @@ import (
 )
 
 // A replica that joins takes the whole state from a peer: the cluster's
-// agreement, its mesh CA and every store a CDS serves from.
+// agreement, its mesh CA and every store a Trust Authority serves from.
 func TestAReplicaInstallsTheWholeStateOfItsCluster(t *testing.T) {
 	source := newReplica(t)
 	source.genesis()

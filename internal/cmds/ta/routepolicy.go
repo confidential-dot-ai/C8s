@@ -19,7 +19,7 @@ type routeHandler struct {
 	Allowlist *allowlist.Handle
 	// Authorize is the allowlist write authorizer: same keys, same checks (W1).
 	Authorize allowlist.WriteAuthorizer
-	// MeshCA is this CDS's mesh CA, which no address backend may anchor on (C3).
+	// MeshCA is this Trust Authority's mesh CA, which no address backend may anchor on (C3).
 	MeshCA meshCA
 }
 
@@ -55,7 +55,7 @@ func (h routeHandler) handlePut(w http.ResponseWriter, r *http.Request) {
 	current, issuing := h.MeshCA.Current()
 	if !issuing {
 		// Without the certificate the C3 anchor check cannot run: fail closed.
-		slog.Error("route manifest write refused: this CDS holds no mesh CA")
+		slog.Error("route manifest write refused: this Trust Authority holds no mesh CA")
 		http.Error(w, "internal server error", http.StatusServiceUnavailable)
 		return
 	}

@@ -46,7 +46,7 @@ func TestParseReturnsTheReplicaSet(t *testing.T) {
 	}
 }
 
-// Without an ha block a cluster's CDS runs as the singleton.
+// Without an ha block a cluster's Trust Authority runs as the singleton.
 func TestParseLeavesTheSingletonWithoutAnHABlock(t *testing.T) {
 	_, operatorPEM := testKey(t)
 	_, anchorPEM := testKey(t)
@@ -90,7 +90,7 @@ func TestParseRefusesEachMalformedHAField(t *testing.T) {
 	}
 }
 
-// An unknown field inside the block is a setting CDS does not define.
+// An unknown field inside the block is a setting Trust Authority does not define.
 func TestParseRefusesAnUndeclaredHAField(t *testing.T) {
 	_, operatorPEM := testKey(t)
 	_, anchorPEM := testKey(t)
@@ -133,7 +133,7 @@ func TestFormatWritesAnHABlockParseAccepts(t *testing.T) {
 	}
 }
 
-// A replica set's Genesis may name its first node set; a single CDS has no
+// A replica set's Genesis may name its first node set; a single Trust Authority has no
 // Genesis.
 func TestFormatWritesNoNodesOnlyForAReplicaSet(t *testing.T) {
 	_, operatorPEM := testKey(t)
@@ -141,7 +141,7 @@ func TestFormatWritesNoNodesOnlyForAReplicaSet(t *testing.T) {
 	document := testDocumentFor(t, operatorPEM, anchorPEM)
 	document.Nodes = nil
 	if _, err := Format(document); err == nil {
-		t.Fatal("Format wrote a single CDS that certifies no node")
+		t.Fatal("Format wrote a single Trust Authority that certifies no node")
 	}
 	document.HA = HA{
 		Replicas: []string{"cds.acme.example"},

@@ -96,7 +96,7 @@ func newVerdict(response remote.VerifyResponse) (verdict, error) {
 	return verdict{response: response, verifiedPlatform: response.Result.Platform}, nil
 }
 
-// noRuntimeExtensions: a CDS guest extends RTMR[3] with its launch file alone.
+// noRuntimeExtensions: a Trust Authority guest extends RTMR[3] with its launch file alone.
 var noRuntimeExtensions []string
 
 // admittedBy judges the verdict against the images a replica admits, of which
@@ -118,7 +118,7 @@ const selfPinName = "this replica's image"
 func (v verdict) imagePin(launchFile []byte) (remote.ImagePin, error) {
 	indices, identified := armtls.ImageRegisters(v.verifiedPlatform.Family())
 	if !identified {
-		return remote.ImagePin{}, fmt.Errorf("platform %q has no CDS image identity", v.verifiedPlatform)
+		return remote.ImagePin{}, fmt.Errorf("platform %q has no Trust Authority image identity", v.verifiedPlatform)
 	}
 	digest, err := v.response.Result.Claims.LaunchMeasurement()
 	if err != nil {

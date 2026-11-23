@@ -103,7 +103,7 @@ type AttestHandler struct {
 
 	// InventoryHosts bounds which addresses the callback may dial — the
 	// operator's node CIDRs. Empty rejects any request carrying a sandbox
-	// token: without it a workload could point CDS at its own pod IP and
+	// token: without it a workload could point Trust Authority at its own pod IP and
 	// answer as the inventory.
 	InventoryHosts workloadclaims.CIDRHosts
 
@@ -249,8 +249,8 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 	matched, router, err := profile.resolveWorkload(ctx, sandbox)
 	if err != nil {
 		// The detail stays in the log. A requester picks both the sandbox ID and
-		// the address CDS just dialled, so echoing what happened there would
-		// hand it a reachability oracle for CDS's network position.
+		// the address Trust Authority just dialled, so echoing what happened there would
+		// hand it a reachability oracle for Trust Authority's network position.
 		slog.Warn("sandbox workload rejected",
 			"sandbox_id", sandbox.SandboxID, "inventory_addr", sandbox.InventoryHost, "error", err,
 			"remote_addr", r.RemoteAddr)
@@ -268,7 +268,7 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 	signing, issuing := h.MeshCA.Current()
 	if !issuing {
 		// A replica that stopped serving between the gate and the signature.
-		httputil.WriteError(w, http.StatusServiceUnavailable, types.ErrorCodeInternal, "this CDS holds no mesh CA to sign with")
+		httputil.WriteError(w, http.StatusServiceUnavailable, types.ErrorCodeInternal, "this Trust Authority holds no mesh CA to sign with")
 		return
 	}
 	clientDocument, clientDocumentDigest := profile.clientDocument()
@@ -376,12 +376,12 @@ func (h AttestHandler) leafTTL(matched *armtls.MatchedWorkload, router bool) tim
 	return ttl
 }
 
-// matchPinnedNodeImage holds the verified evidence to one node image this CDS
+// matchPinnedNodeImage holds the verified evidence to one node image this Trust Authority
 // certifies, judging the platform and extensions the caller claims.
 func (h AttestHandler) matchPinnedNodeImage(verified remote.VerifyResponse, claimedPlatform teetypes.PlatformType, claimedExtensions []string) error {
 	images := h.NodeImages.Current().Images
 	if len(images) == 0 {
-		return errors.New("this CDS certifies no node image")
+		return errors.New("this Trust Authority certifies no node image")
 	}
 	return armtls.EnforceImages(verified, images, claimedPlatform, claimedExtensions)
 }
@@ -404,7 +404,7 @@ func serialHex(serial *big.Int) string {
 // for this issuance, and only with inventory provenance.
 func (h AttestHandler) verifySandboxToken(ctx context.Context, raw json.RawMessage, requesterPub crypto.PublicKey, nonce []byte) (workloadclaims.VerifiedSandbox, error) {
 	if h.SandboxDigests == nil {
-		return workloadclaims.VerifiedSandbox{}, fmt.Errorf("sandbox token presented but this CDS cannot reach an inventory to verify it")
+		return workloadclaims.VerifiedSandbox{}, fmt.Errorf("sandbox token presented but this Trust Authority cannot reach an inventory to verify it")
 	}
 	if len(h.InventoryHosts) == 0 {
 		return workloadclaims.VerifiedSandbox{}, fmt.Errorf("sandbox token presented but the inventory callback has no node addresses to bound it")
@@ -439,7 +439,7 @@ func (h AttestHandler) verifySandboxToken(ctx context.Context, raw json.RawMessa
 		return workloadclaims.VerifiedSandbox{}, fmt.Errorf("resolve inventory key: %w", err)
 	}
 	// Freshness is the challenge itself: the token must carry the same nonce
-	// CDS is consuming for this request, so it cannot be replayed against a
+	// Trust Authority is consuming for this request, so it cannot be replayed against a
 	// later request or pre-signed against a future one.
 	sandbox, err := token.Verify(inventoryPub, requesterPub, nonce)
 	if err != nil {
@@ -473,7 +473,7 @@ func (h AttestHandler) verifySandboxToken(ctx context.Context, raw json.RawMessa
 //
 //  2. The matched-workload stamp: when the high-water (digest, argv) inventory
 //     additionally matches exactly one allowlist entry, that name and the
-//     snapshot's (version, digest) are returned for CDS to stamp. Every
+//     snapshot's (version, digest) are returned for Trust Authority to stamp. Every
 //     failure to establish the name — an old inventory without the containers
 //     view, a malformed or self-disagreeing answer, no or ambiguous match —
 //     suppresses the stamp and preserves today's membership-only issuance,
@@ -483,17 +483,17 @@ func (h AttestHandler) verifySandboxToken(ctx context.Context, raw json.RawMessa
 // No sandbox ⇒ nothing to check: a requester that presents no token gets a
 // leaf with no sandbox ID and no stamp. With a token, an unreachable inventory
 // or allowlist store, a malformed digests view, or a non-allowlisted image is
-// fail-closed — CDS cannot establish what the pod runs, or has established
+// fail-closed — Trust Authority cannot establish what the pod runs, or has established
 // that it should not run, and it never stamps from stale cached state.
 func (h AttestHandler) resolveSandboxWorkload(ctx context.Context, sandbox workloadclaims.VerifiedSandbox) (matched *armtls.MatchedWorkload, router bool, err error) {
 	if sandbox.SandboxID == "" {
 		return nil, false, nil
 	}
 	if h.AllowlistStore == nil {
-		return nil, false, fmt.Errorf("sandbox token presented but this CDS has no allowlist to check it against")
+		return nil, false, fmt.Errorf("sandbox token presented but this Trust Authority has no allowlist to check it against")
 	}
 	if h.SandboxDigests == nil {
-		return nil, false, fmt.Errorf("sandbox token presented but this CDS cannot reach the inventory for its digests")
+		return nil, false, fmt.Errorf("sandbox token presented but this Trust Authority cannot reach the inventory for its digests")
 	}
 	resp, err := h.SandboxDigests.FetchSandbox(ctx, sandbox.InventoryHost, sandbox.SandboxID)
 	if err != nil {

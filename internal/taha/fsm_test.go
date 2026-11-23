@@ -17,7 +17,7 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
 )
 
-// The three stores a CDS keeps are written through the log and nowhere else,
+// The three stores a Trust Authority keeps are written through the log and nowhere else,
 // so a replica that applied the same entries holds the same answers.
 func TestTheLogWritesEveryStore(t *testing.T) {
 	r := newReplica(t)

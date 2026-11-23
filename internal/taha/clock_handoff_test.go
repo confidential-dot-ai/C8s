@@ -150,7 +150,7 @@ func TestClockHandoffRequiresCurrentAuthenticatedEligibleVoter(t *testing.T) {
 			fsm := newReplica(t).FSM
 			fsm.core = leader.fsm.ClusterState()
 			n := &Node{cfg: leader.cfg, member: leader.member, fsm: fsm, raft: leader.raft, peers: newMembers(string(leader.member), testDeadAfter)}
-			reporter := newPeerReplica(t, string(candidate.ID), teetypes.PlatformSNP, snpVerdict(testCDSImage, testLaunchFile), time.Now().Add(time.Hour))
+			reporter := newPeerReplica(t, string(candidate.ID), teetypes.PlatformSNP, snpVerdict(testTAImage, testLaunchFile), time.Now().Add(time.Hour))
 			answer := controlAnswer{Member: reporter.member, Joined: true, Voters: []string{reporter.member}, Clock: &clockReport{AtMS: time.Now().UnixMilli()}}
 			switch name {
 			case "old peer", "old peer with stuck leader", "quarantined during exchange":

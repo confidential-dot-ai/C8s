@@ -33,8 +33,8 @@ func (d *document) UnmarshalJSON(object []byte) error {
 	return nil
 }
 
-// ElidedImages is the CDS image set a decree carries, with every entry's
-// launch file taken out. It pins no CDS on its own: only
+// ElidedImages is the Trust Authority image set a decree carries, with every entry's
+// launch file taken out. It pins no Trust Authority on its own: only
 // [PinDocument.WithLaunchFile] hands out a pin set, and only once the launch
 // file the operator signed it for is back in every entry.
 type ElidedImages struct {
@@ -82,9 +82,9 @@ func EntryBindsLaunch(image remote.ImagePin) bool {
 	return image.Anchor != nil || image.LaunchFile != nil || image.LaunchFileDigest != nil
 }
 
-// PinDocument is the image set a decree pins a CDS to: the cluster's
+// PinDocument is the image set a decree pins a Trust Authority to: the cluster's
 // measurements document with every entry's launch file elided, and the
-// SHA-256 of the file they all bind. Every CDS of a cluster boots the same
+// SHA-256 of the file they all bind. Every Trust Authority of a cluster boots the same
 // launch file, so the digest names it and a decree stays small enough to keep
 // in the cluster's state.
 type PinDocument struct {
@@ -92,7 +92,7 @@ type PinDocument struct {
 	LaunchFileSHA256 string       `json:"launch_file_sha256"`
 }
 
-// NewPinDocument elides the launch file from a CDS pin document. Every entry
+// NewPinDocument elides the launch file from a Trust Authority pin document. Every entry
 // must bind the one file, which the digest then names.
 func NewPinDocument(measurements []byte) (*PinDocument, error) {
 	images, err := refvalues.Parse(measurements)
@@ -101,7 +101,7 @@ func NewPinDocument(measurements []byte) (*PinDocument, error) {
 	}
 	file, err := cmdsutil.CDSLaunchFile(images)
 	if err != nil {
-		return nil, fmt.Errorf("a CDS pin document %w", err)
+		return nil, fmt.Errorf("a Trust Authority pin document %w", err)
 	}
 	for i := range images.Images {
 		images.Images[i].LaunchFile = nil
@@ -117,7 +117,7 @@ func NewPinDocument(measurements []byte) (*PinDocument, error) {
 	}, nil
 }
 
-// WithLaunchFile is the pin set a reader holds its CDS to: the decree's
+// WithLaunchFile is the pin set a reader holds its Trust Authority to: the decree's
 // entries bound to the launch file the reader holds, which must be the file
 // the operator signed them for.
 func (p PinDocument) WithLaunchFile(file []byte) (refvalues.ReferenceValues, error) {

@@ -242,7 +242,7 @@ func caBytes(t *testing.T, ca *issuer.CA) (cert, key []byte) {
 	return ca.Cert.Raw, key
 }
 
-// testPins pins CDS images to the launch file every replica boots.
+// testPins pins Trust Authority images to the launch file every replica boots.
 func testPins(t *testing.T, digests ...byte) *tadecree.PinDocument {
 	t.Helper()
 	images := make([]remote.ImagePin, 0, len(digests))
@@ -360,7 +360,7 @@ func (a *admittedImages) get() []remote.ImagePin {
 	return slices.Clone(a.pinned)
 }
 
-// testReplica is one CDS VM: its attestation-api, identity and admission set.
+// testReplica is one Trust Authority VM: its attestation-api, identity and admission set.
 type testReplica struct {
 	stub     *mockapi.Stub
 	attestor attestor

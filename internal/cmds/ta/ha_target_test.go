@@ -52,7 +52,7 @@ func TestAReplicaNamedByDNSIsReachedWithItsNameAsSNI(t *testing.T) {
 		mu.Unlock()
 		r := replica{
 			address:  tc.entry,
-			cdsPin:   c.cdsPinPath,
+			taPin:    c.taPinPath,
 			verifier: c.verifier(),
 		}
 		reported, err := r.status(context.Background())

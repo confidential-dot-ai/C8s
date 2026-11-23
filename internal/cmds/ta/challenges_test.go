@@ -16,7 +16,7 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
 )
 
-// challengeConsumer is one CDS route that redeems an attestation challenge.
+// challengeConsumer is one Trust Authority route that redeems an attestation challenge.
 type challengeConsumer struct {
 	redeems string
 	mintAt  string
@@ -44,7 +44,7 @@ func challengeConsumers(t *testing.T, deps dependencies) []challengeConsumer {
 	}
 }
 
-// challengeDeps is a CDS whose two challenge pools are the ones given.
+// challengeDeps is a Trust Authority whose two challenge pools are the ones given.
 func challengeDeps(t *testing.T, issuance, secretsPool attestation.Challenges) dependencies {
 	t.Helper()
 	limiter, err := issuer.NewIPRateLimiter(rate.Limit(1000), 1000, 100)
@@ -88,14 +88,14 @@ func mintChallenge(t *testing.T, router http.Handler, path string) []byte {
 }
 
 // Every challenge consumer redeems the nonces of its own route only, in a
-// single CDS and in a CDS HA replica alike.
+// single Trust Authority and in a Trust Authority HA replica alike.
 func TestChallengeConsumersRedeemTheirOwnPoolOnly(t *testing.T) {
 	key := []byte("mesh-ca-derived-key")
 	for name, pools := range map[string]func() (attestation.Challenges, attestation.Challenges){
-		"single CDS": func() (attestation.Challenges, attestation.Challenges) {
+		"single Trust Authority": func() (attestation.Challenges, attestation.Challenges) {
 			return attestation.NewLocalChallenges(time.Minute), attestation.NewLocalChallenges(time.Minute)
 		},
-		"CDS HA replica": func() (attestation.Challenges, attestation.Challenges) {
+		"Trust Authority HA replica": func() (attestation.Challenges, attestation.Challenges) {
 			return attestation.NewSharedChallenges(
 					"issuance",
 					time.Minute,

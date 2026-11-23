@@ -72,7 +72,7 @@ func (k *fakeKMS) config() *taconfig.KMS {
 	return &taconfig.KMS{URL: k.server.URL + "/release", TLSKey: sha256.Sum256(k.server.Certificate().RawSubjectPublicKeyInfo)}
 }
 
-// podLeaf is a CDS-issued pod CVM leaf carrying the pod instance and, unless
+// podLeaf is a Trust Authority-issued pod CVM leaf carrying the pod instance and, unless
 // digest is nil, a client document digest.
 func podLeaf(t *testing.T, mesh *issuer.MeshCA, digest []byte, extra ...pkix.Extension) *x509.Certificate {
 	t.Helper()
@@ -176,7 +176,7 @@ func TestPodSecretBrokeredToTheKMS(t *testing.T) {
 	if s.Pod != "pcvm-0123" || s.Secret != "agent-token" || s.Workload != nil {
 		t.Fatalf("statement = %+v", s)
 	}
-	// Passing through is all CDS does with a value: it is never logged.
+	// Passing through is all Trust Authority does with a value: it is never logged.
 	if strings.Contains(logs.String(), podSecretValue) || !strings.Contains(logs.String(), "pod secret released") {
 		t.Fatalf("log: %s", logs.String())
 	}

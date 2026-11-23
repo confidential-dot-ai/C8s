@@ -281,18 +281,18 @@ func TestEveryStartIsANewMember(t *testing.T) {
 }
 
 // A replica admits peers by its own image until the cluster names the images
-// a CDS of it may run.
+// a Trust Authority of it may run.
 func TestAReplicaAdmitsItsOwnImageUntilTheClusterNamesThem(t *testing.T) {
 	c := newLiveCluster(t)
 	r := c.start()
 	own := r.node.admits()
-	if len(own) != 1 || hex.EncodeToString(own[0].Digest) != testCDSImage {
+	if len(own) != 1 || hex.EncodeToString(own[0].Digest) != testTAImage {
 		t.Fatalf("a replica holding no cluster admits %+v", own)
 	}
 	c.decreeGenesis(r, true)
 	c.started(r)
 	pinned := r.node.admits()
-	if len(pinned) != 1 || hex.EncodeToString(pinned[0].Digest) != testCDSImage {
+	if len(pinned) != 1 || hex.EncodeToString(pinned[0].Digest) != testTAImage {
 		t.Fatalf("a replica of the cluster admits %+v", pinned)
 	}
 	if !bytes.Equal(pinned[0].LaunchFile, testLaunchFile) {
@@ -327,7 +327,7 @@ func TestAPinDecreeThatDropsTheirImageCutsThePeersOff(t *testing.T) {
 
 // runningImage reports the image the test cluster's replicas report running.
 func runningImage(pinned remote.ImagePin) bool {
-	return hex.EncodeToString(pinned.Digest) == testCDSImage
+	return hex.EncodeToString(pinned.Digest) == testTAImage
 }
 
 // A write the admission cap refused is the store's full error; one the

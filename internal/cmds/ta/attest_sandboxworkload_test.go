@@ -134,7 +134,7 @@ func TestAttest_SandboxWorkload_RejectsUnallowlistedImage(t *testing.T) {
 	wantWorkloadRefusal(t, w)
 }
 
-// An inventory that does not know the sandbox is fail-closed: CDS cannot
+// An inventory that does not know the sandbox is fail-closed: Trust Authority cannot
 // establish what the pod runs, which is exactly when it must not issue.
 func TestAttest_SandboxWorkload_UnreachableInventoryFailsClosed(t *testing.T) {
 	stub := newStubAttestationApi(t, testLaunchDigest)
@@ -163,7 +163,7 @@ func TestAttest_SandboxWorkload_EmptySandboxFailsClosed(t *testing.T) {
 	wantWorkloadRefusal(t, w)
 }
 
-// Without a store or a callback client CDS cannot check what the sandbox runs,
+// Without a store or a callback client Trust Authority cannot check what the sandbox runs,
 // so a token-bearing request is refused rather than issued unchecked.
 func TestAttest_SandboxWorkload_RejectsWhenGateUnwired(t *testing.T) {
 	for _, tc := range []struct {

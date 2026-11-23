@@ -54,7 +54,7 @@ func (b *secretBroker) sign(statement []byte) ([]byte, [][]byte, error) {
 func (b *secretBroker) currentChain(now time.Time) ([][]byte, error) {
 	signing, issuing := b.mesh.Current()
 	if !issuing {
-		return nil, fmt.Errorf("this CDS holds no mesh CA to certify its broker key")
+		return nil, fmt.Errorf("this Trust Authority holds no mesh CA to certify its broker key")
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()

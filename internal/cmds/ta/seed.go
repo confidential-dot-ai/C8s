@@ -12,7 +12,7 @@ import (
 // allowlist; the version-stable merge is the seed command.
 //
 // Seeding runs before the HTTP server serves, so the first GET /allowlist
-// reflects the configuration. Any error fails closed: CDS must not serve an
+// reflects the configuration. Any error fails closed: Trust Authority must not serve an
 // empty or partial allowlist because its seed could not be applied.
 func seedWorkloads(store *allowlist.Handle, seed *pkgallowlist.Allowlist) error {
 	added, retired, err := store.SeedWorkloads(seed.Workloads)

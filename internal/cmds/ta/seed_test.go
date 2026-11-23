@@ -80,9 +80,9 @@ func TestSeedWorkloads_AddsAllEntries(t *testing.T) {
 	}
 }
 
-// Re-seeding the same set on every CDS restart must not bump the store version;
+// Re-seeding the same set on every Trust Authority restart must not bump the store version;
 // the version is the worker pull ETag, so churn would force every worker to
-// re-pull on every CDS restart.
+// re-pull on every Trust Authority restart.
 func TestSeedWorkloads_IdempotentDoesNotBumpVersion(t *testing.T) {
 	store, err := allowlist.OpenInMemory()
 	if err != nil {

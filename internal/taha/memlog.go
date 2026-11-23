@@ -8,7 +8,7 @@ import (
 )
 
 // memLog is the replica's Raft log and stable store. Both live in the
-// process's memory, which is where a CDS HA cluster keeps everything, and
+// process's memory, which is where a Trust Authority HA cluster keeps everything, and
 // the log holds every entry until a snapshot lets Raft compact it, so it
 // counts the entry bytes it holds under the same lock.
 type memLog struct {

@@ -1,10 +1,10 @@
-// Package cdsca implements `c8s cds ca`: read the CDS mesh CA bundle over the
+// Package cdsca implements `c8s ta ca`: read the Trust Authority mesh CA bundle over the
 // attested connection.
 //
 // The bundle is the anchor `--mesh-ca` takes on `c8s secrets put`,
 // `c8s volume create` and `c8s verify`. It is read from the same `GET /ca`
 // route that gate compares against, over the armTLS channel cdsconn builds to a
-// direct CDS URL. A router front door does not relay /ca and is refused.
+// direct Trust Authority URL. A router front door does not relay /ca and is refused.
 package taca
 
 import (
@@ -29,14 +29,14 @@ import (
 
 // errUnpinned refuses a read that would turn "any attested build" into an
 // anchor. Every command taking --mesh-ca treats the bundle as a pin it checks
-// CDS against; one read from an unpinned endpoint is whatever answered, and
+// Trust Authority against; one read from an unpinned endpoint is whatever answered, and
 // pinning it later proves only that the same thing answered twice.
-var errUnpinned = fmt.Errorf("%w, and its CA would become the anchor you pin. Pass --ta-image-policy-file <pin.json>, the pin naming this cluster's CDS", taconn.ErrUnpinnedEndpoint)
+var errUnpinned = fmt.Errorf("%w, and its CA would become the anchor you pin. Pass --ta-image-policy-file <pin.json>, the pin naming this cluster's Trust Authority", taconn.ErrUnpinnedEndpoint)
 
-// errPlaintext refuses a plaintext endpoint. The bundle distinguishes one CDS
+// errPlaintext refuses a plaintext endpoint. The bundle distinguishes one Trust Authority
 // from another and nothing over http attests to being either.
 var errPlaintext = errors.New(
-	"--ta-url must be https: the mesh CA bundle is read over the attested connection, and a plaintext CDS " +
+	"--ta-url must be https: the mesh CA bundle is read over the attested connection, and a plaintext Trust Authority " +
 		"needs no bundle — the --mesh-ca gate exempts http endpoints")
 
 // NewCmd returns the `ca` subcommand.
@@ -48,19 +48,19 @@ func newCmd(verifier taconn.PinVerifier) *cobra.Command {
 	var out string
 	cmd := &cobra.Command{
 		Use:   "ca",
-		Short: "Read the CDS mesh CA bundle over the attested connection",
-		Long: `Read the mesh CA bundle CDS serves at GET /ca and write it as PEM to --out,
+		Short: "Read the Trust Authority mesh CA bundle over the attested connection",
+		Long: `Read the mesh CA bundle Trust Authority serves at GET /ca and write it as PEM to --out,
 or to stdout. This is the anchor 'c8s secrets put --mesh-ca',
 'c8s volume create --mesh-ca' and 'c8s verify --mesh-ca' take.
 
 The read travels the attested connection those commands use and requires the
-CDS pin: --ta-image-policy-file names the document binding the configuration that
-CDS runs on. A router front door does not relay /ca, so --ta-url names CDS itself.
+Trust Authority pin: --ta-image-policy-file names the document binding the configuration that
+Trust Authority runs on. A router front door does not relay /ca, so --ta-url names Trust Authority itself.
 The SHA-256 of each certificate is printed on stderr — record it, and compare
 it on a later read or against a copy obtained another way.
 
-CDS generates its mesh CA in process, so a restart replaces it and the bundle
-has to be read again. The bundle carries the CAs CDS still signs against, newest
+Trust Authority generates its mesh CA in process, so a restart replaces it and the bundle
+has to be read again. The bundle carries the CAs Trust Authority still signs against, newest
 first.`,
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
@@ -116,7 +116,7 @@ first.`,
 }
 
 // encode re-emits the parsed certificates. The bundle holds the DER the
-// --mesh-ca gate compares and nothing else, so a byte CDS served outside a
+// --mesh-ca gate compares and nothing else, so a byte Trust Authority served outside a
 // CERTIFICATE block never reaches the anchor.
 func encode(certs []*x509.Certificate) []byte {
 	var out bytes.Buffer
@@ -128,7 +128,7 @@ func encode(certs []*x509.Certificate) []byte {
 }
 
 // report names each certificate: the digest to record and compare on a later
-// read, and the validity window, which moves when CDS regenerates the CA.
+// read, and the validity window, which moves when the Trust Authority regenerates the CA.
 func report(w io.Writer, certs []*x509.Certificate) {
 	for _, c := range certs {
 		sum := sha256.Sum256(c.Raw)

@@ -36,13 +36,13 @@ func admittedImageSet(n *Node) []string {
 func TestAnAdmitDecreeNamesWhatAnUnjoinedReplicaAdmitsBesideItsOwnImage(t *testing.T) {
 	c := newLiveCluster(t)
 	r := c.start()
-	own := []string{testCDSImage}
-	decree := c.admitDecree(r, testCDSDigest, rolledCDSDigest)
+	own := []string{testTAImage}
+	decree := c.admitDecree(r, testTADigest, rolledTADigest)
 	decree.ExpiresAt = time.Now().Add(2 * time.Second)
 
 	c.posted(r, c.signDecree(decree))
 
-	rolled := []string{testCDSImage, rolledCDSImage}
+	rolled := []string{testTAImage, rolledTAImage}
 	slices.Sort(rolled)
 	eventually(t, 5*time.Second, "the replica admitting the decreed images", func() bool {
 		return slices.Equal(admittedImageSet(r.node), rolled)
@@ -57,9 +57,9 @@ func TestAnAdmitDecreeNamesWhatAnUnjoinedReplicaAdmitsBesideItsOwnImage(t *testi
 func TestAnAdmitDecreeForAnotherMemberOrPastItsExpiryAdmitsNothing(t *testing.T) {
 	c := newLiveCluster(t)
 	r := c.start()
-	replayed := c.admitDecree(r, testCDSDigest, rolledCDSDigest)
+	replayed := c.admitDecree(r, testTADigest, rolledTADigest)
 	replayed.TargetMember = testMember
-	expired := c.admitDecree(r, testCDSDigest, rolledCDSDigest)
+	expired := c.admitDecree(r, testTADigest, rolledTADigest)
 	expired.ExpiresAt = time.Now().Add(-time.Minute)
 
 	if _, err := r.node.TakeDecree(c.signDecree(replayed)); err == nil {
@@ -68,7 +68,7 @@ func TestAnAdmitDecreeForAnotherMemberOrPastItsExpiryAdmitsNothing(t *testing.T)
 	c.posted(r, c.signDecree(expired))
 
 	r.node.admitAsDecreed()
-	if admitted := admittedImageSet(r.node); !slices.Equal(admitted, []string{testCDSImage}) {
+	if admitted := admittedImageSet(r.node); !slices.Equal(admitted, []string{testTAImage}) {
 		t.Fatalf("the replica admits %v", admitted)
 	}
 }

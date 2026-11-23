@@ -55,7 +55,7 @@ func TestCDSConfigPreservesNodeKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(got.Images) != 2 || !got.HasAnchors() {
-		t.Fatal("CDS startup dropped node identities")
+		t.Fatal("Trust Authority startup dropped node identities")
 	}
 	encoded, err := refvalues.Format(got)
 	if err != nil {

@@ -86,7 +86,7 @@ func (t Timing) check() error {
 	return nil
 }
 
-// Config is what a replica of a CDS HA cluster runs on. Every field of it
+// Config is what a replica of a Trust Authority HA cluster runs on. Every field of it
 // comes from the measured configuration every replica of the cluster boots.
 type Config struct {
 	Launch Launch
@@ -138,7 +138,7 @@ func (c Config) check() error {
 	return c.Timing.check()
 }
 
-// Node is one replica of a CDS HA cluster: the Raft member this process is,
+// Node is one replica of a Trust Authority HA cluster: the Raft member this process is,
 // over the state machine and the stores the log writes.
 //
 // Every process is a member of its own: the log lives in the replica's
@@ -374,7 +374,7 @@ func (n *Node) verifier() peerVerifier {
 // admitsNobody is the image set that admits no peer.
 var admitsNobody []remote.ImagePin
 
-// admits is the images this replica admits a peer by: the cluster's CDS image
+// admits is the images this replica admits a peer by: the cluster's Trust Authority image
 // set once it holds one, and its own image, with whatever an Admit decree
 // names for it, until then.
 func (n *Node) admits() []remote.ImagePin {
@@ -384,7 +384,7 @@ func (n *Node) admits() []remote.ImagePin {
 	}
 	images, err := clusterImages(core, n.cfg.LaunchFile)
 	if err != nil {
-		slog.Error("cds-ha: this replica admits no peer: the cluster's CDS images are none of this launch file's", "error", err)
+		slog.Error("cds-ha: this replica admits no peer: the cluster's Trust Authority images are none of this launch file's", "error", err)
 		return admitsNobody
 	}
 	return images
@@ -405,7 +405,7 @@ func (n *Node) admitsBeforeJoining() []remote.ImagePin {
 // launch file this replica boots.
 func clusterImages(core ClusterState, launchFile []byte) ([]remote.ImagePin, error) {
 	if core.PinsDecree == nil || core.PinsDecree.Decree.CDSPins == nil {
-		return nil, errors.New("the cluster pins no CDS image")
+		return nil, errors.New("the cluster pins no Trust Authority image")
 	}
 	images, err := core.PinsDecree.Decree.CDSPins.WithLaunchFile(launchFile)
 	if err != nil {

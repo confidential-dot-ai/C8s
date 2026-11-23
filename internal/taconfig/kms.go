@@ -7,8 +7,8 @@ import (
 	"net/url"
 )
 
-// KMS is the key management service CDS brokers pod secret release to
-// (docs/pod-secrets.md). CDS authenticates it by the SHA-256 of its TLS
+// KMS is the key management service Trust Authority brokers pod secret release to
+// (docs/pod-secrets.md). Trust Authority authenticates it by the SHA-256 of its TLS
 // certificate's SubjectPublicKeyInfo, not by a CA.
 type KMS struct {
 	URL    string

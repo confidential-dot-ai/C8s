@@ -30,7 +30,7 @@ import (
 
 // A cluster of replica processes in one test: every replica has its own
 // attestation-api on the loopback, its own stores, and its own peer port.
-// They admit each other by the one CDS image of the test cluster.
+// They admit each other by the one Trust Authority image of the test cluster.
 
 // testTiming runs the replicas fast enough for a test to watch an election.
 var testTiming = Timing{
@@ -52,16 +52,16 @@ const (
 	maxTestSandboxBindings = 100
 )
 
-// The CDS images of the test cluster: the one its replicas report and its pin
+// The Trust Authority images of the test cluster: the one its replicas report and its pin
 // decree names, and the one a replica of the next release reports.
 const (
-	testCDSDigest   = 0x11
-	rolledCDSDigest = 0x22
+	testTADigest   = 0x11
+	rolledTADigest = 0x22
 )
 
 var (
-	testCDSImage   = launchDigestOf(testCDSDigest)
-	rolledCDSImage = launchDigestOf(rolledCDSDigest)
+	testTAImage   = launchDigestOf(testTADigest)
+	rolledTAImage = launchDigestOf(rolledTADigest)
 )
 
 // launchDigestOf is what an attestation-api reports for a testPins image.
@@ -282,12 +282,12 @@ func (c *liveCluster) posted(r *liveReplica, signed tadecree.Signed) Delivered {
 	return delivered
 }
 
-// attestationAPI reports the CDS image of the test cluster.
+// attestationAPI reports the Trust Authority image of the test cluster.
 func (c *liveCluster) attestationAPI() *mockapi.Stub {
 	c.t.Helper()
 	stub := mockapi.New(c.t)
 	stub.SetPlatform(teetypes.PlatformSNP)
-	stub.SetVerdict(snpVerdict(testCDSImage, testLaunchFile))
+	stub.SetVerdict(snpVerdict(testTAImage, testLaunchFile))
 	return stub
 }
 

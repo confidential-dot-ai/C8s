@@ -1,4 +1,4 @@
-// The generator side of a CDS launch file: what an operator's tooling puts
+// The generator side of a Trust Authority launch file: what an operator's tooling puts
 // into one and the rules it checks before writing it.
 
 package taconfig
@@ -14,14 +14,14 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
 )
 
-// The pair an operator launches and verifies a CDS VM with, named the same by
+// The pair an operator launches and verifies a Trust Authority VM with, named the same by
 // every generator that writes them.
 const (
 	ConfigFile = "cds-config.yaml"
 	PinFile    = "cds-pin.json"
 )
 
-// Document is one cluster's CDS settings as a launch file carries them: each
+// Document is one cluster's Trust Authority settings as a launch file carries them: each
 // embedded policy the exact bytes its own parser reads.
 type Document struct {
 	ClusterID string
@@ -29,24 +29,24 @@ type Document struct {
 	OperatorKeys operatorauth.KeyBundle
 	// Workloads is the cluster's allowlist, as MergeWorkloads builds it.
 	Workloads *allowlist.Allowlist
-	// Nodes is the measurements document pinning the nodes CDS admits; nil
+	// Nodes is the measurements document pinning the nodes Trust Authority admits; nil
 	// for a replica set whose Genesis names the first set.
 	Nodes []byte
 	// PodImagePolicy optionally pins Pod identities separately from Nodes.
 	// Empty disables Pod issuance; nonempty bytes must be a complete policy.
 	PodImagePolicy []byte
-	// NodeCIDRs are the subnets CDS may call a sandbox inventory on.
+	// NodeCIDRs are the subnets Trust Authority may call a sandbox inventory on.
 	NodeCIDRs []string
-	// LeafDNSNames and LeafDNSPatterns are the DNS SAN rules CDS issues under.
+	// LeafDNSNames and LeafDNSPatterns are the DNS SAN rules Trust Authority issues under.
 	LeafDNSNames    []string
 	LeafDNSPatterns []string
-	// HA is the replica set the cluster's CDS runs as; a zero one the singleton.
+	// HA is the replica set the cluster's Trust Authority runs as; a zero one the singleton.
 	HA HA
 	// KMS is where pod secret release is brokered to; nil serves no pod secrets.
 	KMS *KMS
 }
 
-// Format renders doc as a CDS launch file under the schema version this
+// Format renders doc as a Trust Authority launch file under the schema version this
 // package parses, and only what Parse accepts back.
 func Format(doc Document) ([]byte, error) {
 	rendered, err := doc.wire()
@@ -55,10 +55,10 @@ func Format(doc Document) ([]byte, error) {
 	}
 	data, err := yaml.Marshal(rendered)
 	if err != nil {
-		return nil, fmt.Errorf("render CDS config: %w", err)
+		return nil, fmt.Errorf("render Trust Authority config: %w", err)
 	}
 	if _, err := Parse(data); err != nil {
-		return nil, fmt.Errorf("rendered CDS config: %w", err)
+		return nil, fmt.Errorf("rendered Trust Authority config: %w", err)
 	}
 	return data, nil
 }
@@ -118,7 +118,7 @@ func addTenantWorkloads(merged *allowlist.Allowlist, tenant []byte) error {
 }
 
 // CheckNodeSubnets refuses a node subnet overlapping one of the cluster's pod
-// or service ranges: CDS dials a node address for a sandbox's admission
+// or service ranges: Trust Authority dials a node address for a sandbox's admission
 // inventory, and a pod inside that bound could answer as one. A generator
 // applies it, holding the ranges the document does not carry.
 func CheckNodeSubnets(nodeCIDRs, clusterCIDRs []string) error {

@@ -10,7 +10,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/remote"
 )
 
-// pinName names the CDS image in the pin document; entries are matched on
+// pinName names the Trust Authority image in the pin document; entries are matched on
 // their measurements, never on the name.
 const pinName = "cds"
 
@@ -27,18 +27,18 @@ func ParsePlatform(platform string) (teetypes.Family, error) {
 	}
 }
 
-// Pin renders the measurements document a client verifies a CDS with: the
-// image the CDS VM boots, bound to the launch file it boots on. One document
-// covers one TEE family, the one the operator runs the CDS VM on. Only an SNP
+// Pin renders the measurements document a client verifies a Trust Authority with: the
+// image the Trust Authority VM boots, bound to the launch file it boots on. One document
+// covers one TEE family, the one the operator runs the Trust Authority VM on. Only an SNP
 // launch digest varies with the vCPU count; a TDX tuple holds for every VM
 // shape and takes no count.
 func Pin(manifestPath string, family teetypes.Family, vcpus []int, config []byte) ([]byte, error) {
 	if len(config) == 0 {
-		return nil, errors.New("a CDS pin binds a launch file: the configuration is empty")
+		return nil, errors.New("a Trust Authority pin binds a launch file: the configuration is empty")
 	}
 	images, err := refvalues.FromImageManifest(manifestPath, pinName, family)
 	if err != nil {
-		return nil, fmt.Errorf("CDS image manifest: %w", err)
+		return nil, fmt.Errorf("Trust Authority image manifest: %w", err)
 	}
 	if family == teetypes.FamilySNP {
 		if images, err = snpVariants(images, vcpus); err != nil {
@@ -56,12 +56,12 @@ func Pin(manifestPath string, family teetypes.Family, vcpus []int, config []byte
 	})
 }
 
-// snpVariants takes one entry per vCPU count the CDS VM may boot with. A count
+// snpVariants takes one entry per vCPU count the Trust Authority VM may boot with. A count
 // the image was not built for is refused: the VM would boot and measure a
 // digest nothing pins.
 func snpVariants(images []remote.ImagePin, vcpus []int) ([]remote.ImagePin, error) {
 	if len(vcpus) == 0 {
-		return nil, fmt.Errorf("%s pins one launch digest per vCPU count: name the counts the CDS VM may boot with", teetypes.FamilySNP)
+		return nil, fmt.Errorf("%s pins one launch digest per vCPU count: name the counts the Trust Authority VM may boot with", teetypes.FamilySNP)
 	}
 	byName := make(map[string]remote.ImagePin, len(images))
 	for _, image := range images {
@@ -76,7 +76,7 @@ func snpVariants(images []remote.ImagePin, vcpus []int) ([]remote.ImagePin, erro
 		taken[count] = true
 		image, built := byName[variantName(count)]
 		if !built {
-			return nil, fmt.Errorf("the CDS image manifest has no %s launch digest for %d vCPUs", teetypes.FamilySNP, count)
+			return nil, fmt.Errorf("the Trust Authority image manifest has no %s launch digest for %d vCPUs", teetypes.FamilySNP, count)
 		}
 		out = append(out, image)
 	}

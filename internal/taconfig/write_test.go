@@ -62,7 +62,7 @@ func TestFormatWritesWhatCDSParses(t *testing.T) {
 }
 
 // The writer states the schema version, so a caller cannot write a document
-// under a version CDS does not parse.
+// under a version Trust Authority does not parse.
 func TestFormatRefusesADocumentCDSWouldRefuse(t *testing.T) {
 	_, operatorPEM := testKey(t)
 	_, anchorPEM := testKey(t)
@@ -118,7 +118,7 @@ func TestCheckNodeSubnetsRefusesClusterRanges(t *testing.T) {
 	}
 }
 
-// The leaf DNS lists are optional: a CDS that issues no literal name writes
+// The leaf DNS lists are optional: a Trust Authority that issues no literal name writes
 // none.
 func TestFormatWritesAnAbsentLeafNameList(t *testing.T) {
 	_, operatorPEM := testKey(t)

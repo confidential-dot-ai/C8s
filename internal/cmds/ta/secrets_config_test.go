@@ -13,7 +13,7 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
-// The shipped flag defaults must satisfy the relation CDS starts on.
+// The shipped flag defaults must satisfy the relation Trust Authority starts on.
 func TestSecretsPathQuotaFlagIsWired(t *testing.T) {
 	flags := NewCmd().Flags()
 	quota := flags.Lookup("secrets-max-paths-per-workload")
@@ -33,7 +33,7 @@ func TestSecretsPathQuotaFlagIsWired(t *testing.T) {
 	cfg.secretsMaxPathsPerWorkload = mustAtoi(t, quota.DefValue)
 	cfg.secretsMaxValueBytes = mustAtoi(t, value.DefValue)
 	if err := validateSecretsConfig(cfg); err != nil {
-		t.Fatalf("the shipped flag defaults refuse to start CDS: %v", err)
+		t.Fatalf("the shipped flag defaults refuse to start Trust Authority: %v", err)
 	}
 }
 
@@ -110,16 +110,16 @@ func testInventoryHosts(t *testing.T) workloadclaims.CIDRHosts {
 	return hosts
 }
 
-// A fully-configured CDS serves /secrets with no flag to turn it on: release is
+// A fully-configured Trust Authority serves /secrets with no flag to turn it on: release is
 // gated on an allowlist entry carrying a grant, not on configuration.
 func TestSecretsEnabledWhenSandboxIdentityWorks(t *testing.T) {
 	enabled, why := secretsEnabled(pinnedNodeImages(), testInventoryHosts(t))
 	if !enabled {
-		t.Fatalf("secrets not served on a fully configured CDS: %s", why)
+		t.Fatalf("secrets not served on a fully configured Trust Authority: %s", why)
 	}
 }
 
-// Each of these leaves CDS unable to establish what a sandbox runs, so it must
+// Each of these leaves Trust Authority unable to establish what a sandbox runs, so it must
 // not answer at all rather than answer badly.
 func TestSecretsDisabledWhenItCannotAnswer(t *testing.T) {
 	for _, tc := range []struct {

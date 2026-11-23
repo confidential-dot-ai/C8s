@@ -85,7 +85,7 @@ func reportPinDecree(node *taha.Node) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		applied := node.ClusterState().PinsDecree
 		if applied == nil {
-			http.Error(w, "cds-ha: this cluster has applied no decree pinning its CDS images", http.StatusNotFound)
+			http.Error(w, "cds-ha: this cluster has applied no decree pinning its Trust Authority images", http.StatusNotFound)
 			return
 		}
 		writeJSON(w, applied)
@@ -158,7 +158,7 @@ func servedUnjoined(path string) bool {
 // cluster routes alone, attested as the full server is. The operator reads an
 // unjoined replica's member id and mesh CA there, and posts the Genesis decree
 // it then acts on. stop returns once the port is free for the full server.
-func (r *clusterCDS) answerWhileJoining(cfg config) (stop func(), err error) {
+func (r *clusterTA) answerWhileJoining(cfg config) (stop func(), err error) {
 	server := newHTTPServer(clientAddress(cfg), joiningMux(r.ClusterRoutes()), cfg)
 	// A replica holding no mesh CA verifies no client chain.
 	tlsCfg, _, err := armtls.NewServerTLSConfig(servingConfig(cfg, nil))

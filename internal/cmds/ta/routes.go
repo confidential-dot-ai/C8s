@@ -137,7 +137,7 @@ func (deps dependencies) protected(next http.Handler) http.Handler {
 // challenge keys do not spend the map the other routes are metered in.
 //
 // Its key is the source address, which for a pod is the node's: pods reach
-// CDS through a NodePort and the host-network mesh proxy. One pod can spend
+// Trust Authority through a NodePort and the host-network mesh proxy. One pod can spend
 // the budget its co-tenants share — as it already can on /attest, which the
 // challenge is only useful with — and pods on a node share a trust domain.
 func (deps dependencies) challengeProtected(next http.Handler) http.Handler {
@@ -145,7 +145,7 @@ func (deps dependencies) challengeProtected(next http.Handler) http.Handler {
 }
 
 // allowlistWrite is protected with the larger allowlist body cap. Its callers
-// are operators reaching CDS directly, so the source address is the caller.
+// are operators reaching Trust Authority directly, so the source address is the caller.
 func (deps dependencies) allowlistWrite(next http.Handler) http.Handler {
 	return issuer.RateLimitMiddleware(deps.RateLimiter, capBody(allowlistWriteBodyCap, next))
 }
@@ -167,7 +167,7 @@ func handleCA(mesh meshCA) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		current, issuing := mesh.Current()
 		if !issuing {
-			http.Error(w, "this CDS holds no mesh CA to publish", http.StatusServiceUnavailable)
+			http.Error(w, "this Trust Authority holds no mesh CA to publish", http.StatusServiceUnavailable)
 			return
 		}
 		w.Header().Set("Content-Type", "application/x-pem-file")
@@ -175,15 +175,15 @@ func handleCA(mesh meshCA) http.HandlerFunc {
 	}
 }
 
-// handleMeasurements renders the node images this CDS admits a caller
+// handleMeasurements renders the node images this Trust Authority admits a caller
 // against, so a verifier can compare the operator's own file with them. An
-// empty set is served, not 404'd: a CDS that certifies no node image is the
+// empty set is served, not 404'd: a Trust Authority that certifies no node image is the
 // state a verifier most needs to be told about.
 func handleMeasurements(nodeImages armtls.PinSource) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		document, err := refvalues.Render(nodeImages.Current())
 		if err != nil {
-			slog.Error("render the node images this CDS certifies", "error", err)
+			slog.Error("render the node images this Trust Authority certifies", "error", err)
 			http.Error(w, "measurements unavailable", http.StatusInternalServerError)
 			return
 		}

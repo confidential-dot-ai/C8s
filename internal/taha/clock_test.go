@@ -48,7 +48,7 @@ func TestClockObservationRequiresCurrentAuthenticatedMember(t *testing.T) {
 			n := &Node{cfg: leader.cfg, member: leader.member, fsm: fsm, raft: leader.raft,
 				peers: newMembers(string(leader.member), testDeadAfter), clockNow: func() time.Time { return received }}
 			reporter := newPeerReplica(t, "clock-peer", teetypes.PlatformSNP,
-				snpVerdict(testCDSImage, testLaunchFile), time.Now().Add(time.Hour))
+				snpVerdict(testTAImage, testLaunchFile), time.Now().Add(time.Hour))
 			answer := controlAnswer{Member: reporter.member, Joined: true,
 				Clock: &clockReport{AtMS: received.Add(time.Minute).UnixMilli(), Quarantined: true}}
 			switch name {

@@ -98,7 +98,7 @@ func newTestAttestHandler(t *testing.T, stubURL string, pinned []remote.ImagePin
 	}
 }
 
-// The set a CDS whose configuration names it certifies, which no command
+// The set a Trust Authority whose configuration names it certifies, which no command
 // replaces.
 func certifying(images ...remote.ImagePin) armtls.PinSource {
 	return armtls.FixedPins(refvalues.ReferenceValues{
@@ -411,7 +411,7 @@ func TestAttest_BindsReportDataToCSRKeyAndChallenge(t *testing.T) {
 // A verifier reporting that the evidence binds different report data must
 // deny issuance: the report attests some other key or challenge. Defensive:
 // non-production shape (mockapi.Verdict) — production refuses a mismatch
-// with a 422; the 401 pins CDS's own fail-closed gate.
+// with a 422; the 401 pins Trust Authority's own fail-closed gate.
 func TestAttest_ReportDataMismatchReturns401(t *testing.T) {
 	stub := newStubAttestationApi(t, testLaunchDigest)
 	verdict := mockapi.PassingVerdict(testLaunchDigest)
@@ -932,7 +932,7 @@ func logRecord(t *testing.T, logs *bytes.Buffer, msg string) map[string]any {
 	return nil
 }
 
-// A CDS that holds no mesh CA between the gate and the signature answers
+// A Trust Authority that holds no mesh CA between the gate and the signature answers
 // unavailable, so a requester retries instead of treating it as a refusal.
 func TestAttest_NoIssuingMeshCAIsUnavailable(t *testing.T) {
 	stub := newStubAttestationApi(t, testLaunchDigest)
@@ -992,7 +992,7 @@ func TestAttest_IssuanceIsRecorded(t *testing.T) {
 }
 
 // A denial and the issuance that follows it have to be correlatable, or a run
-// of probes against CDS cannot be tied to the leaf that eventually succeeded.
+// of probes against the Trust Authority cannot be tied to the leaf that eventually succeeded.
 func TestAttest_NodeImageDenialRecordsPeer(t *testing.T) {
 	stub := newStubAttestationApi(t, testLaunchDigest)
 	h := newTestAttestHandler(t, stub.URL(), []remote.ImagePin{imagePin(t, "node-next", otherLaunchDigest)})

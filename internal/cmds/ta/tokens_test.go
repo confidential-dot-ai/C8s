@@ -20,7 +20,7 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
 )
 
-// floorAt is a CDS whose spent-token record began at start; the zero time
+// floorAt is a Trust Authority whose spent-token record began at start; the zero time
 // refuses no token for its age.
 func floorAt(start time.Time) func() time.Time {
 	return func() time.Time { return start }
@@ -118,7 +118,7 @@ func TestSingleUseRejectsSignatureTwin(t *testing.T) {
 }
 
 // A store that forgets spent tokens at restart refuses every token that could
-// have been spent before CDS started: Authorize accepts an iat up to the clock
+// have been spent before Trust Authority started: Authorize accepts an iat up to the clock
 // skew ahead.
 func TestSingleUseRefusesTokensBeforeStart(t *testing.T) {
 	store, err := allowlist.OpenInMemory()
@@ -151,7 +151,7 @@ func TestSingleUseRefusesTokensBeforeStart(t *testing.T) {
 	}
 }
 
-// A token minted by an operator whose clock runs ahead is spent, CDS restarts
+// A token minted by an operator whose clock runs ahead is spent, Trust Authority restarts
 // on a fresh in-memory store, and the replay is refused although the record of
 // the spend is gone.
 func TestSingleUseRefusesReplayAfterRestart(t *testing.T) {
@@ -181,7 +181,7 @@ func TestSingleUseRefusesReplayAfterRestart(t *testing.T) {
 	}
 }
 
-// A token CDS cannot record as spent is refused as a store failure, not as a
+// A token Trust Authority cannot record as spent is refused as a store failure, not as a
 // bad credential.
 func TestSingleUseReportsStoreFailure(t *testing.T) {
 	store, err := allowlist.OpenInMemory()

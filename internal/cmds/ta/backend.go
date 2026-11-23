@@ -1,6 +1,6 @@
-// What a CDS serves from: the stores and the mesh CA of a singleton, or the
+// What a Trust Authority serves from: the stores and the mesh CA of a singleton, or the
 // ones its cluster's log carries. run picks one backend at startup, so no
-// request path asks which kind of CDS it is on.
+// request path asks which kind of Trust Authority it is on.
 
 package ta
 
@@ -25,9 +25,9 @@ type backend interface {
 	Allowlist() *allowlist.Handle
 	Secrets() *secrets.Handle
 	Bindings() *sandboxledger.Handle
-	// MeshCA signs every leaf this CDS issues and is published at /ca.
+	// MeshCA signs every leaf this Trust Authority issues and is published at /ca.
 	MeshCA() meshCA
-	// NodeImages are the node images this CDS certifies: the set its measured
+	// NodeImages are the node images this Trust Authority certifies: the set its measured
 	// configuration names, or the set its cluster's log carries.
 	NodeImages() armtls.PinSource
 	Challenges() (issuance, secrets attestation.Challenges)
@@ -36,14 +36,14 @@ type backend interface {
 	Ready() bool
 	// ClusterRoutes are answered without a client certificate, by method and path.
 	ClusterRoutes() map[string]http.HandlerFunc
-	// Gate refuses every other route while this CDS may not answer.
+	// Gate refuses every other route while this Trust Authority may not answer.
 	Gate(next http.Handler) http.Handler
 	KeepMeshCA(ctx context.Context, peers *armtls.CertManager)
 	// Stop runs before the stores close.
 	Stop()
 }
 
-// meshCA is the CA a CDS issues under. A replica holds none while it may not
+// meshCA is the CA a Trust Authority issues under. A replica holds none while it may not
 // issue, so a caller reads the second answer before the first.
 type meshCA interface {
 	Current() (issuer.CurrentCA, bool)
@@ -58,7 +58,7 @@ func (o ownCA) Current() (issuer.CurrentCA, bool) {
 	return o.MeshCA.Current(), true
 }
 
-// newBackend picks what this CDS serves from; the configuration's ha block is
+// newBackend picks what this Trust Authority serves from; the configuration's ha block is
 // the whole decision.
 func newBackend(ctx context.Context, cfg config, st stores) (backend, error) {
 	if cfg.measured.HA == nil {
@@ -126,7 +126,7 @@ func (p challengePools) Challenges() (attestation.Challenges, attestation.Challe
 	return p.issuance, p.secrets
 }
 
-// singleton is a CDS serving its cluster on its own: the stores are its own,
+// singleton is a Trust Authority serving its cluster on its own: the stores are its own,
 // and it mints a mesh CA at every start.
 type singleton struct {
 	handles
@@ -168,7 +168,7 @@ func (s *singleton) MeshCA() meshCA {
 	return ownCA{s.mesh}
 }
 
-// NodeImages are the node images the configuration this CDS boots names.
+// NodeImages are the node images the configuration this Trust Authority boots names.
 func (s *singleton) NodeImages() armtls.PinSource {
 	return s.nodes
 }

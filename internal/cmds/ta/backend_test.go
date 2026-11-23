@@ -18,12 +18,12 @@ func TestAConfigurationWithoutAReplicaSetServesTheClusterAlone(t *testing.T) {
 	}
 	defer back.Stop()
 	if !back.Ready() {
-		t.Error("the CDS of a cluster with no replica set does not serve the state it holds")
+		t.Error("the Trust Authority of a cluster with no replica set does not serve the state it holds")
 	}
 }
 
 // A configuration naming a replica set serves the cluster as one replica of
-// it, in every build: the CDS image an operator launches is the release.
+// it, in every build: the Trust Authority image an operator launches is the release.
 func TestAConfigurationWithAReplicaSetJoinsTheCluster(t *testing.T) {
 	cfg, state := replicatedRunConfig(t, attestingAPI(t))
 	cfg.host = "127.0.0.1"
@@ -65,7 +65,7 @@ func startBackend(t *testing.T, ctx context.Context, cfg config, state stores) <
 	return ended
 }
 
-// singletonRunConfig is a CDS VM launched with no replica set.
+// singletonRunConfig is a Trust Authority VM launched with no replica set.
 func singletonRunConfig(t *testing.T, attestationURL string) (config, stores) {
 	t.Helper()
 	cfg := validRunConfig(t, attestationURL)

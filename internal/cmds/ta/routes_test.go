@@ -520,7 +520,7 @@ func TestReadinessFn(t *testing.T) {
 	}{
 		{"attestation-api healthy and CA current", func() bool { return true }, current, true},
 		{"attestation-api down", func() bool { return false }, current, false},
-		{"the state this CDS serves answers nothing", func() bool { return true }, notServing{current}, false},
+		{"the state this Trust Authority serves answers nothing", func() bool { return true }, notServing{current}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := readinessFn(tc.svc, tc.back, time.Hour)(); got != tc.want {
@@ -593,7 +593,7 @@ func TestNewRouter_PanicsOnASharedChallengeLimiter(t *testing.T) {
 	newRouter(dependencies{RateLimiter: shared, ChallengeLimiter: shared, MaxRequestSize: 1})
 }
 
-// /measurements must report what this CDS enforces, and must report an empty
+// /measurements must report what this Trust Authority enforces, and must report an empty
 // set rather than hiding it: "admits any measurement" is the finding a
 // verifier most needs.
 func TestHandleMeasurements(t *testing.T) {

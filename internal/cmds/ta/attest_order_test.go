@@ -96,7 +96,7 @@ func (c countingDigests) InventoryKey(ctx context.Context, host string) (*ecdsa.
 	return c.fakeDigests.InventoryKey(ctx, host)
 }
 
-// A request under a challenge CDS did not issue is refused before its sandbox
+// A request under a challenge Trust Authority did not issue is refused before its sandbox
 // token or its evidence is checked.
 func TestAttest_UnissuedChallengeRefusedBeforeTokenAndEvidence(t *testing.T) {
 	stub := newStubAttestationApi(t, testLaunchDigest)
@@ -119,7 +119,7 @@ func TestAttest_UnissuedChallengeRefusedBeforeTokenAndEvidence(t *testing.T) {
 	}
 }
 
-// Every refused sandbox token is refused before CDS sends the evidence to the
+// Every refused sandbox token is refused before Trust Authority sends the evidence to the
 // attestation-api.
 func TestAttest_SandboxToken_RefusedBeforeEvidenceVerification(t *testing.T) {
 	impostor, err := workloadclaims.NewSandboxTokenSigner(testInventoryHost)
@@ -181,7 +181,7 @@ func TestAttest_SandboxToken_RefusedBeforeEvidenceVerification(t *testing.T) {
 }
 
 // A token naming an inventory outside the node address ranges is refused
-// before CDS dials that inventory for its key.
+// before Trust Authority dials that inventory for its key.
 func TestAttest_SandboxToken_InventoryOutsideNodeRangesIsNotDialed(t *testing.T) {
 	stub := newStubAttestationApi(t, testLaunchDigest)
 	h, signer := newSandboxTestEnv(t, stub.URL())

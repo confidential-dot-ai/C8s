@@ -107,7 +107,7 @@ func TestNormalizeHTTPServerConfig_PreservesNonZero(t *testing.T) {
 }
 
 // operatorKeyPair generates an operator EC key and returns it with the PEM
-// bundle pinning its public half, as a CDS configuration carries it.
+// bundle pinning its public half, as a Trust Authority configuration carries it.
 func operatorKeyPair(t *testing.T) (*ecdsa.PrivateKey, []byte) {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -431,7 +431,7 @@ func TestRun_LogsNodeImagePinning(t *testing.T) {
 }
 
 // A node-image upgrade pins the image being replaced and the one being rolled
-// out at once, and on TDX each carries its own registers. CDS serves such a
+// out at once, and on TDX each carries its own registers. Trust Authority serves such a
 // configuration; startRunServer fails the test if run() exits instead.
 func TestRun_ServesNodeImagesWithDifferentRegisters(t *testing.T) {
 	cfg := armTLSRunConfig(t)
@@ -443,8 +443,8 @@ func TestRun_ServesNodeImagesWithDifferentRegisters(t *testing.T) {
 	startRunServer(t, cfg)
 }
 
-// The node images CDS serves are the ones in the configuration it was started
-// with. A CDS started again under a configuration that pins another image
+// The node images Trust Authority serves are the ones in the configuration it was started
+// with. A Trust Authority started again under a configuration that pins another image
 // serves that image, and no longer the one the first start served.
 func TestRun_RestartServesTheNewConfigurationsNodeImages(t *testing.T) {
 	replaced := `{"schema_version":"1","tee":"tdx","measurements":[` +
@@ -458,8 +458,8 @@ func TestRun_RestartServesTheNewConfigurationsNodeImages(t *testing.T) {
 		}
 		return set
 	}
-	// served starts a CDS under the document and stops it again before
-	// returning, so the next start is a restart rather than a second CDS.
+	// served starts a Trust Authority under the document and stops it again before
+	// returning, so the next start is a restart rather than a second Trust Authority.
 	served := func(document string) (set refvalues.ReferenceValues) {
 		t.Helper()
 		t.Run("start", func(t *testing.T) {
@@ -530,7 +530,7 @@ func TestRun_AllowlistWriteAcceptsClockSkewedToken(t *testing.T) {
 	}
 }
 
-// A non-persistent store forgets spent tokens at restart, so CDS refuses a
+// A non-persistent store forgets spent tokens at restart, so the Trust Authority refuses a
 // fresh token until --jwt-clock-skew has passed since start.
 func TestRun_NonPersistentStoreRefusesTokensAfterStart(t *testing.T) {
 	operatorKey, keysPEM := operatorKeyPair(t)
@@ -688,7 +688,7 @@ func armTLSRunConfig(t *testing.T) config {
 	return cfg
 }
 
-// armTLSClient returns an HTTPS client that accepts the CDS serving
+// armTLSClient returns an HTTPS client that accepts the Trust Authority serving
 // certificate only if it carries an armTLS attestation. The attestation
 // itself is not verified: the stub's report is unsigned. A cert, if given, is
 // presented whenever the server asks for one; crypto/tls would otherwise
@@ -716,7 +716,7 @@ func armTLSClient(cert *tls.Certificate) *http.Client {
 
 // The real armTLS listener, with the client-certificate policy run() sets:
 // VerifyClientCertIfGiven against the mesh CA. A client with no certificate
-// reads every document the CDS publishes.
+// reads every document the Trust Authority publishes.
 func TestRun_ARMTLSServesPublishedDocumentsToCertlessClients(t *testing.T) {
 	cfg := armTLSRunConfig(t)
 	base := fmt.Sprintf("https://127.0.0.1:%d", cfg.port)

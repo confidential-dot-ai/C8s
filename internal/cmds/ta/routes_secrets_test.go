@@ -168,7 +168,7 @@ func TestRouter_ExplainDoesNotShadowSecretPaths(t *testing.T) {
 	}
 }
 
-// leafWithSandbox mints a client certificate carrying a sandbox ID, as CDS
+// leafWithSandbox mints a client certificate carrying a sandbox ID, as Trust Authority
 // stamps one, so a request can arrive with an identity the router can key on.
 func leafWithSandbox(t *testing.T, sandboxID string) *x509.Certificate {
 	t.Helper()
@@ -198,7 +198,7 @@ func leafWithSandbox(t *testing.T, sandboxID string) *x509.Certificate {
 }
 
 // The workload secret routes must bound one sandbox, not one address. Every pod
-// on a node reaches CDS from the same address through the NodePort and the mesh
+// on a node reaches Trust Authority from the same address through the NodePort and the mesh
 // proxy, so an address bucket lets one pod wedge its co-tenants' fetchers.
 func TestRouter_SecretRoutesRateLimitPerSandbox(t *testing.T) {
 	// Burst of one, so the second request against a given bucket is refused.

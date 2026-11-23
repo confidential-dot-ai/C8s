@@ -31,15 +31,15 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/routes"
 )
 
-// e2eCDS is the production CDS router serving /routes and /operator-keys over
+// e2eTA is the production Trust Authority router serving /routes and /operator-keys over
 // armTLS, with evidence from a stub attestation-api. It authorizes writes
 // under key and publishes published at /operator-keys.
-type e2eCDS struct {
+type e2eTA struct {
 	url    string
-	client *http.Client // verifies the CDS like the router does
+	client *http.Client // verifies the Trust Authority like the router does
 }
 
-func startE2ECDS(t *testing.T, stub *mockapi.Stub, pin []byte, mesh ownCA, key, published *ecdsa.PublicKey) *e2eCDS {
+func startE2ETA(t *testing.T, stub *mockapi.Stub, pin []byte, mesh ownCA, key, published *ecdsa.PublicKey) *e2eTA {
 	t.Helper()
 	der, err := x509.MarshalPKIXPublicKey(published)
 	if err != nil {
@@ -76,7 +76,7 @@ func startE2ECDS(t *testing.T, stub *mockapi.Stub, pin []byte, mesh ownCA, key, 
 	srv := &http.Server{Handler: router, ReadHeaderTimeout: 5 * time.Second}
 	go func() { _ = srv.Serve(ln) }()
 	t.Cleanup(func() { _ = srv.Close() })
-	return &e2eCDS{url: "https://" + ln.Addr().String(), client: verifyingClient(t, stub, pin)}
+	return &e2eTA{url: "https://" + ln.Addr().String(), client: verifyingClient(t, stub, pin)}
 }
 
 func verifyingClient(t *testing.T, stub *mockapi.Stub, pin []byte) *http.Client {
@@ -89,7 +89,7 @@ func verifyingClient(t *testing.T, stub *mockapi.Stub, pin []byte) *http.Client 
 }
 
 // put stores manifest under signer, as `c8s routes put` does.
-func (c *e2eCDS) put(t *testing.T, signer *operatorauth.Signer, manifest []byte) {
+func (c *e2eTA) put(t *testing.T, signer *operatorauth.Signer, manifest []byte) {
 	t.Helper()
 	auth, err := signer.Authorization(http.MethodPut, routes.Path, manifest)
 	if err != nil {
@@ -118,9 +118,9 @@ type e2eRouter struct {
 	proxy  *routing.Proxy
 }
 
-func newE2ERouter(t *testing.T, stub *mockapi.Stub, cdsURL string, pin []byte, mesh *issuer.CA) *e2eRouter {
+func newE2ERouter(t *testing.T, stub *mockapi.Stub, taURL string, pin []byte, mesh *issuer.CA) *e2eRouter {
 	t.Helper()
-	ta, err := routing.NewCDSClient(cdsURL, verifyingClient(t, stub, pin))
+	ta, err := routing.NewCDSClient(taURL, verifyingClient(t, stub, pin))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,10 +205,10 @@ func e2eNamedLeaf(t *testing.T, ca *issuer.CA, workload string) tls.Certificate 
 	return pair
 }
 
-// TestRoutesEndToEnd: an operator stores a manifest on the CDS; the router
+// TestRoutesEndToEnd: an operator stores a manifest on the Trust Authority; the router
 // fetches it over armTLS through the production verifying client, checks it
 // under the pinned operator key set, and routes a request to the workload
-// backend it names. A substituted operator key set or a wrong CDS pin applies
+// backend it names. A substituted operator key set or a wrong Trust Authority pin applies
 // nothing.
 func TestRoutesEndToEnd(t *testing.T) {
 	measurement := bytes.Repeat([]byte{0x42}, 48)
@@ -242,7 +242,7 @@ func TestRoutesEndToEnd(t *testing.T) {
 	}
 
 	t.Run("routes by the stored manifest", func(t *testing.T) {
-		ta := startE2ECDS(t, stub, measurement, mesh, key, key)
+		ta := startE2ETA(t, stub, measurement, mesh, key, key)
 		ta.put(t, signer, manifest(1))
 		router := newE2ERouter(t, stub, ta.url, measurement, meshCA)
 		if err := router.poller.Poll(t.Context()); err != nil {
@@ -256,21 +256,21 @@ func TestRoutesEndToEnd(t *testing.T) {
 			t.Fatalf("GET /v1/models = %d %q, want 200 %q", w.Code, w.Body, "web saw /v1/models")
 		}
 	})
-	t.Run("A1 wrong CDS pin", func(t *testing.T) {
-		ta := startE2ECDS(t, stub, measurement, mesh, key, key)
+	t.Run("A1 wrong Trust Authority pin", func(t *testing.T) {
+		ta := startE2ETA(t, stub, measurement, mesh, key, key)
 		ta.put(t, signer, manifest(1))
 		router := newE2ERouter(t, stub, ta.url, bytes.Repeat([]byte{0x43}, 48), meshCA)
 		// The TLS stack flattens the verification error to text.
 		if err := router.poller.Poll(t.Context()); err == nil || !strings.Contains(err.Error(), remote.ErrMeasurementNotAllowed.Error()) {
-			t.Fatalf("Poll() under a wrong CDS pin = %v, want %q", err, remote.ErrMeasurementNotAllowed)
+			t.Fatalf("Poll() under a wrong Trust Authority pin = %v, want %q", err, remote.ErrMeasurementNotAllowed)
 		}
 		if router.state.Current() != nil {
-			t.Fatal("Current() != nil under a wrong CDS pin, want nothing applied")
+			t.Fatal("Current() != nil under a wrong Trust Authority pin, want nothing applied")
 		}
 	})
 	t.Run("W2 W6 substituted operator key set", func(t *testing.T) {
 		_, other := operatorSigner(t)
-		ta := startE2ECDS(t, stub, measurement, mesh, key, other)
+		ta := startE2ETA(t, stub, measurement, mesh, key, other)
 		ta.put(t, signer, manifest(1))
 		router := newE2ERouter(t, stub, ta.url, measurement, meshCA)
 		if err := router.poller.Poll(t.Context()); err == nil {

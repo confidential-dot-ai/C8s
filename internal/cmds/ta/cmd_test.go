@@ -39,7 +39,7 @@ func TestNewCmdDurationFlagDefaults(t *testing.T) {
 	}
 }
 
-// CDS takes no kubeconfig: client-go runs a kubeconfig's exec credential
+// Trust Authority takes no kubeconfig: client-go runs a kubeconfig's exec credential
 // plugin, so a path in the pinned arguments' place would load pod-chosen code.
 func TestNewCmdTakesNoKubeconfig(t *testing.T) {
 	if f := NewCmd().Flags().Lookup("kubeconfig"); f != nil {

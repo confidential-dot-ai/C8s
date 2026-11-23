@@ -22,7 +22,7 @@ func newReplicatedCluster(t *testing.T) operatorCluster {
 	c := newOperatorCluster(t)
 	c.config = replicatedDocument(t, c.operatorPEM)
 	writeTestFile(t, c.configPath, c.config)
-	writeTestFile(t, c.cdsPinPath, []byte(testutil.CDSPinDocument(testutil.TestMeasurement, string(c.config))))
+	writeTestFile(t, c.taPinPath, []byte(testutil.CDSPinDocument(testutil.TestMeasurement, string(c.config))))
 	return c
 }
 
@@ -49,7 +49,7 @@ func (c operatorCluster) replicasServing(t *testing.T, replicas ...map[string]an
 func (c operatorCluster) unreachable() replica {
 	return replica{
 		address:  "127.0.0.1:1",
-		cdsPin:   c.cdsPinPath,
+		taPin:    c.taPinPath,
 		verifier: c.verifier(),
 	}
 }
@@ -384,7 +384,7 @@ func TestTheReachResolvesTheConfigurationsReplicaEntries(t *testing.T) {
 	c := newReplicatedCluster(t)
 	reach := clusterReach{
 		config: c.configPath,
-		cdsPin: c.cdsPinPath,
+		taPin:  c.taPinPath,
 	}
 
 	_, replicas, err := reach.cluster(context.Background())
@@ -408,7 +408,7 @@ func TestTheReachRefusesASingletonConfigurationWithoutAURL(t *testing.T) {
 	c := newOperatorCluster(t)
 	reach := clusterReach{
 		config: c.configPath,
-		cdsPin: c.cdsPinPath,
+		taPin:  c.taPinPath,
 	}
 
 	if _, _, err := reach.cluster(context.Background()); err == nil || !strings.Contains(err.Error(), "no replica set") {

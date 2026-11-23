@@ -12,7 +12,7 @@ import (
 )
 
 // earliestIssue is the earliest issue time a token may carry. A spent-token
-// record that began at the zero time holds every token this CDS ever spent, so
+// record that began at the zero time holds every token this Trust Authority ever spent, so
 // no token is refused for its age.
 func earliestIssue(floor time.Time, clockSkew time.Duration) time.Time {
 	if floor.IsZero() {
@@ -21,11 +21,11 @@ func earliestIssue(floor time.Time, clockSkew time.Duration) time.Time {
 	return floor.Add(clockSkew)
 }
 
-// singleUse lets each operator token authorize one request. CDS serves the token
+// singleUse lets each operator token authorize one request. Trust Authority serves the token
 // of a whole-document write as that document's signature, so without this
 // anyone who fetched it could replay the write until it expires. A non-zero
 // floor refuses tokens that could have been spent before the spent-token
-// record this CDS holds began: a store that does not persist forgets them, and
+// record this Trust Authority holds began: a store that does not persist forgets them, and
 // a cluster that starts again forgets the ones its last life spent. It is read
 // per request, because a cluster that starts again moves it.
 func singleUse(

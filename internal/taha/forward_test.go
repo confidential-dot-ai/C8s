@@ -40,7 +40,7 @@ func TestAWriteAtAFollowerIsCommittedByTheLeader(t *testing.T) {
 
 // A write a replica forwards is applied at the leader's clock: binding expiry
 // and the allowlist's journal time are the cluster's one clock, as the single
-// CDS they replace followed its own.
+// Trust Authority they replace followed its own.
 func TestAForwardedWriteAppliesAtTheLeadersClock(t *testing.T) {
 	c := newLiveCluster(t)
 	c.genesis(1)

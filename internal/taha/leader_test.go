@@ -53,7 +53,7 @@ func TestTheLeaderAppliesAPinDecreePostedToIt(t *testing.T) {
 	leader := c.leader()
 	version := leader.node.fsm.ClusterState().Version
 
-	decree, delivered := c.decreePins(leader, testCDSDigest, rolledCDSDigest)
+	decree, delivered := c.decreePins(leader, testTADigest, rolledTADigest)
 
 	if delivered.Version != version+1 || delivered.Refused != "" {
 		t.Fatalf("the cluster answered %+v, want the decree applied at version %d", delivered, version+1)
@@ -79,7 +79,7 @@ func TestADecreePostedToAFollowerIsAppliedByTheLeader(t *testing.T) {
 	follower := c.follower()
 	version := follower.node.fsm.ClusterState().Version
 
-	decree, delivered := c.decreePins(follower, testCDSDigest, rolledCDSDigest)
+	decree, delivered := c.decreePins(follower, testTADigest, rolledTADigest)
 
 	if delivered.Version != version+1 || delivered.Refused != "" {
 		t.Fatalf("the cluster answered %+v, want the decree applied at version %d", delivered, version+1)
@@ -97,7 +97,7 @@ func TestAPinSetThatUnpinsAVoterMajorityIsRefused(t *testing.T) {
 	leader := c.leader()
 	pinned := leader.node.fsm.ClusterState().PinsDecree.Decree.IntentID
 
-	decree, delivered := c.decreePins(leader, rolledCDSDigest)
+	decree, delivered := c.decreePins(leader, rolledTADigest)
 
 	if !strings.Contains(delivered.Refused, "voters") {
 		t.Fatalf("the cluster answered %+v, want the pin set refused", delivered)
@@ -118,7 +118,7 @@ func TestTheOnlyVoterCountsItsOwnImage(t *testing.T) {
 	c := newLiveCluster(t)
 	c.genesis(1)
 
-	decree, _ := c.decreePins(c.leader(), testCDSDigest, rolledCDSDigest)
+	decree, _ := c.decreePins(c.leader(), testTADigest, rolledTADigest)
 
 	c.applied(decree.IntentID, 15*time.Second)
 }
@@ -157,8 +157,8 @@ func TestADecreeAppliesOnTheVersionItNames(t *testing.T) {
 	c.genesis(1)
 	leader := c.leader()
 	version := leader.node.fsm.ClusterState().Version
-	first := c.pinDecree(leader, version, testCDSDigest, rolledCDSDigest)
-	second := c.pinDecree(leader, version+1, testCDSDigest)
+	first := c.pinDecree(leader, version, testTADigest, rolledTADigest)
+	second := c.pinDecree(leader, version+1, testTADigest)
 
 	if refused := c.posted(leader, c.signDecree(second)); refused.Refused == "" {
 		t.Fatalf("a decree applying above the cluster's version answered %+v", refused)
@@ -187,7 +187,7 @@ func TestADecreeNoOperatorKeySignedIsNotTaken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	signed, err := tadecree.Sign(c.pinDecree(leader, version, testCDSDigest, rolledCDSDigest), stranger)
+	signed, err := tadecree.Sign(c.pinDecree(leader, version, testTADigest, rolledTADigest), stranger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,7 +235,7 @@ func TestAnExpiredDecreeIsRefusedWithItsReason(t *testing.T) {
 	c.genesis(1)
 	leader := c.leader()
 	version := leader.node.fsm.ClusterState().Version
-	decree := c.pinDecree(leader, version, testCDSDigest, rolledCDSDigest)
+	decree := c.pinDecree(leader, version, testTADigest, rolledTADigest)
 	decree.ExpiresAt = time.Now().Add(-time.Minute)
 
 	delivered := c.posted(leader, c.signDecree(decree))

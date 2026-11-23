@@ -1,4 +1,4 @@
-// Package cdsha is the replicated half of CDS: the replicas of one cluster
+// Package cdsha is the replicated half of Trust Authority: the replicas of one cluster
 // admit each other by what they run, and reach each other over one attested
 // port.
 //

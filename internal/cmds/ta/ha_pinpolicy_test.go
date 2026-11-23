@@ -31,7 +31,7 @@ func (c operatorCluster) signedDecree(t *testing.T, d tadecree.Decree) tadecree.
 	return signed
 }
 
-// Both CDS images a cluster accepts while it rolls.
+// Both Trust Authority images a cluster accepts while it rolls.
 func (c operatorCluster) rollPins(t *testing.T) *tadecree.PinDocument {
 	t.Helper()
 	pins, err := pinFlags{
@@ -114,7 +114,7 @@ func TestPinPolicyRefusesADecreeTheConfigurationDoesNotAnswerFor(t *testing.T) {
 			BaseVersion: 3,
 			CDSPins:     otherLaunchFile,
 		}),
-		"no CDS image": c.signedDecree(t, tadecree.Decree{
+		"no Trust Authority image": c.signedDecree(t, tadecree.Decree{
 			Kind:        tadecree.RotateKey,
 			BaseVersion: 3,
 		}),

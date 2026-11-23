@@ -1,6 +1,6 @@
-// Package cdsha replicates the state a CDS cluster agrees on: its mesh CA,
+// Package cdsha replicates the state a Trust Authority cluster agrees on: its mesh CA,
 // the image sets its operator decreed, and the allowlist, secrets and sandbox
-// bindings a single CDS keeps for itself. Every replica applies the same log
+// bindings a single Trust Authority keeps for itself. Every replica applies the same log
 // through the same state machine, so they answer alike.
 //
 // The log is the only history of that state. It lives in the replicas' TEE

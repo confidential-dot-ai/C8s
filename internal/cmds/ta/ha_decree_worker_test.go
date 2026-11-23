@@ -32,7 +32,7 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tadecree"
 )
 
-// workerFiles are a worker document pinning a cluster's CDS, the worker image
+// workerFiles are a worker document pinning a cluster's Trust Authority, the worker image
 // it launches, and a set in force whose every entry binds a launch.
 type workerFiles struct {
 	flags    workerFlags
@@ -40,10 +40,10 @@ type workerFiles struct {
 	document []byte
 }
 
-func newWorkerFiles(t *testing.T, cdsPin []byte) workerFiles {
+func newWorkerFiles(t *testing.T, taPin []byte) workerFiles {
 	t.Helper()
 	dir := t.TempDir()
-	document := workerDocument(t, cdsPin)
+	document := workerDocument(t, taPin)
 	image, err := refvalues.Format(refvalues.ReferenceValues{Family: teetypes.FamilyTDX, Images: []remote.ImagePin{{
 		Name:      "worker",
 		Digest:    bytes.Repeat([]byte{0x77}, refvalues.DigestSize),
@@ -67,15 +67,15 @@ func newWorkerFiles(t *testing.T, cdsPin []byte) workerFiles {
 }
 
 // workerAdmission is a node-images decree for c that also certifies the
-// workers launched with a worker document pinning cdsPin.
+// workers launched with a worker document pinning taPin.
 type workerAdmission struct {
 	o        nodeImagesOptions
 	document []byte
 }
 
-func newWorkerAdmission(t *testing.T, c operatorCluster, cdsPin []byte) workerAdmission {
+func newWorkerAdmission(t *testing.T, c operatorCluster, taPin []byte) workerAdmission {
 	t.Helper()
-	files := newWorkerFiles(t, cdsPin)
+	files := newWorkerFiles(t, taPin)
 	return workerAdmission{
 		o: nodeImagesOptions{
 			decreeOptions: c.options(t),
@@ -120,18 +120,18 @@ func workerGenesis(t *testing.T, c operatorCluster, worker workerFlags) genesisO
 	}
 }
 
-// pinOf is c's CDS pin document.
+// pinOf is c's Trust Authority pin document.
 func pinOf(t *testing.T, c operatorCluster) []byte {
 	t.Helper()
-	data, err := os.ReadFile(c.cdsPinPath)
+	data, err := os.ReadFile(c.taPinPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return data
 }
 
-// workerDocument is a worker document pinning the CDS cdsPin pins.
-func workerDocument(t *testing.T, cdsPin []byte) []byte {
+// workerDocument is a worker document pinning the Trust Authority taPin pins.
+func workerDocument(t *testing.T, taPin []byte) []byte {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -154,7 +154,7 @@ func workerDocument(t *testing.T, cdsPin []byte) []byte {
 		SchemaVersion: worker.SchemaVersion,
 		CDS: cmdsutil.CDS{
 			Address:      "cds.acme.example:8443",
-			Measurements: string(cdsPin),
+			Measurements: string(taPin),
 			PinFloor:     1,
 		},
 		TLSSAN: "c8s-router.c8s-router.svc",
@@ -231,7 +231,7 @@ func TestNodeImagesDecreeRefusesAWorkerDocumentPinningAnotherCDS(t *testing.T) {
 	other := newOperatorCluster(t)
 	w := newWorkerAdmission(t, c, pinOf(t, other))
 	stdout, stderr, err := runAnswering(t, "y\n", w.o.run)
-	if err == nil || !strings.Contains(err.Error(), "pins another CDS than --ta-pin") {
+	if err == nil || !strings.Contains(err.Error(), "pins another Trust Authority than --ta-pin") {
 		t.Fatalf("got %v, want the document refused", err)
 	}
 	if stdout != "" || stderr != "" {

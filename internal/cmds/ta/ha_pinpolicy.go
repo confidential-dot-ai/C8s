@@ -1,6 +1,6 @@
 // `ha pin-policy`: the pin decree a cluster applied, and the pin document it
 // makes. A client, a node document and an Admit decree hold this cluster's
-// CDS to that document, which the cluster itself serves after an image roll.
+// Trust Authority to that document, which the cluster itself serves after an image roll.
 
 package ta
 
@@ -29,7 +29,7 @@ func newPinPolicyCmd() *cobra.Command {
 			"and checks it against the configuration: a key the configuration pins signed it, it names this\n" +
 			"cluster, and its entries bind the launch file the replicas boot.\n\n" +
 			"--out writes the pin document the decree makes, with that launch file filled in: what a client\n" +
-			"pins this CDS by, and what --ta-pin takes during a roll. --decree-out writes the signed decree\n" +
+			"pins this Trust Authority by, and what --ta-pin takes during a roll. --decree-out writes the signed decree\n" +
 			"itself, the object each replica and each node's image-policy plugin checks the roll against.",
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
@@ -122,7 +122,7 @@ func checkedPinDecree(object []byte, c decreeConfig) (appliedPinDecree, error) {
 		return appliedPinDecree{}, err
 	}
 	if applied.Decree.CDSPins == nil {
-		return appliedPinDecree{}, fmt.Errorf("a %s decree pins no CDS image", applied.Decree.Kind)
+		return appliedPinDecree{}, fmt.Errorf("a %s decree pins no Trust Authority image", applied.Decree.Kind)
 	}
 	pins, err := applied.Decree.CDSPins.WithLaunchFile(c.launchFile)
 	if err != nil {

@@ -164,6 +164,6 @@ func TestParseRefusesAnUndeclaredField(t *testing.T) {
 	_, anchorPEM := testKey(t)
 	data := append(render(t, testDocument(t, operatorPEM, anchorPEM)), []byte("cdsAddress: 10.0.0.1:8443\n")...)
 	if _, err := Parse(data); err == nil {
-		t.Fatal("Parse accepted a setting CDS does not define")
+		t.Fatal("Parse accepted a setting Trust Authority does not define")
 	}
 }

@@ -55,7 +55,7 @@ func run(ctx context.Context, cfg config) error {
 		return fmt.Errorf("init rate limiter: %w", err)
 	}
 
-	// The configuration carries at least one operator key, so every CDS
+	// The configuration carries at least one operator key, so every Trust Authority
 	// authorizes writes under the keys its launch bound.
 	operatorKeys := cfg.measured.OperatorKeys
 	operatorKeysHash, err := operatorauth.KeySetHash(operatorKeys.Keys())
@@ -74,7 +74,7 @@ func run(ctx context.Context, cfg config) error {
 	}
 	defer state.close()
 
-	// What this CDS serves from, chosen once: its own stores and a mesh CA it
+	// What this Trust Authority serves from, chosen once: its own stores and a mesh CA it
 	// mints, or the ones its cluster's log carries.
 	back, err := newBackend(ctx, cfg, state)
 	if err != nil {
@@ -86,7 +86,7 @@ func run(ctx context.Context, cfg config) error {
 	mesh := back.MeshCA()
 	issuing, holdsCA := mesh.Current()
 	if !holdsCA {
-		return errors.New("this CDS serves no mesh CA, so it could issue nothing")
+		return errors.New("this Trust Authority serves no mesh CA, so it could issue nothing")
 	}
 	slog.Info("serving under a mesh CA",
 		"key_id", caKeyID(issuing.CA.Cert),
@@ -133,7 +133,7 @@ func run(ctx context.Context, cfg config) error {
 		AllowedCNPattern: cnPattern,
 	}
 
-	// The sandbox-digests callback: at issuance CDS asks the inventory that
+	// The sandbox-digests callback: at issuance Trust Authority asks the inventory that
 	// admitted a pod what the pod is running (docs/armtls.md, "Sandbox
 	// identity"). Pins the same node identities as /attest, so the inventory
 	// answering is held to the standard its armTLS certificate already met.
@@ -235,7 +235,7 @@ func run(ctx context.Context, cfg config) error {
 	go rateLimiter.EvictionLoop(ctx, cfg.rateLimiterEvictInterval, cfg.rateLimiterIdleTimeout)
 	go challengeLimiter.EvictionLoop(ctx, cfg.rateLimiterEvictInterval, cfg.rateLimiterIdleTimeout)
 
-	// The gate refuses what the state this CDS serves no longer answers for.
+	// The gate refuses what the state this Trust Authority serves no longer answers for.
 	router := back.Gate(newRouter(deps))
 
 	go checker.Run(ctx)
@@ -308,13 +308,13 @@ func armtlsAttestFunc(cfg config) func(context.Context, string) (string, error) 
 	return attestclient.MakeSNPARMTLSAttestFunc(attestclient.NewClient(""), cfg.attestationApiURL)
 }
 
-// servingConfig is CDS's armTLS serving certificate. /secrets reads a
-// CDS-stamped field out of the caller's leaf, so the chain has to be verified
+// servingConfig is Trust Authority's armTLS serving certificate. /secrets reads a
+// Trust Authority-stamped field out of the caller's leaf, so the chain has to be verified
 // by crypto/tls against the mesh CA: the armTLS path would admit a self-signed
 // peer whose sandbox-ID extension is whatever it chose. VerifyClientCertIfGiven
 // keeps every other route reachable by a caller with no certificate.
 //
-// A CDS VM extends no register, so neither this certificate nor the
+// A Trust Authority VM extends no register, so neither this certificate nor the
 // sandbox-digests client lists a measured policy.
 func servingConfig(cfg config, meshCA *x509.Certificate) *armtls.ServerConfig {
 	return &armtls.ServerConfig{
@@ -328,8 +328,8 @@ func servingConfig(cfg config, meshCA *x509.Certificate) *armtls.ServerConfig {
 	}
 }
 
-// digestsClientConfig is the client CDS calls node inventories back with for
-// a sandbox's container digests. It holds an inventory to the node images CDS
+// digestsClientConfig is the client Trust Authority calls node inventories back with for
+// a sandbox's container digests. It holds an inventory to the node images Trust Authority
 // certifies, so the two follow one set.
 func digestsClientConfig(cfg config, nodeImages armtls.PinSource) workloadclaims.DigestsClientConfig {
 	return workloadclaims.DigestsClientConfig{
@@ -378,17 +378,17 @@ func validateSecretsConfig(cfg config) error {
 		return fmt.Errorf("--secrets-max-paths-per-workload (%d) must be below --secrets-max-paths (%d), or one workload can fill the store", cfg.secretsMaxPathsPerWorkload, cfg.secretsMaxPaths)
 	}
 	if cfg.secretsMaxValueBytes < secrets.GeneratedValueBytes {
-		return fmt.Errorf("--secrets-max-value-bytes (%d) must be at least %d, the size of every value CDS generates", cfg.secretsMaxValueBytes, secrets.GeneratedValueBytes)
+		return fmt.Errorf("--secrets-max-value-bytes (%d) must be at least %d, the size of every value Trust Authority generates", cfg.secretsMaxValueBytes, secrets.GeneratedValueBytes)
 	}
 	return nil
 }
 
-// secretsEnabled reports whether CDS serves /secrets, and why not when it does
+// secretsEnabled reports whether the Trust Authority serves /secrets, and why not when it does
 // not.
 //
 // Release is gated on an allowlist entry carrying a grant, so an entry without
 // one releases nothing and mounting the endpoint is inert until an operator
-// writes a grant. What this decides is narrower: whether CDS can answer at all,
+// writes a grant. What this decides is narrower: whether the Trust Authority can answer at all,
 // which is what sandbox identity already needs.
 func secretsEnabled(nodeImages []remote.ImagePin, inventoryHosts workloadclaims.CIDRHosts) (bool, string) {
 	switch {
@@ -424,7 +424,7 @@ func imagesWithoutRegisters(images []remote.ImagePin) []string {
 
 func validateConfig(cfg config) error {
 	if cfg.measured == nil {
-		return fmt.Errorf("--config: CDS serves one cluster's measured configuration and was given none")
+		return fmt.Errorf("--config: Trust Authority serves one cluster's measured configuration and was given none")
 	}
 	if len(cfg.measured.OperatorKeys.Keys()) == 0 {
 		return fmt.Errorf("--config: the configuration pins no operator key, so no policy write could ever be authorized")
@@ -497,7 +497,7 @@ func compilePattern(name, raw string) (*regexp.Regexp, error) {
 }
 
 // readinessFn returns a closure that flips /readyz to 503 unless the
-// attestation-api is healthy, the state this CDS serves answers, and its mesh
+// attestation-api is healthy, the state this Trust Authority serves answers, and its mesh
 // CA certificate has more than minCAValidity left — the window renewal has to
 // succeed in.
 func readinessFn(svcReady func() bool, back backend, minCAValidity time.Duration) func() bool {

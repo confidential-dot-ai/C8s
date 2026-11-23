@@ -26,7 +26,7 @@ func testPodPolicy(t *testing.T, anchor string) []byte {
 	return document
 }
 
-// podImagePolicy rides the measured configuration the CDS pin
+// podImagePolicy rides the measured configuration the Trust Authority pin
 // binds, separate from node pins; its absence disables the profile.
 func TestPodPolicyIsSeparateAndBoundByTheCDSLaunch(t *testing.T) {
 	_, operator := testKey(t)
@@ -56,7 +56,7 @@ func TestPodPolicyIsSeparateAndBoundByTheCDSLaunch(t *testing.T) {
 	}
 	bound := parsePin(t, pin)
 	if len(bound.Images) != 1 || !bytes.Equal(bound.Images[0].LaunchFile, configuration) {
-		t.Fatal("CDS pin does not bind the complete configuration including Pod policy")
+		t.Fatal("Trust Authority pin does not bind the complete configuration including Pod policy")
 	}
 	input.PodImagePolicy = nil
 	disabled, _, err := Build(input)

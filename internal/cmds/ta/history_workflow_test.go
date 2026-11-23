@@ -23,7 +23,7 @@ import (
 )
 
 // TestOperatorChangePolicyWorkflow runs the documented P → P∪Q → Q change
-// against CDS's router, wired as run.go wires it: signed whole-document PUTs,
+// against the Trust Authority's router, wired as run.go wires it: signed whole-document PUTs,
 // the journal started before serving, and single-use operator tokens.
 func TestOperatorChangePolicyWorkflow(t *testing.T) {
 	store, err := allowlist.OpenInMemory()
@@ -87,7 +87,7 @@ func TestOperatorChangePolicyWorkflow(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// ParseJSON fills the defaults CDS stores, as the CLI's loaders do.
+		// ParseJSON fills the defaults Trust Authority stores, as the CLI's loaders do.
 		parsed, err := pkgallowlist.ParseJSON(raw)
 		if err != nil {
 			t.Fatal(err)
@@ -158,7 +158,7 @@ func TestOperatorChangePolicyWorkflow(t *testing.T) {
 	if err := json.Unmarshal(raw, &history); err != nil {
 		t.Fatal(err)
 	}
-	// Position 1 is the empty document CDS served at start.
+	// Position 1 is the empty document Trust Authority served at start.
 	if len(history.Entries) != 4 {
 		t.Fatalf("history has %d entries, want the start document then P, P∪Q, Q: %s", len(history.Entries), raw)
 	}

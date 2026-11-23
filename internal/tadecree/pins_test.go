@@ -19,7 +19,7 @@ import (
 // in from the file it already holds, so one decree stays small whatever the
 // configuration's size.
 func TestPinsTravelWithoutTheLaunchFileAndComeBackWithIt(t *testing.T) {
-	document := cdsImages(t, 0x11)
+	document := taImages(t, 0x11)
 	pins, err := NewPinDocument(document)
 	if err != nil {
 		t.Fatal(err)
@@ -47,7 +47,7 @@ func TestPinsTravelWithoutTheLaunchFileAndComeBackWithIt(t *testing.T) {
 // A reader holding another configuration is not the cluster the operator
 // signed these images for.
 func TestPinsRefuseAnotherLaunchFile(t *testing.T) {
-	pins, err := NewPinDocument(cdsImages(t, 0x11))
+	pins, err := NewPinDocument(taImages(t, 0x11))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,7 @@ func TestPinsRefuseAnotherLaunchFile(t *testing.T) {
 	}
 }
 
-// One CDS pin names one cluster's CDS, so every entry binds the same launch
+// One Trust Authority pin names one cluster's Trust Authority, so every entry binds the same launch
 // file and the digest names it.
 func TestPinsBindOneLaunchFile(t *testing.T) {
 	for _, tc := range []struct {
@@ -75,7 +75,7 @@ func TestPinsBindOneLaunchFile(t *testing.T) {
 				t.Fatal(err)
 			}
 			if _, err := NewPinDocument(document); err == nil {
-				t.Fatal("a pin document naming no one CDS was carried into a decree")
+				t.Fatal("a pin document naming no one Trust Authority was carried into a decree")
 			}
 		})
 	}
@@ -87,7 +87,7 @@ func TestDecreePinsCarryNoLaunchBindingOfTheirOwn(t *testing.T) {
 	key, keys := operatorKey(t)
 	d := complete(t, UpdateMeasurements)
 	d.CDSPins = &PinDocument{
-		Images:           ElidedImages{document{json: cdsImages(t, 0x11)}},
+		Images:           ElidedImages{document{json: taImages(t, 0x11)}},
 		LaunchFileSHA256: d.CDSPins.LaunchFileSHA256,
 	}
 	if err := verifySigned(t, key, keys, d); err == nil {

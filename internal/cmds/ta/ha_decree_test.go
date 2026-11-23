@@ -31,7 +31,7 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
 )
 
-// The launch digests of two CDS images: the one the cluster runs, and the one
+// The launch digests of two Trust Authority images: the one the cluster runs, and the one
 // an operator rolls it onto.
 const (
 	smp2Digest    = "e7df3a8f1dbe619607154ce994c1f4d7299c539b120b5560e137f7787e4ece304f270c1444b47c863fde54bc863291d7"
@@ -43,7 +43,7 @@ const (
 )
 
 // operatorCluster is one cluster the operator signs decrees for: the
-// configuration its CDS VMs boot, the key file that configuration pins, and
+// configuration its Trust Authority VMs boot, the key file that configuration pins, and
 // the pin document every replica read is verified against.
 type operatorCluster struct {
 	config      []byte
@@ -51,7 +51,7 @@ type operatorCluster struct {
 	configPath  string
 	keyPath     string
 	operatorPEM []byte
-	cdsPinPath  string
+	taPinPath   string
 }
 
 func newOperatorCluster(t *testing.T) operatorCluster {
@@ -61,7 +61,7 @@ func newOperatorCluster(t *testing.T) operatorCluster {
 	return newOperatorClusterBooting(t, key, operatorPEM, config)
 }
 
-// newOperatorClusterBooting is a cluster whose CDS boots config, which pins
+// newOperatorClusterBooting is a cluster whose Trust Authority boots config, which pins
 // operatorPEM, the public key of key.
 func newOperatorClusterBooting(
 	t *testing.T,
@@ -80,11 +80,11 @@ func newOperatorClusterBooting(
 		configPath:  filepath.Join(dir, "cds-config.yaml"),
 		keyPath:     filepath.Join(dir, "operator.pem"),
 		operatorPEM: operatorPEM,
-		cdsPinPath:  filepath.Join(dir, "cds-pin.json"),
+		taPinPath:   filepath.Join(dir, "cds-pin.json"),
 	}
 	writeTestFile(t, c.configPath, c.config)
 	writeTestFile(t, c.keyPath, keyPEM)
-	writeTestFile(t, c.cdsPinPath, []byte(testutil.CDSPinDocument(testutil.TestMeasurement, string(c.config))))
+	writeTestFile(t, c.taPinPath, []byte(testutil.CDSPinDocument(testutil.TestMeasurement, string(c.config))))
 	parsed, err := taconfig.Parse(c.config)
 	if err != nil {
 		t.Fatal(err)
@@ -105,7 +105,7 @@ func (c operatorCluster) options(t *testing.T) decreeOptions {
 	}
 }
 
-// verifier reports the evidence of a CDS of this cluster: the image the pin
+// verifier reports the evidence of a Trust Authority of this cluster: the image the pin
 // document names, launched on this configuration.
 func (c operatorCluster) verifier() taconn.PinVerifier {
 	return testutil.VerifierStub(func(context.Context, string, json.RawMessage, localverify.Params) (*teetypes.VerificationResult, error) {
@@ -150,7 +150,7 @@ func (c operatorCluster) replicaServing(t *testing.T, routes map[string]any) rep
 	server := testutil.NewARMTLSServer(t, handler)
 	return replica{
 		address:  strings.TrimPrefix(server.URL, "https://"),
-		cdsPin:   c.cdsPinPath,
+		taPin:    c.taPinPath,
 		verifier: c.verifier(),
 	}
 }
@@ -303,7 +303,7 @@ func TestPinDecreeNeedsTheVersionItAppliesOn(t *testing.T) {
 		"--operator-key", c.keyPath,
 		"--out", filepath.Join(t.TempDir(), "pins.json"),
 		"--to", "cds-1.acme.example",
-		"--cds-pin", c.cdsPinPath,
+		"--cds-pin", c.taPinPath,
 		"--platform", "sev-snp",
 		"--vcpus", "2",
 		"--image-manifest", snpManifest(t, smp2Digest),
@@ -481,7 +481,7 @@ func TestNodeImagesDecreeCarriesTheWholeSet(t *testing.T) {
 		t.Fatalf("decree = %+v", decree)
 	}
 	if decree.CDSPins != nil {
-		t.Fatal("a node-image decree carries the images a CDS of the cluster may run")
+		t.Fatal("a node-image decree carries the images a Trust Authority of the cluster may run")
 	}
 	certified, err := decree.NodePins.Images()
 	if err != nil {
@@ -671,7 +671,7 @@ func TestRecoverNeedsTheBreakGlassAcknowledgement(t *testing.T) {
 	}
 }
 
-// A replica is named as an address, and the port every CDS serves the operator
+// A replica is named as an address, and the port every Trust Authority serves the operator
 // on is the default.
 func TestAReplicaAddressNamesAHostAndAPort(t *testing.T) {
 	for _, tc := range []struct {

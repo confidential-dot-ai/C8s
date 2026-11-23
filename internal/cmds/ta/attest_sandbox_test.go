@@ -96,7 +96,7 @@ func newSandboxTestEnv(t *testing.T, stubURL string) (AttestHandler, *workloadcl
 
 // signedSandboxToken issues an inventory token for sandboxID and the CSR key
 // behind csrPEM, bound to the same base64 challenge the request will carry
-// (CDS re-checks the token nonce against the challenge it consumes).
+// (Trust Authority re-checks the token nonce against the challenge it consumes).
 func signedSandboxToken(t *testing.T, signer *workloadclaims.SandboxTokenSigner, csrPEM, challenge, sandboxID string) json.RawMessage {
 	t.Helper()
 	csr, err := certutil.ParseCSRPEM([]byte(csrPEM))
@@ -189,7 +189,7 @@ func TestAttest_SandboxToken_RejectsWrongRequesterKey(t *testing.T) {
 	wantRefusal(t, w, http.StatusForbidden, types.ErrorCodeCSRDenied)
 }
 
-// A token signed by a key other than the inventory key CDS resolves must be
+// A token signed by a key other than the inventory key Trust Authority resolves must be
 // rejected: the token must come from the attested inventory.
 func TestAttest_SandboxToken_RejectsForeignInventoryEAR(t *testing.T) {
 	stub := newStubAttestationApi(t, testLaunchDigest)
@@ -205,8 +205,8 @@ func TestAttest_SandboxToken_RejectsForeignInventoryEAR(t *testing.T) {
 
 // The core of the design: a token signed by a key the inventory does not hold
 // is rejected. This is what stops a compromised workload — which shares the
-// node's launch measurement and can reach CDS — from minting a token naming
-// another pod's sandbox. CDS resolves the key from the inventory's own
+// node's launch measurement and can reach Trust Authority — from minting a token naming
+// another pod's sandbox. Trust Authority resolves the key from the inventory's own
 // privileged-port endpoint, so the impostor's own key never matches.
 func TestAttest_SandboxToken_RejectsKeyTheInventoryDoesNotHold(t *testing.T) {
 	stub := newStubAttestationApi(t, testLaunchDigest)
@@ -242,7 +242,7 @@ func TestAttest_SandboxToken_RejectsHostOutsideNodeCIDRs(t *testing.T) {
 }
 
 // A refused sandbox token tells the caller nothing about the inventory it
-// names: whether CDS dialled it, reached it or got a key from it, the answer is
+// names: whether the Trust Authority dialled it, reached it or got a key from it, the answer is
 // the same and the detail stays in the log.
 func TestAttest_SandboxToken_RefusalWithholdsInventoryDetail(t *testing.T) {
 	insideNodeRanges, err := workloadclaims.ParseInventoryHosts([]string{"10.0.0.0/24"})
@@ -309,12 +309,12 @@ func TestAttest_SandboxToken_RefusalWithholdsInventoryDetail(t *testing.T) {
 	}
 	for _, answer := range answers[1:] {
 		if answer != answers[0] {
-			t.Fatalf("refusals differ by what CDS saw of the inventory: %q", answers)
+			t.Fatalf("refusals differ by what Trust Authority saw of the inventory: %q", answers)
 		}
 	}
 }
 
-// With no CIDRs configured CDS has no boundary to apply, so it refuses tokens
+// With no CIDRs configured Trust Authority has no boundary to apply, so it refuses tokens
 // outright rather than dialing wherever it is pointed.
 func TestAttest_SandboxToken_RejectsWithoutConfiguredCIDRs(t *testing.T) {
 	stub := newStubAttestationApi(t, testLaunchDigest)
@@ -341,7 +341,7 @@ func TestAttest_SandboxToken_RejectsStaleNonce(t *testing.T) {
 	wantRefusal(t, w, http.StatusForbidden, types.ErrorCodeCSRDenied)
 }
 
-// A CDS without an inventory resolver cannot verify sandbox tokens and must
+// A Trust Authority without an inventory resolver cannot verify sandbox tokens and must
 // reject a request that carries one rather than stamp it unverified.
 func TestAttest_SandboxToken_RejectsWhenUnverifiable(t *testing.T) {
 	stub := newStubAttestationApi(t, testLaunchDigest)

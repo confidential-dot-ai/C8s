@@ -292,7 +292,7 @@ func TestRoutePutIfMatch(t *testing.T) {
 	}
 }
 
-// O8 via W1: a CDS without operator keys refuses route writes, whether the
+// O8 via W1: a Trust Authority without operator keys refuses route writes, whether the
 // authorizer is unset or the one run wires when --operator-keys is empty.
 func TestRoutePutWithoutOperatorKeys(t *testing.T) {
 	store := inMemoryStore(t)
@@ -411,7 +411,7 @@ func TestRoutePutConcurrentSameRevision(t *testing.T) {
 	}
 }
 
-// C5: with a persistent database file, a CDS restart keeps the manifest and
+// C5: with a persistent database file, a Trust Authority restart keeps the manifest and
 // its revision floor.
 func TestRoutesSurviveRestart(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "allowlist.db")
@@ -471,7 +471,7 @@ func (holdsNoCA) Current() (issuer.CurrentCA, bool) {
 	return issuer.CurrentCA{}, false
 }
 
-// C3 cannot run its mesh-CA check while the CDS holds no mesh CA, so writes
+// C3 cannot run its mesh-CA check while the Trust Authority holds no mesh CA, so writes
 // fail closed, after authorization.
 func TestRoutePutWhileTheCDSHoldsNoMeshCA(t *testing.T) {
 	store := inMemoryStore(t)
@@ -485,7 +485,7 @@ func TestRoutePutWhileTheCDSHoldsNoMeshCA(t *testing.T) {
 	w := httptest.NewRecorder()
 	h.handlePut(w, httptest.NewRequest(http.MethodPut, routes.Path, bytes.NewReader(b)))
 	if w.Code != http.StatusServiceUnavailable {
-		t.Fatalf("PUT /routes while the CDS holds no mesh CA = %d, want 503", w.Code)
+		t.Fatalf("PUT /routes while the Trust Authority holds no mesh CA = %d, want 503", w.Code)
 	}
 	if _, err := store.LoadRoutes(); err == nil {
 		t.Fatal("a manifest was stored without the mesh CA check")

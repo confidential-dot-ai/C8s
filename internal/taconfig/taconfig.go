@@ -1,5 +1,5 @@
-// Package cdsconfig is the CDS VM's launch file: one document holding every
-// per-cluster setting CDS runs on, bound to its VM by the launch measurement.
+// Package cdsconfig is the Trust Authority VM's launch file: one document holding every
+// per-cluster setting Trust Authority runs on, bound to its VM by the launch measurement.
 // The host can read a launch file, so it carries no secrets.
 package taconfig
 
@@ -30,18 +30,18 @@ type Config struct {
 	// OperatorKeys authorize policy writes.
 	OperatorKeys operatorauth.KeyBundle
 	Workloads    *allowlist.Allowlist
-	// Nodes pins the node launch identities CDS admits and serves. A replica
+	// Nodes pins the node launch identities Trust Authority admits and serves. A replica
 	// set's may be empty, and its Genesis then names the first set.
 	Nodes refvalues.ReferenceValues
 	// PodImages authorize quote-bound Pod mesh issuance only, never node callbacks.
 	PodImages []remote.ImagePin
-	// NodeCIDRs bounds the addresses CDS may call a sandbox inventory on.
+	// NodeCIDRs bounds the addresses Trust Authority may call a sandbox inventory on.
 	NodeCIDRs workloadclaims.CIDRHosts
 	// DNSSANPatterns are the rules a leaf's DNS SANs are matched against,
 	// compiled from the document's leaf names and patterns. Empty admits no
 	// DNS SAN, as issuer.CSRPolicy defines.
 	DNSSANPatterns []*regexp.Regexp
-	// HA is the replica set this CDS belongs to; nil runs the singleton.
+	// HA is the replica set this Trust Authority belongs to; nil runs the singleton.
 	HA *HA
 	// KMS is where pod secret release is brokered to; nil serves no pod secrets.
 	KMS *KMS
@@ -64,7 +64,7 @@ type wire struct {
 	KMS                *kmsWire `yaml:"kms,omitempty"`
 }
 
-// Parse validates a CDS configuration document. It authenticates nothing:
+// Parse validates a Trust Authority configuration document. It authenticates nothing:
 // these bytes are trusted once a verified self-report binds them.
 func Parse(data []byte) (*Config, error) {
 	var document wire
@@ -113,7 +113,7 @@ func (w wire) parse() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := checkSingleCDSNamesNodes(ha, nodes); err != nil {
+	if err := checkSingleTANamesNodes(ha, nodes); err != nil {
 		return nil, err
 	}
 	kms, err := w.KMS.parse()
@@ -152,18 +152,18 @@ func parseNodes(document string) (refvalues.ReferenceValues, error) {
 	return nodes, nil
 }
 
-// checkSingleCDSNamesNodes requires a single CDS to name its nodes: it
+// checkSingleTANamesNodes requires a single Trust Authority to name its nodes: it
 // certifies the launch file's set for life, where a replica set's Genesis
 // may name the first.
-func checkSingleCDSNamesNodes(ha *HA, nodes refvalues.ReferenceValues) error {
-	if runsASingleCDS(ha) && nodes.Empty() {
-		return errors.New("nodes: a single CDS certifies only the nodes its launch file names, and this one names none")
+func checkSingleTANamesNodes(ha *HA, nodes refvalues.ReferenceValues) error {
+	if runsASingleTA(ha) && nodes.Empty() {
+		return errors.New("nodes: a single Trust Authority certifies only the nodes its launch file names, and this one names none")
 	}
 	return nil
 }
 
-// Cluster is what a client takes from the launch file it pins its CDS to.
-// A file naming a single CDS leaves the other fields empty.
+// Cluster is what a client takes from the launch file it pins its Trust Authority to.
+// A file naming a single Trust Authority leaves the other fields empty.
 type Cluster struct {
 	ClusterID    string
 	OperatorKeys []*ecdsa.PublicKey
@@ -171,7 +171,7 @@ type Cluster struct {
 }
 
 // ReadCluster reads those fields out of launchFile and nothing else, so a
-// setting only CDS acts on cannot keep a client from starting.
+// setting only Trust Authority acts on cannot keep a client from starting.
 func ReadCluster(launchFile []byte) (Cluster, error) {
 	var document wire
 	if err := yamlutil.Decode(launchFile, &document); err != nil {
@@ -218,8 +218,8 @@ func checkClusterID(id string) error {
 	return nil
 }
 
-// parseNodeCIDRs builds the inventory bound CDS dials within. Each entry must
-// name the subnet itself, so what the document says is what CDS enforces.
+// parseNodeCIDRs builds the inventory bound Trust Authority dials within. Each entry must
+// name the subnet itself, so what the document says is what Trust Authority enforces.
 func parseNodeCIDRs(cidrs []string) (workloadclaims.CIDRHosts, error) {
 	if len(cidrs) == 0 {
 		return nil, fmt.Errorf("nodeCIDRs must name at least one subnet")

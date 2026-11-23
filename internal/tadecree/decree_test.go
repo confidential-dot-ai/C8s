@@ -30,9 +30,9 @@ func operatorKey(t *testing.T) (*ecdsa.PrivateKey, []*ecdsa.PublicKey) {
 	return key, []*ecdsa.PublicKey{&key.PublicKey}
 }
 
-// cdsImages pins one CDS image to the launch file every replica boots, as
-// `c8s cds config new` writes it.
-func cdsImages(t *testing.T, digest byte) []byte {
+// taImages pins one Trust Authority image to the launch file every replica boots, as
+// `c8s ta config new` writes it.
+func taImages(t *testing.T, digest byte) []byte {
 	t.Helper()
 	document, err := refvalues.Format(refvalues.ReferenceValues{
 		Family: teetypes.FamilySNP,
@@ -48,9 +48,9 @@ func cdsImages(t *testing.T, digest byte) []byte {
 	return document
 }
 
-func cdsPins(t *testing.T, digest byte) *PinDocument {
+func taPins(t *testing.T, digest byte) *PinDocument {
 	t.Helper()
-	pins, err := NewPinDocument(cdsImages(t, digest))
+	pins, err := NewPinDocument(taImages(t, digest))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +99,7 @@ func setField(t *testing.T, d *Decree, name string) {
 	case "base_version":
 		d.BaseVersion = 7
 	case "cds_pins":
-		d.CDSPins = cdsPins(t, 0x11)
+		d.CDSPins = taPins(t, 0x11)
 	case "node_pins":
 		d.NodePins = nodeImages(t)
 	case "target_member":
@@ -194,7 +194,7 @@ func TestVerifyRefusesAnEditedDecree(t *testing.T) {
 		{"another intent", func(d *Decree) { d.IntentID = NewIntentID() }},
 		{"another kind", func(d *Decree) { d.Kind = RotateKey }},
 		{"a later base version", func(d *Decree) { d.BaseVersion++ }},
-		{"other images", func(d *Decree) { d.CDSPins = cdsPins(t, 0x33) }},
+		{"other images", func(d *Decree) { d.CDSPins = taPins(t, 0x33) }},
 		{"another launch file digest", func(d *Decree) { d.CDSPins.LaunchFileSHA256 = strings.Repeat("00", 32) }},
 		{"a longer life", func(d *Decree) { d.ExpiresAt = d.ExpiresAt.Add(time.Hour) }},
 	} {

@@ -1,4 +1,4 @@
-// This process as one replica of its cluster's CDS: the Raft member over the
+// This process as one replica of its cluster's Trust Authority: the Raft member over the
 // replicated state internal/taha keeps, the stores that member's log writes,
 // and the mesh CA its cluster minted. Every setting comes from the ha block of
 // the measured configuration every replica of the cluster boots.
@@ -39,7 +39,7 @@ const (
 	challengeSecrets  = "secrets"
 )
 
-var _ backend = (*clusterCDS)(nil)
+var _ backend = (*clusterTA)(nil)
 
 // joinPoll is how often a starting replica asks whether it serves its cluster
 // yet, and caFollow how often a serving one looks at the cluster's mesh CA.
@@ -48,9 +48,9 @@ const (
 	caFollow = 5 * time.Second
 )
 
-// clusterCDS serves its cluster as one of its replicas: every store write
+// clusterTA serves its cluster as one of its replicas: every store write
 // becomes a log entry, and the mesh CA is the cluster's.
-type clusterCDS struct {
+type clusterTA struct {
 	handles
 	challengePools
 	node *taha.Node
@@ -60,7 +60,7 @@ type clusterCDS struct {
 	ended    <-chan struct{}
 }
 
-// newReplica makes this process one replica of its cluster's CDS. It answers
+// newReplica makes this process one replica of its cluster's Trust Authority. It answers
 // health, status and the cluster's pins on the client port while it joins,
 // and returns once the cluster's mesh CA is this replica's to issue under.
 func newReplica(ctx context.Context, cfg config, st stores) (backend, error) {
@@ -78,7 +78,7 @@ func newReplica(ctx context.Context, cfg config, st stores) (backend, error) {
 		return nil, err
 	}
 	stop, ended := runMember(ctx, node)
-	joining := &clusterCDS{
+	joining := &clusterTA{
 		handles: handles{
 			allowlist: node.Allowlist(),
 			secrets:   node.Secrets(),
@@ -211,7 +211,7 @@ func exitToRestart(reason string) {
 // join answers health, status and the cluster's pins on the client port until
 // this replica serves. An operator reads the member id and the mesh CA of an
 // unjoined replica there, and signs the Genesis decree it then acts on.
-func (r *clusterCDS) join(ctx context.Context, cfg config) error {
+func (r *clusterTA) join(ctx context.Context, cfg config) error {
 	stopAnswering, err := r.answerWhileJoining(cfg)
 	if err != nil {
 		return err
@@ -230,7 +230,7 @@ func (r *clusterCDS) join(ctx context.Context, cfg config) error {
 
 // awaitServing ends with the reason this replica never will answer for its
 // cluster: the process is going down, or the member's loop is gone.
-func (r *clusterCDS) awaitServing(ctx context.Context) error {
+func (r *clusterTA) awaitServing(ctx context.Context) error {
 	asking := time.NewTicker(joinPoll)
 	defer asking.Stop()
 	for !r.Ready() {
@@ -250,19 +250,19 @@ func (r *clusterCDS) awaitServing(ctx context.Context) error {
 	return nil
 }
 
-func (r *clusterCDS) MeshCA() meshCA {
+func (r *clusterTA) MeshCA() meshCA {
 	return clusterCA{node: r.node}
 }
 
 // As this replica's cluster's log carries them.
-func (r *clusterCDS) NodeImages() armtls.PinSource {
+func (r *clusterTA) NodeImages() armtls.PinSource {
 	return clusterNodeImages{node: r.node}
 }
 
 // TokenFloor is when this replica's cluster last started: a cluster that
 // started again holds no record of the tokens its last life spent. A replica
 // holding no cluster has no record at all, so it accepts no token's age.
-func (r *clusterCDS) TokenFloor() time.Time {
+func (r *clusterTA) TokenFloor() time.Time {
 	started := r.node.ClusterState().StartedAtMS
 	if started == 0 {
 		return time.Now()
@@ -271,21 +271,21 @@ func (r *clusterCDS) TokenFloor() time.Time {
 }
 
 // /readyz, and the gate below holds every other route to it.
-func (r *clusterCDS) Ready() bool {
+func (r *clusterTA) Ready() bool {
 	return r.node.Serving().OK
 }
 
-func (r *clusterCDS) ClusterRoutes() map[string]http.HandlerFunc {
+func (r *clusterTA) ClusterRoutes() map[string]http.HandlerFunc {
 	return clusterRoutes(r.node)
 }
 
-func (r *clusterCDS) Gate(next http.Handler) http.Handler {
+func (r *clusterTA) Gate(next http.Handler) http.Handler {
 	return haGate(r.node.Serving, r.node.ClockError, r.node.ConfirmRead, next)
 }
 
 // KeepMeshCA publishes the mesh CA the cluster's log carries whenever it
 // changes, so a rotation stops trusting the leaves of the old key.
-func (r *clusterCDS) KeepMeshCA(ctx context.Context, peers *armtls.CertManager) {
+func (r *clusterTA) KeepMeshCA(ctx context.Context, peers *armtls.CertManager) {
 	var published []byte
 	looking := time.NewTicker(caFollow)
 	defer looking.Stop()
@@ -313,7 +313,7 @@ func (r *clusterCDS) KeepMeshCA(ctx context.Context, peers *armtls.CertManager) 
 	}
 }
 
-func (r *clusterCDS) Stop() {
+func (r *clusterTA) Stop() {
 	r.stopNode()
 }
 

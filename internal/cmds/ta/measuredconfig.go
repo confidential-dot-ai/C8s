@@ -14,9 +14,9 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/taconfig"
 )
 
-// runMeasuredConfig runs CDS on the configuration document its VM was launched
+// runMeasuredConfig runs Trust Authority on the configuration document its VM was launched
 // with. The host can write that file, so the bytes are settings only once a
-// verified self-report binds them; the platform CDS attests on comes from the
+// verified self-report binds them; the platform Trust Authority attests on comes from the
 // same report rather than from an operator's claim about it.
 func runMeasuredConfig(ctx context.Context, cfg config) error {
 	document, err := os.ReadFile(cfg.configPath)
@@ -38,7 +38,7 @@ func runMeasuredConfig(ctx context.Context, cfg config) error {
 	if err != nil {
 		return err
 	}
-	slog.Info("serving a measured CDS configuration", "cluster_id", served.measured.ClusterID, "platform", platform)
+	slog.Info("serving a measured Trust Authority configuration", "cluster_id", served.measured.ClusterID, "platform", platform)
 	return run(ctx, served)
 }
 
@@ -59,7 +59,7 @@ func withMeasuredConfig(cfg config, document []byte, platform teetypes.Family) (
 
 // requireLoopbackAttestationAPI holds the self-report to the attester inside
 // this VM: a report fetched over the network is another guest's, and the
-// attestation-api a CDS VM runs listens on loopback.
+// attestation-api a Trust Authority VM runs listens on loopback.
 func requireLoopbackAttestationAPI(raw string) error {
 	if err := cmdsutil.ValidateAttestationAPIURL("--attestation-api-url", raw); err != nil {
 		return err
@@ -70,7 +70,7 @@ func requireLoopbackAttestationAPI(raw string) error {
 	}
 	address, err := netip.ParseAddr(endpoint.Hostname())
 	if err != nil || !address.IsLoopback() {
-		return fmt.Errorf("--attestation-api-url %q must name a loopback address: CDS attests through the attestation-api inside its own VM", raw)
+		return fmt.Errorf("--attestation-api-url %q must name a loopback address: Trust Authority attests through the attestation-api inside its own VM", raw)
 	}
 	return nil
 }

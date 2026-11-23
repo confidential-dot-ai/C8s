@@ -1,7 +1,7 @@
-// Package cdspins keeps a node's CDS pin set current across a CDS image roll.
+// Package cdspins keeps a node's Trust Authority pin set current across a Trust Authority image roll.
 //
-// A node starts from the CDS pins its launch document carries. The operator
-// moves a cluster to a new CDS image with a signed decree the replicas apply
+// A node starts from the Trust Authority pins its launch document carries. The operator
+// moves a cluster to a new Trust Authority image with a signed decree the replicas apply
 // and serve at GET /ha/pins, carrying the cluster's pin document with every
 // launch file elided. A client fills in the launch file it already pins,
 // which must be the one the decree names, and verifies the decree under the
@@ -39,7 +39,7 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tadecree"
 )
 
-var ErrSingleCDS = errors.New("cdspins: the launch file names a single CDS, which issues no pin decrees")
+var ErrSingleCDS = errors.New("cdspins: the launch file names a single Trust Authority, which issues no pin decrees")
 
 var errBelowFloor = errors.New("cdspins: the pin decree is below this node's floor")
 
@@ -49,7 +49,7 @@ const lookBudget = 10 * time.Second
 // Fetcher reads the decree the replicas serve, and nil where they serve none.
 type Fetcher func(ctx context.Context) (*tadecree.Signed, error)
 
-// AttestedFetcher is a Fetcher answered by a CDS that passed pins.
+// AttestedFetcher is a Fetcher answered by a Trust Authority that passed pins.
 type AttestedFetcher func(ctx context.Context, pins refvalues.ReferenceValues) (*tadecree.Signed, error)
 
 type Config struct {
@@ -77,7 +77,7 @@ func (c Config) check() error {
 	return nil
 }
 
-// Source is a client's CDS pin set as the cluster's decrees move it.
+// Source is a client's Trust Authority pin set as the cluster's decrees move it.
 type Source struct {
 	cfg        Config
 	launchFile []byte
@@ -106,7 +106,7 @@ type state struct {
 }
 
 // New resumes from the state file, and answers [ErrSingleCDS] where the
-// bootstrap set pins a launch file naming one CDS rather than a cluster.
+// bootstrap set pins a launch file naming one Trust Authority rather than a cluster.
 func New(cfg Config) (*Source, error) {
 	if err := cfg.check(); err != nil {
 		return nil, err
@@ -140,7 +140,7 @@ func New(cfg Config) (*Source, error) {
 	return source, nil
 }
 
-// Current is the set to hold CDS to now.
+// Current is the set to hold Trust Authority to now.
 func (s *Source) Current() refvalues.ReferenceValues {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -162,8 +162,8 @@ func (s *Source) Version() (uint64, bool) {
 	return s.inForce.version, s.held()
 }
 
-// Refresh looks for a newer decree. Call it where CDS fails the pin check,
-// and on a timer, so a node talking to no CDS still moves.
+// Refresh looks for a newer decree. Call it where the Trust Authority fails the pin check,
+// and on a timer, so a node talking to no Trust Authority still moves.
 func (s *Source) Refresh() error {
 	ask, due := s.dueForLook()
 	if !due {
@@ -270,7 +270,7 @@ func (s *Source) check(served *tadecree.Signed) (checked, error) {
 	}
 	decree := served.Decree
 	if decree.CDSPins == nil {
-		return checked{}, fmt.Errorf("cdspins: the %s decree pins no CDS image", decree.Kind)
+		return checked{}, fmt.Errorf("cdspins: the %s decree pins no Trust Authority image", decree.Kind)
 	}
 	version := decree.AppliesAt()
 	if belowFloor(version, s.cfg.Floor) {

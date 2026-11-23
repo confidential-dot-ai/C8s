@@ -19,9 +19,9 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
 )
 
-// newAttestedCDS serves GET /ca over armTLS with the given status and body, and
+// newAttestedTA serves GET /ca over armTLS with the given status and body, and
 // counts the requests that reach it.
-func newAttestedCDS(t *testing.T, status int, body []byte) (*int, string) {
+func newAttestedTA(t *testing.T, status int, body []byte) (*int, string) {
 	t.Helper()
 	seen := 0
 	mux := http.NewServeMux()
@@ -52,7 +52,7 @@ func run(t *testing.T, args ...string) (stdout, stderr string, err error) {
 // against, so reading it from an endpoint whose build is not pinned would
 // launder "any attested TEE" into a pin. The refusal lands before any request.
 func TestRefusesAnUnpinnedCDS(t *testing.T) {
-	seen, url := newAttestedCDS(t, http.StatusOK, testutil.PEMCerts(testutil.MeshCA(t, "cds-m")))
+	seen, url := newAttestedTA(t, http.StatusOK, testutil.PEMCerts(testutil.MeshCA(t, "cds-m")))
 
 	_, _, err := run(t, "--url", url)
 	if !errors.Is(err, taconn.ErrUnpinnedEndpoint) {
@@ -98,12 +98,12 @@ func TestRefusesAnUnparseableURLWithoutBlamingTheScheme(t *testing.T) {
 	}
 }
 
-// The bytes written are the DER the --mesh-ca gate compares, in the order CDS
+// The bytes written are the DER the --mesh-ca gate compares, in the order Trust Authority
 // serves them (newest CA first, retained CAs after), and every certificate's
 // digest is reported so an operator can pin it out of band.
 func TestWritesTheServedChainAndReportsEachDigest(t *testing.T) {
 	newest, retained := testutil.MeshCA(t, "cds-m-2"), testutil.MeshCA(t, "cds-m-1")
-	_, url := newAttestedCDS(t, http.StatusOK, testutil.PEMCerts(newest, retained))
+	_, url := newAttestedTA(t, http.StatusOK, testutil.PEMCerts(newest, retained))
 	out := filepath.Join(t.TempDir(), "mesh-ca.pem")
 
 	_, stderr, err := run(t, "--url", url, "--image-policy-file", testutil.CDSPinFile(t), "--out", out)
@@ -112,11 +112,11 @@ func TestWritesTheServedChainAndReportsEachDigest(t *testing.T) {
 	}
 	written := parsePEM(t, readFile(t, out))
 	if len(written) != 2 {
-		t.Fatalf("wrote %d certificate(s), want the 2 CDS served", len(written))
+		t.Fatalf("wrote %d certificate(s), want the 2 Trust Authority served", len(written))
 	}
 	for i, want := range [][]byte{newest, retained} {
 		if !bytes.Equal(written[i].Raw, want) {
-			t.Fatalf("certificate %d is not the DER CDS served", i)
+			t.Fatalf("certificate %d is not the DER Trust Authority served", i)
 		}
 		sum := sha256.Sum256(want)
 		if !strings.Contains(stderr, hex.EncodeToString(sum[:])) {
@@ -129,7 +129,7 @@ func TestWritesTheServedChainAndReportsEachDigest(t *testing.T) {
 // it without an intermediate file, while the digests stay on stderr.
 func TestWritesToStdoutWithoutOut(t *testing.T) {
 	ca := testutil.MeshCA(t, "cds-m")
-	_, url := newAttestedCDS(t, http.StatusOK, testutil.PEMCerts(ca))
+	_, url := newAttestedTA(t, http.StatusOK, testutil.PEMCerts(ca))
 
 	stdout, _, err := run(t, "--url", url, "--image-policy-file", testutil.CDSPinFile(t))
 	if err != nil {
@@ -146,7 +146,7 @@ func TestWritesToStdoutWithoutOut(t *testing.T) {
 func TestDropsNonCertificateBlocks(t *testing.T) {
 	ca := testutil.MeshCA(t, "cds-m")
 	body := append(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: []byte("filler")}), testutil.PEMCerts(ca)...)
-	_, url := newAttestedCDS(t, http.StatusOK, body)
+	_, url := newAttestedTA(t, http.StatusOK, body)
 	out := filepath.Join(t.TempDir(), "mesh-ca.pem")
 
 	if _, _, err := run(t, "--url", url, "--image-policy-file", testutil.CDSPinFile(t), "--out", out); err != nil {
@@ -160,7 +160,7 @@ func TestDropsNonCertificateBlocks(t *testing.T) {
 // A body that is not a certificate bundle must not reach an anchor file: an
 // endpoint answering /ca with anything else is the wrong endpoint.
 func TestRefusesANonCertificateBody(t *testing.T) {
-	_, url := newAttestedCDS(t, http.StatusOK, []byte("not a bundle"))
+	_, url := newAttestedTA(t, http.StatusOK, []byte("not a bundle"))
 	out := filepath.Join(t.TempDir(), "mesh-ca.pem")
 
 	if _, _, err := run(t, "--url", url, "--image-policy-file", testutil.CDSPinFile(t), "--out", out); err == nil {
@@ -172,7 +172,7 @@ func TestRefusesANonCertificateBody(t *testing.T) {
 // A front door that does not proxy /ca answers 404; nothing lands at --out, so
 // a path already holding an anchor still holds it.
 func TestRefusesANonOKResponse(t *testing.T) {
-	_, url := newAttestedCDS(t, http.StatusNotFound, []byte("no such route"))
+	_, url := newAttestedTA(t, http.StatusNotFound, []byte("no such route"))
 	out := filepath.Join(t.TempDir(), "mesh-ca.pem")
 
 	_, _, err := run(t, "--url", url, "--image-policy-file", testutil.CDSPinFile(t), "--out", out)
@@ -221,7 +221,7 @@ func TestImagePolicyGatesCARead(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ca := testutil.MeshCA(t, "cds-m")
-			seen, url := newAttestedCDS(t, http.StatusOK, testutil.PEMCerts(ca))
+			seen, url := newAttestedTA(t, http.StatusOK, testutil.PEMCerts(ca))
 			policy := filepath.Join(t.TempDir(), "policy.json")
 			data := testutil.CDSPinDocument(tc.digest, testutil.CDSLaunchFile)
 			if err := os.WriteFile(policy, []byte(data), 0o600); err != nil {
@@ -250,7 +250,7 @@ func TestImagePolicyGatesCARead(t *testing.T) {
 // ca parses --operator-key and --insecure though it reads neither.
 func TestReadsWithTheFlagsItIgnores(t *testing.T) {
 	ca := testutil.MeshCA(t, "cds-m")
-	_, url := newAttestedCDS(t, http.StatusOK, testutil.PEMCerts(ca))
+	_, url := newAttestedTA(t, http.StatusOK, testutil.PEMCerts(ca))
 
 	stdout, _, err := run(t, "--url", url, "--image-policy-file", testutil.CDSPinFile(t), "--operator-key", "/nonexistent", "--insecure")
 	if err != nil {

@@ -74,7 +74,7 @@ func TestAReplicaReportsItselfWhileItJoins(t *testing.T) {
 		"/readyz":     http.StatusServiceUnavailable,
 		"/ha/status":  http.StatusOK,
 		"/ha/decrees": http.StatusOK,
-		// No decree pins the cluster's CDS images yet.
+		// No decree pins the cluster's Trust Authority images yet.
 		"/ha/pins": http.StatusNotFound,
 		// Everything a joined replica serves waits for the cluster.
 		"/allowlist": http.StatusServiceUnavailable,
@@ -257,7 +257,7 @@ func startReplica(t *testing.T, ctx context.Context, cfg config, state stores) <
 	return joined
 }
 
-// replicatedRunConfig is a CDS VM launched with a replica set's configuration.
+// replicatedRunConfig is a Trust Authority VM launched with a replica set's configuration.
 func replicatedRunConfig(t *testing.T, attestationURL string) (config, stores) {
 	t.Helper()
 	cfg, err := withMeasuredConfig(
@@ -276,7 +276,7 @@ func replicatedRunConfig(t *testing.T, attestationURL string) (config, stores) {
 	return cfg, state
 }
 
-// attestingAPI is the attestation-api on this VM's loopback, reporting one CDS image.
+// attestingAPI is the attestation-api on this VM's loopback, reporting one Trust Authority image.
 func attestingAPI(t *testing.T) string {
 	t.Helper()
 	stub := mockapi.New(t)

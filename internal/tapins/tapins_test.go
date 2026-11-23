@@ -39,8 +39,8 @@ func cluster(t *testing.T, key *ecdsa.PrivateKey) []byte {
 		strings.ReplaceAll(strings.TrimRight(string(block), "\n"), "\n", "\n  ") + "\nha:\n  voters: 3\n")
 }
 
-// singleCDS is the launch file of a CDS that runs alone.
-const singleCDS = "schemaVersion: c8s-cds/v1\nclusterID: " + clusterID + "\n"
+// singleTA is the launch file of a Trust Authority that runs alone.
+const singleTA = "schemaVersion: c8s-cds/v1\nclusterID: " + clusterID + "\n"
 
 func operatorKey(t *testing.T) *ecdsa.PrivateKey {
 	t.Helper()
@@ -51,7 +51,7 @@ func operatorKey(t *testing.T) *ecdsa.PrivateKey {
 	return key
 }
 
-// pinSet pins CDS images to launchFile, as `c8s cds config new` writes it.
+// pinSet pins Trust Authority images to launchFile, as `c8s ta config new` writes it.
 func pinSet(t *testing.T, launchFile []byte, digests ...byte) refvalues.ReferenceValues {
 	t.Helper()
 	set := refvalues.ReferenceValues{Family: teetypes.FamilySNP}
@@ -150,7 +150,7 @@ func version(t *testing.T, source *Source) uint64 {
 	return held
 }
 
-// digestsOf names the images a pin set holds CDS to, by their first byte.
+// digestsOf names the images a pin set holds Trust Authority to, by their first byte.
 func digestsOf(set refvalues.ReferenceValues) []byte {
 	var digests []byte
 	for _, image := range set.Images {
@@ -159,7 +159,7 @@ func digestsOf(set refvalues.ReferenceValues) []byte {
 	return digests
 }
 
-// A client holds CDS to the images the operator decreed, bound to the launch
+// A client holds Trust Authority to the images the operator decreed, bound to the launch
 // file it already pins: the decree carries none, so the images it names
 // become an identity only once the client's own file is in them.
 func TestADecreeMovesTheClientToTheImagesItNames(t *testing.T) {
@@ -212,7 +212,7 @@ func TestADecreeOfAnotherClusterOrKeyIsRefused(t *testing.T) {
 }
 
 // The decree carries the digest of the launch file its images bind, and a
-// client holding another file is pinning another cluster's CDS.
+// client holding another file is pinning another cluster's Trust Authority.
 func TestADecreeForAnotherLaunchFileIsRefused(t *testing.T) {
 	key := operatorKey(t)
 	launchFile := cluster(t, key)
@@ -348,7 +348,7 @@ func TestAnAttestedReplayIsRefused(t *testing.T) {
 
 // A client restarts without a reboot and holds the images it last followed:
 // otherwise every restart would walk back to the launch document's set and
-// fail against a CDS on the image the operator moved to.
+// fail against a Trust Authority on the image the operator moved to.
 func TestTheDecreeInForceSurvivesARestart(t *testing.T) {
 	key := operatorKey(t)
 	launchFile := cluster(t, key)
@@ -415,7 +415,7 @@ func TestAnUnreadableStateFileFails(t *testing.T) {
 }
 
 // A burst of pin misses must not fetch once per handshake: every client of
-// the node calls Refresh the moment CDS fails its check.
+// the node calls Refresh the moment Trust Authority fails its check.
 func TestLooksAreSpaced(t *testing.T) {
 	key := operatorKey(t)
 	launchFile := cluster(t, key)
@@ -444,11 +444,11 @@ func TestLooksAreSpaced(t *testing.T) {
 	}
 }
 
-// One CDS answers for its own image and issues no decree, so a node pinning
+// One Trust Authority answers for its own image and issues no decree, so a node pinning
 // one follows nothing and polls nobody.
 func TestACDSThatRunsAloneIsFollowedByNoOne(t *testing.T) {
 	_, err := New(Config{
-		Bootstrap: pinSet(t, []byte(singleCDS), 0x11),
+		Bootstrap: pinSet(t, []byte(singleTA), 0x11),
 		Attested:  refused,
 		Fetch:     func(context.Context) (*tadecree.Signed, error) { return nil, nil },
 		StateFile: filepath.Join(t.TempDir(), "cds-decree.json"),
@@ -498,7 +498,7 @@ func TestASourceNeedsItsFetchersAndItsStateFile(t *testing.T) {
 	}
 }
 
-// A pin set that is not one CDS VM's identity names no launch file, and the
+// A pin set that is not one Trust Authority VM's identity names no launch file, and the
 // client would have nothing to read a decree against.
 func TestABootstrapSetThatNamesNoCDSIsRefused(t *testing.T) {
 	_, err := New(Config{
@@ -508,6 +508,6 @@ func TestABootstrapSetThatNamesNoCDSIsRefused(t *testing.T) {
 		StateFile: filepath.Join(t.TempDir(), "cds-decree.json"),
 	})
 	if err == nil {
-		t.Fatal("a bootstrap set pinning no CDS was accepted")
+		t.Fatal("a bootstrap set pinning no Trust Authority was accepted")
 	}
 }

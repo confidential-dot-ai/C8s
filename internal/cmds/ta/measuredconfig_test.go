@@ -27,7 +27,7 @@ import (
 // were built against.
 var nodeMRTD = strings.Repeat("ab", refvalues.DigestSize)
 
-// nodesDocument pins one TDX node image. The CDS VM in these tests attests on
+// nodesDocument pins one TDX node image. The Trust Authority VM in these tests attests on
 // SEV-SNP: the family it serves is the nodes', not its own.
 var nodesDocument = `{"schema_version":"1","tee":"tdx","measurements":[` +
 	tdxNodeEntry("node", nodeMRTD, "", "") + `]}`
@@ -49,8 +49,8 @@ func tdxNodeEntry(name, mrtd, kernel, commandLine string) string {
 	return fmt.Sprintf(`{"name":%q,"mrtd":%q,"rtmr":[null,%q,%q,null]}`, name, mrtd, kernel, commandLine)
 }
 
-// cluster is what a test varies in the configuration a CDS VM is launched
-// with: the operator bundle authorizing writes, the workloads CDS serves and
+// cluster is what a test varies in the configuration a Trust Authority VM is launched
+// with: the operator bundle authorizing writes, the workloads Trust Authority serves and
 // the node images it admits.
 type cluster struct {
 	operatorPEM []byte
@@ -67,7 +67,7 @@ func (c cluster) nodePins() string {
 	return c.nodes
 }
 
-// measuredDocument renders one cluster's complete CDS configuration document.
+// measuredDocument renders one cluster's complete Trust Authority configuration document.
 func measuredDocument(t *testing.T, c cluster) []byte {
 	t.Helper()
 	document, err := yaml.Marshal(map[string]any{
@@ -86,12 +86,12 @@ func measuredDocument(t *testing.T, c cluster) []byte {
 	return document
 }
 
-// measuredConfig parses the document, as a CDS VM does at boot.
+// measuredConfig parses the document, as a Trust Authority VM does at boot.
 func measuredConfig(t *testing.T, c cluster) *taconfig.Config {
 	t.Helper()
 	measured, err := taconfig.Parse(measuredDocument(t, c))
 	if err != nil {
-		t.Fatalf("parse CDS configuration: %v", err)
+		t.Fatalf("parse Trust Authority configuration: %v", err)
 	}
 	return measured
 }
@@ -128,15 +128,15 @@ func TestMeasuredConfigDecidesEverySetting(t *testing.T) {
 	}
 }
 
-// CDS serves one cluster's measured configuration, so there is no mode that
+// Trust Authority serves one cluster's measured configuration, so there is no mode that
 // starts without one.
 func TestConfigIsRequired(t *testing.T) {
-	if err := executeCDS(t); err == nil {
-		t.Fatal("`c8s cds` started with no configuration")
+	if err := executeTA(t); err == nil {
+		t.Fatal("`c8s ta` started with no configuration")
 	}
 }
 
-// The document is a host-writable file, so CDS serves the cluster it describes
+// The document is a host-writable file, so the Trust Authority serves the cluster it describes
 // only while the launch binding names those exact bytes. Any other value is a
 // swapped configuration.
 func TestRunMeasuredConfigRefusesADocumentTheLaunchDidNotBind(t *testing.T) {
@@ -201,7 +201,7 @@ func TestRunMeasuredConfigRequiresALoopbackAttester(t *testing.T) {
 	}
 }
 
-// replicatedDocument is the measured document of a cluster whose CDS runs as
+// replicatedDocument is the measured document of a cluster whose Trust Authority runs as
 // a replica set, with the operator keys a test signs decrees with.
 func replicatedDocument(t *testing.T, operatorPEM []byte) []byte {
 	t.Helper()
@@ -237,7 +237,7 @@ func writeMeasuredDocument(t *testing.T) string {
 	return path
 }
 
-// A CDS serving a measured configuration publishes what the document holds,
+// A Trust Authority serving a measured configuration publishes what the document holds,
 // with no flag naming a workload, a node pin or an operator key.
 func TestRunServesTheMeasuredConfiguration(t *testing.T) {
 	cfg := validRunConfig(t, mockapi.New(t).URL())
@@ -267,16 +267,16 @@ func TestRunServesTheMeasuredConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /measurements does not parse: %v", err)
 	}
-	// The nodes CDS admits run on their own family, which an external CDS VM
+	// The nodes Trust Authority admits run on their own family, which an external Trust Authority VM
 	// need not share.
 	if served.Family != teetypes.FamilyTDX || len(served.Images) != 1 {
 		t.Errorf("served pins = %+v, want the document's one TDX image", served)
 	}
 }
 
-// executeCDS runs the command with the arguments every mode requires, so what
+// executeTA runs the command with the arguments every mode requires, so what
 // a case exercises is the arguments it adds.
-func executeCDS(t *testing.T, args ...string) error {
+func executeTA(t *testing.T, args ...string) error {
 	t.Helper()
 	cmd := NewCmd()
 	cmd.SetOut(io.Discard)

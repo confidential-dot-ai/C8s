@@ -28,7 +28,7 @@ func TestClockQuarantineRefusesAuthorityAndKeepsState(t *testing.T) {
 	if !ok {
 		t.Fatal("leader has no CA")
 	}
-	decree := c.signDecree(c.admitDecree(r, testCDSDigest))
+	decree := c.signDecree(c.admitDecree(r, testTADigest))
 	posted, err := json.Marshal(decree)
 	if err != nil {
 		t.Fatal(err)
@@ -109,7 +109,7 @@ func TestClockQuarantineRefusesLocalAdmit(t *testing.T) {
 	c := newLiveCluster(t)
 	c.genesis(1)
 	n := c.leader().node
-	d := c.admitDecree(c.leader(), testCDSDigest)
+	d := c.admitDecree(c.leader(), testTADigest)
 	n.posted.hold(c.signDecree(d))
 	quarantine(n)
 	n.admitAsDecreed()
