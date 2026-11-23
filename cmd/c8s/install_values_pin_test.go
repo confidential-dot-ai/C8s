@@ -231,14 +231,6 @@ attestationApi:
     image:
         digest: sha256:abababababababababababababababababababababababababababababababab
         repository: ghcr.io/confidential-dot-ai/attestation-api
-cds:
-    address: 127.0.0.1:1
-    measurementsConfig: '{"schema_version":"2","tee":"sev-snp","measurements":[{"name":"cds","measurement":"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd","launch_file":"schemaVersion: c8s-cds/v1\nclusterID: test\noperatorPublicKeys: |\n  -----BEGIN PUBLIC KEY-----\n  MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE+ozuS8lfikNld52SnfWYj1/SlUGr\n  mG5PZp8/jAWmARD163wkoiQC2tlHUNJ6nqkN79y37EBKHGFV3B3CW+Ah6A==\n  -----END PUBLIC KEY-----\nworkloads: ''{\"schema\":\"c8s.allowlist/v1\",\"workloads\":{\"app\":{\"label\":\"registry/app@sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"containers\":[{\"digest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"image\":\"registry/app@sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"command\":{\"policy\":\"any\"},\"args\":{\"policy\":\"any\"},\"mounts\":{\"policy\":\"any\"}}]}}}''\nnodes: ''{\"schema_version\":\"1\",\"tee\":\"sev-snp\",\"measurements\":[{\"name\":\"node\",\"measurement\":\"abababababababababababababababababababababababababababababababababababababababababababababababab\"}]}''\nnodeCIDRs:\n  - 192.0.2.0/24\nleafDNSNames:\n  - router.example.com\n"}]}'
-    operatorKeys: |
-        -----BEGIN PUBLIC KEY-----
-        MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE+ozuS8lfikNld52SnfWYj1/SlUGr
-        mG5PZp8/jAWmARD163wkoiQC2tlHUNJ6nqkN79y37EBKHGFV3B3CW+Ah6A==
-        -----END PUBLIC KEY-----
 image:
     digest: sha256:abababababababababababababababababababababababababababababababab
     repository: ghcr.io/confidential-dot-ai/c8s-operator
@@ -278,6 +270,14 @@ nriImagePolicy:
     image:
         digest: sha256:abababababababababababababababababababababababababababababababab
         repository: ghcr.io/confidential-dot-ai/nri-image-policy
+ta:
+    address: 127.0.0.1:1
+    measurementsConfig: '{"schema_version":"2","tee":"sev-snp","measurements":[{"name":"cds","measurement":"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd","launch_file":"schemaVersion: c8s-cds/v1\nclusterID: test\noperatorPublicKeys: |\n  -----BEGIN PUBLIC KEY-----\n  MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE+ozuS8lfikNld52SnfWYj1/SlUGr\n  mG5PZp8/jAWmARD163wkoiQC2tlHUNJ6nqkN79y37EBKHGFV3B3CW+Ah6A==\n  -----END PUBLIC KEY-----\nworkloads: ''{\"schema\":\"c8s.allowlist/v1\",\"workloads\":{\"app\":{\"label\":\"registry/app@sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"containers\":[{\"digest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"image\":\"registry/app@sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"command\":{\"policy\":\"any\"},\"args\":{\"policy\":\"any\"},\"mounts\":{\"policy\":\"any\"}}]}}}''\nnodes: ''{\"schema_version\":\"1\",\"tee\":\"sev-snp\",\"measurements\":[{\"name\":\"node\",\"measurement\":\"abababababababababababababababababababababababababababababababababababababababababababababababab\"}]}''\nnodeCIDRs:\n  - 192.0.2.0/24\nleafDNSNames:\n  - router.example.com\n"}]}'
+    operatorKeys: |
+        -----BEGIN PUBLIC KEY-----
+        MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE+ozuS8lfikNld52SnfWYj1/SlUGr
+        mG5PZp8/jAWmARD163wkoiQC2tlHUNJ6nqkN79y37EBKHGFV3B3CW+Ah6A==
+        -----END PUBLIC KEY-----
 volumed:
     enabled: true
     image:

@@ -54,6 +54,7 @@ type seedRender struct {
 	valueFiles  []string
 	// helm reads this last, as it does on the install itself.
 	computed string
+	legacyTA bool
 	// cds names a CDS the release itself does not, as --set arguments that
 	// outrank every file above.
 	cds []string
@@ -87,7 +88,7 @@ func installSeed(ctx context.Context, render seedRender) (*pkgallowlist.Allowlis
 	return pkgallowlist.ParseJSON([]byte(document))
 }
 
-// writeInstallSeed writes that seed as the document `c8s cds config new`
+// writeInstallSeed writes that seed as the document `c8s ta config new`
 // takes, under a CDS no rendered entry reaches: the chart requires an address
 // and a pin, and no component's arguments or mounts carry either, which is
 // what lets an operator render the seed before the CDS that serves it exists.
@@ -97,9 +98,13 @@ func writeInstallSeed(ctx context.Context, render seedRender, path string) error
 		return fmt.Errorf("write the placeholder CDS pin: %w", err)
 	}
 	defer os.Remove(pin)
+	key := "ta"
+	if render.legacyTA {
+		key = "cds"
+	}
 	render.cds = []string{
-		"--set-string", "cds.address=" + documentationRangeCDSAddress,
-		"--set-file", "cds.measurementsConfig=" + pin,
+		"--set-string", key + ".address=" + documentationRangeCDSAddress,
+		"--set-file", key + ".measurementsConfig=" + pin,
 	}
 	seed, err := installSeed(ctx, render)
 	if err != nil {
@@ -113,7 +118,7 @@ func writeInstallSeed(ctx context.Context, render seedRender, path string) error
 		return fmt.Errorf("write %s: %w", path, err)
 	}
 	fmt.Fprintf(os.Stdout, "+ wrote %d component entries to %s\n", len(seed.Workloads), path)
-	fmt.Fprintf(os.Stdout, "  Pass it to `c8s cds config new --allowlist-seed %s`, then install with --%s and --%s.\n", path, flagCDSAddress, flagCDSPin)
+	fmt.Fprintf(os.Stdout, "  Pass it to `c8s ta config new --allowlist-seed %s`, then install with --%s and --%s.\n", path, flagCDSAddress, flagCDSPin)
 	return nil
 }
 
@@ -308,7 +313,7 @@ func checkNodeSubnets(ctx context.Context, config *taconfig.Config, declaredPodC
 		inventoryBound = append(inventoryBound, subnet.String())
 	}
 	if err := taconfig.CheckNodeSubnets(inventoryBound, knownPodRanges); err != nil {
-		return fmt.Errorf("the CDS this install names dials sandbox inventories where this cluster's pods answer (%w): a pod there could answer as a node's inventory. Re-run `c8s cds config new` with node subnets outside the cluster's pod ranges", err)
+		return fmt.Errorf("the CDS this install names dials sandbox inventories where this cluster's pods answer (%w): a pod there could answer as a node's inventory. Re-run `c8s ta config new` with node subnets outside the cluster's pod ranges", err)
 	}
 	return nil
 }

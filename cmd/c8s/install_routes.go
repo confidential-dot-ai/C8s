@@ -119,13 +119,16 @@ func (u upstreamRoutes) apply(m *pkgroutes.Manifest, now time.Time) ([]byte, err
 // <host>:<port> it serves on outside the cluster, which the install reaches
 // directly.
 func installCDSURL(values map[string]any) (string, error) {
-	raw, _ := valueAtPath(values, "cds.address")
-	address, ok := raw.(string)
-	if !ok || address == "" {
-		return "", fmt.Errorf("cds.address names no CDS, so nothing says where this install reaches it")
+	ta, err := trustAuthorityValues(values)
+	if err != nil {
+		return "", err
+	}
+	address := ta["address"]
+	if address == "" {
+		return "", fmt.Errorf("ta.address must name the Trust Authority endpoint")
 	}
 	if _, _, err := cmdsutil.SplitCDSAddress(address); err != nil {
-		return "", fmt.Errorf("cds.address %w", err)
+		return "", fmt.Errorf("ta.address %w", err)
 	}
 	return cmdsutil.CDSURL(address), nil
 }
@@ -199,9 +202,6 @@ func preflightUpstreamRoutes() error {
 	return nil
 }
 
-// installedOperatorKeys are the operator public keys this install gives CDS:
-// --operator-keys, else cds.operatorKeys from the last -f file that sets it,
-// as Helm merges them. An empty value there leaves CDS without keys.
 func installedOperatorKeys() (keys []*ecdsa.PublicKey, source string, err error) {
 	var pemBytes []byte
 	if installOperatorKeys != "" {
@@ -210,16 +210,11 @@ func installedOperatorKeys() (keys []*ecdsa.PublicKey, source string, err error)
 		}
 		source = "--operator-keys"
 	} else {
-		for _, f := range installValues {
-			tree, err := decodeValuesFile(f)
-			if err != nil {
-				return nil, "", err
-			}
-			if v, ok := valueAtPath(tree, "cds.operatorKeys"); ok {
-				pem, _ := v.(string)
-				pemBytes, source = []byte(pem), "cds.operatorKeys in "+f
-			}
+		values, _, err := taValuesFromFiles(installValues)
+		if err != nil {
+			return nil, "", err
 		}
+		pemBytes, source = []byte(values["operatorKeys"]), "ta.operatorKeys from the values files"
 	}
 	if len(bytes.TrimSpace(pemBytes)) == 0 {
 		return nil, "", fmt.Errorf("--%s needs CDS to trust its public key: pass --operator-keys", flagOperatorKey)

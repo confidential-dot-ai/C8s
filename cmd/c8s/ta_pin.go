@@ -34,7 +34,7 @@ func cdsInstallValues(address string, pin string) (map[string]any, error) {
 		return nil, fmt.Errorf("--%s: %w", flagCDSPin, err)
 	}
 	return map[string]any{
-		"cds": map[string]any{
+		"ta": map[string]any{
 			"address":            address,
 			"measurementsConfig": string(document),
 		},
@@ -67,7 +67,7 @@ type cdsPin struct {
 }
 
 // resolveCDSPin is the one pin this install holds its CDS to, read where the
-// release reads it: --cds-pin's file, else the document the last -f file
+// release reads it: --ta-pin's file, else the document the last -f file
 // naming one carries. It returns nil where nothing names a CDS. A pin only a
 // values file carries is copied to a file of its own, which remove deletes,
 // since the clients this install dials read a path.
@@ -88,11 +88,11 @@ func resolveCDSPin(valuesFiles []string) (pin *cdsPin, remove func(), err error)
 		}
 		return &cdsPin{path: path, config: config}, keep, nil
 	}
-	values, err := cdsValues(valuesFiles)
+	values, _, err := taValuesFromFiles(valuesFiles)
 	if err != nil {
 		return nil, keep, err
 	}
-	document, _ := values["cds.measurementsConfig"].(string)
+	document := values["measurementsConfig"]
 	if document == "" {
 		return nil, keep, nil
 	}

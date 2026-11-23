@@ -1671,9 +1671,9 @@ func TestVerifyHintPrintsRunnableCommands(t *testing.T) {
 		t.Errorf("c8s verify %s: %v", strings.Join(verifyArgs, " "), err)
 	}
 
-	anchorArgs := hintCommandArgs(t, buf.String(), "c8s cds ca")
+	anchorArgs := hintCommandArgs(t, buf.String(), "c8s ta ca")
 	if err := taca.NewCmd().ParseFlags(anchorArgs); err != nil {
-		t.Errorf("c8s cds ca %s: %v", strings.Join(anchorArgs, " "), err)
+		t.Errorf("c8s ta ca %s: %v", strings.Join(anchorArgs, " "), err)
 	}
 	for _, want := range []string{cdsURL, cdsPin} {
 		if !slices.Contains(anchorArgs, want) {
