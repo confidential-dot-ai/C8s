@@ -350,7 +350,8 @@ func TestCertGateTakesNoSocketDirectory(t *testing.T) {
 	if err := p.prepareTAPins(nodeTAPins(t, p)); err != nil {
 		t.Fatalf("prepareTAPins: %v", err)
 	}
-	pod, gate := certGatePod(), certGateContainer()
+	pod := certGatePod()
+	gate := certGateContainer()
 	adjust := mustCredentialMounts(t, p, pod, gate)
 	if mountTo(adjust, workloadclaims.CDSPinsPath) == nil {
 		t.Error("the certificate gate was handed no Trust Authority policy")
@@ -439,7 +440,8 @@ func TestCredentialRoleFromAComponentSetInForce(t *testing.T) {
 		t.Fatalf("prepareTAPins: %v", err)
 	}
 
-	pod, gate := certGatePod(), certGateContainer()
+	pod := certGatePod()
+	gate := certGateContainer()
 	adjust := mustCredentialMounts(t, p, pod, gate)
 	if mountTo(adjust, workloadclaims.CDSPinsPath) == nil {
 		t.Error("the gate the set grants the credentials role was handed no Trust Authority policy")

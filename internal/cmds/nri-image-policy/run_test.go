@@ -417,13 +417,15 @@ func occupySocketPath(t *testing.T, socketDir string) {
 // degrade-to-base condition.
 func TestRun_PluginDeathDuringInitialPullIsFatal(t *testing.T) {
 	t.Setenv("NRI_PLUGIN_NAME", "")
-	origDelay, origRetries := allowlistApiInitialDelay, allowlistApiMaxRetries
+	origDelay := allowlistApiInitialDelay
+	origRetries := allowlistApiMaxRetries
 	allowlistApiInitialDelay = 5 * time.Millisecond
 	// Keep retrying until the plugin death is observed; each fetch attempt
 	// fails instantly against the closed port.
 	allowlistApiMaxRetries = 1000
 	defer func() {
-		allowlistApiInitialDelay, allowlistApiMaxRetries = origDelay, origRetries
+		allowlistApiInitialDelay = origDelay
+		allowlistApiMaxRetries = origRetries
 	}()
 
 	dir := t.TempDir()
@@ -468,11 +470,13 @@ logging:
 // the fail-soft path instead and surface the plugin's own failure.
 func TestRun_SlowTADuringInitialPullIsNotShutdown(t *testing.T) {
 	t.Setenv("NRI_PLUGIN_NAME", "")
-	origDelay, origRetries := allowlistApiInitialDelay, allowlistApiMaxRetries
+	origDelay := allowlistApiInitialDelay
+	origRetries := allowlistApiMaxRetries
 	allowlistApiInitialDelay = 5 * time.Millisecond
 	allowlistApiMaxRetries = 1
 	defer func() {
-		allowlistApiInitialDelay, allowlistApiMaxRetries = origDelay, origRetries
+		allowlistApiInitialDelay = origDelay
+		allowlistApiMaxRetries = origRetries
 	}()
 
 	// Both endpoints accept and then hang, so an attempt expires on its own

@@ -37,7 +37,8 @@ func (c *taClock) observe(date time.Time) {
 	if !c.dated.IsZero() && !date.After(c.carried()) {
 		return
 	}
-	c.dated, c.read = date, c.local()
+	c.dated = date
+	c.read = c.local()
 }
 
 func (c *taClock) now() time.Time {

@@ -91,7 +91,5 @@ func (p podTarget) replace(
 }
 
 func (p podTarget) endSets(ctx context.Context) {
-	if p.plugin.policy.rebuildEndedSets() {
-		p.plugin.KillRevoked(ctx)
-	}
+	p.plugin.endPodSets(ctx)
 }

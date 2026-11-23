@@ -194,7 +194,8 @@ func TestBootGateDoesNotEscalateBeforeTheFirstPull(t *testing.T) {
 	// No pull has applied a snapshot, so the store is at version 0.
 	p := unpulledPlugin(cfg)
 	rec := &fatalRecorder{}
-	p.boot.powerOff, p.boot.exit = rec.powerOff, rec.exit
+	p.boot.powerOff = rec.powerOff
+	p.boot.exit = rec.exit
 	stopped := 0
 	p.containerd = &fakeContainerd{
 		resolve: func(context.Context, string) (string, error) { return "", errors.New("no store") },

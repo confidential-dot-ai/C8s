@@ -27,10 +27,27 @@ func (p *plugin) applyPodPolicy(ctx context.Context, pulled *allowlist.Allowlist
 		return nil
 	}
 	p.policy.apply(pulled, version)
+	p.podPolicyChanged(ctx)
+	return nil
+}
+
+// endPodSets puts the end of a retired component set into force under the same
+// lock applyPodPolicy holds, so no issuance obtained while the set stood
+// publishes after it ended.
+func (p *plugin) endPodSets(ctx context.Context) {
+	p.podMu.Lock()
+	defer p.podMu.Unlock()
+	if !p.policy.rebuildEndedSets() {
+		return
+	}
+	p.podPolicyChanged(ctx)
+}
+
+// podPolicyChanged follows a policy change on a Pod guest: callers hold podMu.
+func (p *plugin) podPolicyChanged(ctx context.Context) {
 	p.inventory.mu.Lock()
 	p.inventory.revision++
 	p.inventory.mu.Unlock()
 	p.podChanged()
 	p.KillRevoked(ctx)
-	return nil
 }

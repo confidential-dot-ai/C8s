@@ -178,7 +178,8 @@ func (l *pullLoop) poll(ctx context.Context) {
 	case l.rolledBack(served):
 		l.ignoreRollback(served)
 	case l.settle(ctx, served):
-		l.etag, l.unmeasuredDigest = served.ETag, ""
+		l.etag = served.ETag
+		l.unmeasuredDigest = ""
 	}
 }
 

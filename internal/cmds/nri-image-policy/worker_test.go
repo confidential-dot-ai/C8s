@@ -220,7 +220,8 @@ func TestWorkerExcusesNoAPIPod(t *testing.T) {
 			p := newTestPlugin(cfg)
 			p.policy = newPolicyStore(base, localClock())
 
-			pod, ctr := sandboxedPod(), sandboxedContainer()
+			pod := sandboxedPod()
+			ctr := sandboxedContainer()
 			ctr.Mounts = slices.DeleteFunc(ctr.Mounts, func(m *api.Mount) bool { return m.Type == "bind" })
 			pod.Namespace = tt.namespace
 			pod.Annotations = map[string]string{}

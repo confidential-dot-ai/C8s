@@ -1244,7 +1244,8 @@ func (r *memRegister) Extension() ([]byte, error) {
 // router's non-root cds-attest, also after a failed extend rewrote it 0600.
 func TestPolicyMeasurerMeasures(t *testing.T) {
 	anchor := []byte("operator key")
-	origKey, origOpen := readOperatorKey, openPolicyJournal
+	origKey := readOperatorKey
+	origOpen := openPolicyJournal
 	t.Cleanup(func() { readOperatorKey, openPolicyJournal = origKey, origOpen })
 	readOperatorKey = func() ([]byte, error) { return anchor, nil }
 
@@ -1299,7 +1300,8 @@ func TestPolicyMeasurerMeasures(t *testing.T) {
 // one it already measured.
 func TestPolicyMeasurerStopsAtTheCap(t *testing.T) {
 	anchor := []byte("operator key")
-	origKey, origOpen := readOperatorKey, openPolicyJournal
+	origKey := readOperatorKey
+	origOpen := openPolicyJournal
 	t.Cleanup(func() { readOperatorKey, openPolicyJournal = origKey, origOpen })
 	readOperatorKey = func() ([]byte, error) { return anchor, nil }
 	reg := &memRegister{val: runtimemeasure.Seed(anchor)}
@@ -1441,7 +1443,8 @@ func TestPullLoopLogsMeasureFailureOnce(t *testing.T) {
 // journal again and measures.
 func TestPolicyMeasurerRetriesOpen(t *testing.T) {
 	anchor := []byte("operator key")
-	origKey, origOpen := readOperatorKey, openPolicyJournal
+	origKey := readOperatorKey
+	origOpen := openPolicyJournal
 	t.Cleanup(func() { readOperatorKey, openPolicyJournal = origKey, origOpen })
 	readOperatorKey = func() ([]byte, error) { return anchor, nil }
 	reg := &memRegister{val: runtimemeasure.Seed(anchor)}
@@ -1474,7 +1477,8 @@ func TestPolicyMeasurerRetriesOpen(t *testing.T) {
 // the hook extends nothing and reopens it on the next call.
 func TestPolicyMeasurerRetriesUnreadableRegister(t *testing.T) {
 	anchor := []byte("operator key")
-	origKey, origOpen := readOperatorKey, openPolicyJournal
+	origKey := readOperatorKey
+	origOpen := openPolicyJournal
 	t.Cleanup(func() { readOperatorKey, openPolicyJournal = origKey, origOpen })
 	readOperatorKey = func() ([]byte, error) { return anchor, nil }
 	reg := &memRegister{val: runtimemeasure.Seed(anchor), readFail: errors.New("register unreadable")}
@@ -1505,7 +1509,8 @@ func TestPolicyMeasurerRetriesUnreadableRegister(t *testing.T) {
 
 // A platform without a runtime register is a refusal that names the cause.
 func TestPolicyMeasurerNoRegister(t *testing.T) {
-	origKey, origOpen := readOperatorKey, openPolicyJournal
+	origKey := readOperatorKey
+	origOpen := openPolicyJournal
 	t.Cleanup(func() { readOperatorKey, openPolicyJournal = origKey, origOpen })
 	readOperatorKey = func() ([]byte, error) { return []byte("operator key"), nil }
 	openPolicyJournal = func(runtimeDir string, _ teetypes.PlatformType, anchor []byte) (*runtimemeasure.Journal, error) {
@@ -1562,7 +1567,8 @@ func TestPullLoopLogsMeasureFailureAfterRefusal(t *testing.T) {
 // A register that diverged from the journal refuses every policy for good.
 func TestPolicyMeasurerRefusesOnDivergedRegister(t *testing.T) {
 	anchor := []byte("operator key")
-	origKey, origOpen := readOperatorKey, openPolicyJournal
+	origKey := readOperatorKey
+	origOpen := openPolicyJournal
 	t.Cleanup(func() { readOperatorKey, openPolicyJournal = origKey, origOpen })
 	readOperatorKey = func() ([]byte, error) { return anchor, nil }
 	reg := &memRegister{val: runtimemeasure.Seed([]byte("another key"))}
