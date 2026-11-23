@@ -239,7 +239,7 @@ const (
 	// the node's measured, read-only dm-verity root.
 	ProvenanceNodeRoot = "node-root"
 	// ProvenanceFSVerity is mount evidence for a file whose kernel-enforced
-	// fs-verity digest the node staged and measured.
+	// fs-verity digest the node measured through the container's root.
 	ProvenanceFSVerity = "fs-verity"
 )
 

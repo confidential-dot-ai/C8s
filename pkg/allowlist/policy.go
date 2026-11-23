@@ -11,8 +11,9 @@ import (
 // enforcer with no policy yet can query it without a guard.
 type Index struct {
 	byDigest map[string][]Container
-	// fsVerity is true when some entry has an fsVerityFile mount rule.
-	fsVerity bool
+	// fsVerityFiles are the source and destination pairs that some entry's
+	// fsVerityFile rule names.
+	fsVerityFiles map[[2]string]bool
 	// published are the entries that declare host ports, which belong to the
 	// whole entry rather than to a digest.
 	published []hostPortGrant
@@ -20,11 +21,13 @@ type Index struct {
 
 // BuildIndex projects an Allowlist into an admission index.
 func (a *Allowlist) BuildIndex() *Index {
-	idx := &Index{byDigest: map[string][]Container{}}
+	idx := &Index{byDigest: map[string][]Container{}, fsVerityFiles: map[[2]string]bool{}}
 	for _, w := range a.Workloads {
 		for _, c := range w.containers() {
 			idx.byDigest[c.Digest.String()] = append(idx.byDigest[c.Digest.String()], c)
-			idx.fsVerity = idx.fsVerity || len(fsVerityMountRules(c)) > 0
+			for _, rule := range fsVerityMountRules(c) {
+				idx.fsVerityFiles[[2]string{rule.Source, rule.Destination}] = true
+			}
 		}
 		if len(w.HostPorts) > 0 {
 			idx.published = append(idx.published, hostPortGrant{ports: w.HostPorts, containers: w.containers()})
@@ -287,7 +290,7 @@ func (c Container) mismatch(r RunningContainer, final bool) []string {
 	if !final {
 		return fields
 	}
-	if !c.Mounts.admits(r.Mounts) || c.executableShadowed(r) {
+	if !c.Mounts.admitsLaunch(r) || c.executableShadowed(r) {
 		fields = append(fields, "mounts")
 	}
 	if !newEnvConstraint(&c.Env).admits(r) {
@@ -428,14 +431,20 @@ func (i *Index) NodeRootBinds(digest string, mounts []ObservedMount) []ObservedM
 }
 
 // HasFSVerityMountRules reports whether any entry has an fsVerityFile mount
-// rule, so an enforcer can skip resolving an image digest for staging.
+// rule.
 func (i *Index) HasFSVerityMountRules() bool {
-	return i != nil && i.fsVerity
+	return i != nil && len(i.fsVerityFiles) > 0
+}
+
+// DeclaresFSVerityFile reports whether an fsVerityFile rule of some entry, for
+// any image, binds source at destination: the binds an enforcer measures,
+// before it resolves an image digest.
+func (i *Index) DeclaresFSVerityFile(source, destination string) bool {
+	return i != nil && i.fsVerityFiles[[2]string{source, destination}]
 }
 
 // FSVerityMountRules returns the fsVerityFile mount rules of every entry for
-// digest. They are staging candidates, not an admission decision: the enforcer
-// still matches the finalized container against the whole policy.
+// digest.
 func (i *Index) FSVerityMountRules(digest string) []MountRule {
 	if i == nil {
 		return nil

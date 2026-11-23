@@ -16,6 +16,20 @@ type RunningContainer struct {
 	// that the final OCI spec contained no bind mounts.
 	Mounts []ObservedMount
 	Env    *EnvObservation
+	// verityDeferred is set by DeferVerity only. It is not evidence: it has
+	// no serialized form, and Workload.Diff clears it.
+	verityDeferred bool
+}
+
+// DeferVerity returns r for the node's create-time validation, where the
+// container has no root yet to measure: an fsVerityFile rule then admits a
+// read-only host bind of its source that carries no provenance, and the
+// node's start check decides the digest. Index matching honours it; workload
+// matching (MatchWorkload, Workload.Diff), which issuance and secret release
+// use, never does.
+func (r RunningContainer) DeferVerity() RunningContainer {
+	r.verityDeferred = true
+	return r
 }
 
 // ObservedMount is a bind mount classified by the node. Source is diagnostic
@@ -32,8 +46,8 @@ type ObservedMount struct {
 	ReadOnly         bool         `json:"readOnly,omitempty"`
 	// Provenance is evidence supplied by the trusted node, never a declaration.
 	Provenance string `json:"provenance,omitempty"`
-	// VerityDigest is the fs-verity digest of the staged inode; it is set only
-	// with ProvenanceFSVerity.
+	// VerityDigest is the fs-verity digest the node measured for the file the
+	// container received; it is set only with ProvenanceFSVerity.
 	VerityDigest string `json:"verityDigest,omitempty"`
 }
 
@@ -112,6 +126,10 @@ func (d EntryDiff) Describes() bool { return len(d.Foreign) == 0 && len(d.Missin
 // Diff().Describes(), so a diagnostic built on this cannot disagree with what
 // Trust Authority actually did.
 func (w Workload) Diff(running []RunningContainer) EntryDiff {
+	running = slices.Clone(running)
+	for i := range running {
+		running[i].verityDeferred = false
+	}
 	declared := make([]Container, 0, len(w.Containers)+len(w.InitContainers))
 	declared = append(declared, w.Containers...)
 	declared = append(declared, w.InitContainers...)
@@ -211,6 +229,13 @@ func (p MountPolicy) pinned() bool {
 // admits checks classified final mount evidence. Platform mounts are the
 // baseline. Exact means equality with the non-platform rules.
 func (p MountPolicy) admits(mounts []ObservedMount) bool {
+	return p.admitsLaunch(RunningContainer{Mounts: mounts})
+}
+
+// admitsLaunch is admits over r.Mounts, deferring fs-verity digests as r asks
+// (RunningContainer.DeferVerity).
+func (p MountPolicy) admitsLaunch(r RunningContainer) bool {
+	mounts := r.Mounts
 	if p.Policy == PolicyAny {
 		return true
 	}
@@ -230,7 +255,7 @@ func (p MountPolicy) admits(mounts []ObservedMount) bool {
 		if mount.Class == MountPlatform {
 			continue
 		}
-		if seen[mount.Destination] || !p.admitsMount(mount) {
+		if seen[mount.Destination] || !p.admitsMount(mount, r.verityDeferred) {
 			return false
 		}
 		seen[mount.Destination] = true
@@ -238,12 +263,15 @@ func (p MountPolicy) admits(mounts []ObservedMount) bool {
 	return len(seen) == len(p.Rules)
 }
 
-func (p MountPolicy) admitsMount(mount ObservedMount) bool {
+func (p MountPolicy) admitsMount(mount ObservedMount, verityDeferred bool) bool {
 	i := slices.IndexFunc(p.Rules, func(rule MountRule) bool {
 		return rule.Destination == mount.Destination && rule.observedClass() == mount.Class
 	})
 	if i < 0 {
 		return false
+	}
+	if verityDeferred && p.Rules[i].Kind == MountFSVerityFile {
+		return (fsVerityFileRule{hostRule{p.Rules[i]}}).admitsUnmeasured(mount)
 	}
 	behavior := p.Rules[i].behavior()
 	return behavior != nil && behavior.admits(mount)

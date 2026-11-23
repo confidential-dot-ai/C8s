@@ -170,6 +170,13 @@ func (r fsVerityFileRule) admits(m ObservedMount) bool {
 	return m.Provenance == ProvenanceFSVerity && m.VerityDigest == r.VerityDigest && r.hostRule.admits(m)
 }
 
+// admitsUnmeasured judges m on its source and read-only mode alone, for a
+// launch whose digest is decided later (RunningContainer.DeferVerity). Other
+// provenance, such as a node-root file's, still never matches.
+func (r fsVerityFileRule) admitsUnmeasured(m ObservedMount) bool {
+	return m.Provenance == "" && m.VerityDigest == "" && r.hostRule.admits(m)
+}
+
 // grantPinned is true when read-only: the verityDigest pins the bytes the
 // kernel serves, and read-only removes the write channel.
 func (r fsVerityFileRule) grantPinned() bool {

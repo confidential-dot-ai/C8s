@@ -62,7 +62,7 @@ func (m mountConstraint) normalize() (string, error) {
 	return "mounts", normalizeMounts(m.policy)
 }
 func (m mountConstraint) admits(r RunningContainer) bool {
-	return m.policy.admits(r.Mounts)
+	return m.policy.admitsLaunch(r)
 }
 
 // Deny and exact retain verified platform mounts (/etc/hosts, /etc/resolv.conf,

@@ -280,7 +280,7 @@ func TestGrantsHostBind(t *testing.T) {
 	hash := strings.Repeat("b", 64)
 	fsVerityRule := nodeRootRule
 	fsVerityRule.Kind, fsVerityRule.VerityDigest = MountFSVerityFile, hash
-	staged := func(m *ObservedMount) { m.Provenance, m.VerityDigest = ProvenanceFSVerity, hash }
+	measured := func(m *ObservedMount) { m.Provenance, m.VerityDigest = ProvenanceFSVerity, hash }
 	verified := ObservedMount{Destination: source, Class: MountHost, Storage: MountUnknown, HostSourceDigest: sourceDigest, ReadOnly: true, Provenance: ProvenanceNodeRoot}
 	for _, tc := range []struct {
 		name   string
@@ -302,10 +302,10 @@ func TestGrantsHostBind(t *testing.T) {
 			nil,
 			false,
 		},
-		{"exact fsVerityFile rule", index(declare(ownCommand, exact(fsVerityRule), pinnedEnv)), staged, true},
-		{"fsVerityFile rule, other digest", index(declare(ownCommand, exact(fsVerityRule), pinnedEnv)), func(m *ObservedMount) { staged(m); m.VerityDigest = strings.Repeat("a", 64) }, false},
+		{"exact fsVerityFile rule", index(declare(ownCommand, exact(fsVerityRule), pinnedEnv)), measured, true},
+		{"fsVerityFile rule, other digest", index(declare(ownCommand, exact(fsVerityRule), pinnedEnv)), func(m *ObservedMount) { measured(m); m.VerityDigest = strings.Repeat("a", 64) }, false},
 		{"fsVerityFile rule, node-root evidence", index(declare(ownCommand, exact(fsVerityRule), pinnedEnv)), nil, false},
-		{"nodeRootFile rule, fs-verity evidence", index(declare(ownCommand, exact(nodeRootRule), pinnedEnv)), staged, false},
+		{"nodeRootFile rule, fs-verity evidence", index(declare(ownCommand, exact(nodeRootRule), pinnedEnv)), measured, false},
 		{"no allowlist", nil, nil, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -368,8 +368,17 @@ func TestIndexFSVerityMountRules(t *testing.T) {
 	digest := mustDigest(t, "sha256:"+strings.Repeat("a", 64))
 	al := &Allowlist{Workloads: map[string]Workload{"w": {Containers: []Container{{Digest: digest, Mounts: MountPolicy{Policy: PolicyExact, Rules: []MountRule{pinned, plain}}}}}}}
 	idx := al.BuildIndex()
-	if !idx.HasFSVerityMountRules() {
-		t.Fatal("HasFSVerityMountRules() = false, want true")
+	for _, tc := range []struct {
+		source, destination string
+		want                bool
+	}{
+		{pinned.Source, pinned.Destination, true},
+		{pinned.Source, plain.Destination, false},
+		{plain.Source, plain.Destination, false},
+	} {
+		if got := idx.DeclaresFSVerityFile(tc.source, tc.destination); got != tc.want {
+			t.Errorf("DeclaresFSVerityFile(%s, %s) = %t, want %t", tc.source, tc.destination, got, tc.want)
+		}
 	}
 	if got := idx.FSVerityMountRules(digest.String()); len(got) != 1 || got[0] != pinned {
 		t.Fatalf("FSVerityMountRules() = %+v, want [%+v]", got, pinned)
@@ -378,8 +387,83 @@ func TestIndexFSVerityMountRules(t *testing.T) {
 		t.Fatalf("FSVerityMountRules(other image) = %+v, want none", got)
 	}
 	var none *Index
-	if none.HasFSVerityMountRules() || none.FSVerityMountRules(digest.String()) != nil {
+	if none.DeclaresFSVerityFile(pinned.Source, pinned.Destination) || none.FSVerityMountRules(digest.String()) != nil {
 		t.Fatal("nil index reported fs-verity rules")
+	}
+}
+
+// A deferred digest is a matching phase of the node's create-time validation,
+// never evidence: nothing serializes it and workload matching ignores it.
+func TestDeferVerity(t *testing.T) {
+	const source, destination = "/opt/tools/tool", "/usr/bin/tool"
+	hash := strings.Repeat("b", 64)
+	sourceDigest, err := HostSourceDigest(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unproven := ObservedMount{Destination: destination, Class: MountHost, HostSourceDigest: sourceDigest, ReadOnly: true}
+	fsVerity := MountRule{Destination: destination, Kind: MountFSVerityFile, Source: source, ReadOnly: true, VerityDigest: hash}
+	nodeRoot := MountRule{Destination: destination, Kind: MountNodeRootFile, Source: source, ReadOnly: true}
+	allowlistFor := func(rule MountRule) *Allowlist {
+		al := &Allowlist{Schema: Schema, Workloads: map[string]Workload{"w": {Containers: []Container{{
+			Digest:  dig(t, dApp),
+			Command: ArgvPolicy{Policy: PolicyAny},
+			Args:    ArgvPolicy{Policy: PolicyAny},
+			Mounts:  MountPolicy{Policy: PolicyExact, Rules: []MountRule{rule}},
+		}}}}}
+		if err := al.Normalize(); err != nil {
+			t.Fatal(err)
+		}
+		return al
+	}
+	for _, tc := range []struct {
+		name     string
+		rule     MountRule
+		mutate   func(*ObservedMount)
+		deferred bool
+		want     bool
+	}{
+		{"measured digest", fsVerity, func(m *ObservedMount) { m.Provenance, m.VerityDigest = ProvenanceFSVerity, hash }, false, true},
+		{"no evidence", fsVerity, nil, false, false},
+		{"deferred, no evidence", fsVerity, nil, true, true},
+		{"deferred, writable bind", fsVerity, func(m *ObservedMount) { m.ReadOnly = false }, true, false},
+		{"deferred, other source", fsVerity, func(m *ObservedMount) { m.HostSourceDigest = "other" }, true, false},
+		{"deferred, node-root evidence", fsVerity, func(m *ObservedMount) { m.Provenance = ProvenanceNodeRoot }, true, false},
+		{"deferred, other measured digest", fsVerity, func(m *ObservedMount) { m.Provenance, m.VerityDigest = ProvenanceFSVerity, strings.Repeat("a", 64) }, true, false},
+		{"deferred, nodeRootFile rule", nodeRoot, nil, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := unproven
+			if tc.mutate != nil {
+				tc.mutate(&m)
+			}
+			r := RunningContainer{Digest: dApp, Argv: []string{"/bin/app"}, Mounts: []ObservedMount{m}}
+			if tc.deferred {
+				r = r.DeferVerity()
+			}
+			if got := allowlistFor(tc.rule).BuildIndex().AdmitsContainer(r); got != tc.want {
+				t.Fatalf("AdmitsContainer(%+v) = %t, want %t", m, got, tc.want)
+			}
+		})
+	}
+
+	al := allowlistFor(fsVerity)
+	deferred := RunningContainer{Digest: dApp, Argv: []string{"/bin/app"}, Mounts: []ObservedMount{unproven}}.DeferVerity()
+	if got := al.BuildIndex().Mismatch(deferred, true); len(got) != 0 {
+		t.Fatalf("Mismatch(deferred) = %v, want none", got)
+	}
+	if name, _, err := al.MatchWorkload([]RunningContainer{deferred}); !errors.Is(err, ErrNoMatch) {
+		t.Fatalf("MatchWorkload(deferred) = %q, %v, want %v", name, err, ErrNoMatch)
+	}
+	if diff := al.Workloads["w"].Diff([]RunningContainer{deferred}); diff.Describes() {
+		t.Fatal("Diff(deferred) describes the launch, want no match")
+	}
+	plain, err := json.Marshal(RunningContainer{Digest: dApp, Mounts: []ObservedMount{unproven}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if encoded, err := json.Marshal(RunningContainer{Digest: dApp, Mounts: []ObservedMount{unproven}}.DeferVerity()); err != nil || string(encoded) != string(plain) {
+		t.Fatalf("json.Marshal(deferred) = %s, %v, want %s", encoded, err, plain)
 	}
 }
 
