@@ -144,6 +144,32 @@ func TestSetsAdmitting(t *testing.T) {
 	}
 }
 
+// A component container names the set that declares it after that set has
+// ended, so a node can tell it from a container no set ever declared.
+func TestSetsDeclaringIgnoresRetirement(t *testing.T) {
+	al := mustParse(t, componentsDoc(
+		retiringSet("0.42.1", "c8s-mesh-endpoint", digestA),
+		`"0.43.0":{"entries":{"c8s-mesh-endpoint":`+componentEntry(digestB, RoleMesh)+`}}`,
+	))
+	ended := al.SetsDeclaring(meshLaunch(digestA))
+	if len(ended) != 1 || ended[0].Version != "0.42.1" {
+		t.Fatalf("SetsDeclaring = %v, want the retired set", ended)
+	}
+	if al.SetsAdmitting(meshLaunch(digestA), deadline) != nil {
+		t.Fatal("the retired set admits its entry past the deadline")
+	}
+	current := al.SetsDeclaring(meshLaunch(digestB))
+	if len(current) != 1 || current[0].Version != "0.43.0" {
+		t.Fatalf("SetsDeclaring = %v, want the current set", current)
+	}
+	if got := al.SetsDeclaring(meshLaunch(digestC)); got != nil {
+		t.Fatalf("a launch no set declares is declared by %v", got)
+	}
+	if got := al.SetsDeclaring(meshLaunch("not-a-digest")); got != nil {
+		t.Fatalf("an unreadable digest is declared by %v", got)
+	}
+}
+
 // The index over the sets in force binds their roles, and loses them with the
 // set.
 func TestBuildIndexAtCoversTheSetsInForce(t *testing.T) {

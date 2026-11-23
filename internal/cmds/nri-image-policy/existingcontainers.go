@@ -6,7 +6,6 @@ import (
 
 	"github.com/containerd/nri/pkg/api"
 
-	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
@@ -141,7 +140,6 @@ func (p *plugin) recoverExisting(ctx context.Context, pods []*api.PodSandbox, ct
 		// state and the running set together decide it.
 		if ctr.GetState() != api.ContainerState_CONTAINER_CREATED || running {
 			workloads[pod.GetId()] = append(workloads[pod.GetId()], p.sandboxContainer(launch))
-			p.rejoinComponentSet(pod.GetId(), launch, role)
 		}
 	}
 	for _, pod := range pods {
@@ -296,7 +294,8 @@ func (p *plugin) KillRevoked(ctx context.Context) {
 		// The same image admission matched: on a Pod guest the staged pin,
 		// not an alias the CRI annotation may have moved since.
 		imageRef, err := p.cvm().imageOf(c.pod, c.ctr)
-		verdict, denial := verdictDeny, ""
+		verdict := verdictDeny
+		denial := ""
 		if err == nil {
 			verdict, denial = p.checkContainer(ctx, cfg, c.pod, c.ctr, imageRef)
 		} else {
@@ -339,24 +338,31 @@ func (p *plugin) endPodsOnEndedSets(ctx context.Context) {
 }
 
 // endedPod is a pod whose component sets have ended, with the containers of it
-// that still run.
+// that still run and why they may not.
 type endedPod struct {
-	pod  *api.PodSandbox
-	ctrs []*api.Container
-	sets []allowlist.SetRef
+	pod   *api.PodSandbox
+	ctrs  []*api.Container
+	cause error
 }
 
-// podsOffTheirSets are the pods running here whose membership holds no
-// component set the applied document still has in force.
+// podsOffTheirSets are the pods running here whose recorded containers the
+// component sets in force no longer admit.
 func (p *plugin) podsOffTheirSets() []endedPod {
-	inForce := p.policy.setsInForce()
 	var ended []endedPod
 	for sandboxID, running := range p.runningPods() {
-		sets, off := p.componentSets.offSetsInForce(sandboxID, inForce)
-		if !off {
+		recorded, err := p.recordedContainers(sandboxID)
+		if err != nil {
+			// A sandbox the inventory cannot answer for holds no identity;
+			// KillRevoked judges its containers one by one.
+			p.logger.Warn("cannot read a running pod's containers to judge its component sets",
+				"sandbox", sandboxID, "error", err)
 			continue
 		}
-		pod := endedPod{pod: running[0].pod, sets: sets}
+		cause := p.componentSetRefusal(recorded)
+		if cause == nil {
+			continue
+		}
+		pod := endedPod{pod: running[0].pod, cause: cause}
 		for _, c := range running {
 			pod.ctrs = append(pod.ctrs, c.ctr)
 		}
@@ -378,19 +384,18 @@ func (p *plugin) runningPods() map[string][]runningContainer {
 // leaves the running set once its kill is delivered; one whose kill failed
 // stays on it, for the next recheck.
 func (p *plugin) endPod(ctx context.Context, ended endedPod) {
-	cause := errors.New("this pod runs on no component set in force")
 	p.logger.Warn("ending a pod whose component sets have ended",
 		"namespace", ended.pod.GetNamespace(),
 		"pod", ended.pod.GetName(),
 		"containers", len(ended.ctrs),
-		"sets", setVersions(ended.sets))
-	p.cvm().endIdentityForRefusal(ended.pod, cause)
+		"error", ended.cause)
+	p.cvm().endIdentityForRefusal(ended.pod, ended.cause)
 	for _, ctr := range ended.ctrs {
-		if p.killRunning(ctx, ended.pod, ctr, cause.Error()) {
+		if p.killRunning(ctx, ended.pod, ctr, ended.cause.Error()) {
 			p.running.remove(ctr.GetId())
 		}
 	}
-	p.deleteEndedPod(ended.pod, cause)
+	p.deleteEndedPod(ended.pod, ended.cause)
 }
 
 // The delete runs off the pull loop, which keeps polling while the API server

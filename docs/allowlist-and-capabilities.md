@@ -389,20 +389,22 @@ interval of its deadline, under the same bytes at the same version — and
 rechecks its running containers as an applied document does.
 
 A pod is on the component sets that admit every C8s component container it has
-run — the containers a role is bound to — each judged as it was admitted. One
-set must admit them all: a component container the pod's sets do not admit is
-refused, and the refusal names the sets, so a pod cannot mix two releases'
-components. A pod whose component containers the measured base alone admits is
-on no set, and is judged as a pod without them.
+run — the containers a role is bound to. A node computes that from the
+containers it has recorded for the sandbox, each judged at the CDS's time, and
+keeps nothing beside those records, so a restart recovers the membership with
+the containers. One set must admit them all: a component container the pod's
+sets do not admit is refused, and the refusal names the sets, so a pod cannot
+mix two releases' components. A pod whose component containers the measured
+base alone admits is on no set, and is judged as a pod without them.
 
 Once no set a pod is on is in force — its deadline has passed, or a write
-removed it — the node ends the whole pod: it stops every container of it, the
-tenant's own included, and asks the API server to delete the Pod, so its
-controller replaces it on a set in force. A main container left without its
-sidecars would be cut off from the mesh and would still hold its secrets. A pod
-a newer set also admits runs on when the older set ends. A node rebuilds this
-membership from the containers it recovers after a restart, and an ended pod
-stays ended: admission refuses a container no set in force admits.
+removed it — the node refuses the pod every further start, the tenant's own
+containers included, and ends the whole pod: it stops every container of it and
+asks the API server to delete the Pod, so its controller replaces it on a set
+in force. A main container left without its sidecars would be cut off from the
+mesh and would still hold its secrets, and a dropped delete would otherwise
+leave the kubelet starting it again. A pod a newer set also admits runs on when
+the older set ends.
 
 ## Bootstrap
 

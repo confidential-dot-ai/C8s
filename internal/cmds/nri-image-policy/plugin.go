@@ -120,10 +120,6 @@ type plugin struct {
 	// running is what KillRevoked rechecks after each applied allowlist.
 	running runningContainers
 
-	// componentSets is each pod's component-set membership, which ends the
-	// pod once no set it is on is in force (componentsets.go).
-	componentSets podComponentSets
-
 	// Deferred check: pods/containers observed during Synchronize before
 	// the plugin is ready, replayed once the cache has a allowlist.
 	deferredMu   sync.Mutex
@@ -331,7 +327,6 @@ func (p *plugin) RemovePodSandbox(ctx context.Context, pod *api.PodSandbox) erro
 		p.inventory.removeSandbox(pod.GetId())
 	}
 	p.mesh.forget(pod.GetId())
-	p.componentSets.forget(pod.GetId())
 	return nil
 }
 

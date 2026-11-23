@@ -39,7 +39,9 @@ func runningCtr(pod *api.PodSandbox, name, digest string) *api.Container {
 func TestKillRevokedKillsOnlyWhatTheAppliedAllowlistDenies(t *testing.T) {
 	p, store, killed := revocationPlugin(enforcing)
 	pod := makePod("default", "pod")
-	revoked, kept, base := runningCtr(pod, "revoked", pushDigestA), runningCtr(pod, "kept", pushDigestB), runningCtr(pod, "base", pushDigestC)
+	revoked := runningCtr(pod, "revoked", pushDigestA)
+	kept := runningCtr(pod, "kept", pushDigestB)
+	base := runningCtr(pod, "base", pushDigestC)
 	for _, ctr := range []*api.Container{revoked, kept, base} {
 		p.running.add(pod, ctr)
 	}
@@ -115,7 +117,8 @@ func TestStartAdmittedJustBeforeARevocationIsKilled(t *testing.T) {
 	p.mountStorage = fixedStorage(allowlist.MountMemory)
 	// Measurement follows admission and precedes the start return, so it is
 	// the deterministic pause point even when digest resolution is cached.
-	admitted, release := make(chan struct{}), make(chan struct{})
+	admitted := make(chan struct{})
+	release := make(chan struct{})
 	p.measurer = pausingMeasurer{admitted: admitted, release: release}
 	started := make(chan error)
 	go func() { started <- p.StartContainer(context.Background(), pod, ctr) }()
@@ -432,5 +435,67 @@ func TestRemovingASetEndsItsPodsOnTheNextPull(t *testing.T) {
 	}
 	if ended := <-deleted; ended != pod {
 		t.Fatalf("deleted %s/%s, want the pod on the removed set", ended.GetNamespace(), ended.GetName())
+	}
+}
+
+// Between a set's deadline and the tick that ends it the applied index still
+// admits the set's containers: a component container starting then is refused,
+// because no set in force admits it and the measured base binds it no role.
+func TestAComponentContainerStartingPastTheDeadlineIsRefused(t *testing.T) {
+	taTime := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	deadline := taTime.Add(time.Hour)
+	retiring := &allowlist.Retirement{Deadline: allowlist.Deadline{Time: deadline}}
+	document := componentDocument(t, retiring, componentContainer(t, pushDigestA, allowlist.RoleMesh, meshArgv))
+	p, _ := componentSetPlugin(t, func() time.Time { return taTime }, componentBase(), document)
+
+	inForce := componentPod("inference-0")
+	startAll(t, p, inForce, componentCtr(inForce, "c8s-mesh", pushDigestA, meshArgv))
+
+	taTime = deadline
+	ended := componentPod("inference-1")
+	err := p.StartContainer(t.Context(), ended, componentCtr(ended, "c8s-mesh", pushDigestA, meshArgv))
+	if err == nil {
+		t.Fatal("the index the passed deadline left stale admitted a component container")
+	}
+	if !strings.Contains(err.Error(), "no component set in force") {
+		t.Fatalf("refusal %q does not say that no component set in force admits it", err)
+	}
+}
+
+// A pod off its sets is refused every start, including the tenant container
+// the document still admits: the control plane may drop the Pod delete, and
+// the kubelet then starts that container again. A pod on a set in force runs on.
+func TestEveryStartInAPodOffItsSetsIsRefused(t *testing.T) {
+	taTime := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	deadline := taTime.Add(time.Hour)
+	retiring := &allowlist.Retirement{Deadline: allowlist.Deadline{Time: deadline}}
+	document := componentSetsDocument(t, map[string]string{pushDigestB: "app"}, map[string]allowlist.ComponentSet{
+		"0.43.0": componentSet(retiring, componentContainer(t, pushDigestA, allowlist.RoleMesh, meshArgv)),
+		"0.44.0": componentSet(nil, componentContainer(t, pushDigestC, allowlist.RoleMesh, meshArgv)),
+	})
+	p, killed := componentSetPlugin(t, func() time.Time { return taTime }, componentBase(), document)
+
+	ended := componentPod("inference-0")
+	app := runningCtr(ended, "app", pushDigestB)
+	startAll(t, p, ended, componentCtr(ended, "c8s-mesh", pushDigestA, meshArgv), app)
+	current := componentPod("inference-1")
+	startAll(t, p, current, componentCtr(current, "c8s-mesh", pushDigestC, meshArgv))
+
+	taTime = deadline
+	if !p.policy.rebuildEndedSets() {
+		t.Fatal("the retiring set stayed in force past its deadline")
+	}
+	p.recheckRunning(t.Context())
+	if len(*killed) != 2 {
+		t.Fatalf("killed %v, want both containers of the pod off its sets", *killed)
+	}
+
+	restarted := runningCtr(ended, "app", pushDigestB)
+	restarted.Id = app.GetId() + "-restarted"
+	if err := p.StartContainer(t.Context(), ended, restarted); err == nil {
+		t.Fatal("the tenant container of a pod off its sets started again")
+	}
+	if err := p.StartContainer(t.Context(), current, runningCtr(current, "app", pushDigestB)); err != nil {
+		t.Fatalf("a pod on a set in force was refused a start: %v", err)
 	}
 }

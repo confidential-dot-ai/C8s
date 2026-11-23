@@ -3,91 +3,85 @@ package nriimagepolicy
 import (
 	"context"
 	"fmt"
-	"slices"
 	"strings"
-	"sync"
+	"time"
 
 	"github.com/containerd/nri/pkg/api"
 
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
-// podComponentSets is each sandbox's component-set membership: the component
-// sets admitting every c8s component container the pod has run, each judged
-// when that container was admitted. A restart rebuilds it from the recovered
-// containers (recoverExisting); nothing is persisted.
-type podComponentSets struct {
-	mu        sync.Mutex
-	bySandbox map[string]podSets
+// A pod's component sets are computed where they are needed, from the
+// containers the inventory records for its sandbox: the sets in force that
+// admit every container a c8s component role was bound to
+// (workloadclaims.ComponentSets). Nothing is kept beside the inventory, so a
+// restart recovers the membership with the containers.
+
+// admitOnComponentSets refuses a start the component sets in force forbid: the
+// pod's recorded component containers and the starting one must run on one set
+// in force.
+func (p *plugin) admitOnComponentSets(ctx context.Context, pod *api.PodSandbox, ctr *api.Container, imageRef string) error {
+	recorded, err := p.recordedContainers(pod.GetId())
+	if err != nil {
+		// A sandbox that admitted a container with no resolved digest holds no
+		// identity; the starting container is judged on its own.
+		p.logger.Warn("judging a start against the component sets in force on its own launch",
+			"namespace", pod.GetNamespace(), "pod", pod.GetName(), "container", ctr.GetName(), "error", err)
+		recorded = nil
+	}
+	launch := p.observedLaunch(ctx, p.observeContainer(pod, ctr, imageRef))
+	return p.componentSetRefusal(append(recorded, p.sandboxContainer(launch)))
 }
 
-// podSets is one pod's membership. onASet marks a pod a component set admitted
-// a container of, so sets empty beside it means the pod's component containers
-// share no set. A pod whose component containers the base alone admits is on
-// no set and judged without sets.
-type podSets struct {
-	sets   []allowlist.SetRef
-	onASet bool
-}
-
-// joinSet puts a component container admitted by the sets in admitting on its
-// pod's membership, which becomes the sets admitting every component container
-// of the pod. It reports the refusal when that leaves the pod no set: the
-// control plane cannot mix two releases' components in one pod.
-func (s *podComponentSets) joinSet(sandboxID string, admitting []allowlist.SetRef) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.bySandbox == nil {
-		s.bySandbox = map[string]podSets{}
+// componentSetRefusal is why the containers of one sandbox may not run on the
+// component sets the applied document holds in force at the CDS's time, and
+// nil when they may. A pod off its sets is refused every start, its tenant
+// containers included, and the component containers of one pod must share a
+// set, so no pod mixes two releases' components — a set's beside the measured
+// base's included.
+func (p *plugin) componentSetRefusal(containers []workloadclaims.SandboxContainer) error {
+	snap := p.policy.current()
+	if snap == nil || snap.pulled == nil {
+		return nil
 	}
-	held, onRecord := s.bySandbox[sandboxID]
-	joined := podSets{onASet: held.onASet || len(admitting) > 0}
-	switch {
-	case !onRecord:
-		joined.sets = slices.Clone(admitting)
-	case held.onASet && len(admitting) > 0:
-		joined.sets = sharedSets(held.sets, admitting)
+	now := p.policy.clock.now()
+	for _, c := range containers {
+		if p.offItsSets(snap.pulled, c, now) {
+			return fmt.Errorf("no component set in force admits this pod's component container %s", c.Digest)
+		}
 	}
-	s.bySandbox[sandboxID] = joined
-	if joined.onASet && len(joined.sets) == 0 {
-		return fmt.Errorf("a container admitted by %s cannot join a pod whose component containers run on %s: one component set must admit every component container of a pod",
-			setVersions(admitting), setVersions(held.sets))
+	if _, err := workloadclaims.ComponentSets(snap.pulled, containers, now); err != nil {
+		return fmt.Errorf("%w: %s", err, setsPerComponent(snap.pulled, containers, now))
 	}
 	return nil
 }
 
-// offSetsInForce reports a pod none of whose sets is among the ones in force,
-// with the sets it is on. A pod on no set is never off its sets.
-func (s *podComponentSets) offSetsInForce(sandboxID string, inForce []allowlist.SetRef) ([]allowlist.SetRef, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	held := s.bySandbox[sandboxID]
-	if !held.onASet {
-		return nil, false
+// offItsSets reports whether this container of the pod is a c8s component no
+// component set in force admits: it was admitted under a role, or the served
+// document declares its launch in a set of its own. The second case carries a
+// restart, whose recovered containers take their role from the current index
+// and so hold none. A role the measured base binds needs no set: an older
+// worker image's components are judged as before.
+func (p *plugin) offItsSets(served *allowlist.Allowlist, c workloadclaims.SandboxContainer, now time.Time) bool {
+	launch := c.Running()
+	if p.policy.baseBindsRole(launch) || len(served.SetsAdmitting(launch, now)) > 0 {
+		return false
 	}
-	for _, ref := range held.sets {
-		if slices.Contains(inForce, ref) {
-			return nil, false
-		}
-	}
-	return held.sets, true
+	return c.Role != "" || len(served.SetsDeclaring(launch)) > 0
 }
 
-func (s *podComponentSets) forget(sandboxID string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.bySandbox, sandboxID)
-}
-
-// sharedSets are the sets both memberships name, by version and digest.
-func sharedSets(held, admitting []allowlist.SetRef) []allowlist.SetRef {
-	var shared []allowlist.SetRef
-	for _, ref := range held {
-		if slices.Contains(admitting, ref) {
-			shared = append(shared, ref)
+// setsPerComponent names the sets in force admitting each of the pod's
+// component containers, so a refusal says which releases it would mix.
+func setsPerComponent(served *allowlist.Allowlist, containers []workloadclaims.SandboxContainer, now time.Time) string {
+	var named []string
+	for _, c := range containers {
+		if c.Role == "" {
+			continue
 		}
+		named = append(named, c.Role+" on "+setVersions(served.SetsAdmitting(c.Running(), now)))
 	}
-	return shared
+	return strings.Join(named, ", ")
 }
 
 // setVersions names sets for a refusal or a log line.
@@ -100,29 +94,4 @@ func setVersions(refs []allowlist.SetRef) string {
 		versions[i] = ref.Version
 	}
 	return "component set " + strings.Join(versions, ", ")
-}
-
-// joinComponentSet puts an admitted component container — one the base or a
-// set in force binds a role to — on its pod's component sets, and refuses a
-// launch that would leave the pod's component containers on no shared set.
-func (p *plugin) joinComponentSet(ctx context.Context, pod *api.PodSandbox, ctr *api.Container, imageRef string) error {
-	launch := p.observedLaunch(ctx, p.observeContainer(pod, ctr, imageRef))
-	if p.roleOf(launch) == "" {
-		return nil
-	}
-	return p.componentSets.joinSet(pod.GetId(), p.policy.setsAdmitting(launch))
-}
-
-// rejoinComponentSet puts a recovered component container back on its pod's
-// sets, so a restart recomputes membership from what runs. A pod the recovered
-// containers leave on no set in force ends (endPodsOnEndedSets), and its
-// containers are refused at admission whatever happens here.
-func (p *plugin) rejoinComponentSet(sandboxID string, launch allowlist.RunningContainer, role string) {
-	if role == "" {
-		return
-	}
-	if err := p.componentSets.joinSet(sandboxID, p.policy.setsAdmitting(launch)); err != nil {
-		p.logger.Warn("a recovered pod's component containers share no component set",
-			"sandbox", sandboxID, "error", err)
-	}
 }

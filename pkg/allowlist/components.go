@@ -147,6 +147,27 @@ func (a *Allowlist) SetsAdmitting(r RunningContainer, now time.Time) []SetRef {
 	return admitting
 }
 
+// SetsDeclaring are the sets with an entry that admits the running container
+// whole, whatever their retirement: a component container names the set it
+// belongs to after that set has ended.
+func (a *Allowlist) SetsDeclaring(r RunningContainer) []SetRef {
+	digest, err := types.ParseDigest(r.Digest)
+	if err != nil {
+		return nil
+	}
+	r.Digest = digest.String()
+	var declaring []SetRef
+	for version, set := range a.Components {
+		if set.admits(r) {
+			declaring = append(declaring, SetRef{Version: version, Digest: set.DigestString()})
+		}
+	}
+	slices.SortFunc(declaring, func(x, y SetRef) int {
+		return CompareSetVersions(x.Version, y.Version)
+	})
+	return declaring
+}
+
 // EarliestDeadline is the first deadline among the retiring sets still in
 // force at now, where there is one.
 func (a *Allowlist) EarliestDeadline(now time.Time) (time.Time, bool) {
