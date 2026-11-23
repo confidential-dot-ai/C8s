@@ -72,6 +72,7 @@ func nodeServicePluginWith(t *testing.T, document *allowlist.Allowlist) *plugin 
 	p, _ := newCachedPlugin(cfg, document)
 	p.SetReady()
 	p.mountStorage = fixedStorage(allowlist.MountMemory)
+	p.inventory = newAdmissionInventory(t.TempDir())
 	p.nodeServiceGrants = newNodeServiceGrantRecords(filepath.Join(privateDir(t), "grants"))
 	return p
 }
@@ -80,17 +81,31 @@ func nodeServicePluginWith(t *testing.T, document *allowlist.Allowlist) *plugin 
 // namespaces, which the host-privilege rules refuse every other pod.
 func nodeServicePod(sandboxID, podUID string) *api.PodSandbox {
 	pod := sandboxedPod()
-	pod.Id, pod.Uid, pod.Name = sandboxID, podUID, nodeServiceEntry
+	pod.Id = sandboxID
+	pod.Uid = podUID
+	pod.Name = nodeServiceEntry
 	pod.Linux.Namespaces = slices.DeleteFunc(pod.Linux.Namespaces, func(ns *api.LinuxNamespace) bool {
 		return ns.Type == "network" || ns.Type == "uts" || ns.Type == "pid"
 	})
 	return pod
 }
 
+// nodeServiceSharedPod is a pod of ordinary shape, so a container beside the
+// node service is admitted on its own.
+func nodeServiceSharedPod(sandboxID, podUID string) *api.PodSandbox {
+	pod := sandboxedPod()
+	pod.Id = sandboxID
+	pod.Uid = podUID
+	pod.Name = nodeServiceEntry
+	return pod
+}
+
 // nodeServiceLaunch is the container the entry declares, in pod.
 func nodeServiceLaunch(pod *api.PodSandbox) *api.Container {
 	ctr := sandboxedContainer()
-	ctr.Id, ctr.Name, ctr.PodSandboxId = nodeServiceContainerID, nodeServiceEntry, pod.GetId()
+	ctr.Id = nodeServiceContainerID
+	ctr.Name = nodeServiceEntry
+	ctr.PodSandboxId = pod.GetId()
 	ctr.Args = []string{"/usr/local/bin/c8s", "volumed", "--state-dir", "/var/lib/c8s"}
 	ctr.Env = []string{"C8S_LOG=info"}
 	ctr.Annotations = map[string]string{annotationImageName: "registry/repo@" + pushDigestB}
@@ -103,10 +118,16 @@ func nodeServiceLaunch(pod *api.PodSandbox) *api.Container {
 }
 
 // admitNodeService runs a container of a node service's pod through the final
-// check, where the host-privilege rules apply.
+// check, where the host-privilege rules apply, and records what it admits as
+// admission does.
 func admitNodeService(t *testing.T, p *plugin, pod *api.PodSandbox, ctr *api.Container) (imageVerdict, string) {
 	t.Helper()
-	return p.checkContainerPhase(t.Context(), p.cfg, pod, ctr, ctr.GetAnnotations()[annotationImageName], launchFinal)
+	imageRef := ctr.GetAnnotations()[annotationImageName]
+	verdict, reason := p.checkContainerPhase(t.Context(), p.cfg, pod, ctr, imageRef, launchFinal)
+	if verdict != verdictDeny {
+		p.recordForInventory(t.Context(), pod, ctr, imageRef)
+	}
+	return verdict, reason
 }
 
 // The entry pins the whole launch, so a pod that changes one argument, one
@@ -146,34 +167,75 @@ func TestNodeServiceNeedsTheLaunchItsEntryPins(t *testing.T) {
 	}
 }
 
-// A node service runs alone in its pod, whichever of the two containers the
-// control plane starts first.
+// A node service runs alone in its pod, whichever container the control plane
+// starts first and whatever it calls it: the rules read the launches admission
+// cleared in the sandbox, not the names the control plane chose.
 func TestNodeServiceRunsAloneInItsPod(t *testing.T) {
-	sidecar := func(pod *api.PodSandbox) *api.Container {
-		ctr := nodeServiceLaunch(pod)
-		ctr.Id, ctr.Name = "2"+nodeServiceContainerID[1:], "sidecar"
-		ctr.Annotations = map[string]string{annotationImageName: "registry/repo@" + pushDigestA}
-		return ctr
+	sidecar := func(name string) func(*api.PodSandbox) *api.Container {
+		return func(pod *api.PodSandbox) *api.Container {
+			ctr := nodeServiceLaunch(pod)
+			ctr.Id = "2" + nodeServiceContainerID[1:]
+			ctr.Name = name
+			ctr.Annotations = map[string]string{annotationImageName: "registry/repo@" + pushDigestA}
+			return ctr
+		}
 	}
 	for _, tc := range []struct {
 		name  string
 		first func(*api.PodSandbox) *api.Container
 		next  func(*api.PodSandbox) *api.Container
 	}{
-		{name: "the node service first", first: nodeServiceLaunch, next: sidecar},
-		{name: "the other container first", first: sidecar, next: nodeServiceLaunch},
+		{name: "the node service first", first: nodeServiceLaunch, next: sidecar("sidecar")},
+		{name: "the other container first", first: sidecar("sidecar"), next: nodeServiceLaunch},
+		{name: "the node service before a container of its own name", first: nodeServiceLaunch, next: sidecar(nodeServiceEntry)},
+		{name: "a container of the node service's own name first", first: sidecar(nodeServiceEntry), next: nodeServiceLaunch},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p := nodeServicePlugin(t, nil)
-			pod := nodeServicePod(testSandboxID, testPodUID)
-			if _, reason := admitNodeService(t, p, pod, tc.first(pod)); strings.Contains(reason, "alone in its pod") {
-				t.Fatalf("the pod's first container was refused: %q", reason)
+			pod := nodeServiceSharedPod(testSandboxID, testPodUID)
+			if verdict, reason := admitNodeService(t, p, pod, tc.first(pod)); verdict == verdictDeny {
+				t.Fatalf("the pod's first container was refused: %d %q", verdict, reason)
 			}
 			verdict, reason := admitNodeService(t, p, pod, tc.next(pod))
 			if verdict != verdictDeny || !strings.Contains(reason, "alone in its pod") {
 				t.Fatalf("verdict = %d %q, want a refusal naming the rule", verdict, reason)
 			}
 		})
+	}
+}
+
+// A second container of the node service's own launch is refused too: it has a
+// container ID of its own, which the launch the sandbox recorded does not show.
+func TestASecondContainerOfTheNodeServiceIsRefused(t *testing.T) {
+	p := nodeServicePlugin(t, nil)
+	pod := nodeServicePod(testSandboxID, testPodUID)
+	if verdict, reason := admitNodeService(t, p, pod, nodeServiceLaunch(pod)); verdict != verdictAllow {
+		t.Fatalf("the node's one node service was refused: %d %q", verdict, reason)
+	}
+	twin := nodeServiceLaunch(pod)
+	twin.Id = "2" + nodeServiceContainerID[1:]
+	verdict, reason := admitNodeService(t, p, pod, twin)
+	if verdict != verdictDeny || !strings.Contains(reason, "alone in its pod") {
+		t.Fatalf("verdict = %d %q, want a refusal naming the rule", verdict, reason)
+	}
+}
+
+// The kubelet starts the entry's container again under a new ID once the
+// first is gone, in the pod that holds the node service.
+func TestTheNodeServiceStartsAgainUnderANewContainerID(t *testing.T) {
+	p := nodeServicePlugin(t, nil)
+	pod := nodeServicePod(testSandboxID, testPodUID)
+	first := nodeServiceLaunch(pod)
+	if verdict, reason := admitNodeService(t, p, pod, first); verdict != verdictAllow {
+		t.Fatalf("the node's one node service was refused: %d %q", verdict, reason)
+	}
+	if err := p.RemoveContainer(t.Context(), pod, first); err != nil {
+		t.Fatal(err)
+	}
+	restarted := nodeServiceLaunch(pod)
+	restarted.Id = "2" + nodeServiceContainerID[1:]
+	if verdict, reason := admitNodeService(t, p, pod, restarted); verdict != verdictAllow {
+		t.Fatalf("the restarted node service was refused: %d %q", verdict, reason)
 	}
 }
 
@@ -244,29 +306,26 @@ func TestNodeServiceEndsWithItsSet(t *testing.T) {
 	}
 }
 
-// A restarted enforcer counts the node services containerd is already running,
-// and counts no container that has stopped.
-func TestRecountNodeServicesAfterARestart(t *testing.T) {
-	for _, tc := range []struct {
-		name  string
-		state api.ContainerState
-		want  imageVerdict
-	}{
-		{name: "running", state: api.ContainerState_CONTAINER_RUNNING, want: verdictDeny},
-		{name: "stopped", state: api.ContainerState_CONTAINER_STOPPED, want: verdictAllow},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			p := nodeServicePlugin(t, nil)
-			running := nodeServicePod(testSandboxID, testPodUID)
-			existing := nodeServiceLaunch(running)
-			existing.State = tc.state
-			p.recountNodeServices(t.Context(), []*api.PodSandbox{running}, []*api.Container{existing})
-			replacement := nodeServicePod("def456sandbox", "66666666-7777-8888-9999-000000000000")
-			verdict, reason := admitNodeService(t, p, replacement, nodeServiceLaunch(replacement))
-			if verdict != tc.want {
-				t.Fatalf("verdict = %d %q, want %d", verdict, reason, tc.want)
-			}
-		})
+// A restarted enforcer reads the node services it recorded for the containers
+// containerd is already running, so the node's one pod keeps them, and a pod
+// that is gone holds nothing.
+func TestARestartKeepsTheNodeServiceWithItsPod(t *testing.T) {
+	p := nodeServicePlugin(t, nil)
+	running := nodeServicePod(testSandboxID, testPodUID)
+	existing := nodeServiceLaunch(running)
+	if _, err := p.Synchronize(t.Context(), []*api.PodSandbox{running}, []*api.Container{existing}); err != nil {
+		t.Fatal(err)
+	}
+	replacement := nodeServicePod("def456sandbox", "66666666-7777-8888-9999-000000000000")
+	verdict, reason := admitNodeService(t, p, replacement, nodeServiceLaunch(replacement))
+	if verdict != verdictDeny || !strings.Contains(reason, "one pod on the node") {
+		t.Fatalf("verdict = %d %q, want a refusal naming the rule", verdict, reason)
+	}
+	if err := p.RemovePodSandbox(t.Context(), running); err != nil {
+		t.Fatal(err)
+	}
+	if verdict, reason := admitNodeService(t, p, replacement, nodeServiceLaunch(replacement)); verdict != verdictAllow {
+		t.Fatalf("the replacement was refused once the first pod was gone: %d %q", verdict, reason)
 	}
 }
 

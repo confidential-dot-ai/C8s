@@ -3,11 +3,9 @@ package nriimagepolicy
 import (
 	"context"
 	"fmt"
-	"sync"
-
-	"github.com/containerd/nri/pkg/api"
 
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 // A node service is a pod of one container serving the whole node: a component
@@ -23,95 +21,78 @@ import (
 // nodeServiceRule names the rule in a refusal's log and audit record.
 const nodeServiceRule = "node_service"
 
-// nodeServices is the node's node-service count: which sandbox holds each
-// entry, and the container names admission cleared in each sandbox. It is
-// memory alone; a restart rebuilds it from the containers the runtime reports
-// (recountNodeServices).
-type nodeServices struct {
-	mu        sync.Mutex
-	bySandbox map[string]*nodeServiceSandbox
-	byEntry   map[string]string
+// nodeServiceOf is the node-service entry a component set in force binds to
+// this container's launch, and the refusal when the pod it runs in is not that
+// node service's pod.
+//
+// The digest is resolved only where the applied document declares a node
+// service, so an ordinary container costs no containerd round-trip.
+func (p *plugin) nodeServiceOf(ctx context.Context, snap *policySnapshot, observed observedContainer) (allowlist.NodeServiceRef, error) {
+	if !p.policy.declaresNodeService(snap) {
+		return allowlist.NodeServiceRef{}, nil
+	}
+	service, _ := p.policy.nodeServiceOf(snap, p.observedLaunch(ctx, observed))
+	if err := p.nodeServiceRefusal(snap, observed, service); err != nil {
+		return allowlist.NodeServiceRef{}, err
+	}
+	return service, nil
 }
 
-// nodeServiceSandbox is one sandbox's part of the count: the container names
-// admission cleared in it, and the node-service entry one of them holds.
-type nodeServiceSandbox struct {
-	containers map[string]bool
-	entry      string
-	container  string
-}
-
-// hold records a container admission cleared in a sandbox and, where a
-// node-service entry admits its launch, the node's one instance of that entry.
-// It reports why that sandbox may not run the container.
-func (n *nodeServices) hold(sandboxID, container, entry string) error {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	if n.bySandbox == nil {
-		n.bySandbox, n.byEntry = map[string]*nodeServiceSandbox{}, map[string]string{}
-	}
-	sandbox := n.bySandbox[sandboxID]
-	if sandbox == nil {
-		sandbox = &nodeServiceSandbox{containers: map[string]bool{}}
-		n.bySandbox[sandboxID] = sandbox
-	}
-	if entry == "" {
-		if sandbox.entry != "" && sandbox.container != container {
-			return fmt.Errorf("a node service runs alone in its pod: the pod runs node service %q", sandbox.entry)
+// nodeServiceRefusal is why this container may not run in this sandbox, nil
+// when it may. The rules read the containers the inventory records for each
+// sandbox, so judging one container again — at its start, at a recheck or
+// after this enforcer restarted — judges it the same, and a kubelet that
+// starts the entry's container again takes its predecessor's place.
+func (p *plugin) nodeServiceRefusal(snap *policySnapshot, observed observedContainer, service allowlist.NodeServiceRef) error {
+	sandboxID := observed.pod.GetId()
+	recorded := p.recordedBySandbox()
+	if service.Entry == "" {
+		if held := p.nodeServiceIn(snap, recorded[sandboxID]); held != "" {
+			return fmt.Errorf("a node service runs alone in its pod: the pod runs node service %q", held)
 		}
-		sandbox.containers[container] = true
 		return nil
 	}
-	if beside := sandbox.besides(container); beside != "" {
-		return fmt.Errorf("a node service runs alone in its pod: node service %q runs beside container %q", entry, beside)
+	for _, c := range recorded[sandboxID] {
+		if held, _ := p.policy.nodeServiceOf(snap, c.Running()); held.Entry != service.Entry {
+			return fmt.Errorf("a node service runs alone in its pod: node service %q runs beside the container admitted as %s", service.Entry, c.Digest)
+		}
 	}
-	if holder, held := n.byEntry[entry]; held && holder != sandboxID {
-		return fmt.Errorf("a node service runs in one pod on the node: node service %q runs in sandbox %s", entry, holder)
+	if holder := p.sandboxHolding(snap, recorded, sandboxID, service.Entry); holder != "" {
+		return fmt.Errorf("a node service runs in one pod on the node: node service %q runs in sandbox %s", service.Entry, holder)
 	}
-	sandbox.containers[container] = true
-	sandbox.entry, sandbox.container = entry, container
-	n.byEntry[entry] = sandboxID
+	// Two containers of one launch share a record, so the live containers tell
+	// a second copy of the node service from the container being judged.
+	if beside := p.liveContainerBeside(sandboxID, observed.ctr.GetId()); beside != "" {
+		return fmt.Errorf("a node service runs alone in its pod: node service %q runs beside container %q", service.Entry, beside)
+	}
 	return nil
 }
 
-func (s *nodeServiceSandbox) besides(container string) string {
-	for name := range s.containers {
-		if name != container {
-			return name
+// nodeServiceIn is the node-service entry one of these recorded containers was
+// admitted by, "" when none was.
+func (p *plugin) nodeServiceIn(snap *policySnapshot, containers []workloadclaims.SandboxContainer) string {
+	for _, c := range containers {
+		if service, held := p.policy.nodeServiceOf(snap, c.Running()); held {
+			return service.Entry
 		}
 	}
 	return ""
 }
 
-func (n *nodeServices) forget(sandboxID string) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	sandbox := n.bySandbox[sandboxID]
-	if sandbox == nil {
-		return
+// sandboxHolding is the sandbox other than this one whose recorded containers
+// hold entry, "" when none does.
+func (p *plugin) sandboxHolding(snap *policySnapshot, recorded map[string][]workloadclaims.SandboxContainer, sandboxID, entry string) string {
+	for id, containers := range recorded {
+		if id == sandboxID {
+			continue
+		}
+		for _, c := range containers {
+			if service, held := p.policy.nodeServiceOf(snap, c.Running()); held && service.Entry == entry {
+				return id
+			}
+		}
 	}
-	if sandbox.entry != "" && n.byEntry[sandbox.entry] == sandboxID {
-		delete(n.byEntry, sandbox.entry)
-	}
-	delete(n.bySandbox, sandboxID)
-}
-
-// nodeServiceOf is the node-service entry a component set in force binds to
-// this container's launch, and the refusal when the pod it runs in is not that
-// node service's pod. The container joins its sandbox's record here, so the
-// rules read what admission cleared.
-//
-// The digest is resolved only where the applied document declares a node
-// service, so an ordinary container costs no containerd round-trip.
-func (p *plugin) nodeServiceOf(ctx context.Context, snap *policySnapshot, observed observedContainer) (allowlist.NodeServiceRef, error) {
-	var service allowlist.NodeServiceRef
-	if p.policy.declaresNodeService(snap) {
-		service, _ = p.policy.nodeServiceOf(snap, p.observedLaunch(ctx, observed))
-	}
-	if err := p.nodeServices.hold(observed.pod.GetId(), observed.ctr.GetName(), service.Entry); err != nil {
-		return allowlist.NodeServiceRef{}, err
-	}
-	return service, nil
+	return ""
 }
 
 // noteNodeService records a node service's grant for the runtime wrapper's
@@ -135,21 +116,4 @@ func (p *plugin) noteNodeService(ctx context.Context, snap *policySnapshot, obse
 			"container", observed.ctr.GetId(), "error", err)
 	}
 	return nil
-}
-
-// recountNodeServices rebuilds the node-service count from the containers the
-// runtime reported at registration.
-func (p *plugin) recountNodeServices(ctx context.Context, pods []*api.PodSandbox, ctrs []*api.Container) {
-	podByID := podsByID(pods)
-	for _, ctr := range ctrs {
-		pod := podByID[ctr.GetPodSandboxId()]
-		if pod == nil || ctr.GetState() == api.ContainerState_CONTAINER_STOPPED {
-			continue
-		}
-		observed := p.observeContainer(pod, ctr, ctr.GetAnnotations()[annotationImageName])
-		if _, err := p.nodeServiceOf(ctx, p.policy.current(), observed); err != nil {
-			p.logger.Warn("a container running before this enforcer connected breaks a node-service rule; its next start is refused",
-				"namespace", pod.GetNamespace(), "pod", pod.GetName(), "container", ctr.GetName(), "error", err)
-		}
-	}
 }

@@ -121,7 +121,7 @@ func TestPodFloorAdmitsRoot(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			bundle := workloadBundle()
 			bundle.Process.User = specs.User{UID: 0, GID: tc.gid}
-			err := requireFloor(bundle, "ctr", nil, floor, "", "")
+			err := requireFloor(floorCreate{Spec: bundle, ContainerID: "ctr", Floor: floor})
 			switch {
 			case tc.wants == "" && err != nil:
 				t.Fatalf("the pod floor refused %s: %v", tc.name, err)
@@ -142,11 +142,11 @@ func TestPodFloorRefusesRuntimeHooks(t *testing.T) {
 	spec.Annotations[annotationContainerType] = containerTypeSandbox
 	spec.Annotations[annotationSandboxID] = "ctr"
 	spec.Hooks = &specs.Hooks{Poststop: []specs.Hook{{Path: "/unadmitted-hook"}}}
-	if err := requireFloor(spec, "ctr", nil, floor, "", ""); err == nil {
+	if err := requireFloor(floorCreate{Spec: spec, ContainerID: "ctr", Floor: floor}); err == nil {
 		t.Fatal("pod hook admitted")
 	}
 	spec.Hooks = &specs.Hooks{}
-	if err := requireFloor(spec, "ctr", nil, floor, "", ""); err != nil {
+	if err := requireFloor(floorCreate{Spec: spec, ContainerID: "ctr", Floor: floor}); err != nil {
 		t.Fatalf("empty hooks denied: %v", err)
 	}
 }
@@ -342,7 +342,7 @@ func TestFloorRefusals(t *testing.T) {
 			if tc.bundle != nil {
 				tc.bundle(bundle)
 			}
-			err := requireFloor(bundle, "ctr", nil, testFloor(), "", "")
+			err := requireFloor(floorCreate{Spec: bundle, ContainerID: "ctr", Floor: testFloor()})
 			switch {
 			case tc.wants == "" && err != nil:
 				t.Fatalf("the floor refused an ordinary container: %v", err)
@@ -370,27 +370,52 @@ func TestFloorHoldsCapabilitiesToTheGrant(t *testing.T) {
 	}
 	bundle := workloadBundle()
 	bundle.Process.Capabilities.Effective = append(bundle.Process.Capabilities.Effective, "CAP_SYS_ADMIN")
-	if err := requireFloor(bundle, granted, nil, testFloor(), dir, ""); err != nil {
+	if err := requireFloor(floorCreate{
+		Spec:        bundle,
+		ContainerID: granted,
+		Floor:       testFloor(),
+		CapGrantDir: dir,
+	}); err != nil {
 		t.Fatalf("a granted capability was refused: %v", err)
 	}
-	if err := requireFloor(bundle, other, nil, testFloor(), dir, ""); err == nil {
+	if err := requireFloor(floorCreate{
+		Spec:        bundle,
+		ContainerID: other,
+		Floor:       testFloor(),
+		CapGrantDir: dir,
+	}); err == nil {
 		t.Fatal("a container with no record of its own kept SYS_ADMIN")
 	}
 	bundle.Process.Capabilities.Bounding = append(bundle.Process.Capabilities.Bounding, "CAP_BPF")
-	err := requireFloor(bundle, granted, nil, testFloor(), dir, "")
+	err := requireFloor(floorCreate{
+		Spec:        bundle,
+		ContainerID: granted,
+		Floor:       testFloor(),
+		CapGrantDir: dir,
+	})
 	if err == nil || !strings.Contains(err.Error(), "capabilities BPF, SYS_ADMIN") {
 		t.Fatalf("capabilities no one declaration grants were admitted: %v", err)
 	}
 	bundle.Process.Capabilities.Bounding = bundleCapabilities(allowlist.DefaultCapabilities...)
 	bundle.Process.Capabilities.Effective = append(bundle.Process.Capabilities.Effective, "CAP_NET_ADMIN")
-	if err := requireFloor(bundle, granted, nil, testFloor(), dir, ""); err == nil {
+	if err := requireFloor(floorCreate{
+		Spec:        bundle,
+		ContainerID: granted,
+		Floor:       testFloor(),
+		CapGrantDir: dir,
+	}); err == nil {
 		t.Fatal("a record naming NET_ADMIN granted it")
 	}
 	bundle.Process.Capabilities.Effective = bundleCapabilities(append(allowlist.DefaultCapabilities, "SYS_ADMIN")...)
 	if err := os.Chmod(record, 0o666); err != nil {
 		t.Fatal(err)
 	}
-	if err := requireFloor(bundle, granted, nil, testFloor(), dir, ""); err == nil {
+	if err := requireFloor(floorCreate{
+		Spec:        bundle,
+		ContainerID: granted,
+		Floor:       testFloor(),
+		CapGrantDir: dir,
+	}); err == nil {
 		t.Fatal("a record anyone could write was read as admission's")
 	}
 }
@@ -406,7 +431,7 @@ func TestFloorExcusesAGrantedNodeService(t *testing.T) {
 	privileged.Process.User = specs.User{}
 	privileged.Linux.Namespaces = slices.DeleteFunc(privileged.Linux.Namespaces,
 		func(ns specs.LinuxNamespace) bool { return ns.Type == specs.PIDNamespace })
-	if err := requireFloor(privileged, granted, nil, testFloor(), "", ""); err == nil {
+	if err := requireFloor(floorCreate{Spec: privileged, ContainerID: granted, Floor: testFloor()}); err == nil {
 		t.Fatal("a container holding the node's pid namespace was admitted without a grant")
 	}
 	dir := t.TempDir()
@@ -414,16 +439,31 @@ func TestFloorExcusesAGrantedNodeService(t *testing.T) {
 	if err := os.WriteFile(record, []byte(`{"nodeService":[["volumed"]]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := requireFloor(privileged, granted, nil, testFloor(), "", dir); err != nil {
+	if err := requireFloor(floorCreate{
+		Spec:                privileged,
+		ContainerID:         granted,
+		Floor:               testFloor(),
+		NodeServiceGrantDir: dir,
+	}); err != nil {
 		t.Fatalf("the granted node service was refused: %v", err)
 	}
-	if err := requireFloor(privileged, other, nil, testFloor(), "", dir); err == nil {
+	if err := requireFloor(floorCreate{
+		Spec:                privileged,
+		ContainerID:         other,
+		Floor:               testFloor(),
+		NodeServiceGrantDir: dir,
+	}); err == nil {
 		t.Fatal("a container with no record of its own was excused")
 	}
 	if err := os.Chmod(record, 0o666); err != nil {
 		t.Fatal(err)
 	}
-	if err := requireFloor(privileged, granted, nil, testFloor(), "", dir); err == nil {
+	if err := requireFloor(floorCreate{
+		Spec:                privileged,
+		ContainerID:         granted,
+		Floor:               testFloor(),
+		NodeServiceGrantDir: dir,
+	}); err == nil {
 		t.Fatal("a record anyone could write excused the container")
 	}
 }
@@ -437,11 +477,11 @@ func TestFloorLeavesARoleNoCapabilities(t *testing.T) {
 			GID: uid,
 		}
 		bundle.Process.Capabilities = &specs.LinuxCapabilities{}
-		if err := requireFloor(bundle, "ctr", nil, testFloor(), "", ""); err != nil {
+		if err := requireFloor(floorCreate{Spec: bundle, ContainerID: "ctr", Floor: testFloor()}); err != nil {
 			t.Fatalf("the role at uid %d was refused with no capability: %v", uid, err)
 		}
 		bundle.Process.Capabilities.Effective = []string{"CAP_NET_BIND_SERVICE"}
-		if err := requireFloor(bundle, "ctr", nil, testFloor(), "", ""); err == nil {
+		if err := requireFloor(floorCreate{Spec: bundle, ContainerID: "ctr", Floor: testFloor()}); err == nil {
 			t.Fatalf("the role at uid %d kept a capability", uid)
 		}
 	}
@@ -456,7 +496,7 @@ func TestFloorLeavesExemptContainersUntouched(t *testing.T) {
 	cilium.Process.User = specs.User{}
 	cilium.Process.NoNewPrivileges = false
 	cilium.Process.Capabilities.Effective = append(cilium.Process.Capabilities.Effective, "CAP_NET_ADMIN", "CAP_SYS_ADMIN")
-	if err := requireFloor(cilium, "ctr", nil, testFloor(), "", ""); err != nil {
+	if err := requireFloor(floorCreate{Spec: cilium, ContainerID: "ctr", Floor: testFloor()}); err != nil {
 		t.Fatalf("an exempt namespace's container was refused: %v", err)
 	}
 
@@ -465,7 +505,7 @@ func TestFloorLeavesExemptContainersUntouched(t *testing.T) {
 	pause.Process.User = specs.User{}
 	pause.Process.NoNewPrivileges = false
 	pause.Process.Capabilities.Effective = append(pause.Process.Capabilities.Effective, "CAP_NET_RAW", "CAP_SETUID")
-	if err := requireFloor(pause, "sandbox-1", nil, testFloor(), "", ""); err != nil {
+	if err := requireFloor(floorCreate{Spec: pause, ContainerID: "sandbox-1", Floor: testFloor()}); err != nil {
 		t.Fatalf("the pod's own sandbox container was refused: %v", err)
 	}
 
@@ -476,20 +516,20 @@ func TestFloorLeavesExemptContainersUntouched(t *testing.T) {
 	static.Process.User = specs.User{}
 	static.Process.NoNewPrivileges = false
 	static.Linux.Resources.Devices = []specs.LinuxDeviceCgroup{{Allow: true, Access: "rwm"}}
-	if err := requireFloor(static, "ctr", nil, testFloor(), "", ""); err != nil {
+	if err := requireFloor(floorCreate{Spec: static, ContainerID: "ctr", Floor: testFloor()}); err != nil {
 		t.Fatalf("a static pod's container was refused: %v", err)
 	}
 	// A pod CVM's assigned pod is a static pod and the member the floor covers.
 	podFloor := testFloor()
 	podFloor.PodRole = true
-	if err := requireFloor(static, "ctr", nil, podFloor, "", ""); err == nil {
+	if err := requireFloor(floorCreate{Spec: static, ContainerID: "ctr", Floor: podFloor}); err == nil {
 		t.Fatal("a pod CVM's static pod container escaped the floor")
 	}
 	for _, source := range []string{"api", ""} {
 		apiPod := workloadBundle()
 		apiPod.Annotations["kubernetes.io/config.source"] = source
 		apiPod.Process.NoNewPrivileges = false
-		if err := requireFloor(apiPod, "ctr", nil, testFloor(), "", ""); err == nil {
+		if err := requireFloor(floorCreate{Spec: apiPod, ContainerID: "ctr", Floor: testFloor()}); err == nil {
 			t.Fatalf("a container of a pod from source %q escaped the floor", source)
 		}
 	}
@@ -498,7 +538,7 @@ func TestFloorLeavesExemptContainersUntouched(t *testing.T) {
 	unnamed := workloadBundle()
 	delete(unnamed.Annotations, annotationSandboxNamespace)
 	unnamed.Process.NoNewPrivileges = false
-	if err := requireFloor(unnamed, "ctr", nil, testFloor(), "", ""); err == nil {
+	if err := requireFloor(floorCreate{Spec: unnamed, ContainerID: "ctr", Floor: testFloor()}); err == nil {
 		t.Fatal("a container naming no namespace escaped the floor")
 	}
 }
@@ -537,12 +577,17 @@ func TestNoContainerIsCreatedAttachable(t *testing.T) {
 		t.Run(tc.name+" with a terminal", func(t *testing.T) {
 			bundle := tc.bundle()
 			bundle.Process.Terminal = true
-			if err := requireFloor(bundle, tc.containerID, nil, testFloor(), "", ""); err == nil {
+			if err := requireFloor(floorCreate{Spec: bundle, ContainerID: tc.containerID, Floor: testFloor()}); err == nil {
 				t.Fatalf("%s was created with a terminal", tc.name)
 			}
 		})
 		t.Run(tc.name+" carrying standard input", func(t *testing.T) {
-			if err := requireFloor(tc.bundle(), tc.containerID, pipeRead, testFloor(), "", ""); err == nil {
+			if err := requireFloor(floorCreate{
+				Spec:        tc.bundle(),
+				ContainerID: tc.containerID,
+				Stdin:       pipeRead,
+				Floor:       testFloor(),
+			}); err == nil {
 				t.Fatalf("%s was created with the container's standard input", tc.name)
 			}
 		})
@@ -739,7 +784,12 @@ func TestFloorRefusesACreateCarryingStdin(t *testing.T) {
 		pipeRead.Close()
 		pipeWrite.Close()
 	})
-	if err := requireFloor(workloadBundle(), "ctr", pipeRead, testFloor(), "", ""); err == nil {
+	if err := requireFloor(floorCreate{
+		Spec:        workloadBundle(),
+		ContainerID: "ctr",
+		Stdin:       pipeRead,
+		Floor:       testFloor(),
+	}); err == nil {
 		t.Fatal("a create carrying the container's standard input was admitted")
 	}
 
@@ -748,7 +798,12 @@ func TestFloorRefusesACreateCarryingStdin(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { null.Close() })
-	if err := requireFloor(workloadBundle(), "ctr", null, testFloor(), "", ""); err != nil {
+	if err := requireFloor(floorCreate{
+		Spec:        workloadBundle(),
+		ContainerID: "ctr",
+		Stdin:       null,
+		Floor:       testFloor(),
+	}); err != nil {
 		t.Fatalf("a create with the null device on its standard input was refused: %v", err)
 	}
 }
@@ -811,7 +866,7 @@ func TestFloorDeviceWildcardSemantics(t *testing.T) {
 							Minor:  minor,
 							Access: access,
 						})
-						err := requireFloor(bundle, "ctr", nil, testFloor(), "", "")
+						err := requireFloor(floorCreate{Spec: bundle, ContainerID: "ctr", Floor: testFloor()})
 						if deviceType == "" || deviceType == "a" {
 							if err == nil || !strings.Contains(err.Error(), "allows every device") {
 								t.Fatalf("requireFloor = %v, want every-device refusal", err)
@@ -884,7 +939,7 @@ func TestFloorRefusesAWorkingDirOnSuppliedContent(t *testing.T) {
 			if tc.mount.Destination != "" {
 				bundle.Mounts = append(bundle.Mounts, tc.mount)
 			}
-			err := requireFloor(bundle, "ctr", nil, testFloor(), "", "")
+			err := requireFloor(floorCreate{Spec: bundle, ContainerID: "ctr", Floor: testFloor()})
 			if tc.wants == "" {
 				if err != nil {
 					t.Fatalf("refused: %v", err)

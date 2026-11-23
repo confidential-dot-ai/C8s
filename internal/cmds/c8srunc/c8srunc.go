@@ -194,7 +194,14 @@ func (w Wrapper) checkFloor(args []string) error {
 	if err != nil {
 		return err
 	}
-	return requireFloor(spec, containerID, w.Stdin, w.Floor, w.CapGrantDir, w.NodeServiceGrantDir)
+	return requireFloor(floorCreate{
+		Spec:                spec,
+		ContainerID:         containerID,
+		Stdin:               w.Stdin,
+		Floor:               w.Floor,
+		CapGrantDir:         w.CapGrantDir,
+		NodeServiceGrantDir: w.NodeServiceGrantDir,
+	})
 }
 
 // deny reports msg on stderr and, when the caller asked runc to log to a file,

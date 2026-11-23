@@ -236,9 +236,9 @@ environment and mounts — and the enforcer grants the exemption only while that
 container is the only one of its pod and no other pod on the node runs that
 entry's container; a launch the entry admits in any other pod is refused,
 naming the rule. Host ports are no part of it: they are declared or refused as
-for every other pod. The enforcer counts the node's instances in memory and
-rebuilds the count from the containers the runtime reports after a restart, and
-it records each grant under `/run/nri-image-policy-node-services` for the
+for every other pod. Both rules read the containers the enforcer has recorded
+for each sandbox, so a restart recovers them with the containers it records
+again, and it records each grant under `/run/nri-image-policy-node-services` for the
 runtime wrapper's floor, removed with the container
 ([node-exec-mode.md](node-exec-mode.md#the-privilege-floor)). The operator key
 therefore runs code as root on a worker; that is the cost of fixing a node

@@ -117,7 +117,8 @@ func (p *plugin) unpinnedStaticPod(ctx context.Context, cfg *config, observed ob
 // rejects a creation: a create notification can time out and a closed plugin
 // lets the create proceed, while a validator's refusal is the answer.
 func (p *plugin) gateMesh(ctx context.Context, req *api.ValidateContainerAdjustmentRequest, observed observedContainer) error {
-	pod, ctr := observed.pod, observed.ctr
+	pod := observed.pod
+	ctr := observed.ctr
 	if !p.mesh.hosts(pod) {
 		return nil
 	}

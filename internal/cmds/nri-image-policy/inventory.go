@@ -359,6 +359,34 @@ func (b *admissionInventory) podSnapshot(sandboxID string) ([]workloadclaims.San
 	return containers, b.revision, err
 }
 
+// containersBySandbox is every live sandbox's recorded containers.
+func (b *admissionInventory) containersBySandbox() map[string][]workloadclaims.SandboxContainer {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	bySandbox := make(map[string][]workloadclaims.SandboxContainer, len(b.sandboxes))
+	for sandboxID := range b.sandboxes {
+		_, containers, err := b.admitted[sandboxID].Snapshot(nil)
+		if err != nil {
+			continue
+		}
+		bySandbox[sandboxID] = containers
+	}
+	return bySandbox
+}
+
+// liveContainerBeside names a container the sandbox runs other than
+// containerID, "" when it runs no other.
+func (b *admissionInventory) liveContainerBeside(sandboxID, containerID string) string {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	for id, rec := range b.containers {
+		if rec.sandboxID == sandboxID && id != containerID {
+			return rec.name
+		}
+	}
+	return ""
+}
+
 // recordedContainers are the containers the inventory holds for a sandbox:
 // every container admission let run there, each with the digest, argv, env,
 // mounts and role it was admitted under. It is empty where the
@@ -369,4 +397,22 @@ func (p *plugin) recordedContainers(sandboxID string) ([]workloadclaims.SandboxC
 	}
 	_, recorded, _, err := p.inventory.DigestsForSandbox(sandboxID)
 	return recorded, err
+}
+
+// recordedBySandbox is the recorded containers of every sandbox the inventory
+// knows, by sandbox ID. A sandbox whose answer is closed is left out.
+func (p *plugin) recordedBySandbox() map[string][]workloadclaims.SandboxContainer {
+	if p.inventory == nil {
+		return nil
+	}
+	return p.inventory.containersBySandbox()
+}
+
+// liveContainerBeside names a live container of the sandbox other than
+// containerID, "" when it has none.
+func (p *plugin) liveContainerBeside(sandboxID, containerID string) string {
+	if p.inventory == nil {
+		return ""
+	}
+	return p.inventory.liveContainerBeside(sandboxID, containerID)
 }

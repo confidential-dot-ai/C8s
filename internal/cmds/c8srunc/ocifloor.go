@@ -37,28 +37,34 @@ const (
 // with privileges the pod's protection cannot survive. Attachability is
 // refused for every container the wrapper creates, whether or not the floor
 // covers it.
-func requireFloor(
-	spec *specs.Spec,
-	containerID string,
-	stdin *os.File,
-	floor nriimagepolicy.MeshFloor,
-	capGrantDir string,
-	nodeServiceGrantDir string,
-) error {
-	if floor.PodRole && spec.Hooks != nil {
+// floorCreate is the create the floor judges: the bundle containerd
+// persisted, the container it starts, the standard input runc was handed, the
+// measured floor and the directories admission records its grants in.
+type floorCreate struct {
+	Spec                *specs.Spec
+	ContainerID         string
+	Stdin               *os.File
+	Floor               nriimagepolicy.MeshFloor
+	CapGrantDir         string
+	NodeServiceGrantDir string
+}
+
+func requireFloor(create floorCreate) error {
+	spec := create.Spec
+	if create.Floor.PodRole && spec.Hooks != nil {
 		// Include legacy hook stages: none may execute before Pod admission.
 		hooks, err := json.Marshal(spec.Hooks)
 		if err != nil || string(hooks) != "{}" {
 			return errors.New("pod runtime hooks are not permitted")
 		}
 	}
-	if err := requireNotAttachable(spec, stdin); err != nil {
+	if err := requireNotAttachable(spec, create.Stdin); err != nil {
 		return fmt.Errorf("no container on this node may be attachable: %w", err)
 	}
-	if !floorApplies(spec, containerID, floor) {
+	if !floorApplies(spec, create.ContainerID, create.Floor) {
 		return nil
 	}
-	grant, err := nriimagepolicy.ReadNodeServiceGrant(nodeServiceGrantDir, containerID)
+	grant, err := nriimagepolicy.ReadNodeServiceGrant(create.NodeServiceGrantDir, create.ContainerID)
 	if err != nil {
 		return fmt.Errorf("the container's node-service grant is not one admission wrote: %w", err)
 	}
@@ -67,7 +73,7 @@ func requireFloor(
 	if grant.Granted() {
 		return nil
 	}
-	if err := floorChecks(spec, floor, capGrantDir, containerID); err != nil {
+	if err := floorChecks(spec, create.Floor, create.CapGrantDir, create.ContainerID); err != nil {
 		return fmt.Errorf("the measured privilege floor refuses this container: %w", err)
 	}
 	return nil

@@ -69,8 +69,6 @@ type plugin struct {
 	// nodeServiceGrants records the containers admission admitted as a node
 	// service, for the runtime wrapper (nodeservicegrants.go).
 	nodeServiceGrants *grantRecords
-	// nodeServices is this node's node-service count (nodeservice.go).
-	nodeServices nodeServices
 
 	// mesh is the mesh gate (meshgate.go), under the mesh policy the measured
 	// config carries.
@@ -333,7 +331,6 @@ func (p *plugin) RemovePodSandbox(ctx context.Context, pod *api.PodSandbox) erro
 	if p.inventory != nil {
 		p.inventory.removeSandbox(pod.GetId())
 	}
-	p.nodeServices.forget(pod.GetId())
 	p.mesh.forget(pod.GetId())
 	return nil
 }
