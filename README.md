@@ -404,7 +404,8 @@ make install
 # Run tests
 make test
 
-# Mutation-test the changes vs origin/main (BASE=<ref> to override)
+# Mutation-test the changes vs origin/main (BASE=<ref> to override); lists
+# each changed operator the tests of its package do not notice being replaced
 make mutation-check
 
 # Lint (format check + vet)

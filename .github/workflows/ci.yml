@@ -333,7 +333,9 @@ jobs:
   mutation:
     name: Mutation (advisory)
     runs-on: ubuntu-latest
-    needs: changes
+    # After the tests: gremlins runs the whole suite before it mutates, so on a
+    # failing suite it reports nothing the test job has not.
+    needs: [changes, test]
     # Diff-based vs the base branch, reported on the PR; the queue gains nothing from it.
     if: needs.changes.outputs.relevant == 'true' && github.event_name == 'pull_request'
     timeout-minutes: 20
@@ -372,18 +374,21 @@ jobs:
             ./scripts/mutation-check.sh summary
           } > mutation-summary.md
           cat mutation-summary.md >> "$GITHUB_STEP_SUMMARY"
-          # A pass: the run finished and no mutant lived or went uncovered.
-          survivors=$(jq '[.files[]?.mutations[]? | select(.status == "LIVED" or .status == "NOT COVERED")] | length' mutation.json 2>/dev/null || echo error)
-          pass=false
-          if [ "$status" -eq 0 ] && [ "$survivors" = 0 ]; then pass=true; fi
-          echo "pass=$pass" >> "$GITHUB_OUTPUT"
+          # Only a finished run is reported on the PR, and only its lived
+          # mutants: a NOT COVERED one was never run against the tests.
+          lived=$(jq '[.files[]?.mutations[]? | select(.status == "LIVED")] | length' mutation.json 2>/dev/null || echo error)
+          report=none
+          if [ "$status" -eq 0 ] && [ "$lived" = 0 ]; then report=clean; fi
+          if [ "$status" -eq 0 ] && [ "$lived" -gt 0 ] 2>/dev/null; then report=lived; fi
+          echo "report=$report" >> "$GITHUB_OUTPUT"
 
       # Fork PRs get a read-only token; their results stay in the step summary.
       - name: Comment mutation results on the PR
-        if: github.event.pull_request.head.repo.full_name == github.repository
+        # An unfinished run says nothing, and leaves an earlier report as it is.
+        if: github.event.pull_request.head.repo.full_name == github.repository && steps.mutation.outputs.report != 'none'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
-          PASS: ${{ steps.mutation.outputs.pass }}
+          REPORT: ${{ steps.mutation.outputs.report }}
         with:
           script: |
             const fs = require('fs');
@@ -393,11 +398,16 @@ jobs:
               ...context.repo, issue_number: pr.number, per_page: 100,
             });
             const prev = comments.find(c => c.body && c.body.includes(marker));
-            // A clean run only refreshes an earlier report, so a fixed PR does not keep stale survivors.
-            if (process.env.PASS === 'true' && !prev) return;
+            // A clean run only refreshes an earlier report, so a fixed PR does not keep stale mutants.
+            if (process.env.REPORT === 'clean' && !prev) return;
+            // A comment holds 65536 characters; cut a longer report at a line and say so.
+            let summary = fs.readFileSync('mutation-summary.md', 'utf8');
+            if (summary.length > 60000) {
+              summary = summary.slice(0, summary.lastIndexOf('\n', 60000)) + '\n\nCut short here; the run summary has the full list.';
+            }
             const body = [
               marker,
-              fs.readFileSync('mutation-summary.md', 'utf8').slice(0, 60000),
+              summary,
               '',
               `<sub>On ${pr.head.sha.slice(0, 7)}, [run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})</sub>`,
             ].join('\n');
