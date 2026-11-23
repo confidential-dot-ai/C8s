@@ -69,7 +69,8 @@ func running(t *testing.T, seed *pkgallowlist.Allowlist, pod corev1.PodSpec) []w
 		case strings.Contains(c.Image, "/volumed@"):
 			imageEnv = envs["volumed.image"]
 		}
-		command, args := c.Command, c.Args
+		command := c.Command
+		args := c.Args
 		switch {
 		case len(command) > 0:
 		case digest == c8sDigest:
@@ -82,7 +83,8 @@ func running(t *testing.T, seed *pkgallowlist.Allowlist, pod corev1.PodSpec) []w
 		default:
 			command = seededEntrypoint(seed, digest)
 		}
-		c.Command, c.Args = command, args
+		c.Command = command
+		c.Args = args
 		out = append(out, workloadclaims.SandboxContainer{
 			Digest: digest,
 			Argv:   runtimeArgv(c, nil),

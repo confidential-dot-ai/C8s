@@ -28,27 +28,26 @@ func ComponentSetFile(templateData, seed []byte, version string) ([]byte, error)
 	if err != nil {
 		return nil, err
 	}
-	parsed, err := allowlist.ParseJSON(seed)
+	published, err := allowlist.ParseJSON(seed)
 	if err != nil {
 		return nil, fmt.Errorf("seed: %w", err)
 	}
-	for _, published := range []struct {
-		prefix      string
-		nodeService bool
-	}{
-		{prefix: routerWorkloadPrefix},
-		{prefix: volumedWorkloadPrefix, nodeService: true},
-	} {
-		name, entry, err := seedEntry(parsed, published.prefix)
-		if err != nil {
-			return nil, err
-		}
+	routerName, router, err := seedEntry(published, routerWorkloadPrefix)
+	if err != nil {
+		return nil, err
+	}
+	volumedName, volumed, err := seedEntry(published, volumedWorkloadPrefix)
+	if err != nil {
+		return nil, err
+	}
+	volumed.NodeService = true
+	for _, name := range []string{routerName, volumedName} {
 		if _, taken := entries[name]; taken {
 			return nil, fmt.Errorf("floor template: a platform role is named %s, the seed's entry", name)
 		}
-		entry.NodeService = published.nodeService
-		entries[name] = entry
 	}
+	entries[routerName] = router
+	entries[volumedName] = volumed
 	document, err := json.Marshal(allowlist.Allowlist{
 		Schema:     allowlist.Schema,
 		Workloads:  map[string]allowlist.Workload{},
