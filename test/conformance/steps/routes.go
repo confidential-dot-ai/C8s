@@ -23,7 +23,7 @@ import (
 
 	"github.com/cucumber/godog"
 
-	"github.com/confidential-dot-ai/c8s/pkg/routes"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/routes"
 )
 
 // The router polls the Trust Authority every 30s by default; three polls and the
