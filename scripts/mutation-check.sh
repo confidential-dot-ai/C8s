@@ -55,15 +55,9 @@ summary() { # $1=out-prefix $2=source-root (default .)
   echo "The tests of each line's package still pass with the operator replaced as shown."
   echo "Add a test that fails on it, or say in the PR why it stays."
   echo
-  local n=0 file line col type
+  local file line col type
   while IFS=$'\t' read -r file line col type; do
-    n=$((n + 1))
-    # The first 30 show their line; every one keeps its position.
-    if [[ "$n" -le 30 ]]; then
-      describe "$root" "$file" "$line" "$col" "$type"
-    else
-      echo "- \`$file:$line:$col\` $type"
-    fi
+    describe "$root" "$file" "$line" "$col" "$type"
   done <<< "$lived"
 }
 
@@ -91,15 +85,18 @@ replacement() {
 }
 
 describe() { # $1=source-root $2=file $3=line $4=column $5=type; one markdown list item
-  local text="" op="" new="" width root dir
+  local text="" op="" new="" width root dir src
   # The report's path and position go into a file read, sed and arithmetic:
   # a readable file that is physically under the root and digits only, or the
-  # mutant is listed bare.
-  root="$(CDPATH="" cd -P "$1" 2>/dev/null && pwd -P)" || root=""
-  dir="$(CDPATH="" cd -P "$(dirname "$1/$2")" 2>/dev/null && pwd -P)" || dir=""
+  # mutant is listed bare. The x keeps a newline ending a directory's name,
+  # which the substitution would strip.
+  root="$(CDPATH="" cd -P "$1" 2>/dev/null && pwd -P && printf x)" || root=""
+  src="$1/$2"
+  dir="$(CDPATH="" cd -P "${src%/*}" 2>/dev/null && pwd -P && printf x)" || dir=""
+  root="${root%$'\n'x}" dir="${dir%$'\n'x}" src="${dir%$'\n'x}/${2##*/}"
   if [[ "$3" =~ ^[1-9][0-9]*$ && "$4" =~ ^[1-9][0-9]*$ && -n "$root" && "$dir/" == "$root/"* \
-    && -f "$1/$2" && ! -L "$1/$2" && -r "$1/$2" ]]; then
-    text="$(sed -n "${3}p" "$1/$2" 2>/dev/null)" || text=""
+    && -f "$src" && ! -L "$src" && -r "$src" ]]; then
+    text="$(sed -n "${3}p" "$src" 2>/dev/null)" || text=""
     # Go columns count bytes; try the two-byte operator before the one-byte one.
     for width in 2 1; do
       op="$(LC_ALL=C; printf '%s' "${text:$(($4 - 1)):width}")"
@@ -169,6 +166,10 @@ JSON
   mkdir "$dir/sub"
   ln -s .. "$dir/sub/link"
   ln -s ../calc.go "$dir/sub/link.go"
+  # A sibling named as the root plus a newline, reached through a symlink.
+  mkdir "$dir/sub"$'\n'
+  command cp -f "$dir/calc.go" "$dir/sub"$'\n'/calc.go
+  ln -s "../sub"$'\n' "$dir/sub/nl"
   cat > "$dir/summary-zero.json" <<'JSON'
 {
   "go_module": "probe",
@@ -187,13 +188,19 @@ JSON
   echo "$out" | grep -qF -- '- `calc.go:6:7`: `>` replaced with `<=`' || { echo "selftest: negation not described" >&2; return 1; }
   echo "$out" | grep -qF -- '- `calc.go:6:7`: `>` replaced with `>=`' || { echo "selftest: boundary not described" >&2; return 1; }
   echo "$out" | grep -qxF '  if a > 0 {' || { echo "selftest: mutated line not shown" >&2; return 1; }
-  # A position that is not a number, or a path leaving the root (by name or by symlink), is not read.
+  # A position that is not a number, or a path leaving the root (by name or by symlink), is not read;
+  # a file in a package under the root is.
   [[ "$(describe "$dir" calc.go '6p;e true' 7 CONDITIONALS_NEGATION)" == '- `calc.go:6p;e true:7` CONDITIONALS_NEGATION' ]] \
     && [[ "$(describe "$dir" calc.go 6 unknown CONDITIONALS_NEGATION)" == '- `calc.go:6:unknown` CONDITIONALS_NEGATION' ]] \
     && [[ "$(describe "$dir/sub" ../calc.go 6 7 CONDITIONALS_NEGATION)" == '- `../calc.go:6:7` CONDITIONALS_NEGATION' ]] \
     && [[ "$(describe "$dir/sub" link/calc.go 6 7 CONDITIONALS_NEGATION)" == '- `link/calc.go:6:7` CONDITIONALS_NEGATION' ]] \
+    && [[ "$(describe "$dir/sub" nl/calc.go 6 7 CONDITIONALS_NEGATION)" == '- `nl/calc.go:6:7` CONDITIONALS_NEGATION' ]] \
     && [[ "$(describe "$dir/sub" link.go 6 7 CONDITIONALS_NEGATION)" == '- `link.go:6:7` CONDITIONALS_NEGATION' ]] \
     || { echo "selftest: an unchecked path or position was used" >&2; return 1; }
+  mkdir "$dir/pkg"
+  command cp -f "$dir/calc.go" "$dir/pkg/calc.go"
+  describe "$dir" pkg/calc.go 6 7 CONDITIONALS_NEGATION | grep -qF 'replaced with `<=`' \
+    || { echo "selftest: a file under the root was refused" >&2; return 1; }
   # A position holding no operator of that type still gets a line.
   echo "$out" | grep -qF -- '- `calc.go:1:1` INVERT_NEGATIVES' || { echo "selftest: undescribed mutant dropped" >&2; return 1; }
   # NOT COVERED mutants were never run: counted, not listed.

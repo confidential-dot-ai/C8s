@@ -400,10 +400,10 @@ jobs:
             const prev = comments.find(c => c.body && c.body.includes(marker));
             // A clean run only refreshes an earlier report, so a fixed PR does not keep stale mutants.
             if (process.env.REPORT === 'clean' && !prev) return;
-            // A comment holds 65536 characters; cut a longer report at a line and say so.
+            // A comment holds 65536 characters; cut a longer report before a mutant and say so.
             let summary = fs.readFileSync('mutation-summary.md', 'utf8');
             if (summary.length > 60000) {
-              summary = summary.slice(0, summary.lastIndexOf('\n', 60000)) + '\n\nCut short here; the run summary has the full list.';
+              summary = summary.slice(0, summary.lastIndexOf('\n- `', 60000)) + '\n\nCut short here; the run linked below lists every lived mutant.';
             }
             const body = [
               marker,
