@@ -59,8 +59,9 @@ type routingConfig struct {
 }
 
 func bindRoutingFlags(f *pflag.FlagSet, cfg *routingConfig) {
-	f.StringVar(&cfg.cdsURL, "cds-url", "", "CDS base URL (https, armTLS-verified) to poll the signed route manifest from; required unless this node's enforcer mounts the endpoint")
-	cmdsutil.BindImagePolicyFlags(f, &cfg.imagePolicyFile, nil, "pins the CDS endpoint (REQUIRED), every entry bound to the launch file that CDS runs on")
+	f.StringVar(&cfg.cdsURL, "ta-url", "", "Trust Authority base URL (https, armTLS-verified) to poll the signed route manifest from; required unless this node's enforcer mounts the endpoint")
+	cmdsutil.AliasFlag(f, "ta-url", "cds-url")
+	cmdsutil.BindTAImagePolicyFlags(f, &cfg.imagePolicyFile, nil, "pins the Trust Authority endpoint (REQUIRED), every entry bound to the launch file that CDS runs on")
 	f.StringVar(&cfg.operatorKeysFile, "operator-keys-file", "", "PEM operator public keys a route manifest must be signed under, used when the node's launch configuration carries none; unset, the keys come from the verified CDS's GET /operator-keys")
 	f.DurationVar(&cfg.pollInterval, "routes-poll-interval", 30*time.Second, "how often to poll the CDS for the route manifest")
 	f.StringVar(&cfg.host, "routing-host", "127.0.0.1", "routing listener host (loopback: nginx proxies application requests to it)")
@@ -74,10 +75,10 @@ func bindRoutingFlags(f *pflag.FlagSet, cfg *routingConfig) {
 func checkRoutingFlags(cfg config) error {
 	r := cfg.routing
 	if r.publish && r.cdsURL == "" {
-		return errors.New("--publish-routes requires --cds-url: it publishes the manifest polled from CDS")
+		return errors.New("--publish-routes requires --ta-url: it publishes the manifest polled from CDS")
 	}
 	if r.cdsURL == "" {
-		return errors.New("--cds-url is required: no node hands this router a CDS endpoint, and it routes only by the route manifest it polls from one")
+		return errors.New("--ta-url is required: no node hands this router a CDS endpoint, and it routes only by the route manifest it polls from one")
 	}
 	// routes.Compile requires normalized reserved paths.
 	for _, p := range r.reservedPaths {
@@ -86,7 +87,7 @@ func checkRoutingFlags(cfg config) error {
 		}
 	}
 	if cfg.attestationAPIURL == "" {
-		return errors.New("--cds-url requires --attestation-api-url to verify the CDS")
+		return errors.New("--ta-url requires --attestation-api-url to verify the CDS")
 	}
 	if r.pollInterval <= 0 {
 		return errors.New("--routes-poll-interval must be positive")
@@ -131,7 +132,7 @@ func newRoutingEngine(ctx context.Context, cfg config, bindings *Bindings, logge
 	}
 	cds, err := routing.NewCDSClient(r.cdsURL, httpClient)
 	if err != nil {
-		return nil, fmt.Errorf("--cds-url: %w", err)
+		return nil, fmt.Errorf("--ta-url: %w", err)
 	}
 	keys, err := operatorKeySource(r, cds, logger)
 	if err != nil {
@@ -175,7 +176,7 @@ func newRoutingEngine(ctx context.Context, cfg config, bindings *Bindings, logge
 
 // routeSourcePins is the set the poller holds its CDS to: the pins the node's
 // enforcer mounts at followed, so the router keeps polling across a CDS image
-// roll, and --image-policy-file where the node mounts none.
+// roll, and --ta-image-policy-file where the node mounts none.
 func routeSourcePins(ctx context.Context, r routingConfig, followed string) (armtls.PinSource, error) {
 	node, err := cmdsutil.FollowNodePins(ctx, followed)
 	if err != nil {
@@ -189,7 +190,7 @@ func routeSourcePins(ctx context.Context, r routingConfig, followed string) (arm
 		return nil, err
 	}
 	if _, err := cmdsutil.CDSLaunchFile(values); err != nil {
-		return nil, fmt.Errorf("--image-policy-file %w", err)
+		return nil, fmt.Errorf("--ta-image-policy-file %w", err)
 	}
 	return armtls.FixedPins(values), nil
 }

@@ -40,9 +40,9 @@ type options struct {
 
 func (o *options) validate() error {
 	if o.cdsURL == "" {
-		return fmt.Errorf("--cds-url is required")
+		return fmt.Errorf("--ta-url is required")
 	}
-	if err := cmdsutil.ValidateHTTPURL("--cds-url", o.cdsURL); err != nil {
+	if err := cmdsutil.ValidateHTTPURL("--ta-url", o.cdsURL); err != nil {
 		return err
 	}
 	o.cdsURL = strings.TrimRight(o.cdsURL, "/")
@@ -80,7 +80,7 @@ func NewCmd() *cobra.Command { return newCmd(os.Exit, sidecar.NewClient) }
 func newCmd(exit func(int), newClient clientFunc) *cobra.Command {
 	o := options{newClient: newClient}
 	root := &cobra.Command{
-		Use:    "secret-probe --cds-url URL --attestation-api-url URL --cert FILE --key FILE <challenge|token|request>",
+		Use:    "secret-probe --ta-url URL --attestation-api-url URL --cert FILE --key FILE <challenge|token|request>",
 		Hidden: true,
 		Short:  "Conformance probe: one workload secret request with every input under the caller's control",
 		Long: `secret-probe is a conformance test instrument, not a client for applications.
@@ -95,7 +95,7 @@ missing or replayed challenge, another pod's token, a non-canonical path.
   token       redeem a sandbox token for this sandbox, bound to the leaf's key
               and to --challenge (32 random bytes when none is given); prints
               the JSON the Authorization header carries, one line
-  request     send GET or POST <path> to <cds-url>/secrets<path>, verbatim;
+  request     send GET or POST <path> to <ta-url>/secrets<path>, verbatim;
               prints one line with the HTTP status (000 when nothing
               answered), the challenge sent and the token sent, the last two
               base64 or - when the header was omitted, then the body exactly
@@ -127,9 +127,10 @@ file, or a token the inventory did not redeem, with the reason on stderr.`,
 		return nil
 	})
 	pf := root.PersistentFlags()
-	pf.StringVar(&o.cdsURL, "cds-url", "", "base URL of CDS (required)")
+	pf.StringVar(&o.cdsURL, "ta-url", "", "base URL of CDS (required)")
+	cmdsutil.AliasFlag(pf, "ta-url", "cds-url")
 	pf.StringVar(&o.attestationURL, "attestation-api-url", "", "local attestation-api used to verify CDS's armTLS certificate (required)")
-	cmdsutil.BindImagePolicyFlags(pf, &o.policyFile, &o.policyJSON, "pins CDS, every entry bound to the launch file it runs on")
+	cmdsutil.BindTAImagePolicyFlags(pf, &o.policyFile, &o.policyJSON, "pins CDS, every entry bound to the launch file it runs on")
 	pf.StringVar(&o.certPath, "cert", "", "the pod's CDS-issued certificate, presented to CDS (required)")
 	pf.StringVar(&o.keyPath, "key", "", "private key for --cert (required)")
 	pf.StringVar(&o.socket, "socket", strings.TrimPrefix(workloadclaims.InventoryEndpoint(), "unix://"), "the inventory's token socket")

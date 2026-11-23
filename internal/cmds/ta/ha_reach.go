@@ -32,8 +32,9 @@ func bindReachFlags(cmd *cobra.Command, reach *clusterReach) {
 	f := cmd.Flags()
 	f.StringVar(&reach.config, "config", "", "the configuration document the cluster's CDS VMs boot on (REQUIRED); its replica entries name the replicas to read")
 	f.StringArrayVar(&reach.urls, "url", nil, "<host>[:"+strconv.Itoa(replicaPort)+"] of a replica to read instead of the configuration's replica entries; repeatable")
-	f.StringVar(&reach.cdsPin, "cds-pin", "", "measurements document pinning this cluster's CDS, which every replica read is verified against (REQUIRED); during an image roll the one naming both images")
-	cmdsutil.RequireFlags(cmd, "config", "cds-pin")
+	f.StringVar(&reach.cdsPin, "ta-pin", "", "measurements document pinning this cluster's CDS, which every replica read is verified against (REQUIRED); during an image roll the one naming both images")
+	cmdsutil.AliasFlag(f, "ta-pin", "cds-pin")
+	cmdsutil.RequireFlags(cmd, "config", "ta-pin")
 }
 
 // There is always at least one replica to read.

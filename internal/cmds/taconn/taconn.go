@@ -69,15 +69,16 @@ type Options struct {
 // pinned to the configuration it runs on, so a command that only ever reaches
 // CDS takes the pin document and nothing else.
 func BindFlags(pf *pflag.FlagSet, o *Options) {
-	urlHelp := "CDS-issued-TLS router or direct CDS base URL (required); WebPKI router URLs are not attestation-bound"
 	if o.DirectCDS {
-		urlHelp = "direct CDS base URL, https://<host>:<port> using the install's --cds-address (required); a router front door does not relay this API"
+		pf.StringVar(&o.URL, "ta-url", "", "direct Trust Authority base URL, https://<host>:<port> using the install's --ta-address (required)")
+		cmdsutil.AliasFlag(pf, "ta-url", "url")
+		cmdsutil.BindTAImagePolicyFlags(pf, &o.MeasurementsConfig, nil, "pins the launch file the Trust Authority runs on")
 	} else {
 		pf.StringSliceVar(&o.Measurements, "measurements", nil, "trusted router launch digest(s) (repeatable/comma-separated) for a CDS-issued public TLS front door; an https --url requires a pin, and a TDX endpoint needs --image-policy-file with RTMR[1] and RTMR[2]")
 		pf.StringVar(&o.MeasurementsFile, "measurements-file", "", "text file of trusted router SHA-384 hex digests, one per line; use --image-policy-file for complete JSON policies")
+		pf.StringVar(&o.URL, "url", "", "Trust Authority or attested router base URL (required)")
+		cmdsutil.BindImagePolicyFlags(pf, &o.MeasurementsConfig, nil, "pins the endpoint; a direct Trust Authority URL requires binding its launch file")
 	}
-	pf.StringVar(&o.URL, "url", "", urlHelp)
-	cmdsutil.BindImagePolicyFlags(pf, &o.MeasurementsConfig, nil, "pins the endpoint; a direct CDS URL needs this and every entry must bind the launch file CDS runs on")
 	pf.DurationVar(&o.Timeout, "timeout", 15*time.Second, "per-request timeout")
 	pf.StringVar(&o.OperatorKey, "operator-key", "", "operator EC private key PEM file, whose public key is pinned on CDS via --operator-keys (env "+EnvOperatorKey+"); required for writes")
 	pf.BoolVar(&o.Insecure, "insecure", false, "dev/test only: allow a plaintext http:// CDS URL, skipping armTLS attestation of CDS")
@@ -86,6 +87,9 @@ func BindFlags(pf *pflag.FlagSet, o *Options) {
 // Validate checks the flags every subcommand needs.
 func (o *Options) Validate() error {
 	if strings.TrimSpace(o.URL) == "" {
+		if o.DirectCDS {
+			return fmt.Errorf("--ta-url is required")
+		}
 		return fmt.Errorf("--url is required")
 	}
 	return nil
@@ -176,7 +180,7 @@ func (o *Options) httpsClient(ctx context.Context, pins refvalues.ReferenceValue
 			hc.CloseIdleConnections()
 		}
 		return nil, fmt.Errorf("--url %s serves a router discovery document; a router front door does not relay CDS's /ca or /secrets. "+
-			"Use the CDS URL directly, the <host>:<port> the install was given as --cds-address, "+
+			"Use the CDS URL directly, the <host>:<port> the install was given as --ta-address, "+
 			"and pin the CDS launch file instead of the router's launch digest", o.URL)
 	case err == nil:
 		fmt.Fprintln(os.Stderr, "note: target is a router front door; verified its discovery attestation and bound this session to its CDS")
@@ -192,7 +196,7 @@ func (o *Options) httpsClient(ctx context.Context, pins refvalues.ReferenceValue
 // what to pass.
 func (o *Options) pinFlags() string {
 	if o.DirectCDS {
-		return "--image-policy-file <cds-pin.json>, the pin naming this cluster's CDS"
+		return "--ta-image-policy-file <pin.json>, the pin naming this cluster's Trust Authority"
 	}
 	return "--image-policy-file <policy.json>, or --measurements/--measurements-file for a router front door"
 }
@@ -201,7 +205,7 @@ func (o *Options) loadPins() (refvalues.ReferenceValues, error) {
 	pins := cmdsutil.MeasurementPins{Measurements: o.Measurements, MeasurementsFile: o.MeasurementsFile}
 	if o.DirectCDS {
 		if flags := pins.Flags(); len(flags) != 0 {
-			return refvalues.ReferenceValues{}, fmt.Errorf("%s pins a build, and this command only ever reaches CDS, which is pinned to the configuration it runs on: pass --image-policy-file", strings.Join(flags, " and "))
+			return refvalues.ReferenceValues{}, fmt.Errorf("%s pins a build, and this command only ever reaches CDS, which is pinned to the configuration it runs on: pass --ta-image-policy-file", strings.Join(flags, " and "))
 		}
 		return (cmdsutil.ImagePolicySource{File: o.MeasurementsConfig}).Values()
 	}

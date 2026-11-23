@@ -316,8 +316,8 @@ func TestPutRefusesPlaintextWithoutInsecure(t *testing.T) {
 
 func TestPutRequiresURLAndKey(t *testing.T) {
 	t.Setenv("C8S_OPERATOR_KEY", "")
-	if _, _, err := run(t, "v", "put", "/a"); err == nil || !strings.Contains(err.Error(), "--url is required") {
-		t.Fatalf("err = %v, want a --url error", err)
+	if _, _, err := run(t, "v", "put", "/a"); err == nil || !strings.Contains(err.Error(), "--ta-url is required") {
+		t.Fatalf("err = %v, want a --ta-url error", err)
 	}
 	_, url := newFakeCDS(t)
 	if _, _, err := run(t, "v", "put", "/a", "--url", url, "--insecure"); err == nil ||

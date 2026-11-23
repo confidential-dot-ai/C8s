@@ -232,15 +232,28 @@ func LoadMeasurements(values []string, path string) ([][]byte, error) {
 // BindImagePolicyFlags registers canonical JSON sources. A nil inline pointer
 // exposes only file input. Only one source may be used.
 func BindImagePolicyFlags(fs *pflag.FlagSet, file, inline *string, purpose string) {
+	bindImagePolicyFlags(fs, file, inline, "image-policy", purpose)
+}
+
+// BindTAImagePolicyFlags binds a policy for a Trust Authority endpoint.
+func BindTAImagePolicyFlags(fs *pflag.FlagSet, file, inline *string, purpose string) {
+	bindImagePolicyFlags(fs, file, inline, "ta-image-policy", purpose)
+	AliasFlag(fs, "ta-image-policy-file", "image-policy-file")
+	if inline != nil {
+		AliasFlag(fs, "ta-image-policy-json", "image-policy-json")
+	}
+}
+
+func bindImagePolicyFlags(fs *pflag.FlagSet, file, inline *string, prefix, purpose string) {
 	selected := ""
 	bind := func(target *string, name, usage string) {
 		fs.Var(&policySourceFlag{target: target, selected: &selected, name: name}, name, usage)
 	}
 	*file = ""
-	bind(file, "image-policy-file", "path to a complete JSON image policy (image, RTMR and launch-key pins); "+purpose)
+	bind(file, prefix+"-file", "path to a complete JSON image policy (image, RTMR and launch-key pins); "+purpose)
 	if inline != nil {
 		*inline = ""
-		bind(inline, "image-policy-json", "inline complete JSON image policy, in the same format as --image-policy-file; "+purpose)
+		bind(inline, prefix+"-json", "inline complete JSON image policy, in the same format as --"+prefix+"-file; "+purpose)
 	}
 }
 

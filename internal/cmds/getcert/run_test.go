@@ -57,7 +57,7 @@ func TestCDSHTTPClientRejectsPlainHTTP(t *testing.T) {
 // its absence is refused before the rest of the configuration is validated.
 func TestRunRequiresACDSEndpoint(t *testing.T) {
 	err := run(t.Context(), config{NoSAN: true})
-	if err == nil || err.Error() != "--cds-url is required: no node hands this client a CDS endpoint" {
+	if err == nil || err.Error() != "--ta-url is required: no node hands this client a CDS endpoint" {
 		t.Fatalf("error = %v, want the missing-endpoint refusal", err)
 	}
 }

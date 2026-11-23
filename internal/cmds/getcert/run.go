@@ -133,8 +133,9 @@ consumers that read that volume.`,
 	}
 
 	flags := cmd.Flags()
-	cmdsutil.BindImagePolicyFlags(flags, &cfg.MeasurementsConfig, &cfg.MeasurementsConfigJSON, "pins the CDS endpoint, every entry bound to the launch file that CDS runs on; required unless the node pins CDS")
-	flags.StringVar(&cfg.CDSURL, "cds-url", "", "URL of the CDS service (e.g. https://cds:8443); refused in an injected sidecar, which dials the endpoint the node mounts")
+	cmdsutil.BindTAImagePolicyFlags(flags, &cfg.MeasurementsConfig, &cfg.MeasurementsConfigJSON, "pins the Trust Authority endpoint, every entry bound to the launch file that CDS runs on; required unless the node pins CDS")
+	flags.StringVar(&cfg.CDSURL, "ta-url", "", "URL of the Trust Authority (e.g. https://cds:8443); refused in an injected sidecar, which dials the endpoint the node mounts")
+	cmdsutil.AliasFlag(flags, "ta-url", "cds-url")
 	flags.StringVar(&cfg.AttestationApiURL, "attestation-api-url", "", "URL of the node-local attestation-api (http://localhost:8400, or unix:// plus the on-node socket path the chart wires)"+cmdsutil.NodeAddressHelp)
 	flags.StringVar(&cfg.CertPath, "cert-path", "", "Path where the certificate chain PEM of the published generation is read")
 	flags.StringVar(&cfg.CAPath, "ca-path", "", "Path where the mesh CA PEM of the published generation is read; must be in the --cert-path directory")
@@ -150,7 +151,8 @@ consumers that read that volume.`,
 	flags.BoolVar(&cfg.ContinueOnInitialError, "continue-on-initial-error", false, "In renewal mode, keep running when the first certificate request fails, retrying on a capped backoff until a certificate is issued")
 	flags.DurationVar(&cfg.CAWatchInterval, "ca-watch-interval", defaultCDSWatchInterval, "Poll CDS at this interval and renew when the published certificate falls behind it. Renew immediately when CDS serves a renewed certificate under the pod's bound CA key. A replacement CA key requires pod recreation. With a workload identity assertion, renew after a random delay of up to half the interval when the allowlist policy CDS serves no longer matches the snapshot stamped in the leaf, which strict clients reject. The default applies only with --renew-interval; otherwise the watch is off (0 = disabled, otherwise minimum 1s)")
 	flags.StringVar(&cfg.DiscoveryOutPath, "discovery-out", "", "Path to write JSON discovery metadata for the issued certificate and attestation evidence")
-	flags.StringVar(&cfg.DiscoveryCDSCertURL, "discovery-cds-cert-url", "", "Public URL path where the CDS certificate PEM is served")
+	flags.StringVar(&cfg.DiscoveryCDSCertURL, "discovery-ta-cert-url", "", "Public URL path where the Trust Authority certificate PEM is served")
+	cmdsutil.AliasFlag(flags, "discovery-ta-cert-url", "discovery-cds-cert-url")
 	flags.StringVar(&cfg.DiscoveryMeshCAURL, "discovery-mesh-ca-url", "", "Public URL path where the mesh CA PEM is served")
 	flags.StringVar(&cfg.DiscoveryPublicTLSMode, "discovery-public-tls-mode", "cds", "Public TLS mode to report in discovery metadata (cds, webpki, or acme)")
 	flags.StringVar(&cfg.DiscoveryPublicTLSModeFile, "discovery-public-tls-mode-file", "", "File holding the public TLS mode to report in discovery metadata, read at start; replaces --discovery-public-tls-mode")
@@ -193,7 +195,7 @@ func newCDSClient(ctx context.Context, cfg config) (attestclient.Client, allowli
 func cdsHTTPClient(ctx context.Context, cfg config) (*http.Client, error) {
 	parsed, err := url.Parse(cfg.CDSURL)
 	if err != nil {
-		return nil, fmt.Errorf("--cds-url: %w", err)
+		return nil, fmt.Errorf("--ta-url: %w", err)
 	}
 	// CDS is reached over armTLS: the scheme MUST be https so the client
 	// verifies CDS's TEE attestation. A plaintext http:// URL would fall back
@@ -201,7 +203,7 @@ func cdsHTTPClient(ctx context.Context, cfg config) (*http.Client, error) {
 	// on-path peer becomes trivial. The chart only ever renders https URLs, so
 	// a non-https value is a misconfiguration, not a supported mode.
 	if parsed.Scheme != "https" {
-		return nil, fmt.Errorf("--cds-url must use https (armTLS); got scheme %q", parsed.Scheme)
+		return nil, fmt.Errorf("--ta-url must use https (armTLS); got scheme %q", parsed.Scheme)
 	}
 
 	pins, err := cdsPins(ctx, cfg)
@@ -244,7 +246,7 @@ func run(ctx context.Context, cfg config) error {
 	}
 	cfg.CDSURL = cdsURL
 	if cfg.CDSURL == "" {
-		return errors.New("--cds-url is required: no node hands this client a CDS endpoint")
+		return errors.New("--ta-url is required: no node hands this client a CDS endpoint")
 	}
 	slog.Info("starting get-cert", "san", cfg.SAN, "cds_url", cfg.CDSURL, "cds_from_node", fromNode)
 
@@ -531,7 +533,7 @@ func applyCDSWatchDefault(cfg *config, flags *pflag.FlagSet) {
 
 // validateConfig checks that all required configuration is valid.
 func validateConfig(cfg config) error {
-	if err := cmdsutil.ValidateHTTPURL("--cds-url", cfg.CDSURL); err != nil {
+	if err := cmdsutil.ValidateHTTPURL("--ta-url", cfg.CDSURL); err != nil {
 		return err
 	}
 	if err := cmdsutil.ValidateAttestationAPIURL("--attestation-api-url", cfg.AttestationApiURL); err != nil {

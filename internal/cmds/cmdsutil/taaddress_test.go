@@ -36,7 +36,7 @@ func TestResolveCDSAddress(t *testing.T) {
 			name:     "an argument beside the node's endpoint",
 			mounted:  "10.1.2.3:30808\n",
 			supplied: "https://attacker.svc:8443",
-			wants:    "remove --cds-url",
+			wants:    "remove --ta-url",
 		},
 		{
 			name:    "an endpoint with no port",
@@ -116,7 +116,7 @@ func TestResolveCDSURLPrefersTheNodesEndpoint(t *testing.T) {
 			name:     "an argument beside the node's endpoint",
 			mounted:  "10.1.2.3:30808\n",
 			supplied: "https://attacker.svc:8443",
-			wants:    "remove --cds-url",
+			wants:    "remove --ta-url",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

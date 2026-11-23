@@ -31,12 +31,12 @@ import (
 // anchor. Every command taking --mesh-ca treats the bundle as a pin it checks
 // CDS against; one read from an unpinned endpoint is whatever answered, and
 // pinning it later proves only that the same thing answered twice.
-var errUnpinned = fmt.Errorf("%w, and its CA would become the anchor you pin. Pass --image-policy-file <cds-pin.json>, the pin naming this cluster's CDS", taconn.ErrUnpinnedEndpoint)
+var errUnpinned = fmt.Errorf("%w, and its CA would become the anchor you pin. Pass --ta-image-policy-file <pin.json>, the pin naming this cluster's CDS", taconn.ErrUnpinnedEndpoint)
 
 // errPlaintext refuses a plaintext endpoint. The bundle distinguishes one CDS
 // from another and nothing over http attests to being either.
 var errPlaintext = errors.New(
-	"--url must be https: the mesh CA bundle is read over the attested connection, and a plaintext CDS " +
+	"--ta-url must be https: the mesh CA bundle is read over the attested connection, and a plaintext CDS " +
 		"needs no bundle — the --mesh-ca gate exempts http endpoints")
 
 // NewCmd returns the `ca` subcommand.
@@ -54,8 +54,8 @@ or to stdout. This is the anchor 'c8s secrets put --mesh-ca',
 'c8s volume create --mesh-ca' and 'c8s verify --mesh-ca' take.
 
 The read travels the attested connection those commands use and requires the
-CDS pin: --image-policy-file names the document binding the configuration that
-CDS runs on. A router front door does not relay /ca, so --url names CDS itself.
+CDS pin: --ta-image-policy-file names the document binding the configuration that
+CDS runs on. A router front door does not relay /ca, so --ta-url names CDS itself.
 The SHA-256 of each certificate is printed on stderr — record it, and compare
 it on a later read or against a copy obtained another way.
 
@@ -70,7 +70,7 @@ first.`,
 			}
 			u, err := url.Parse(o.URL)
 			if err != nil {
-				return fmt.Errorf("parse --url %q: %w", o.URL, err)
+				return fmt.Errorf("parse --ta-url %q: %w", o.URL, err)
 			}
 			if u.Scheme != "https" {
 				return errPlaintext

@@ -50,7 +50,7 @@ type PodBundleOptions struct {
 // removes it.
 func NewPodBundle(opts PodBundleOptions) (err error) {
 	if opts.Dir == "" || opts.ClusterID == "" || opts.ManifestPath == "" || opts.NodeName == "" || opts.CDSAddress == "" || opts.CDSImagePolicyPath == "" {
-		return errors.New("--out, --cluster-id, --image-manifest, --name, --cds-address and --cds-image-policy-file are required")
+		return errors.New("--out, --cluster-id, --image-manifest, --name, --ta-address and --ta-image-policy-file are required")
 	}
 	cdsPolicy, err := readBounded(opts.CDSImagePolicyPath, MaxDocumentSize)
 	if err != nil {

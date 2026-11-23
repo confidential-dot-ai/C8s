@@ -103,11 +103,11 @@ func CDSURLAddress(raw string) (string, error) {
 
 // ResolveCDSAddress returns the CDS endpoint the node mounts at path, and
 // whether it mounts one at all. resolveNodePolicy states the rule; a caller
-// that is handed no endpoint and holds no --cds-url reaches no CDS.
+// that is handed no endpoint and holds no --ta-url reaches no CDS.
 func ResolveCDSAddress(path, suppliedURL string) (string, bool, error) {
 	var supplied []string
 	if suppliedURL != "" {
-		supplied = []string{"--cds-url"}
+		supplied = []string{"--ta-url"}
 	}
 	return resolveNodePolicy(path, supplied, ParseCDSAddress)
 }

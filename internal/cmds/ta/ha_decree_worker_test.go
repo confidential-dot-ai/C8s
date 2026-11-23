@@ -231,7 +231,7 @@ func TestNodeImagesDecreeRefusesAWorkerDocumentPinningAnotherCDS(t *testing.T) {
 	other := newOperatorCluster(t)
 	w := newWorkerAdmission(t, c, pinOf(t, other))
 	stdout, stderr, err := runAnswering(t, "y\n", w.o.run)
-	if err == nil || !strings.Contains(err.Error(), "pins another CDS than --cds-pin") {
+	if err == nil || !strings.Contains(err.Error(), "pins another CDS than --ta-pin") {
 		t.Fatalf("got %v, want the document refused", err)
 	}
 	if stdout != "" || stderr != "" {

@@ -90,8 +90,8 @@ func TestRunErrors(t *testing.T) {
 func TestRunRequiresCDSURL(t *testing.T) {
 	cfg := routedRunConfig(t, freePort(t))
 	cfg.routing.cdsURL = ""
-	if err := run(t.Context(), cfg); err == nil || !strings.Contains(err.Error(), "--cds-url is required") {
-		t.Fatalf("run() without --cds-url = %v, want the --cds-url error", err)
+	if err := run(t.Context(), cfg); err == nil || !strings.Contains(err.Error(), "--ta-url is required") {
+		t.Fatalf("run() without --ta-url = %v, want the --ta-url error", err)
 	}
 }
 

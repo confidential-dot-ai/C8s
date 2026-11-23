@@ -68,8 +68,9 @@ func NewCmd() *cobra.Command {
 	f := cmd.Flags()
 	f.StringVar(&cfg.host, "host", "127.0.0.1", "listen host (loopback; nginx is the public listener)")
 	f.IntVarP(&cfg.port, "port", "p", 8801, "listen port")
-	f.StringVar(&cfg.cdsURL, "cds-url", "", "CDS base URL (must use https/armTLS)")
-	cmdsutil.BindImagePolicyFlags(f, &cfg.measurementsConfig, nil, "pins the CDS endpoint, every entry bound to the launch file that CDS runs on; required unless the node pins CDS")
+	f.StringVar(&cfg.cdsURL, "ta-url", "", "Trust Authority base URL (must use https/armTLS)")
+	cmdsutil.AliasFlag(f, "ta-url", "cds-url")
+	cmdsutil.BindTAImagePolicyFlags(f, &cfg.measurementsConfig, nil, "pins the Trust Authority endpoint, every entry bound to the launch file that CDS runs on; required unless the node pins CDS")
 	f.StringVar(&cfg.attestationAPIURL, "attestation-api-url", "", "attestation-api URL used to verify CDS evidence"+cmdsutil.NodeAddressHelp)
 	f.DurationVar(&cfg.requestTimeout, "request-timeout", defaultRequestTimeout, "timeout for one request to CDS")
 	f.DurationVar(&cfg.readHeaderTimeout, "read-header-timeout", defaultReadHeaderTimeout, "HTTP request-header timeout")
@@ -187,7 +188,7 @@ func (cfg config) resolveCDS(ctx context.Context) (cds, error) {
 		return cds{}, err
 	}
 	if cdsURL == "" {
-		return cds{}, errors.New("--cds-url is required: no node hands this client a CDS endpoint")
+		return cds{}, errors.New("--ta-url is required: no node hands this client a CDS endpoint")
 	}
 	return cds{
 		url:  cdsURL,
@@ -198,13 +199,13 @@ func (cfg config) resolveCDS(ctx context.Context) (cds, error) {
 func parseCDSURL(raw string) (*url.URL, error) {
 	target, err := url.Parse(raw)
 	if err != nil || target.Host == "" {
-		return nil, fmt.Errorf("invalid --cds-url %q", raw)
+		return nil, fmt.Errorf("invalid --ta-url %q", raw)
 	}
 	if target.Scheme != "https" {
-		return nil, fmt.Errorf("--cds-url must use https (armTLS), got scheme %q", target.Scheme)
+		return nil, fmt.Errorf("--ta-url must use https (armTLS), got scheme %q", target.Scheme)
 	}
 	if target.User != nil || (target.Path != "" && target.Path != "/") || target.RawQuery != "" || target.Fragment != "" {
-		return nil, fmt.Errorf("--cds-url must be an origin without credentials, path, query, or fragment")
+		return nil, fmt.Errorf("--ta-url must be an origin without credentials, path, query, or fragment")
 	}
 	return target, nil
 }

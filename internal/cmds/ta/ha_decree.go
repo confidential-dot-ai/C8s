@@ -335,7 +335,7 @@ func (w workerFlags) read(cdsPinPath string) (admissionFiles, error) {
 	}
 	cdsPin, err := os.ReadFile(cdsPinPath)
 	if err != nil {
-		return admissionFiles{}, fmt.Errorf("--cds-pin: %w", err)
+		return admissionFiles{}, fmt.Errorf("--ta-pin: %w", err)
 	}
 	image, err := os.ReadFile(w.image)
 	if err != nil {
@@ -460,7 +460,7 @@ func (o genesisOptions) confirmedNodePins(cmd *cobra.Command, c decreeConfig) (*
 	return configuredNodeImages(c)
 }
 
-// The whole set the cluster is to certify, as `c8s cds config new --nodes`
+// The whole set the cluster is to certify, as `c8s ta config new --nodes`
 // writes one.
 func readNodeImages(path string) (*tadecree.NodeImages, error) {
 	measurements, err := os.ReadFile(path)
@@ -509,7 +509,7 @@ func newNodeImagesCmd() *cobra.Command {
 			"the whole set: an upgrade signs the image being replaced and the one replacing it together,\n"+
 			"and a second decree then names the new image alone.\n\n"+
 			"With --worker-document, the decree also certifies the worker image launched with that exact\n"+
-			"document. The document must pin the CDS --cds-pin pins. The cluster facts it carries are\n"+
+			"document. The document must pin the CDS --ta-pin pins. The cluster facts it carries are\n"+
 			"printed, and the decree is signed only once you confirm them.",
 		&o.decreeOptions, func(cmd *cobra.Command) error {
 			return o.run(cmd)
@@ -832,7 +832,7 @@ func (o admitOptions) appliedPins(ctx context.Context, c decreeConfig) (*tadecre
 
 // servingReplica is the joined replica an Admit reads the cluster's applied
 // pin decree from. An image roll's pin document names the old and the new
-// image, so the one --cds-pin verifies this replica and the target.
+// image, so the one --ta-pin verifies this replica and the target.
 func (o admitOptions) servingReplica() replica {
 	return replica{
 		address:  o.joined,

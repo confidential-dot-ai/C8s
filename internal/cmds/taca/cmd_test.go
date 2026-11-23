@@ -58,7 +58,7 @@ func TestRefusesAnUnpinnedCDS(t *testing.T) {
 	if !errors.Is(err, taconn.ErrUnpinnedEndpoint) {
 		t.Fatalf("err = %v, want errors.Is cdsconn.ErrUnpinnedEndpoint", err)
 	}
-	if !strings.Contains(err.Error(), "--image-policy-file") {
+	if !strings.Contains(err.Error(), "--ta-image-policy-file") {
 		t.Fatalf("refusal does not name --image-policy-file: %v", err)
 	}
 	if *seen != 0 {
@@ -266,5 +266,5 @@ func TestHelpListsOnlyTheFlagsCARead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("--help: %v", err)
 	}
-	testutil.CheckHelpFlags(t, stdout, []string{"--url", "--image-policy-file", "--timeout", "--out"}, []string{"--operator-key", "--insecure"})
+	testutil.CheckHelpFlags(t, stdout, []string{"--ta-url", "--ta-image-policy-file", "--timeout", "--out"}, []string{"--operator-key", "--insecure"})
 }

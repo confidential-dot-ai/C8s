@@ -175,10 +175,10 @@ func TestParseCDSURL(t *testing.T) {
 		wantErr string
 	}{
 		{raw: "https://c8s-cds.c8s-system.svc:8443"},
-		{raw: "http://c8s-cds:8443", wantErr: `--cds-url must use https (armTLS), got scheme "http"`},
-		{raw: "https://c8s-cds:8443/base", wantErr: "--cds-url must be an origin without credentials, path, query, or fragment"},
-		{raw: "https://user@c8s-cds:8443", wantErr: "--cds-url must be an origin without credentials, path, query, or fragment"},
-		{raw: "not a URL", wantErr: `invalid --cds-url "not a URL"`},
+		{raw: "http://c8s-cds:8443", wantErr: `--ta-url must use https (armTLS), got scheme "http"`},
+		{raw: "https://c8s-cds:8443/base", wantErr: "--ta-url must be an origin without credentials, path, query, or fragment"},
+		{raw: "https://user@c8s-cds:8443", wantErr: "--ta-url must be an origin without credentials, path, query, or fragment"},
+		{raw: "not a URL", wantErr: `invalid --ta-url "not a URL"`},
 	} {
 		t.Run(tc.raw, func(t *testing.T) {
 			_, err := parseCDSURL(tc.raw)
@@ -265,7 +265,7 @@ func TestNewHandlerRequiresCDSURLWithoutNodeEndpoint(t *testing.T) {
 		measurementsConfig: testutil.CDSPinFile(t),
 		requestTimeout:     time.Second,
 	}, slog.Default())
-	if err == nil || !strings.Contains(err.Error(), "--cds-url is required") {
+	if err == nil || !strings.Contains(err.Error(), "--ta-url is required") {
 		t.Fatalf("error = %v, want one naming the missing CDS endpoint", err)
 	}
 }
@@ -312,7 +312,7 @@ func TestNewHandlerRefusesMixedCDSSources(t *testing.T) {
 				requestTimeout:    time.Second,
 				cdsURL:            "https://cds.example:8443",
 			},
-			want: "remove --cds-url",
+			want: "remove --ta-url",
 		},
 		"flag beside the node's pins": {
 			address: address,

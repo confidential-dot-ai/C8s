@@ -64,9 +64,12 @@ parses it with, then written to --out, or to stdout without one.`,
 	}
 	f := cmd.Flags()
 	f.StringVar(&d.out, "out", "", "file to write the document to, which must not exist (default stdout)")
-	f.StringVar(&d.cds.Address, "cds-address", "", "<host>:<port> the cluster's CDS serves on, the host a DNS name its clients resolve or an IPv4 address")
-	f.StringVar(&d.cdsPinPath, "cds-pin", "", "measurements document pinning the cluster's CDS VM to its configuration, as 'c8s cds config new' writes it")
-	f.Uint64Var(&d.cdsPinFloor, "cds-pin-floor", 0, "lowest cluster version a worker takes a CDS pin decree at")
+	f.StringVar(&d.cds.Address, "ta-address", "", "<host>:<port> the cluster's CDS serves on, the host a DNS name its clients resolve or an IPv4 address")
+	cmdsutil.AliasFlag(f, "ta-address", "cds-address")
+	f.StringVar(&d.cdsPinPath, "ta-pin", "", "measurements document pinning the cluster's CDS VM to its configuration, as 'c8s ta config new' writes it")
+	cmdsutil.AliasFlag(f, "ta-pin", "cds-pin")
+	f.Uint64Var(&d.cdsPinFloor, "ta-pin-floor", 0, "lowest cluster version a worker takes a CDS pin decree at")
+	cmdsutil.AliasFlag(f, "ta-pin-floor", "cds-pin-floor")
 	f.StringVar(&d.tlsSAN, "tls-san", "", "DNS name of the router's front-door certificate, one the pinned CDS configuration lets a leaf carry")
 	nodeservices.BindRouterFlags(f, &d.router)
 	f.StringVar(&d.kubernetes.APIServer, "api-server", "", "<host>:<port> of the cluster's Kubernetes API server, the host a DNS name or an IPv4 address")
@@ -75,8 +78,8 @@ parses it with, then written to --out, or to stdout without one.`,
 	f.StringVar(&d.kubernetes.ServiceCIDR, "service-cidr", "", "the cluster's Service range, an IPv4 CIDR")
 	f.StringVar(&d.kubernetes.ClusterDNS, "cluster-dns", "", "the cluster DNS Service's IPv4 address, inside --service-cidr")
 	cmdsutil.RequireFlags(cmd,
-		"cds-address",
-		"cds-pin",
+		"ta-address",
+		"ta-pin",
 		"tls-san",
 		"api-server",
 		"ca-certificate",
@@ -91,7 +94,7 @@ parses it with, then written to --out, or to stdout without one.`,
 func (d draft) render() ([]byte, error) {
 	pin, err := os.ReadFile(d.cdsPinPath)
 	if err != nil {
-		return nil, fmt.Errorf("--cds-pin: %w", err)
+		return nil, fmt.Errorf("--ta-pin: %w", err)
 	}
 	ca, err := os.ReadFile(d.caCertificatePath)
 	if err != nil {

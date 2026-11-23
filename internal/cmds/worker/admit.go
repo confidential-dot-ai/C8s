@@ -202,17 +202,17 @@ func admittedSet(nodes refvalues.ReferenceValues) ([]byte, error) {
 func checkCDSPin(cds cmdsutil.CDS, own []byte) error {
 	mine, err := refvalues.Parse(own)
 	if err != nil {
-		return fmt.Errorf("--cds-pin: %w", err)
+		return fmt.Errorf("--ta-pin: %w", err)
 	}
 	theirs, err := refvalues.Parse([]byte(cds.Measurements))
 	if err != nil {
 		return fmt.Errorf("cds.measurements: %w", err)
 	}
 	if theirs.Family != mine.Family {
-		return fmt.Errorf("cds.measurements pins a %s CDS and --cds-pin a %s one", theirs.Family, mine.Family)
+		return fmt.Errorf("cds.measurements pins a %s CDS and --ta-pin a %s one", theirs.Family, mine.Family)
 	}
 	if missing, extra := refvalues.Diff(mine, theirs); len(missing) > 0 || len(extra) > 0 {
-		return errors.New("cds.measurements pins another CDS than --cds-pin: a worker launched with this document would trust it")
+		return errors.New("cds.measurements pins another CDS than --ta-pin: a worker launched with this document would trust it")
 	}
 	return nil
 }

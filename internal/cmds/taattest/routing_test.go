@@ -551,7 +551,7 @@ func TestCheckRoutingFlags(t *testing.T) {
 		wantSub string
 	}{
 		{"routed", routed(nil), ""},
-		{"no cds", routed(func(c *config) { c.routing.cdsURL = "" }), "--cds-url is required"},
+		{"no cds", routed(func(c *config) { c.routing.cdsURL = "" }), "--ta-url is required"},
 		{"tunnel budget under one request", routed(func(c *config) { c.routing.tunnelBudget = quantityFlag{bytes: oneRequestBudget - 1, set: true} }), "--tunnel-budget"},
 		{"cds without attestation api", routed(func(c *config) { c.attestationAPIURL = "" }), "--attestation-api-url"},
 		{"non-loopback routing host", routed(func(c *config) { c.routing.host = "0.0.0.0" }), "loopback"},
@@ -561,7 +561,7 @@ func TestCheckRoutingFlags(t *testing.T) {
 		{"zero backend timeout", routed(func(c *config) { c.routing.backendTimeout = 0 }), "--backend-timeout"},
 		{"negative backend timeout", routed(func(c *config) { c.routing.backendTimeout = -time.Second }), "--backend-timeout"},
 		{"publish routes", routed(func(c *config) { c.routing.publish = true }), ""},
-		{"publish routes without cds", routed(func(c *config) { c.routing.publish = true; c.routing.cdsURL = "" }), "--publish-routes requires --cds-url"},
+		{"publish routes without cds", routed(func(c *config) { c.routing.publish = true; c.routing.cdsURL = "" }), "--publish-routes requires --ta-url"},
 		{"measured policies", routed(func(c *config) { c.measuredPolicies = "/run/nri/measured-policies" }), ""},
 		{"default reserved paths", routed(func(c *config) { c.routing.reservedPaths = defaultReservedPaths }), ""},
 		{"reserved path /a//b", routed(func(c *config) { c.routing.reservedPaths = []string{"/ok", "/a//b"} }), "--reserved-paths"},

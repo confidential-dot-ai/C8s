@@ -55,8 +55,9 @@ func (c Config) Endpoint() string {
 // shape also moves the volume daemon onto guest loopback) overrides the
 // affected flag's Usage via f.Lookup after this call.
 func BindFlags(f *pflag.FlagSet, cfg *Config) {
-	cmdsutil.BindImagePolicyFlags(f, &cfg.MeasurementsConfig, &cfg.MeasurementsConfigJSON, "pins the CDS endpoint, every entry bound to the launch file that CDS runs on; required unless the node pins CDS")
-	f.StringVar(&cfg.CDSURL, "cds-url", "", "https base URL of CDS; refused in an injected sidecar, which dials the endpoint the node mounts")
+	cmdsutil.BindTAImagePolicyFlags(f, &cfg.MeasurementsConfig, &cfg.MeasurementsConfigJSON, "pins the Trust Authority endpoint, every entry bound to the launch file that CDS runs on; required unless the node pins CDS")
+	f.StringVar(&cfg.CDSURL, "ta-url", "", "HTTPS Trust Authority base URL; refused in an injected sidecar, which dials the endpoint the node mounts")
+	cmdsutil.AliasFlag(f, "ta-url", "cds-url")
 	f.StringVar(&cfg.AttestationApiURL, "attestation-api-url", "", "local attestation-api used to verify CDS's armTLS certificate")
 	f.StringVar(&cfg.CertPath, "cert", "/run/c8s/certs/tls.crt", "the pod's CDS-issued certificate, presented to CDS")
 	f.StringVar(&cfg.KeyPath, "key", "/run/c8s/certs/tls.key", "private key for --cert")
@@ -71,7 +72,7 @@ func BindFlags(f *pflag.FlagSet, cfg *Config) {
 var nodeAddressPath = workloadclaims.CDSAddressPath
 
 // ResolveCDSEndpoint fixes the CDS this sidecar dials: the endpoint its node
-// hands an injected client, otherwise --cds-url. Each command calls it while
+// hands an injected client, otherwise --ta-url. Each command calls it while
 // it wires its flags, before validating what it ended up with.
 func (c *Config) ResolveCDSEndpoint() error {
 	cdsURL, fromNode, err := cmdsutil.ResolveCDSURL(nodeAddressPath, c.CDSURL)
@@ -87,11 +88,11 @@ func (c *Config) ResolveCDSEndpoint() error {
 // Each command's own validate covers the fields only it knows about.
 func (c *Config) Validate() error {
 	if c.CDSURL == "" {
-		return fmt.Errorf("--cds-url is required")
+		return fmt.Errorf("--ta-url is required")
 	}
 	c.CDSURL = strings.TrimRight(c.CDSURL, "/")
 	if !strings.HasPrefix(c.CDSURL, "https://") {
-		return fmt.Errorf("--cds-url must be https (armTLS)")
+		return fmt.Errorf("--ta-url must be https (armTLS)")
 	}
 	if c.AttestationApiURL == "" {
 		return fmt.Errorf("--attestation-api-url is required to verify CDS")
@@ -112,7 +113,7 @@ func (c *Config) Validate() error {
 }
 
 // ParsePins resolves the pins this sidecar holds its CDS to: the node's policy
-// where the enforcer mounts it, otherwise --image-policy-file.
+// where the enforcer mounts it, otherwise --ta-image-policy-file.
 func (c *Config) ParsePins(ctx context.Context) (armtls.PinSource, error) {
 	return cmdsutil.ClientCDSPins(ctx, workloadclaims.CDSPinsPath,
 		cmdsutil.ImagePolicySource{

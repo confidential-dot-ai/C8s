@@ -220,10 +220,10 @@ func TestAdmitRefusesWhatTheCustomerCannotAdmit(t *testing.T) {
 			pins, _ := refvalues.Parse(f.in.CDSPin)
 			pins.Family = teetypes.FamilyTDX
 			f.in.CDSPin = formatPins(t, pins.Family, pins.Images...)
-		}, "cds.measurements pins a sev-snp CDS and --cds-pin a tdx one"},
+		}, "cds.measurements pins a sev-snp CDS and --ta-pin a tdx one"},
 		{"another CDS pin", func(t *testing.T, f *admitFixture) {
 			f.in.CDSPin = []byte(testCDSPin(t, cdsConfig(t, "192.168.0.0/16")))
-		}, "pins another CDS than --cds-pin"},
+		}, "pins another CDS than --ta-pin"},
 		{"a worker image bound already", func(t *testing.T, f *admitFixture) {
 			pin := remote.ImagePin{Name: "worker", Digest: workerDigest, Anchor: []byte(publicKeyPEM(t))}
 			f.in.WorkerImage = formatPins(t, f.family, pin)
