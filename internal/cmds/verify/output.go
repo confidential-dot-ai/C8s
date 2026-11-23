@@ -79,7 +79,7 @@ type Outcome struct {
 
 	// OperatorKeys are hex SHA-256 fingerprints (of the PKIX/SPKI DER) of the
 	// operator public keys the target pins for allowlist writes (served list,
-	// kind=cds only), fetched over the attested serving cert.
+	// kind=ta only), fetched over the attested serving cert.
 	// OperatorKeysNote says what stands behind them: matched against
 	// --operator-keys, reported unpinned, or why the set is absent.
 	OperatorKeys     []string `json:"operator_keys,omitempty"`

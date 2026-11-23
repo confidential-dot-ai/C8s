@@ -49,7 +49,7 @@ type verifyPlan struct {
 	routes *routeCheck
 	// trustKeys is the parsed --trust-operator-keys bundle, nil when unset.
 	trustKeys []*ecdsa.PublicKey
-	// operatorKeysDigest is the digest the set a kind=cds target serves at
+	// operatorKeysDigest is the digest the set a kind=ta target serves at
 	// /operator-keys must equal, nil when no --operator-keys bundle pins it.
 	operatorKeysDigest []byte
 	tdxTCBStatuses     []teetypes.TdxTcbStatus
@@ -287,12 +287,12 @@ func (p rtmrPins) any() bool {
 	return p.image != nil || p.rtmr3 != nil || len(p.manual) > 0
 }
 
-// requireCDSIdentity holds a kind=cds target to the identity of one CDS VM: a
+// requireCDSIdentity holds a kind=ta target to the identity of one CDS VM: a
 // pin document binding every entry to the launch file that CDS runs on. A
 // launch digest, with or without registers, names the CDS image, which says
 // nothing about the cluster the VM serves.
 func requireCDSIdentity(cfg config, refValues refvalues.ReferenceValues) error {
-	if cfg.kind != "cds" {
+	if cfg.kind != "ta" {
 		return nil
 	}
 	if len(cfg.measurements) > 0 || cfg.measurementsFile != "" {
@@ -320,10 +320,10 @@ func allowlistFlagsUsed(cfg config) string {
 	}
 }
 
-// refuseMeshLeafFlagsWithKindCDS refuses, under --kind cds, the flags that
+// refuseMeshLeafFlagsWithKindCDS refuses, under --kind ta, the flags that
 // check a leaf the mesh CA issued: its chain and the stamps CDS signs into it.
 func refuseMeshLeafFlagsWithKindCDS(cfg config) error {
-	if cfg.kind != "cds" {
+	if cfg.kind != "ta" {
 		return nil
 	}
 	var used []string
@@ -345,7 +345,7 @@ func refuseMeshLeafFlagsWithKindCDS(cfg config) error {
 	if len(used) == 0 {
 		return nil
 	}
-	return fmt.Errorf("a CDS target (--kind cds) takes no %s: its serving certificate is self-signed, so it chains to no mesh CA and carries no sandbox ID or workload stamp. These flags check the certificates CDS issues to --kind lb and --kind workload targets", strings.Join(used, ", "))
+	return fmt.Errorf("a CDS target (--kind ta) takes no %s: its serving certificate is self-signed, so it chains to no mesh CA and carries no sandbox ID or workload stamp. These flags check the certificates CDS issues to --kind lb and --kind workload targets", strings.Join(used, ", "))
 }
 
 // rtmr3FlagUsed names whichever flag supplied the RTMR[3] pin. Both feed one

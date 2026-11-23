@@ -32,10 +32,10 @@ func applyVerdictPolicies(oc *Outcome, cfg config, ev *evidence, held *heldAllow
 }
 
 // applyServedSetNote says so when the /measurements cross-check did not run:
-// a kind=cds verdict without --served-policy-file proves the target's own
+// a kind=ta verdict without --served-policy-file proves the target's own
 // identity and nothing about the node identities it admits.
 func applyServedSetNote(oc *Outcome, cfg config, plan *verifyPlan) {
-	if cfg.kind == "cds" && plan.served == nil {
+	if cfg.kind == "ta" && plan.served == nil {
 		oc.Warnings = append(oc.Warnings, "no --served-policy-file: the set this CDS reports enforcing at /measurements was not checked")
 	}
 }
@@ -263,7 +263,7 @@ func applySandboxPolicy(oc *Outcome, cfg config, ev *evidence, opKeys operatorKe
 	checkServedOperatorKeys(oc, plan.operatorKeysDigest, opKeys, fail)
 }
 
-// checkServedOperatorKeys compares the key set a kind=cds target serves at
+// checkServedOperatorKeys compares the key set a kind=ta target serves at
 // /operator-keys with the --operator-keys digest the plan resolved.
 func checkServedOperatorKeys(oc *Outcome, expected []byte, opKeys operatorKeysReport, fail func(string, ...any)) {
 	if len(expected) == 0 {

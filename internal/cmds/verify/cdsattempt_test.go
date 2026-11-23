@@ -160,7 +160,7 @@ func TestCDSAttemptCrosscheckVerdict(t *testing.T) {
 				}
 			})
 			connections.Store(count)
-			cfg := config{kind: "cds", url: srv.URL, server: "cds.example", timeout: time.Second, measurementsConfig: testutil.CDSPinFile(t)}
+			cfg := config{kind: "ta", url: srv.URL, server: "cds.example", timeout: time.Second, measurementsConfig: testutil.CDSPinFile(t)}
 			if tc.keys {
 				cfg.operatorKeys = keyPath
 			}
@@ -307,7 +307,7 @@ func TestCDSRunKeepsEvidenceConnection(t *testing.T) {
 					t.Errorf("unexpected path %s", r.URL.Path)
 				}
 			})
-			cfg := config{kind: "cds", url: srv.URL, timeout: time.Second, measurementsConfig: testutil.CDSPinFile(t)}
+			cfg := config{kind: "ta", url: srv.URL, timeout: time.Second, measurementsConfig: testutil.CDSPinFile(t)}
 			if check != "keys" {
 				cfg.servedPolicyFile = writeImagePolicy(t, "served.json", served)
 			}

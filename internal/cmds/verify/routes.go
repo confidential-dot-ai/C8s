@@ -66,7 +66,7 @@ func attestedMode(cfg config) bool {
 
 // parseRouteCheck validates the route flags and reads --operator-keys once.
 // It returns nil when the run checks no route digest. Outside the attested
-// modes --operator-keys keeps its kind=cds meaning.
+// modes --operator-keys keeps its kind=ta meaning.
 func parseRouteCheck(cfg config) (*routeCheck, error) {
 	// The override replaces the transcript, and with it the route digest the
 	// transcript binds.
@@ -100,8 +100,8 @@ func parseRouteCheck(cfg config) (*routeCheck, error) {
 		}
 		return parseRoutePins(cfg.routeDigests)
 	case cfg.operatorKeys != "":
-		if cfg.kind == "cds" {
-			return nil, errors.New("--operator-keys in --mode " + resolveMode(cfg) + " checks the published route manifest, not the /operator-keys set --kind cds checks: drop --kind cds or the mode")
+		if cfg.kind == "ta" {
+			return nil, errors.New("--operator-keys in --mode " + resolveMode(cfg) + " checks the published route manifest, not the /operator-keys set --kind ta checks: drop --kind ta or the mode")
 		}
 		if cfg.fromFile != "" {
 			return nil, errors.New("--operator-keys checks the manifest the live router publishes; to verify a saved receipt, pass --route-digest")

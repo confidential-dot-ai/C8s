@@ -265,7 +265,7 @@ func TestCheckServedPolicyNamesTheFlagOnAnUncheckedTarget(t *testing.T) {
 	want := mcSet(t, `{"name":"a","measurement":"00`+mcDigestA+`"}`)
 	plan := &verifyPlan{served: &want}
 	fail, msgs := collectFailures()
-	checkServedPolicy(plan, measurementsReport{note: "target kind is not cds (use --kind cds to enable)"}, fail)
+	checkServedPolicy(plan, measurementsReport{note: "target kind is not ta (use --kind ta to enable)"}, fail)
 	if len(*msgs) != 1 || !strings.Contains((*msgs)[0], "--served-policy-file cannot be checked") {
 		t.Fatalf("unchecked target did not fail naming the flag: %v", *msgs)
 	}
@@ -278,7 +278,7 @@ func TestGatherMeasurementsRunsForServedPolicyFileAlone(t *testing.T) {
 	if report.note == "" {
 		t.Fatal("a non-cds target must record why the check could not run")
 	}
-	if got := gatherMeasurements(context.Background(), config{kind: "cds"}, &verifyPlan{}, &evidence{}, fetchAttested); got.fetched || got.note != "" || got.fetchErr != nil {
+	if got := gatherMeasurements(context.Background(), config{kind: "ta"}, &verifyPlan{}, &evidence{}, fetchAttested); got.fetched || got.note != "" || got.fetchErr != nil {
 		t.Fatalf("no policy flag means no fetch: %+v", got)
 	}
 }

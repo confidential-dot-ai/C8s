@@ -1,4 +1,4 @@
-// Package cds implements the Certificate Distribution Service subcommand:
+// Package cds implements the Trust Authority subcommand:
 // the C8s trust root (attestation, mesh CA, leaf signing).
 package cds
 
@@ -29,8 +29,9 @@ const (
 func NewCmd() *cobra.Command {
 	var cfg config
 	cmd := &cobra.Command{
-		Use:   "cds",
-		Short: "Run the Certificate Distribution Service (CDS)",
+		Use:     "ta",
+		Aliases: []string{"cds"},
+		Short:   "Run the Trust Authority",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runMeasuredConfig(cmd.Context(), cfg)
 		},
@@ -83,18 +84,18 @@ func NewCmd() *cobra.Command {
 
 	cmdsutil.RequireFlags(cmd, "config", "attestation-api-url", "allowlist-db")
 
-	// `c8s cds verify` — a shorthand for `c8s verify --kind cds`, sharing the
-	// same implementation. Running CDS (the server) stays `c8s cds`.
+	// `c8s ta verify` — a shorthand for `c8s verify --kind ta`, sharing the
+	// same implementation. Running CDS (the server) stays `c8s ta`.
 	//
 	// Mode is intentionally left at auto: resolveMode derives it from --kind
-	// (cds → armtls-cert, lb → discovery), so `c8s cds verify --kind lb` targets
+	// (ta → armtls-cert, lb → discovery), so `c8s ta verify --kind lb` targets
 	// the LB's discovery doc. Presetting Mode: "armtls-cert" here would shadow
 	// that and make --kind lb dial for the embedded armTLS extension the LB
 	// front door never serves.
 	cmd.AddCommand(verify.NewCmd(verify.Defaults{
 		Use:         "verify [target]",
-		Short:       "Verify a CDS endpoint's TEE attestation",
-		Kind:        "cds",
+		Short:       "Verify a Trust Authority endpoint's TEE attestation",
+		Kind:        "ta",
 		DefaultPort: 8443,
 	}))
 

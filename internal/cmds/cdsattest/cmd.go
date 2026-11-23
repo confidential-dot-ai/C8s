@@ -56,8 +56,9 @@ type config struct {
 func NewCmd() *cobra.Command {
 	var cfg config
 	cmd := &cobra.Command{
-		Use:   "cds-attest",
-		Short: "Run the router routing, attestation and over-encryption sidecar",
+		Use:     "ta-attest",
+		Aliases: []string{"cds-attest"},
+		Short:   "Run the router routing, attestation and over-encryption sidecar",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return run(cmd.Context(), cfg)
 		},

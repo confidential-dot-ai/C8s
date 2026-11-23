@@ -247,7 +247,7 @@ func TestParseRouteCheckV2(t *testing.T) {
 		{name: "keys and pin", cfg: config{mode: "attest-pq", operatorKeys: op.keyFile, routeDigests: []string{pin}}, wantErr: "pass one of"},
 		{name: "floor without keys", cfg: config{mode: "attest-pq", routeDigests: []string{pin}, routesFloor: "7:" + pin}, wantErr: "only with --operator-keys"},
 		{name: "floor outside attested modes", cfg: config{mode: "discovery", routesFloor: "7:" + pin}, wantErr: "applies only to"},
-		{name: "keys with kind cds", cfg: config{kind: "cds", mode: "attest-pq", operatorKeys: op.keyFile}, wantErr: "drop --kind cds"},
+		{name: "keys with kind cds", cfg: config{kind: "ta", mode: "attest-pq", operatorKeys: op.keyFile}, wantErr: "drop --kind ta"},
 		{name: "keys with a saved file", cfg: config{mode: "attest-lb", fromFile: "receipt.json", operatorKeys: op.keyFile}, wantErr: "pass --route-digest"},
 		{name: "floor without a colon", cfg: config{mode: "attest-pq", operatorKeys: op.keyFile, routesFloor: pin}, wantErr: "want <revision>"},
 		{name: "floor revision zero", cfg: config{mode: "attest-pq", operatorKeys: op.keyFile, routesFloor: "0:" + pin}, wantErr: "positive integer"},
@@ -441,7 +441,7 @@ func TestSavedBundleRouteFlags(t *testing.T) {
 		{name: "expected report data in attest-pq mode", cfg: config{mode: "attest-pq", fromFile: bundle, routeDigests: []string{pin}, expectedRDHex: "00"}, want: "does not apply to --mode attest-pq"},
 		{name: "expected report data in attest-pq mode without a route check", cfg: config{mode: "attest-pq", fromFile: bundle, expectedRDHex: "00"}, want: "does not apply to --mode attest-pq"},
 		{name: "expected report data against a live router", cfg: config{url: "https://router.invalid", mode: "attest-lb", routeDigests: []string{pin}, expectedRDHex: "00"}, want: "does not apply to --mode attest-lb"},
-		{name: "operator keys with kind cds", cfg: config{url: "https://router.invalid", kind: "cds", mode: "attest-pq", measurementsConfig: testutil.CDSPinFile(t), operatorKeys: newOperatorSigner(t).keyFile}, want: "drop --kind cds"},
+		{name: "operator keys with kind cds", cfg: config{url: "https://router.invalid", kind: "ta", mode: "attest-pq", measurementsConfig: testutil.CDSPinFile(t), operatorKeys: newOperatorSigner(t).keyFile}, want: "drop --kind ta"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var out, errOut bytes.Buffer
