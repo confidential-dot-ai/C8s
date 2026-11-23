@@ -387,7 +387,8 @@ jobs:
         if: steps.mutation.outputs.report == 'lived'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: mutation-report
+          # One per attempt: a rerun cannot upload under a name the run already holds.
+          name: mutation-report-${{ github.run_attempt }}
           path: |
             mutation-summary.md
             mutation.json
