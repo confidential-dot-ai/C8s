@@ -1,63 +1,63 @@
-# A cloud cluster's CDS
+# A cloud cluster's Trust Authority (TA)
 
-CDS — the Certificate Distribution Service, the VM outside the cluster that
+The TA — the VM outside the cluster that
 holds C8s policy and signs every workload certificate — does not run on the
 cloud that runs the cluster. This page covers where it runs instead, the flows
-it needs, and where the node pins come from on AKS and GKE. What CDS does for a
+it needs, and where the node pins come from on AKS and GKE. What the TA does for a
 cluster is [operator.md](operator.md); running several of them is
-[cds-ha.md](cds-ha.md).
+[ta-ha.md](ta-ha.md).
 
 ## Where it runs
 
-`cds-pin.json`, the document every client holds CDS to, binds two values: a
-launch digest from the `manifest.json` published with the `cds-guest` image,
+`cds-pin.json`, the document every client holds the TA to, binds two values: a
+launch digest from the `manifest.json` published with the `ta-guest` image,
 and the exact bytes of the `cds-config.yaml` the VM booted, which on SEV-SNP
 the launcher commits as `HOST_DATA`
-([launch requirements](../images/cds-guest/README.md#launch-requirements)).
+([launch requirements](../images/ta-guest/README.md#launch-requirements)).
 
 An AKS or GKE confidential VM proves neither: its launch digest is the
 provider's firmware layer, and `HOST_DATA` belongs to the cloud stack
-([measurements.md](measurements.md#where-the-evidence-comes-from)). So the CDS
+([measurements.md](measurements.md#where-the-evidence-comes-from)). So the TA
 VM runs on SEV-SNP or TDX hardware you hold, beside the cloud cluster rather
 than in it — a host launching it under an IGVM-capable QEMU, or a KubeVirt VM
 on a cluster of your own confidential hosts. The cloud cluster holds its
-address and its pin, which `c8s install --cds-address <HOST>:<PORT> --cds-pin
+address and its pin, which `c8s install --ta-address <HOST>:<PORT> --ta-pin
 cds-pin.json` carries into the release, and nothing else of it.
 
 ## The flows it needs
 
 | From | To | Port | Why |
 |---|---|---|---|
-| Every confidential node, and the member pods on it | CDS | TCP, the `--cds-address` port (8443 unless the VM was started on another `--port`) | certificate issuance, allowlist pulls, secret and volume-key release |
-| CDS | every node, at the node's own address | TCP 1019 | the admission inventory's identity and digests, read on every issuance ([armtls.md](armtls.md#sandbox-identity)) |
-| The operator's workstation | CDS | the `--cds-address` port | `c8s install`, allowlist, route and secret writes, `c8s cds verify` |
-| CDS, every confidential node, and the operator's workstation | `kdsintf.amd.com`, `api.trustedservices.intel.com` | TCP 443 | the endorsement certificate for evidence that carries none, and revocation lists |
-| CDS | the KMS of `c8s cds config new --kms-url`, when set | that URL's port | Pod CVM secret release ([pod-secrets.md](pod-secrets.md)) |
-| Each CDS replica | the other replicas | TCP 8444 | the replicated log, HA only ([cds-ha.md](cds-ha.md#addresses)) |
+| Every confidential node, and the member pods on it | TA | TCP, the `--ta-address` port (8443 unless the VM was started on another `--port`) | certificate issuance, allowlist pulls, secret and volume-key release |
+| TA | every node, at the node's own address | TCP 1019 | the admission inventory's identity and digests, read on every issuance ([armtls.md](armtls.md#sandbox-identity)) |
+| The operator's workstation | TA | the `--ta-address` port | `c8s install`, allowlist, route and secret writes, `c8s ta verify` |
+| the TA, every confidential node, and the operator's workstation | `kdsintf.amd.com`, `api.trustedservices.intel.com` | TCP 443 | the endorsement certificate for evidence that carries none, and revocation lists |
+| TA | the KMS of `c8s ta config new --kms-url`, when set | that URL's port | Pod CVM secret release ([pod-secrets.md](pod-secrets.md)) |
+| Each TA replica | the other replicas | TCP 8444 | the replicated log, HA only ([ta-ha.md](ta-ha.md#addresses)) |
 
-CDS dialing a node on 1019 is the flow a cloud network breaks. Each sandbox
-token names the node's own address and CDS dials that address, so the CDS host
+The TA dialing a node on 1019 is the flow a cloud network breaks. Each sandbox
+token names the node's own address and the TA dials that address, so the TA host
 needs a route to the node subnet — peering, a VPN or an interconnect — and a
 node reached only through NAT answers on an address no token names. The
-address must also fall inside a `--node-cidr` of the CDS configuration, a
+address must also fall inside a `--node-cidr` of the TA configuration, a
 bound that holds no pod address
 ([operator.md](operator.md#what-an-install-deploys) states that overlap rule
 and how to read the AKS pod range).
 
 The vendor-certificate flow is easy to miss on the cluster side: in-cluster
-verification runs through the node's own attestation API, and a CDS serving
+verification runs through the node's own attestation API, and a TA serving
 certificate on SEV-SNP carries a bare report whose VCEK that API fetches from
 AMD.
 
 ## Node pins on AKS and GKE
 
-`c8s cds config new --node-pins` takes the measurements config pinning the node
-launch identities CDS admits. For the C8s node image that file comes from the
+`c8s ta config new --node-pins` takes the measurements config pinning the node
+launch identities the TA admits. For the C8s node image that file comes from the
 image build's published manifest
 ([verify.md](verify.md#derive-the-pins-yourself)). Azure and Google build the
 node image on the managed lanes and publish no manifest, so the value comes
 from a confidential node of the pool the cluster will run on, read before the
-CDS configuration is written.
+TA configuration is written.
 
 1. Serve the attestation API on one confidential node of each machine shape
    the pool runs. An installed cluster already runs it on every confidential
@@ -161,7 +161,7 @@ CDS configuration is written.
    `measurement` is the node's launch digest and `measurement_pinned` is
    false: this run reads a value rather than checking one.
 
-4. Write the measurements config and pass it to `c8s cds config new
+4. Write the measurements config and pass it to `c8s ta config new
    --node-pins`. On `aks-tdx` the verdict's `measurement` is the MRTD: write
    it as `mrtd` with `tee` set to `tdx`, where it covers Azure's TDX firmware
    ([measurements.md](measurements.md#the-measurements-config)):
@@ -187,6 +187,6 @@ What that pin is worth, and what it costs:
   cluster to what that node reported and to no build you can audit.
 - A provider change that moves the digest stops issuance on the nodes that
   carry the new one, and re-pinning costs a new configuration, a new pin, a
-  CDS relaunch and `c8s install --cds-pin` again — for a replicated CDS too,
+  TA relaunch and `c8s install --ta-pin` again — for a replicated TA too,
   whose later `node-images` decrees take only entries that bind a launch
-  ([cds-ha.md](cds-ha.md#the-node-images-the-cluster-certifies)).
+  ([ta-ha.md](ta-ha.md#the-node-images-the-cluster-certifies)).

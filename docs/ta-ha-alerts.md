@@ -1,13 +1,13 @@
-# CDS HA alarms
+# High availability alarms for the Trust Authority (TA)
 
-What to watch on a CDS that runs as several VMs, and which runbook answers it.
-[cds-ha.md](cds-ha.md) explains the behaviour.
+What to watch on a TA that runs as several VMs, and which runbook answers it.
+[ta-ha.md](ta-ha.md) explains the behaviour.
 
 Two sources say the same things. Every replica reports itself over the
-attested channel, which `c8s cds ha status` reads and prints as one row per
+attested channel, which `c8s ta ha status` reads and prints as one row per
 replica, a line per alarm, and a last line on whether the replicas describe
 one cluster; and every replica logs what is wrong with it
-to its own journal at ERROR, prefixed `cds-ha:`, once for as long as the cause
+to its own journal at ERROR, prefixed `ta-ha:`, once for as long as the cause
 holds. The lines an operator must act on carry `ALARM:`. Alert on either
 source, and read the other to tell which replica is at fault.
 
@@ -15,7 +15,7 @@ A status is one replica's own word. `ha status` exits non-zero when the
 replicas do not agree, which is the one check that needs no threshold:
 
 ```sh
-c8s cds ha status --config cds-config.yaml --cds-pin cds-pin.json || alert
+c8s ta ha status --config cds-config.yaml --ta-pin cds-pin.json || alert
 ```
 
 ## What one replica reports
@@ -55,7 +55,7 @@ omits them.
 | `no replica of this cluster may be replaced now: ...` | the seats are not settled | wait before a planned removal; replace an already removed VM while a serving majority survives: runbook 2 |
 | `the replicas of this cluster take turns answering at one address` | a replica entry resolves to a load-balanced address, or two VMs share one | give every replica its own address: runbook 3 |
 | `this leader's Raft refuses every barrier of its term` | the leader cannot confirm reads | it exits, and another replica takes the cluster over; alert if it repeats |
-| `this replica admits no peer: the cluster's CDS images are none of this launch file's` | this VM runs an image the cluster does not accept | the roll skipped it, or its Admit expired: runbook 6 |
+| `this replica admits no peer: the cluster's TA images are none of this launch file's` | this VM runs an image the cluster does not accept | the roll skipped it, or its Admit expired: runbook 6 |
 
 ## Thresholds worth setting
 

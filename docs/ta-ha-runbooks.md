@@ -1,14 +1,14 @@
-# CDS HA runbooks
+# High availability runbooks for the Trust Authority (TA)
 
-Procedures for a CDS that runs as several VMs. [cds-ha.md](cds-ha.md)
+Procedures for a TA that runs as several VMs. [ta-ha.md](ta-ha.md)
 explains the behaviour each one relies on, and
-[cds-ha-alerts.md](cds-ha-alerts.md) what to watch.
+[ta-ha-alerts.md](ta-ha-alerts.md) what to watch.
 
 Every runbook assumes:
 
 - `cds-config.yaml`: the launch file every replica of the cluster boots;
-- `cds-pin.json`: the pin document for the CDS images the cluster accepts,
-  which `c8s cds ha pin-policy --out` writes;
+- `cds-pin.json`: the pin document for the TA images the cluster accepts,
+  which `c8s ta ha pin-policy --out` writes;
 - `operator.key`: a private key whose public half the launch file pins.
 
 Every decree is posted to a replica over the attested channel: `--to` names
@@ -18,7 +18,7 @@ any replica of the cluster, and `--target` the one replica a `genesis`,
 Read the cluster before and after every step:
 
 ```sh
-c8s cds ha status --config cds-config.yaml --cds-pin cds-pin.json
+c8s ta ha status --config cds-config.yaml --ta-pin cds-pin.json
 ```
 
 The `VERSION` column is what the next decree's `--base-version` names. A
@@ -32,7 +32,7 @@ The replicas are booted and none of them holds a cluster.
 1. Check that every replica answers and reports no cluster:
 
    ```sh
-   c8s cds ha status --config cds-config.yaml --cds-pin cds-pin.json
+   c8s ta ha status --config cds-config.yaml --ta-pin cds-pin.json
    ```
 
    Every row reads `does not serve: "this replica holds no cluster"`. A
@@ -43,10 +43,10 @@ The replicas are booted and none of them holds a cluster.
    member id and mesh CA over the attested channel and signs them in:
 
    ```sh
-   c8s cds ha decree genesis \
+   c8s ta ha decree genesis \
        --config cds-config.yaml --operator-key operator.key \
-       --target cds-1.example.org --cds-pin cds-pin.json \
-       --platform sev-snp --vcpus 4 --image-manifest cds-manifest.json \
+       --target ta-1.example.org --ta-pin cds-pin.json \
+       --platform sev-snp --vcpus 4 --image-manifest ta-manifest.json \
        --resume-version 0
    ```
 
@@ -62,7 +62,7 @@ The replicas are booted and none of them holds a cluster.
    decreed replica leads and the others join:
 
    ```sh
-   c8s cds ha status --config cds-config.yaml --cds-pin cds-pin.json
+   c8s ta ha status --config cds-config.yaml --ta-pin cds-pin.json
    ```
 
    Every row reads `serving`, and the last line reads
@@ -81,7 +81,7 @@ a host that hides the others would get a cluster beside them.
 
 ## 2. Replace a replica VM
 
-A VM is gone, or is to be replaced for any reason other than a new CDS image
+A VM is gone, or is to be replaced for any reason other than a new TA image
 (runbook 6).
 
 If the cluster lost its majority, follow runbook 7 before replacing VMs.
@@ -92,7 +92,7 @@ If the cluster lost its majority, follow runbook 7 before replacing VMs.
      replaced:
 
      ```sh
-     c8s cds ha status --config cds-config.yaml --cds-pin cds-pin.json --json |
+     c8s ta ha status --config cds-config.yaml --ta-pin cds-pin.json --json |
          jq -e 'any(.[]; .status.roll_safe.ok)'
      ```
 
@@ -100,10 +100,10 @@ If the cluster lost its majority, follow runbook 7 before replacing VMs.
      seats. Destroy the old VM, then continue to step 2.
 
    - **VM already removed:** read the surviving leader, replacing
-     `cds-2.example.org` with its address:
+     `ta-2.example.org` with its address:
 
      ```sh
-     c8s cds ha status --config cds-config.yaml --cds-pin cds-pin.json --url cds-2.example.org
+     c8s ta ha status --config cds-config.yaml --ta-pin cds-pin.json --url ta-2.example.org
      ```
 
      Require a successful exit and its row to read `leader` and `serving`,
@@ -145,10 +145,10 @@ More seats tolerate more loss and cost a wider majority per write. The count
 is odd, at most 9, and no larger than the number of replicas that can fill it.
 
 ```sh
-c8s cds ha decree voters \
+c8s ta ha decree voters \
     --config cds-config.yaml --operator-key operator.key \
     --base-version 12 --voters 5 \
-    --to cds-1.example.org --cds-pin cds-pin.json
+    --to ta-1.example.org --ta-pin cds-pin.json
 ```
 
 The replicas fill or give up one seat at a time, so the cluster keeps a
@@ -159,17 +159,17 @@ more seats than there are replicas.
 
 ## 5. Upgrade the node images the cluster certifies
 
-Two decrees, with the node relaunches between them. No CDS VM, launch file or
+Two decrees, with the node relaunches between them. No TA VM, launch file or
 client pin changes.
 
 1. Write the node pin document naming the image being replaced and the one
    replacing it, and decree it:
 
    ```sh
-   c8s cds ha decree node-images \
+   c8s ta ha decree node-images \
        --config cds-config.yaml --operator-key operator.key \
        --base-version 12 --nodes nodes-old-and-new.json \
-       --to cds-1.example.org --cds-pin cds-pin.json
+       --to ta-1.example.org --ta-pin cds-pin.json
    ```
 
    Wait until `ha status --json` reports `node_images_version` as the version
@@ -182,18 +182,18 @@ client pin changes.
 3. Decree the new image alone:
 
    ```sh
-   c8s cds ha decree node-images \
+   c8s ta ha decree node-images \
        --config cds-config.yaml --operator-key operator.key \
        --base-version 13 --nodes nodes-new.json \
-       --to cds-1.example.org --cds-pin cds-pin.json
+       --to ta-1.example.org --ta-pin cds-pin.json
    ```
 
 4. Keep the node document of the decree in force: it is what
-   `c8s verify --kind cds --served-policy-file` expects the cluster to serve.
+   `c8s verify --kind ta --served-policy-file` expects the cluster to serve.
 
-## 6. Roll the CDS image
+## 6. Roll the TA image
 
-Every replica VM is replaced with one running the new CDS image. During the
+Every replica VM is replaced with one running the new TA image. During the
 roll the cluster accepts both images, so a new replica reaches a leader still
 running the old one.
 
@@ -202,31 +202,31 @@ running the old one.
 2. Decree both images:
 
    ```sh
-   c8s cds ha decree pins \
+   c8s ta ha decree pins \
        --config cds-config.yaml --operator-key operator.key \
        --base-version 12 --platform sev-snp --vcpus 4 \
-       --image-manifest cds-manifest-old.json \
-       --image-manifest cds-manifest-new.json \
-       --to cds-1.example.org --cds-pin cds-pin.json
+       --image-manifest ta-manifest-old.json \
+       --image-manifest ta-manifest-new.json \
+       --to ta-1.example.org --ta-pin cds-pin.json
    ```
 
-   Wait until `c8s cds ha decrees` lists it, then write the pin document it
-   makes. That document is the `--cds-pin` for the rest of the roll: it
+   Wait until `c8s ta ha decrees` lists it, then write the pin document it
+   makes. That document is the `--ta-pin` for the rest of the roll: it
    verifies a replica of either image.
 
    ```sh
-   c8s cds ha pin-policy --config cds-config.yaml --cds-pin cds-pin.json \
-       --out cds-pin-both.json --decree-out pins-applied.json
+   c8s ta ha pin-policy --config cds-config.yaml --ta-pin cds-pin.json \
+       --out ta-pin-both.json --decree-out pins-applied.json
    ```
 
 3. Replace one VM with one running the new image, then let it admit the
    cluster's images:
 
    ```sh
-   c8s cds ha decree admit \
+   c8s ta ha decree admit \
        --config cds-config.yaml --operator-key operator.key \
-       --target cds-1.example.org --cds-pin cds-pin-both.json \
-       --cluster cds-2.example.org
+       --target ta-1.example.org --ta-pin ta-pin-both.json \
+       --cluster ta-2.example.org
    ```
 
    An unjoined replica admits only its own image, so without this it never
@@ -240,17 +240,17 @@ running the old one.
 5. Decree the new image alone:
 
    ```sh
-   c8s cds ha decree pins \
+   c8s ta ha decree pins \
        --config cds-config.yaml --operator-key operator.key \
        --base-version 13 --platform sev-snp --vcpus 4 \
-       --image-manifest cds-manifest-new.json \
-       --to cds-1.example.org --cds-pin cds-pin-both.json
+       --image-manifest ta-manifest-new.json \
+       --to ta-1.example.org --ta-pin ta-pin-both.json
    ```
 
 6. Write the new pin document for the clients and the nodes:
 
    ```sh
-   c8s cds ha pin-policy --config cds-config.yaml --cds-pin cds-pin-both.json \
+   c8s ta ha pin-policy --config cds-config.yaml --ta-pin ta-pin-both.json \
        --out cds-pin.json --decree-out pins-applied.json
    ```
 
@@ -274,9 +274,9 @@ the recovered one.
 3. Sign the Recover and post it to the survivor:
 
    ```sh
-   c8s cds ha decree recover \
+   c8s ta ha decree recover \
        --config cds-config.yaml --operator-key operator.key \
-       --target cds-3.example.org --cds-pin cds-pin.json \
+       --target ta-3.example.org --ta-pin cds-pin.json \
        --base-version 14 --resume-version 14 \
        --i-understand-recover-is-break-glass
    ```
@@ -293,10 +293,10 @@ reports the decree as its doubt. Once the doubted member has rejoined, or its
 VM is destroyed, lift the doubt:
 
 ```sh
-c8s cds ha decree dismiss-recover \
+c8s ta ha decree dismiss-recover \
     --config cds-config.yaml --operator-key operator.key \
     --base-version 14 --recover-intent <intent id from ha status> \
-    --to cds-3.example.org --cds-pin cds-pin.json
+    --to ta-3.example.org --ta-pin cds-pin.json
 ```
 
 ## 8. A halted cluster
@@ -316,10 +316,10 @@ what loses the cluster, not the halt.
      answering its disk. Fix that, and the replicas serve again by
      themselves, in the order they stopped.
    - *cannot apply a committed log entry*: applying it failed on every
-     replica running this CDS image, and it will fail again on a restart.
+     replica running this TA image, and it will fail again on a restart.
 
 2. For the second kind, capture the reason, the leader's `applied_index` from
-   `ha status --json` and the alarm lines, and escalate. Only a CDS image that
+   `ha status --json` and the alarm lines, and escalate. Only a TA image that
    applies the entry gets the cluster out, and a halted cluster applies no
    decree, so it cannot accept that image by itself.
 
@@ -349,18 +349,18 @@ The leader compares what the replicas applied at every checkpoint.
 Keep the alarm lines: they name each member with its digests and how many
 voters agree.
 
-## 10. Add a node after a CDS image was retired
+## 10. Add a node after a TA image was retired
 
 A node follows the cluster's pin decrees, so it must not take one that still
-names a retired CDS image. A node already running holds the newer decree and
+names a retired TA image. A node already running holds the newer decree and
 refuses older ones. A worker added later needs the floor in its own document:
 
 ```sh
-c8s cds ha pin-policy --config cds-config.yaml --cds-pin cds-pin.json
+c8s ta ha pin-policy --config cds-config.yaml --ta-pin cds-pin.json
 ```
 
 It reports the version the applied pin decree stands at. Pass that version as
-`c8s worker new --cds-pin-floor`, and the document carries it as the worker's
+`c8s worker new --ta-pin-floor`, and the document carries it as the worker's
 pin floor: a replayed
 older decree, including one that still named the retired image, is refused. A
 worker that reboots forgets the decree it followed and starts from its own

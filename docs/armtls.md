@@ -15,8 +15,7 @@ the **evidence path**, where the peer presents a self-issued certificate with
 its evidence embedded, and the **chain path**, where it presents a leaf signed
 by the mesh CA.
 
-The evidence path carries the API of CDS — the Certificate Distribution Service,
-which holds policy and secrets and signs workload certificates — and the
+The evidence path carries the API of the Trust Authority (TA) and the
 endpoint of each node's admission inventory, the node service that records which
 containers were admitted in which pod sandbox. A verifier there re-checks the
 peer's evidence against its own measurement pins on every connection. It refuses
@@ -53,7 +52,7 @@ RTMR[3] — on a Pod CVM, the image digests it admitted — for a verifier to re
 an external verifier's job
 ([allowlist-and-capabilities.md](allowlist-and-capabilities.md#measured-policy-history)).
 
-CDS-issued leaves can carry a sandbox identity from either a node inventory
+TA-issued leaves can carry a sandbox identity from either a node inventory
 token or the [Pod CVM issuance profile](#pod-cvm-issuance). A Pod identity
 does not grant node-inventory or secret-release authority.
 
@@ -88,19 +87,19 @@ envelope) maps to `ErrInvalidReport` and is terminal, as does an unset
 attestation-api URL; every other status, a non-JSON body and transport errors
 stay unwrapped, as retryable or as a verifier deployment fault.
 
-## CDS issuance
+## TA issuance
 
-CDS is the only component that signs leaves. Its mesh CA is a P-384 key
+The TA is the only component that signs leaves. Its mesh CA is a P-384 key
 generated in process memory at startup, CN `c8s Mesh CA`, valid for a year and
 renewed past half of that under the same key. The key is never a Kubernetes
-Secret and never on disk, so a CDS restart mints a fresh CA and every workload
+Secret and never on disk, so a TA restart mints a fresh CA and every workload
 re-bootstraps ([operator.md](operator.md)).
 
-Issuance is challenge, attest, certify. The requester asks CDS for a challenge
+Issuance is challenge, attest, certify. The requester asks the TA for a challenge
 (32 bytes, single-use, TTL-bound), generates a key and a CSR, asks its
 attestation-api for evidence over `SHA-384(CSR pubkey ‖ challenge)`, and posts
 the challenge, that evidence, the CSR and any sandbox token — the inventory's
-signed statement of which pod sandbox the requester is in — to `/attest`. CDS
+signed statement of which pod sandbox the requester is in — to `/attest`. The TA
 verifies the sandbox token, then the evidence through its own attestation-api,
 enforces its measurement and register pins, checks the CSR's SAN and CN policy,
 asks the pod's inventory what it is running, and returns the leaf plus the CA
@@ -110,7 +109,7 @@ hours, a leaf carrying a matched workload at 6.
 
 The leaf's name follows from what the request carries. A CSR with DNS or IP SANs
 keeps its own common name, as does a CSR carrying only a common name and no
-sandbox token. For `get-cert --no-san`, whose CSR must carry no common name, CDS
+sandbox token. For `get-cert --no-san`, whose CSR must carry no common name, the TA
 sets the common name to the lowercase hex SHA-256 of the verified sandbox ID. A
 request with none of those names is refused `403 csr_denied`, and so is a
 `--no-san` CSR that carries one. Names authorize nothing here: the mesh matches
@@ -130,7 +129,7 @@ get-cert publishes the pod's leaf, key and CA set as one generation on a
 memory-backed volume at `/etc/c8s/certs`, renewing at the earlier of
 `--renew-interval` and half the generation's remaining lifetime — its leaf's or
 its CA's, whichever expires first. Between renewals `--ca-watch-interval` polls
-CDS, so a renewed mesh CA or a stale stamped policy snapshot is picked up early.
+the TA, so a renewed mesh CA or a stale stamped policy snapshot is picked up early.
 The endpoint carries the pod's captured TCP over armTLS, on ports 15001
 outbound, 15006 inbound and 15021 for probes.
 
@@ -142,7 +141,7 @@ uncaptured:
 - **Resolver queries**: to the single address trusted policy names, on port 53.
 - **Probes**: the ones the mesh endpoint forwards to the pod's own address on
   port 15021.
-- **Platform-role sockets**: the credential clients that reach CDS, the
+- **Platform-role sockets**: the credential clients that reach the TA, the
   endpoint itself, and, in the router's pod, the route authority
   (`cds-attest`), which authenticates each backend itself
   ([operator.md](operator.md#pattern-rules)).
@@ -153,7 +152,7 @@ Loopback stays reachable.
 
 ### The mesh endpoint profile
 
-A mesh endpoint presents its pod's CDS-issued leaf and authenticates peers on
+A mesh endpoint presents its pod's TA-issued leaf and authenticates peers on
 the chain path alone. It accepts a peer only when the leaf chains to the mesh CA
 it holds at the current time, permits the purpose the peer's role needs
 (`serverAuth` for a server, `clientAuth` for a client), carries an ECDSA P-256
@@ -178,7 +177,7 @@ evidence.
 
 A `role: pod` guest runs the same mesh endpoint, with credentials supplied by
 its measured admission plugin instead of a container credential client and node
-inventory callback. The guest authenticates CDS against the CDS pins its signed
+inventory callback. The guest authenticates the TA against the TA pins its signed
 launch document carries, then sends an empty-subject CSR, a fresh
 challenge, evidence and canonical `pod_claims` to `POST /attest`. The claims
 bind the boot identity, the assigned and runtime Pod UIDs, the sandbox ID, a
@@ -186,7 +185,7 @@ revision, the complete ordered image measurement list and every retained
 admission, completed containers included: its image digest, effective argv,
 environment commitment, mounts with their named volumes, the platform role the
 guest's measured base binds to it, and `spec_digest`, a domain-separated
-SHA-256 over the argv, environment commitment and mounts that CDS recomputes.
+SHA-256 over the argv, environment commitment and mounts that the TA recomputes.
 When the Pod has a client document, the claims also carry its SHA-256 as
 `client_document_digest`. `pkg/workloadclaims` owns their encoding. The report
 data is:
@@ -195,7 +194,7 @@ data is:
 SHA384("c8s-pod-attestation/v1\0" || SHA384(SPKI DER) || challenge || SHA384(claims))
 ```
 
-CDS verifies that binding and replays the whole measurement list against its
+the TA verifies that binding and replays the whole measurement list against its
 separate Pod image policy. Every measured digest must be in the current workload
 policy. When the Pod's whole observation set, without the platform's mesh
 endpoint, matches exactly one allowlist entry of the same policy snapshot,
@@ -246,7 +245,7 @@ whose egress needs none.
 ## Sandbox identity
 
 Hardware attestation binds a key to a guest, and the guest here is the whole
-node: every pod shares one launch measurement. A CDS-issued leaf narrows that to
+node: every pod shares one launch measurement. A TA-issued leaf narrows that to
 one pod run, naming the CRI pod sandbox it was issued to under OID
 `1.3.6.1.4.1.66378.1.4`.
 
@@ -267,15 +266,15 @@ not
 measurement, separates the inventory from any other pod on the node.
 
 get-cert asks the inventory for a sandbox token, which binds the sandbox ID, a
-digest of the requester's key, the CDS challenge for this issuance, and the IP
+digest of the requester's key, the TA challenge for this issuance, and the IP
 of the node serving port 1019. Nothing get-cert sends names its pod, and it
 reports no images of its own. The token carries no credential for its signing
-key: CDS resolves that key by dialing `/identity` at the named address, which
-must be a routable unicast IP literal inside the operator's node bound (the CDS
-configuration's `nodeCIDRs`; an empty bound refuses every token). CDS then
+key: the TA resolves that key by dialing `/identity` at the named address, which
+must be a routable unicast IP literal inside the operator's node bound (the TA
+configuration's `nodeCIDRs`; an empty bound refuses every token). The TA then
 verifies the token and asks `/digests/{id}`, where every image reported must be
 in the allowlist — the operator policy of workload
-entries CDS serves and every node enforces — and an empty answer is refused.
+entries the TA serves and every node enforces — and an empty answer is refused.
 
 Issuance gates on membership, not on a whole workload entry
 ([allowlist-and-capabilities.md](allowlist-and-capabilities.md) owns that rule),
@@ -299,7 +298,7 @@ stamp carries the entry name (at most 63 bytes, in the grammar that
 the allowlist digest: the SHA-256 of that policy's canonical bytes. Parsing is
 strict, so damage never reads as absence.
 
-CDS decides once per issuance, from one inventory answer and one immutable
+The TA decides once per issuance, from one inventory answer and one immutable
 policy snapshot: it runs the membership gate above, cross-checks the answer's
 two views, drops a container by the platform role the node's base allowlist
 binds to its launch, and matches the rest. A unique match stamps that name with

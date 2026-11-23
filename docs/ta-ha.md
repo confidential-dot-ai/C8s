@@ -1,24 +1,24 @@
-# A highly available CDS
+# A highly available Trust Authority (TA)
 
-One cluster's CDS can run as several confidential VMs instead of one. The
+One cluster's TA can run as several confidential VMs instead of one. The
 replicas share one mesh CA, one allowlist and one secret store, and they agree
 on every change through a replicated log. A client reaches whichever replica
 answers: the certificate it gets, the policy that admits it and the secrets it
 reads are the cluster's, not that replica's.
 
 The host is not trusted with any of it. Each replica admits a peer only after
-the peer's certificate proves a CDS image the cluster accepts, booted on the
+the peer's certificate proves a TA image the cluster accepts, booted on the
 same launch file. The operator's instructions arrive as signed decrees through
 an ordinary object store, and the store is never trusted: a replica acts on
 the signature, not on the object.
 
-What CDS does for a cluster is unchanged, and this page assumes it:
+What the TA does for a cluster is unchanged, and this page assumes it:
 [operator.md](operator.md) for running it,
 [measurements.md](measurements.md) for what pins it,
 [armtls.md](armtls.md) for the attested channel.
 
-The procedures are in [cds-ha-runbooks.md](cds-ha-runbooks.md), the alarms in
-[cds-ha-alerts.md](cds-ha-alerts.md).
+The procedures are in [ta-ha-runbooks.md](ta-ha-runbooks.md), the alarms in
+[ta-ha-alerts.md](ta-ha-alerts.md).
 
 ## Versions
 
@@ -26,10 +26,10 @@ A cluster counts the operator commands it has applied. That count is its
 **version**. Every decree an operator signs names the version it applies on
 top of (`--base-version`), so two operators cannot apply conflicting commands
 in either order, and a decree the host replays later applies to nothing. The
-cluster reports its version in `c8s cds ha status`.
+cluster reports its version in `c8s ta ha status`.
 
 A node keeps a **pin floor**: the lowest version at which it takes a decree
-naming the CDS images it trusts. A node launched today never follows a decree
+naming the TA images it trusts. A node launched today never follows a decree
 the operator signed before the set its own launch document carries.
 
 ## What the launch file starts and what it fixes
@@ -44,13 +44,13 @@ cluster; the log rules afterwards.
 | `workloads` | seeds the allowlist at every Genesis | operator allowlist writes |
 | `ha.voters` | the voter seats the cluster starts with | a `voters` decree, one seat at a time |
 | `ha.replicas` | the names and addresses discovery resolves to find the replicas | adding replicas behind a name needs no change; another list is another cluster |
-| `clusterID`, `operatorPublicKeys`, `nodeCIDRs`, `leafDNSNames`, `leafDNSPatterns` | as for a single CDS | fixed for the cluster's life |
+| `clusterID`, `operatorPublicKeys`, `nodeCIDRs`, `leafDNSNames`, `leafDNSPatterns` | as for a single TA | fixed for the cluster's life |
 
-The CDS images a replica may run are not in the file at all: the Genesis
+The TA images a replica may run are not in the file at all: the Genesis
 decree carries the first set, and a `pins` decree replaces it.
 
-`c8s cds config new --replica ... --voters 3` writes the file. A
-file with no `--replica` runs one CDS, which is the deployment
+`c8s ta config new --replica ... --voters 3` writes the file. A
+file with no `--replica` runs one TA, which is the deployment
 [operator.md](operator.md) describes.
 
 ## Addresses
@@ -77,7 +77,7 @@ still tells them apart. armTLS authenticates a replica by its evidence, never
 by the name. A name that resolves to several addresses is reached at each of
 them, as before.
 
-A node names its cluster's CDS by one `cds.address`. Several replicas behind
+A node names its cluster's TA by one `cds.address`. Several replicas behind
 that one name, or a load balancer in front of them, is what makes a client's
 request survive the loss of a replica: ordinary DNS resolution and the
 client's own retry do the failover.
@@ -94,17 +94,17 @@ An operator instructs a cluster by signing a decree with a key the launch file
 pins and posting it to a replica over the attested channel:
 
 ```sh
-c8s cds ha decree pins --config cds-config.yaml --operator-key operator.key \
+c8s ta ha decree pins --config cds-config.yaml --operator-key operator.key \
     --base-version 12 --platform sev-snp --vcpus 4 \
     --image-manifest manifest.json \
-    --to cds-1.example.org --cds-pin cds-pin.json
+    --to ta-1.example.org --ta-pin cds-pin.json
 ```
 
 The decree's signature is its authority, so the channel only has to reach an
 attested replica of the cluster. A replica hands what it is posted to the
 leader, which applies it through the log and answers with the version it
 produced or the reason the cluster refused it. The record of what the cluster
-applied is `c8s cds ha decrees`, read over the same channel.
+applied is `c8s ta ha decrees`, read over the same channel.
 
 `genesis`, `recover` and `admit` are posted to the replica their `--target`
 names, which holds the decree until it acts on it. `--out` writes the signed
@@ -113,7 +113,7 @@ decree to a file as well.
 | Decree | What it does |
 |---|---|
 | `genesis` | starts a cluster on one replica that holds none |
-| `pins` | replaces the CDS images a replica of the cluster may run |
+| `pins` | replaces the TA images a replica of the cluster may run |
 | `node-images` | replaces the node images the cluster certifies |
 | `voters` | names the voter seats the cluster holds |
 | `rotate-key` | mints a new mesh CA key, which forks the mesh |
@@ -161,16 +161,16 @@ replaced at that address.
 ## Reading the cluster
 
 ```sh
-c8s cds ha status --config cds-config.yaml --cds-pin cds-pin.json
+c8s ta ha status --config cds-config.yaml --ta-pin cds-pin.json
 ```
 
 One attested client per replica, and a summary of what they answered:
 
 ```
 ADDRESS                 MEMBER                        ROLE      VOTER  VERSION  HEALTH
-cds-1.example.org:8443  "ahn7yq4qnkwftxo6ihoyu2bxpi"  leader    yes    7        serving
-cds-2.example.org:8443  "mv3qa5kt2bdyl7ncu6hzjx4wpi"  follower  yes    7        serving
-cds-3.example.org:8443  "wq7tc4nxfi6sbz2hyolp5kdrue"  follower  yes    7        serving
+ta-1.example.org:8443  "ahn7yq4qnkwftxo6ihoyu2bxpi"  leader    yes    7        serving
+ta-2.example.org:8443  "mv3qa5kt2bdyl7ncu6hzjx4wpi"  follower  yes    7        serving
+ta-3.example.org:8443  "wq7tc4nxfi6sbz2hyolp5kdrue"  follower  yes    7        serving
 the replicas agree: leader "ahn7yq4qnkwftxo6ihoyu2bxpi", 3 voter seats, version 7
 ```
 
@@ -185,10 +185,10 @@ gate and the log indices are. The command exits non-zero when a replica
 answers nothing, does not serve, serves another cluster, or holds another
 version or mesh CA than the first.
 
-`c8s cds ha decrees` reads the record of applied decrees, with every signature
-checked against the keys the launch file pins. `c8s cds ha pin-policy` reads
+`c8s ta ha decrees` reads the record of applied decrees, with every signature
+checked against the keys the launch file pins. `c8s ta ha pin-policy` reads
 the pin decree the cluster applied and writes the pin document it makes, which
-is what a client pins and what `--cds-pin` takes during an image roll.
+is what a client pins and what `--ta-pin` takes during an image roll.
 
 `/readyz` answers for one replica: it serves when it holds the cluster,
 follows the log, and holds a read lease its leader confirmed. A replica that
@@ -238,12 +238,12 @@ false while a current voter is known quarantined. If no eligible voter can lead,
 preserve the running replicas and their state and escalate for recovery;
 a retained quorum alone does not restore authority.
 
-## The CDS images a replica may run
+## The TA images a replica may run
 
 The cluster's log holds the set, and all of it is one decree's work:
 
 - the replicas admit each other by it;
-- clients and nodes pin CDS by it;
+- clients and nodes pin the TA by it;
 - an Admit decree hands one unjoined replica the set, so a replica of a new
   image can reach a leader still running the old one.
 
@@ -258,25 +258,25 @@ during the overlap needs a new one.
 The cluster certifies the node images its log names, and a `node-images`
 decree replaces that set. Every entry of the set it carries must bind the
 launch of the nodes it certifies (`approver_key`, `launch_file` or
-`launch_file_digest`): `c8s cds ha decree node-images` and the leader it is
+`launch_file_digest`): `c8s ta ha decree node-images` and the leader it is
 posted to refuse one that binds none. A Genesis carries the nodes it names as
 they are. An upgrade is two decrees with the node relaunches between them:
 first the old and the new image together, then the new image alone. No launch
-file, client pin or CDS VM changes for it. Runbook 5 has the steps.
+file, client pin or TA VM changes for it. Runbook 5 has the steps.
 
 A launch file may name no nodes. The Genesis of a cluster of workers then
 certifies only the workers of its first worker document (`--worker-document`).
 
 For a verifier this moves where the set comes from. The launch file's `nodes`
 is only the set the cluster started from, so
-`c8s verify --kind cds --served-policy-file cds-config nodes` fails after the
+`c8s verify --kind ta --served-policy-file ta-config nodes` fails after the
 first `node-images` decree. The expected set is the node document the operator
-signed into the decree in force, and `c8s cds ha decrees` says which decree
+signed into the decree in force, and `c8s ta ha decrees` says which decree
 that is:
 
 ```sh
-c8s cds ha decrees --config cds-config.yaml --cds-pin cds-pin.json
-c8s verify https://<cds-address> --kind cds --served-policy-file nodes-v13.json ...
+c8s ta ha decrees --config cds-config.yaml --ta-pin cds-pin.json
+c8s verify https://<ta-address> --kind ta --served-policy-file nodes-v13.json ...
 ```
 
 A replica also publishes the set it enforces at `/measurements`, which is what
@@ -284,7 +284,7 @@ A replica also publishes the set it enforces at `/measurements`, which is what
 keep the signed node document.
 
 Nodes follow the pin decrees themselves. A node's enforcer reads
-`/ha/pins` from a CDS it already pins, checks the operator signature and the
+`/ha/pins` from a TA it already pins, checks the operator signature and the
 launch-file digest, refuses anything below its pin floor, and hands the images
 to its credential clients.
 
@@ -299,7 +299,7 @@ say so.
 
 ## When the cluster stops serving
 
-A replicated CDS fails closed. Three reasons are worth telling apart, and
+A replicated TA fails closed. Three reasons are worth telling apart, and
 `ha status` names each:
 
 - **No majority.** Fewer voters answer than a majority. No replica serves,

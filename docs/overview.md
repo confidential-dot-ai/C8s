@@ -24,7 +24,7 @@ when, is [armtls.md](armtls.md) and [verify.md](verify.md).
 ## Trust boundary and adversary
 
 The trust boundary is the TEE. Inside it: the measured node software, the pods
-it admits, and CDS, the Certificate Distribution Service — a VM of its own,
+it admits, and the Trust Authority (TA) — a VM of its own,
 outside the cluster, holding C8s policy and signing every workload certificate.
 
 Outside it: the host and its hypervisor, the Kubernetes control plane, the pod
@@ -52,21 +52,21 @@ VM that runs one pod and joins no cluster, is not a node —
 
 ## What runs where
 
-- **CDS** is one VM outside the cluster, booted on the measured configuration
-  document `c8s cds config new` writes. It verifies evidence, signs each pod's
+- **TA** is one VM outside the cluster, booted on the measured configuration
+  document `c8s ta config new` writes. It verifies evidence, signs each pod's
   leaf — the short-lived certificate issued for one pod run — with a mesh CA it
   generates in its own memory, and holds the served allowlist, the secret store,
-  and the route manifest. CDS reads and writes no Kubernetes object:
+  and the route manifest. The TA reads and writes no Kubernetes object:
   operator-added entries, secrets, the route manifest, and the mesh CA live only
   in its memory, so a restart re-bootstraps from its configuration and the
-  operator re-applies the rest — [operator.md](operator.md#cds-runs-as-one-vm).
+  operator re-applies the rest — [operator.md](operator.md#the-ta-runs-as-one-vm).
 - The **admission plugin** `nri-image-policy` is a host process, not a pod:
   containerd launches it on a `gke` or `aks` node, and systemd runs it on the
   measured node image. It admits or denies every container and installs each
   member pod's packet rules —
   [allowlist-and-capabilities.md](allowlist-and-capabilities.md).
 - The **admission inventory** is the same process, answering pods on a
-  node-local Unix socket and CDS's sandbox callback on a privileged port. It
+  node-local Unix socket and the TA's sandbox callback on a privileged port. It
   records every container a pod has run, signs tokens naming the sandbox a
   caller is in, and answers that callback —
   [armtls.md](armtls.md#sandbox-identity).
@@ -91,9 +91,9 @@ VM that runs one pod and joins no cluster, is not a node —
     relying party:    c8s verify, or a browser client using the
                       router's attestation endpoints
   --------------------------- trust boundary ---------------------------
-   CDS VM, measured at launch
+   TA VM, measured at launch
    +-----------------------------------------------------------------+
-   | CDS: allowlist, secret store, route manifest, mesh CA           |
+   | TA: allowlist, secret store, route manifest, mesh CA           |
    +-----------------------------------------------------------------+
    node CVM (AMD SEV-SNP or Intel TDX), measured at launch
    +-----------------------------------------------------------------+
@@ -130,7 +130,7 @@ Node services are `attestation-api` and the admission plugin; the base
 allowlist is the set of entries each plugin holds itself
 ([allowlist-and-capabilities.md](allowlist-and-capabilities.md#bootstrap)); the
 privilege floor and the exec denial are
-[node-exec-mode.md](node-exec-mode.md); the launch configuration names the CDS
+[node-exec-mode.md](node-exec-mode.md); the launch configuration names the TA
 a worker trusts and the control plane it joins, with every field in
 [launch-configuration.md](launch-configuration.md).
 
@@ -174,12 +174,12 @@ How the node image is built is `../images/node-guest/README.md`.
    no longer admits. On the measured node image it refuses a container that
    holds host privilege outside the node's own components —
    [allowlist-and-capabilities.md](allowlist-and-capabilities.md).
-4. `c8s-cert` generates a key in pod memory and asks CDS for a challenge, a
-   single-use nonce, authenticating CDS against its pins. It then redeems a
+4. `c8s-cert` generates a key in pod memory and asks the TA for a challenge, a
+   single-use nonce, authenticating the TA against its pins. It then redeems a
    token from the admission inventory, which binds that key and challenge to the
    pod's sandbox —
    [getcert-workload-binding.md](getcert-workload-binding.md).
-5. CDS checks the evidence, its measurement policy, the token, and that every
+5. The TA checks the evidence, its measurement policy, the token, and that every
    image the inventory reports is allowlisted. It then signs a short-lived leaf
    naming this pod run and, when exactly one entry matches, that entry —
    [armtls.md](armtls.md#matched-workload).
@@ -187,7 +187,7 @@ How the node image is built is `../images/node-guest/README.md`.
    armTLS. Without credentials or rules it carries no application traffic; its
    health port still answers the node's probes —
    [armtls.md](armtls.md#the-mesh-endpoint-profile).
-7. `c8s-secret` or `c8s-volume` redeems a fresh token and asks CDS, which
+7. `c8s-secret` or `c8s-volume` redeems a fresh token and asks the TA, which
    re-reads the pod's containers and requires a grant that still matches. Files
    therefore appear only after the main containers have started —
    [secrets.md](secrets.md), [volumes.md](volumes.md).
