@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
 	"sync"
 	"time"
 
@@ -43,15 +44,17 @@ type verityCheck struct {
 	// declared reports whether an fsVerityFile rule names a bind.
 	declared func(source, destination string) bool
 	// deferUnmeasured has a check of running containers judge, as the
-	// validation check does, the fsVerityFile rules of a container whose file
-	// it could not measure (deferred): a file is only denied for what a
-	// measurement found. The start check refuses such a container.
+	// validation check does, the fsVerityFile rule of a file it could not
+	// measure (deferred): a file is only denied for what a measurement found.
+	// The start check refuses such a container.
 	deferUnmeasured bool
 
-	mu         sync.Mutex
-	budget     time.Duration
-	digests    map[verityTarget]string
-	unmeasured map[string]bool
+	mu      sync.Mutex
+	budget  time.Duration
+	digests map[verityTarget]string
+	// unmeasured holds, per container, the destinations of the files whose
+	// measurement did not run to its end.
+	unmeasured map[string][]string
 }
 
 type verityTarget struct {
@@ -82,7 +85,7 @@ func (p *plugin) newVerityCheck(deferUnmeasured bool) *verityCheck {
 		deferUnmeasured: deferUnmeasured,
 		budget:          verityBudget,
 		digests:         map[verityTarget]string{},
-		unmeasured:      map[string]bool{},
+		unmeasured:      map[string][]string{},
 	}
 }
 
@@ -99,7 +102,7 @@ func (c *verityCheck) attach(ctr *api.Container, m *api.Mount, mount allowlist.O
 		return mount
 	}
 	if ctr.GetPid() == 0 {
-		c.noteUnmeasured(ctr.GetId())
+		c.noteUnmeasured(ctr.GetId(), m.GetDestination())
 		return mount
 	}
 	if digest := c.digest(verityTarget{container: ctr.GetId(), pid: ctr.GetPid(), destination: m.GetDestination()}); digest != "" {
@@ -121,27 +124,34 @@ func (c *verityCheck) digest(target verityTarget) string {
 	// A process that is gone, or a measurement that never ran to its end,
 	// says nothing about the file.
 	if errors.Is(err, errNotContainerInit) || errors.Is(err, errVerityOverrun) || errors.Is(err, errVerityBusy) {
-		c.unmeasured[target.container] = true
+		c.unmeasuredLocked(target.container, target.destination)
 	}
 	c.digests[target] = digest
 	return digest
 }
 
-func (c *verityCheck) noteUnmeasured(container string) {
+func (c *verityCheck) noteUnmeasured(container, destination string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.unmeasured[container] = true
+	c.unmeasuredLocked(container, destination)
 }
 
-// deferred reports whether the check judges container's fsVerityFile rules
-// without a digest (deferUnmeasured).
-func (c *verityCheck) deferred(container string) bool {
+func (c *verityCheck) unmeasuredLocked(container, destination string) {
+	if !slices.Contains(c.unmeasured[container], destination) {
+		c.unmeasured[container] = append(c.unmeasured[container], destination)
+	}
+}
+
+// deferred returns the destinations of container's files the check judges
+// without a digest (deferUnmeasured): only those whose measurement did not
+// run, so a file a measurement found wanting is still denied.
+func (c *verityCheck) deferred(container string) []string {
 	if c == nil || !c.deferUnmeasured {
-		return false
+		return nil
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.unmeasured[container]
+	return slices.Clone(c.unmeasured[container])
 }
 
 // measure charges the budget only with the time it measures, so the other

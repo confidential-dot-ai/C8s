@@ -36,13 +36,14 @@ func (p *plugin) ValidateContainerAdjustment(ctx context.Context, req *api.Valid
 	if err != nil {
 		return p.denyContainerCreation(req.GetPod().GetId(), ctr.GetName(), err)
 	}
+	mounts := p.adjustedMounts(ctx, req, ctr)
 	observed := observedContainer{
 		pod:         req.GetPod(),
 		ctr:         ctr,
 		imageRef:    imageRef,
 		env:         env,
-		mounts:      p.adjustedMounts(ctx, req, ctr),
-		deferVerity: true,
+		mounts:      mounts,
+		deferVerity: bindDestinations(mounts),
 		// The gate and the static-pod check run ahead of admission; all three
 		// share one lookup, so they judge one digest.
 		lookup: p.digestLookup(ctx, imageRef),
@@ -141,6 +142,14 @@ func (p *plugin) gateMesh(ctx context.Context, req *api.ValidateContainerAdjustm
 		namespaces:   adjusted.GetNamespaces(),
 		netDevices:   adjusted.GetNetDevices(),
 	})
+}
+
+func bindDestinations(mounts []allowlist.ObservedMount) []string {
+	destinations := make([]string, len(mounts))
+	for i, m := range mounts {
+		destinations[i] = m.Destination
+	}
+	return destinations
 }
 
 // adjustedLaunchContainer applies the env/argv part of cumulative NRI edits.

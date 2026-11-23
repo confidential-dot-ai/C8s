@@ -70,7 +70,7 @@ func newTestVerityCheck() *verityCheck {
 		},
 		budget:     time.Minute,
 		digests:    map[verityTarget]string{},
-		unmeasured: map[string]bool{},
+		unmeasured: map[string][]string{},
 	}
 }
 
@@ -302,11 +302,13 @@ func setVerityBudget(t *testing.T, budget time.Duration) {
 }
 
 // verityEnforcingPlugin enforces on running containers with one fsVerityFile
-// rule pinning testVerityDigest. Its containerd records kills.
-func verityEnforcingPlugin(t *testing.T) (*plugin, *[]string) {
+// rule pinning testVerityDigest, and the extra rules. Its containerd records
+// kills.
+func verityEnforcingPlugin(t *testing.T, extra ...allowlist.MountRule) (*plugin, *[]string) {
 	t.Helper()
 	al := workloadAllowlist(t, pushDigestA, pushDigestB, []string{"/bin/app"})
-	al.Workloads["w"].Containers[0].Mounts = allowlist.MountPolicy{Policy: allowlist.PolicyExact, Rules: []allowlist.MountRule{{Destination: verityTestDestination, Kind: allowlist.MountFSVerityFile, Source: verityTestSource, ReadOnly: true, VerityDigest: testVerityDigest}}}
+	rules := append([]allowlist.MountRule{{Destination: verityTestDestination, Kind: allowlist.MountFSVerityFile, Source: verityTestSource, ReadOnly: true, VerityDigest: testVerityDigest}}, extra...)
+	al.Workloads["w"].Containers[0].Mounts = allowlist.MountPolicy{Policy: allowlist.PolicyExact, Rules: rules}
 	if err := al.Normalize(); err != nil {
 		t.Fatal(err)
 	}
@@ -419,6 +421,40 @@ func TestExistingChecksMeasureFSVerity(t *testing.T) {
 				}
 				if recorded != want {
 					t.Fatalf("%s(%s) recorded digest %q, want %q", entry.name, tc.name, recorded, want)
+				}
+			})
+		}
+	}
+}
+
+// A file a measurement found wanting is denied even when a sibling file of
+// the same container could not be measured: deferral covers only the latter.
+func TestExistingChecksDeferOnlyUnmeasuredFiles(t *testing.T) {
+	const otherSource, otherDestination = "/opt/tools/other", "/usr/bin/other"
+	for _, sibling := range []error{errNotContainerInit, errVerityBusy, errVerityOverrun} {
+		for _, tc := range []struct {
+			first  error
+			killed bool
+		}{
+			{first: errVerityFilesystem, killed: true},
+			{first: sibling},
+		} {
+			t.Run(tc.first.Error()+"/"+sibling.Error(), func(t *testing.T) {
+				stubMeasurement(t, func(_ uint32, _, destination string) (string, error) {
+					if destination == verityTestDestination {
+						return "", tc.first
+					}
+					return "", sibling
+				})
+				p, killed := verityEnforcingPlugin(t, allowlist.MountRule{Destination: otherDestination, Kind: allowlist.MountFSVerityFile, Source: otherSource, ReadOnly: true, VerityDigest: testVerityDigest})
+				p.SetReady()
+				pod := makePod("default", "pod")
+				ctr := verityCtr(pod, api.ContainerState_CONTAINER_RUNNING, 42)
+				ctr.Mounts = append(ctr.Mounts, &api.Mount{Type: "bind", Source: otherSource, Destination: otherDestination, Options: []string{"rbind", "ro"}})
+				p.running.add(pod, ctr)
+				p.KillRevoked(t.Context())
+				if got := len(*killed) == 1; got != tc.killed {
+					t.Fatalf("KillRevoked(%v beside %v) stopped %v, want stopped %t", tc.first, sibling, *killed, tc.killed)
 				}
 			})
 		}

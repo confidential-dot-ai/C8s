@@ -440,7 +440,7 @@ func TestDeferVerity(t *testing.T) {
 			}
 			r := RunningContainer{Digest: dApp, Argv: []string{"/bin/app"}, Mounts: []ObservedMount{m}}
 			if tc.deferred {
-				r = r.DeferVerity()
+				r = r.DeferVerity(destination)
 			}
 			if got := allowlistFor(tc.rule).BuildIndex().AdmitsContainer(r); got != tc.want {
 				t.Fatalf("AdmitsContainer(%+v) = %t, want %t", m, got, tc.want)
@@ -448,8 +448,13 @@ func TestDeferVerity(t *testing.T) {
 		})
 	}
 
+	elsewhere := RunningContainer{Digest: dApp, Argv: []string{"/bin/app"}, Mounts: []ObservedMount{unproven}}.DeferVerity("/usr/bin/other")
+	if allowlistFor(fsVerity).BuildIndex().AdmitsContainer(elsewhere) {
+		t.Fatal("AdmitsContainer(deferred at another destination) = true, want false")
+	}
+
 	al := allowlistFor(fsVerity)
-	deferred := RunningContainer{Digest: dApp, Argv: []string{"/bin/app"}, Mounts: []ObservedMount{unproven}}.DeferVerity()
+	deferred := RunningContainer{Digest: dApp, Argv: []string{"/bin/app"}, Mounts: []ObservedMount{unproven}}.DeferVerity(destination)
 	if got := al.BuildIndex().Mismatch(deferred, true); len(got) != 0 {
 		t.Fatalf("Mismatch(deferred) = %v, want none", got)
 	}
@@ -463,7 +468,7 @@ func TestDeferVerity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if encoded, err := json.Marshal(RunningContainer{Digest: dApp, Mounts: []ObservedMount{unproven}}.DeferVerity()); err != nil || string(encoded) != string(plain) {
+	if encoded, err := json.Marshal(RunningContainer{Digest: dApp, Mounts: []ObservedMount{unproven}}.DeferVerity(destination)); err != nil || string(encoded) != string(plain) {
 		t.Fatalf("json.Marshal(deferred) = %s, %v, want %s", encoded, err, plain)
 	}
 }

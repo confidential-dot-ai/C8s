@@ -72,9 +72,9 @@ type imageCheck struct {
 	// the cause. It names at most a variable, never a value.
 	EnvErr error
 	Mounts []allowlist.ObservedMount
-	// DeferVerity judges fsVerityFile rules without a digest
-	// (allowlist.RunningContainer.DeferVerity).
-	DeferVerity bool
+	// DeferVerity names the destinations whose fsVerityFile rules are judged
+	// without a digest (allowlist.RunningContainer.DeferVerity).
+	DeferVerity []string
 	// Lookup resolves ImageRef once for every check of one container
 	// (plugin.digestLookup); nil has checkImageAt ask containerd.
 	Lookup func() (string, error)
@@ -143,9 +143,7 @@ func (p *plugin) checkImageAt(ctx context.Context, cfg *config, snap *policySnap
 	// The base allowlist admits what its entries admit. Served entries are
 	// matched against the final OCI argv, environment, and classified mounts.
 	rc := allowlist.RunningContainer{Digest: digest, Argv: check.Argv, Env: check.Env, Mounts: check.Mounts}
-	if check.DeferVerity {
-		rc = rc.DeferVerity()
-	}
+	rc = rc.DeferVerity(check.DeferVerity...)
 	baseAdmitted := p.policy.baseAdmits(rc, phase)
 
 	// A tag is resolved here, at hook time, while the runtime builds the
@@ -261,10 +259,11 @@ type observedContainer struct {
 	imageRef string
 	env      *allowlist.EnvObservation
 	mounts   []allowlist.ObservedMount
-	// deferVerity is set at the validation check, before the container has a
-	// root to measure, and for a running container whose file could not be
-	// measured (verityCheck.deferred, allowlist.RunningContainer.DeferVerity).
-	deferVerity bool
+	// deferVerity names every bind at the validation check, before the
+	// container has a root to measure, and for a running container the binds
+	// whose file could not be measured (verityCheck.deferred,
+	// allowlist.RunningContainer.DeferVerity).
+	deferVerity []string
 	// lookup resolves imageRef once for every check of one admission
 	// (plugin.digestLookup); nil resolves it on each read.
 	lookup func() (string, error)
@@ -287,16 +286,12 @@ func (p *plugin) observeContainer(ctx context.Context, pod *api.PodSandbox, ctr 
 // launch is the observation an allowlist entry is matched against, under a
 // digest the caller has resolved.
 func (o observedContainer) launch(digest string) allowlist.RunningContainer {
-	launch := allowlist.RunningContainer{
+	return allowlist.RunningContainer{
 		Digest: digest,
 		Argv:   o.ctr.GetArgs(),
 		Env:    o.env,
 		Mounts: o.mounts,
-	}
-	if o.deferVerity {
-		return launch.DeferVerity()
-	}
-	return launch
+	}.DeferVerity(o.deferVerity...)
 }
 
 // checkContainer runs the label rules and the image allowlist over a

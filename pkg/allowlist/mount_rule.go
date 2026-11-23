@@ -170,10 +170,9 @@ func (r fsVerityFileRule) admits(m ObservedMount) bool {
 	return m.Provenance == ProvenanceFSVerity && m.VerityDigest == r.VerityDigest && r.hostRule.admits(m)
 }
 
-// admitsDeferred is admits for a launch whose digests are decided later
+// admitsDeferred is admits for a bind whose digest is decided later
 // (RunningContainer.DeferVerity): it also accepts m without provenance,
-// judged on its source and read-only mode alone. Deferral covers the whole
-// launch, so a sibling bind that did measure must still match its digest.
+// judged on its source and read-only mode alone.
 func (r fsVerityFileRule) admitsDeferred(m ObservedMount) bool {
 	return r.admits(m) || m.Provenance == "" && m.VerityDigest == "" && r.hostRule.admits(m)
 }

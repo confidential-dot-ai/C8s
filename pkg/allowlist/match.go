@@ -16,19 +16,21 @@ type RunningContainer struct {
 	// that the final OCI spec contained no bind mounts.
 	Mounts []ObservedMount
 	Env    *EnvObservation
-	// verityDeferred is set by DeferVerity only. It is not evidence: it has
-	// no serialized form, and Workload.Diff clears it.
-	verityDeferred bool
+	// verityDeferred holds the destinations DeferVerity named. It is not
+	// evidence: it has no serialized form, and Workload.Diff clears it.
+	verityDeferred []string
 }
 
-// DeferVerity returns r for the node's create-time validation, where the
-// container has no root yet to measure: an fsVerityFile rule then also admits
-// a read-only host bind of its source that carries no provenance, and the
-// node's start check decides the digest. Index matching honours it; workload
-// matching (MatchWorkload, Workload.Diff), which issuance and secret release
-// use, never does.
-func (r RunningContainer) DeferVerity() RunningContainer {
-	r.verityDeferred = true
+// DeferVerity returns r with the fs-verity digests of the binds at
+// destinations decided later: at the node's create-time validation, where
+// the container has no root yet to measure, or for a running container whose
+// file the node could not measure. An fsVerityFile rule then also admits a
+// read-only host bind of its source at one of destinations that carries no
+// provenance; a bind at any other destination must still match its digest.
+// Index matching honours it; workload matching (MatchWorkload,
+// Workload.Diff), which issuance and secret release use, never does.
+func (r RunningContainer) DeferVerity(destinations ...string) RunningContainer {
+	r.verityDeferred = slices.Concat(r.verityDeferred, destinations)
 	return r
 }
 
@@ -128,7 +130,7 @@ func (d EntryDiff) Describes() bool { return len(d.Foreign) == 0 && len(d.Missin
 func (w Workload) Diff(running []RunningContainer) EntryDiff {
 	running = slices.Clone(running)
 	for i := range running {
-		running[i].verityDeferred = false
+		running[i].verityDeferred = nil
 	}
 	declared := make([]Container, 0, len(w.Containers)+len(w.InitContainers))
 	declared = append(declared, w.Containers...)
@@ -255,7 +257,7 @@ func (p MountPolicy) admitsLaunch(r RunningContainer) bool {
 		if mount.Class == MountPlatform {
 			continue
 		}
-		if seen[mount.Destination] || !p.admitsMount(mount, r.verityDeferred) {
+		if seen[mount.Destination] || !p.admitsMount(mount, slices.Contains(r.verityDeferred, mount.Destination)) {
 			return false
 		}
 		seen[mount.Destination] = true
