@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 )
 
@@ -52,8 +53,8 @@ func testStamp(t *testing.T) (*armtls.ComponentSet, pkix.Extension) {
 	return set, ext
 }
 
-// The set the leaf names reaches the verdict and the printed report, and a
-// failed verdict surfaces nothing.
+// The set the leaf names reaches the verdict and the printed report under the
+// note that says what vouches for it, and a failed verdict surfaces nothing.
 func TestApplyWorkloadPolicyReportsTheComponentSet(t *testing.T) {
 	set, ext := testStamp(t)
 	ev := &evidence{leaf: stampedLeaf(t, ext)}
@@ -63,16 +64,51 @@ func TestApplyWorkloadPolicyReportsTheComponentSet(t *testing.T) {
 	if oc.ComponentSet != set.Version || oc.ComponentSetDigest != hex.EncodeToString(set.Digest) {
 		t.Fatalf("component set = %q %q, want %q %x", oc.ComponentSet, oc.ComponentSetDigest, set.Version, set.Digest)
 	}
+	if oc.ComponentSetNote != componentSetUnverifiedNote {
+		t.Fatalf("note = %q, want the unverified one without --mesh-ca", oc.ComponentSetNote)
+	}
 	var out bytes.Buffer
 	renderText(config{}, oc, &out)
-	if !strings.Contains(out.String(), "component set: 0.43.0") {
-		t.Fatalf("report does not name the component set:\n%s", out.String())
+	if !strings.Contains(out.String(), "component set: 0.43.0") || !strings.Contains(out.String(), componentSetUnverifiedNote) {
+		t.Fatalf("report does not name the component set and what vouches for it:\n%s", out.String())
+	}
+
+	vouched := Outcome{Verified: true}
+	applyWorkloadPolicy(&vouched, config{meshCA: "ca.pem"}, ev, nil)
+	if !strings.HasPrefix(vouched.ComponentSetNote, "ca-vouched:") {
+		t.Fatalf("note = %q, want the CA-vouched one", vouched.ComponentSetNote)
 	}
 
 	failed := Outcome{Verified: false}
 	applyWorkloadPolicy(&failed, config{}, ev, nil)
-	if failed.ComponentSet != "" {
-		t.Fatalf("ComponentSet = %q on a failed verdict, want empty", failed.ComponentSet)
+	if failed.ComponentSet != "" || failed.ComponentSetNote != "" {
+		t.Fatalf("component set = %q, note = %q on a failed verdict, want empty", failed.ComponentSet, failed.ComponentSetNote)
+	}
+}
+
+// A hard failure states no passed check: the CA-vouched set is dropped, and the
+// unverified one survives with the value it qualifies, as the sandbox ID and
+// the workload stamp do.
+func TestFinalNotesKeepOnlyTheUnverifiedComponentSet(t *testing.T) {
+	set, ext := testStamp(t)
+	ev := &evidence{leaf: stampedLeaf(t, ext)}
+	plan := &verifyPlan{}
+	result := &teetypes.VerificationResult{}
+
+	unverified := Outcome{Verified: true}
+	applyWorkloadPolicy(&unverified, config{}, ev, nil)
+	unverified.Error = "a later check failed"
+	applyFinalNotes(&unverified, ev, result, plan)
+	if unverified.ComponentSet != set.Version || unverified.ComponentSetNote != componentSetUnverifiedNote {
+		t.Fatalf("set = %q, note = %q, want both kept", unverified.ComponentSet, unverified.ComponentSetNote)
+	}
+
+	vouched := Outcome{Verified: true}
+	applyWorkloadPolicy(&vouched, config{meshCA: "ca.pem"}, ev, nil)
+	vouched.Error = "a later check failed"
+	applyFinalNotes(&vouched, ev, result, plan)
+	if vouched.ComponentSet != "" || vouched.ComponentSetDigest != "" || vouched.ComponentSetNote != "" {
+		t.Fatalf("set = %q, digest = %q, note = %q, want all cleared", vouched.ComponentSet, vouched.ComponentSetDigest, vouched.ComponentSetNote)
 	}
 }
 

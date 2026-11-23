@@ -105,10 +105,11 @@ type Outcome struct {
 	WorkloadNote             string `json:"workload_note,omitempty"`
 
 	// ComponentSet is the release the leaf's component-set stamp names and
-	// ComponentSetDigest the hex digest of that set's entries. CA-vouched like
-	// the matched workload, on the same basis WorkloadNote states.
+	// ComponentSetDigest the hex digest of that set's entries.
+	// ComponentSetNote says what stands behind them.
 	ComponentSet       string `json:"component_set,omitempty"`
 	ComponentSetDigest string `json:"component_set_digest,omitempty"`
+	ComponentSetNote   string `json:"component_set_note,omitempty"`
 
 	// ClientDocumentDigest is the hex client document digest on a Pod CVM's
 	// leaf and AgentLabel the DNS label derived from it. CA-vouched like the
@@ -230,6 +231,7 @@ func renderText(cfg config, oc Outcome, out io.Writer) {
 	}
 	if oc.ComponentSet != "" {
 		fmt.Fprintf(out, "  component set: %s  (digest %s)\n", oc.ComponentSet, oc.ComponentSetDigest)
+		fmt.Fprintf(out, "                %s\n", oc.ComponentSetNote)
 	}
 	if oc.ClientDocumentDigest != "" {
 		fmt.Fprintf(out, "  client doc:   sha256:%s  (agent label %s)\n", oc.ClientDocumentDigest, oc.AgentLabel)

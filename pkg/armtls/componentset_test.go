@@ -2,6 +2,8 @@ package armtls
 
 import (
 	"bytes"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/asn1"
 	"encoding/hex"
 	"strings"
@@ -116,5 +118,13 @@ func TestComponentSetFromCert(t *testing.T) {
 	damaged.Value = ext.Value[:len(ext.Value)-1]
 	if _, err := ComponentSetFromCert(selfSignedWithExts(t, damaged)); err == nil || !strings.Contains(err.Error(), "component set") {
 		t.Fatalf("a damaged stamp read as %v", err)
+	}
+	// Two stamps name two releases, and taking either would let a leaf claim
+	// the set a reader pins beside the one it is really on.
+	// x509.CreateCertificate refuses to mint a duplicate, so the parser is
+	// driven with a hand-built certificate value.
+	duplicated := &x509.Certificate{Extensions: []pkix.Extension{ext, ext}}
+	if _, err := ComponentSetFromCert(duplicated); err == nil || !strings.Contains(err.Error(), "more than one") {
+		t.Fatalf("two stamps read as %v", err)
 	}
 }
