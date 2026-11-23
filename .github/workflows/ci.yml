@@ -333,8 +333,9 @@ jobs:
   mutation:
     name: Mutation (advisory)
     runs-on: ubuntu-latest
-    # After the tests: gremlins runs the whole suite before it mutates, so on a
-    # failing suite it reports nothing the test job has not.
+    # Starts only when the tests pass, and is skipped when they fail, time out
+    # or are cancelled: gremlins runs the whole suite before it mutates, so
+    # without a passing suite it reports nothing the test job has not.
     needs: [changes, test]
     # Diff-based vs the base branch, reported on the PR; the queue gains nothing from it.
     if: needs.changes.outputs.relevant == 'true' && github.event_name == 'pull_request'
