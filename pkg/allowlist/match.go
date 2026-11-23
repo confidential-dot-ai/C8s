@@ -22,8 +22,8 @@ type RunningContainer struct {
 }
 
 // DeferVerity returns r for the node's create-time validation, where the
-// container has no root yet to measure: an fsVerityFile rule then admits a
-// read-only host bind of its source that carries no provenance, and the
+// container has no root yet to measure: an fsVerityFile rule then also admits
+// a read-only host bind of its source that carries no provenance, and the
 // node's start check decides the digest. Index matching honours it; workload
 // matching (MatchWorkload, Workload.Diff), which issuance and secret release
 // use, never does.
@@ -271,7 +271,7 @@ func (p MountPolicy) admitsMount(mount ObservedMount, verityDeferred bool) bool 
 		return false
 	}
 	if verityDeferred && p.Rules[i].Kind == MountFSVerityFile {
-		return (fsVerityFileRule{hostRule{p.Rules[i]}}).admitsUnmeasured(mount)
+		return (fsVerityFileRule{hostRule{p.Rules[i]}}).admitsDeferred(mount)
 	}
 	behavior := p.Rules[i].behavior()
 	return behavior != nil && behavior.admits(mount)

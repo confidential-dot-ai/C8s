@@ -426,6 +426,7 @@ func TestDeferVerity(t *testing.T) {
 		{"measured digest", fsVerity, func(m *ObservedMount) { m.Provenance, m.VerityDigest = ProvenanceFSVerity, hash }, false, true},
 		{"no evidence", fsVerity, nil, false, false},
 		{"deferred, no evidence", fsVerity, nil, true, true},
+		{"deferred, measured digest", fsVerity, func(m *ObservedMount) { m.Provenance, m.VerityDigest = ProvenanceFSVerity, hash }, true, true},
 		{"deferred, writable bind", fsVerity, func(m *ObservedMount) { m.ReadOnly = false }, true, false},
 		{"deferred, other source", fsVerity, func(m *ObservedMount) { m.HostSourceDigest = "other" }, true, false},
 		{"deferred, node-root evidence", fsVerity, func(m *ObservedMount) { m.Provenance = ProvenanceNodeRoot }, true, false},
