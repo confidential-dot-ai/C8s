@@ -71,7 +71,8 @@ func TestComponentSetDigestNamesTheBytes(t *testing.T) {
 // A deadline ends the set at the instant it names, not after it.
 func TestComponentSetInForce(t *testing.T) {
 	al := mustParse(t, componentsDoc(currentSet(), retiringSet("0.42.1", "c8s-mesh-endpoint", digestB)))
-	current, retiring := al.Components[currentSetVersion], al.Components["0.42.1"]
+	current := al.Components[currentSetVersion]
+	retiring := al.Components["0.42.1"]
 	for _, tc := range []struct {
 		name    string
 		set     ComponentSet

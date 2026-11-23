@@ -65,8 +65,12 @@ type allowlistDiff struct {
 }
 
 func (d allowlistDiff) empty() bool {
-	return len(d.WorkloadsAdded) == 0 && len(d.WorkloadsRemoved) == 0 && len(d.WorkloadsChanged) == 0 &&
-		len(d.SetsAdded) == 0 && len(d.SetsRemoved) == 0 && len(d.SetsChanged) == 0
+	return len(d.WorkloadsAdded) == 0 &&
+		len(d.WorkloadsRemoved) == 0 &&
+		len(d.WorkloadsChanged) == 0 &&
+		len(d.SetsAdded) == 0 &&
+		len(d.SetsRemoved) == 0 &&
+		len(d.SetsChanged) == 0
 }
 
 // diffAllowlists computes the entry- and field-level diff of desired over live.
@@ -120,11 +124,15 @@ func diffComponents(d *allowlistDiff, live, desired *pkgallowlist.Allowlist) {
 // diffSet compares two sets under the same version.
 func diffSet(live, desired pkgallowlist.ComponentSet) setDiff {
 	var sd setDiff
-	if from, to := setEnd(live), setEnd(desired); from != to {
-		sd.Deadline = &changedEntry{From: from, To: to}
+	liveEnd := setEnd(live)
+	desiredEnd := setEnd(desired)
+	if liveEnd != desiredEnd {
+		sd.Deadline = &changedEntry{From: liveEnd, To: desiredEnd}
 	}
-	if from, to := live.DigestString(), desired.DigestString(); from != to {
-		sd.Entries = &changedEntry{From: from, To: to}
+	liveEntries := live.DigestString()
+	desiredEntries := desired.DigestString()
+	if liveEntries != desiredEntries {
+		sd.Entries = &changedEntry{From: liveEntries, To: desiredEntries}
 	}
 	return sd
 }
@@ -143,17 +151,25 @@ func diffEntry(live, desired pkgallowlist.Workload) entryDiff {
 	if live.Label != desired.Label {
 		ed.Label = &changedEntry{From: live.Label, To: desired.Label}
 	}
-	if from, to := secretsGrant(live.Secrets), secretsGrant(desired.Secrets); from != to {
-		ed.Secrets = &changedEntry{From: from, To: to}
+	liveSecrets := secretsGrant(live.Secrets)
+	desiredSecrets := secretsGrant(desired.Secrets)
+	if liveSecrets != desiredSecrets {
+		ed.Secrets = &changedEntry{From: liveSecrets, To: desiredSecrets}
 	}
-	if from, to := egressList(live.Egress), egressList(desired.Egress); from != to {
-		ed.Egress = &changedEntry{From: from, To: to}
+	liveEgress := egressList(live.Egress)
+	desiredEgress := egressList(desired.Egress)
+	if liveEgress != desiredEgress {
+		ed.Egress = &changedEntry{From: liveEgress, To: desiredEgress}
 	}
-	if from, to := hostPortList(live.HostPorts), hostPortList(desired.HostPorts); from != to {
-		ed.HostPorts = &changedEntry{From: from, To: to}
+	livePorts := hostPortList(live.HostPorts)
+	desiredPorts := hostPortList(desired.HostPorts)
+	if livePorts != desiredPorts {
+		ed.HostPorts = &changedEntry{From: livePorts, To: desiredPorts}
 	}
 	added, removed, changed := diffContainers("init", live.InitContainers, desired.InitContainers)
-	ed.Added, ed.Removed, ed.Changed = added, removed, changed
+	ed.Added = added
+	ed.Removed = removed
+	ed.Changed = changed
 	a2, r2, c2 := diffContainers("main", live.Containers, desired.Containers)
 	ed.Added = append(ed.Added, a2...)
 	ed.Removed = append(ed.Removed, r2...)
@@ -301,31 +317,32 @@ func printDiff(w io.Writer, format string, d allowlistDiff) error {
 		fmt.Fprintf(w, "~ %s\n", name)
 		printEntryDiff(w, d.WorkloadsChanged[name])
 	}
-	printComponentDiff(w, d)
+	writeChanges(w, "component sets:", componentChanges(d))
 	return nil
 }
 
-func printComponentDiff(w io.Writer, d allowlistDiff) {
-	if len(d.SetsAdded) == 0 && len(d.SetsRemoved) == 0 && len(d.SetsChanged) == 0 {
-		return
-	}
-	fmt.Fprintln(w, "component sets:")
+// componentChanges is the component-set part of d as the diff reports it, in
+// version order.
+func componentChanges(d allowlistDiff) []change {
+	changes := make([]change, 0, len(d.SetsAdded)+len(d.SetsRemoved)+len(d.SetsChanged))
 	for _, version := range d.SetsAdded {
-		fmt.Fprintf(w, "+ %s\n", version)
+		changes = append(changes, change{Marker: "+", Name: version})
 	}
 	for _, version := range d.SetsRemoved {
-		fmt.Fprintf(w, "- %s\n", version)
+		changes = append(changes, change{Marker: "-", Name: version})
 	}
 	for _, version := range slices.SortedFunc(maps.Keys(d.SetsChanged), pkgallowlist.CompareSetVersions) {
-		fmt.Fprintf(w, "~ %s\n", version)
 		sd := d.SetsChanged[version]
+		c := change{Marker: "~", Name: version}
 		if sd.Deadline != nil {
-			fmt.Fprintf(w, "    deadline: %s -> %s\n", sd.Deadline.From, sd.Deadline.To)
+			c.Fields = append(c.Fields, fieldChange{Name: "deadline", From: sd.Deadline.From, To: sd.Deadline.To})
 		}
 		if sd.Entries != nil {
-			fmt.Fprintf(w, "    entries: %s -> %s\n", sd.Entries.From, sd.Entries.To)
+			c.Fields = append(c.Fields, fieldChange{Name: "entries", From: sd.Entries.From, To: sd.Entries.To})
 		}
+		changes = append(changes, c)
 	}
+	return changes
 }
 
 func printEntryDiff(w io.Writer, e entryDiff) {

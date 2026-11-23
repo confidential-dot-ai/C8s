@@ -67,7 +67,7 @@ func TestComponentsAddPutsTheSetIn(t *testing.T) {
 	ta, args := componentsTA(t)
 	file := writeFile(t, "set.json", componentSetDoc("0.43.0", digA))
 
-	out, _, err := runCmd(append([]string{"components", "add", "--set-file", file}, args...)...)
+	out, _, err := runCmd(append([]string{"components", "add", file}, args...)...)
 	if err != nil {
 		t.Fatalf("components add: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestComponentsAddRetiresAndRemoves(t *testing.T) {
 	file := writeFile(t, "set.json", componentSetDoc("0.43.0", digA))
 
 	out, _, err := runCmd(append([]string{
-		"components", "add", "--set-file", file,
+		"components", "add", file,
 		"--retire", "0.42.1=" + futureDeadline,
 		"--remove", "0.41.0",
 	}, args...)...)
@@ -180,7 +180,7 @@ func TestComponentsAddRefusals(t *testing.T) {
 			before := ta.currentVersion()
 			file := writeFile(t, "set.json", tc.file)
 
-			_, _, err := runCmd(append([]string{"components", "add", "--set-file", file}, append(tc.flags, args...)...)...)
+			_, _, err := runCmd(append([]string{"components", "add", file}, append(tc.flags, args...)...)...)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("err = %v, want one naming %q", err, tc.want)
 			}
@@ -197,7 +197,7 @@ func TestComponentsAddRetiringEverySetBefore(t *testing.T) {
 	file := writeFile(t, "set.json", componentSetDoc("0.43.0", digA))
 
 	_, _, err := runCmd(append([]string{
-		"components", "add", "--set-file", file,
+		"components", "add", file,
 		"--retire", "0.42.1=" + futureDeadline,
 	}, args...)...)
 	if err != nil {
@@ -274,7 +274,7 @@ func TestComponentsAddAfterARacingWrite(t *testing.T) {
 	file := writeFile(t, "set.json", componentSetDoc("0.43.0", digA))
 
 	if _, _, err := runCmd(append([]string{
-		"components", "add", "--set-file", file, "--remove", "0.42.1",
+		"components", "add", file, "--remove", "0.42.1",
 	}, args...)...); err != nil {
 		t.Fatalf("components add after a racing write: %v", err)
 	}
@@ -401,5 +401,131 @@ func TestDiffShowsComponentSetChanges(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("diff output misses %q:\n%s", want, out)
 		}
+	}
+}
+
+// A missing FILE is reported as the command's usage line, which the root
+// command silences.
+func TestComponentsAddWithoutAFileReportsUsage(t *testing.T) {
+	_, _, err := runCmd("components", "add")
+	if err == nil || !strings.Contains(err.Error(), "usage: ") || !strings.Contains(err.Error(), "components add FILE") {
+		t.Fatalf("err = %v, want a usage line naming FILE", err)
+	}
+}
+
+// putSets changes the component sets as another operator's write would: a new
+// version.
+func (f *fakeTA) putSets(change func(sets map[string]pkgallowlist.ComponentSet)) {
+	f.mu.Lock()
+	if f.al.Components == nil {
+		f.al.Components = map[string]pkgallowlist.ComponentSet{}
+	}
+	change(f.al.Components)
+	f.version++
+	f.mu.Unlock()
+}
+
+// raceSetWrite makes the next whole-document write lose to a write that
+// changes the component sets just before it. The returned function reports how
+// many writes it raced.
+func raceSetWrite(ta *fakeTA, change func(sets map[string]pkgallowlist.ComponentSet)) func() int {
+	raced := 0
+	ta.beforeReplace = func() {
+		if raced == 1 {
+			return
+		}
+		raced++
+		ta.putSets(change)
+	}
+	return func() int { return raced }
+}
+
+// The version a racing write published is not overwritten: add is refused
+// against the newer document as it would have been against the one it read.
+func TestComponentsAddRefusedWhenARacingWritePublishedTheVersion(t *testing.T) {
+	ta, args := componentsTA(t)
+	ta.seedSet("0.42.1", mustSet(t, "0.42.1", digC))
+	racer := mustSet(t, "0.43.0", digB)
+	raced := raceSetWrite(ta, func(sets map[string]pkgallowlist.ComponentSet) { sets["0.43.0"] = racer })
+	file := writeFile(t, "set.json", componentSetDoc("0.43.0", digA))
+
+	_, _, err := runCmd(append([]string{"components", "add", file}, args...)...)
+	if err == nil || !strings.Contains(err.Error(), "already holds component set 0.43.0") {
+		t.Fatalf("err = %v, want a refusal naming the set the racing write published", err)
+	}
+	if raced() != 1 {
+		t.Fatalf("raced %d writes, want 1", raced())
+	}
+	if got := ta.sets()["0.43.0"]; got.DigestString() != racer.DigestString() {
+		t.Fatal("the racing write's set was overwritten")
+	}
+}
+
+// A set a racing write removed cannot be retired: the no-op result is refused
+// instead of reported as the change.
+func TestComponentsRetireRefusedWhenARacingWriteRemovedTheSet(t *testing.T) {
+	ta, args := componentsTA(t)
+	ta.seedSet("0.42.1", mustSet(t, "0.42.1", digC))
+	ta.seedSet("0.43.0", mustSet(t, "0.43.0", digA))
+	raceSetWrite(ta, func(sets map[string]pkgallowlist.ComponentSet) { delete(sets, "0.42.1") })
+	before := ta.currentVersion()
+
+	_, _, err := runCmd(append([]string{"components", "retire", "0.42.1", futureDeadline}, args...)...)
+	if err == nil || !strings.Contains(err.Error(), "holds no component set 0.42.1") {
+		t.Fatalf("err = %v, want a refusal naming the set the racing write removed", err)
+	}
+	if got := ta.currentVersion(); got != before+1 {
+		t.Fatalf("version %d -> %d, want only the racing write", before, got)
+	}
+}
+
+// The set remove drops is gone, whether this command's write or the racing one
+// dropped it, so the command reports the result it asked for.
+func TestComponentsRemoveWhenARacingWriteRemovedTheSame(t *testing.T) {
+	ta, args := componentsTA(t)
+	ta.seedSet("0.42.1", mustSet(t, "0.42.1", digC))
+	ta.seedSet("0.43.0", mustSet(t, "0.43.0", digA))
+	raced := raceSetWrite(ta, func(sets map[string]pkgallowlist.ComponentSet) { delete(sets, "0.42.1") })
+	before := ta.currentVersion()
+
+	if _, _, err := runCmd(append([]string{"components", "remove", "0.42.1"}, args...)...); err != nil {
+		t.Fatalf("components remove after the same removal landed: %v", err)
+	}
+	if raced() != 1 {
+		t.Fatalf("raced %d writes, want 1", raced())
+	}
+	if got := ta.currentVersion(); got != before+1 {
+		t.Fatalf("version %d -> %d, want only the racing write", before, got)
+	}
+	sets := ta.sets()
+	if _, ok := sets["0.42.1"]; ok {
+		t.Fatal("the removed set is still in the allowlist")
+	}
+	if _, ok := sets["0.43.0"]; !ok {
+		t.Fatal("a set the command did not name was lost")
+	}
+}
+
+// add's write lands but is answered 500, and another write lands on top before
+// it reads back. The newer document holds the set it added, so it reports
+// success without writing again.
+func TestComponentsAddUnconfirmedWriteThatLandedUnderAnother(t *testing.T) {
+	ta, args := componentsTA(t)
+	ta.lost500 = 1
+	ta.afterReplace = func() {
+		ta.afterReplace = nil
+		ta.put("racer", workloadOf(t, 6))
+	}
+	before := ta.currentVersion()
+	file := writeFile(t, "set.json", componentSetDoc("0.43.0", digA))
+
+	if _, _, err := runCmd(append([]string{"components", "add", file}, args...)...); err != nil {
+		t.Fatalf("an added set whose write answered 500 reported as failed: %v", err)
+	}
+	if got := ta.currentVersion(); got != before+2 {
+		t.Fatalf("version %d -> %d, want add's one write and the racing one", before, got)
+	}
+	if _, ok := ta.sets()["0.43.0"]; !ok {
+		t.Fatalf("the added set is missing: %+v", ta.sets())
 	}
 }

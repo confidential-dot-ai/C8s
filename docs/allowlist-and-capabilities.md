@@ -304,19 +304,20 @@ deadline is current; a set with a deadline is retiring and in force until that
 deadline.
 
 A release publishes its set as a **set file**: an allowlist document holding
-that one set and nothing else. `c8s allowlist components add --set-file FILE`
-puts it in as a current set and says what happens to the sets already there:
+that one set and nothing else. `c8s allowlist components add FILE` puts it in
+as a current set and says what happens to the sets already there:
 
 ```
 # add the new set and leave the old one in force
-c8s allowlist components add --set-file component-set.json
+c8s allowlist components add component-set.json
 
 # add the new set and give the old one a deadline
-c8s allowlist components add --set-file component-set.json \
+c8s allowlist components add component-set.json \
     --retire 0.42.1=2026-12-01T00:00:00Z
 
 # add the new set and take the old one out of the document
-c8s allowlist components add --set-file component-set.json --remove 0.42.1
+c8s allowlist components add component-set.json \
+    --remove 0.42.1
 ```
 
 `--retire` and `--remove` repeat, and name sets the live document holds. A
