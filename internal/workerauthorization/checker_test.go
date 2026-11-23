@@ -36,8 +36,8 @@ func TestCheckWorkerAuthorization(t *testing.T) {
 			binding := runtimemeasure.HostData([]byte(tc.launch))
 			verdict.Claims.InitData = binding[:]
 			api.SetVerdict(verdict)
-			cds := servePolicy(t, testutil.CDSPinDocument(testutil.TestMeasurement, testutil.CDSLaunchFile))
-			checker := newTestChecker(cds, api)
+			ta := servePolicy(t, testutil.CDSPinDocument(testutil.TestMeasurement, testutil.CDSLaunchFile))
+			checker := newTestChecker(ta, api)
 			eligible, err := checker.Check(t.Context())
 			if err != nil || eligible != tc.eligible {
 				t.Fatalf("eligible=%v, err=%v; want %v", eligible, err, tc.eligible)
@@ -105,15 +105,15 @@ func TestCheckFailuresRemainUnknown(t *testing.T) {
 		name string
 		fail func(*httptest.Server, *mockapi.Stub)
 	}{
-		{"CDS unavailable", stopCDS},
+		{"Trust Authority unavailable", stopTA},
 		{"invalid evidence", refuseEvidence},
 		{"verifier unavailable", stopVerification},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			api := mockapi.New(t)
-			cds := servePolicy(t, testutil.CDSPinDocument(testutil.TestMeasurement, testutil.CDSLaunchFile))
-			checker := newTestChecker(cds, api)
-			tc.fail(cds, api)
+			ta := servePolicy(t, testutil.CDSPinDocument(testutil.TestMeasurement, testutil.CDSLaunchFile))
+			checker := newTestChecker(ta, api)
+			tc.fail(ta, api)
 			requireUnknown(t, checker, t.Context())
 		})
 	}
@@ -130,7 +130,7 @@ func TestCheckFailuresRemainUnknown(t *testing.T) {
 	})
 }
 
-func stopCDS(cds *httptest.Server, _ *mockapi.Stub) { cds.Close() }
+func stopTA(ta *httptest.Server, _ *mockapi.Stub) { ta.Close() }
 func refuseEvidence(_ *httptest.Server, api *mockapi.Stub) {
 	api.SetVerifyError(mockapi.VerificationFailed("bad signature"))
 }
@@ -151,7 +151,7 @@ func TestCheckRejectsChangedRuntimeUnderUnchangedPolicy(t *testing.T) {
 	verdict.Claims.PlatformData = map[string]any{"rtmr_1": testutil.TestMeasurement}
 	api.SetVerdict(verdict)
 	policy := `{"schema_version":"1","tee":"tdx","measurements":[{"name":"worker","mrtd":"` + testutil.TestMeasurement + `","rtmr":[null,"` + testutil.TestMeasurement + `"]}]}`
-	cds := servePolicy(t, policy)
+	ta := servePolicy(t, policy)
 	provider := &armtls.SelfSignedProvider{
 		Platform: "tdx",
 		Opts:     &armtls.CertOptions{},
@@ -159,7 +159,7 @@ func TestCheckRejectsChangedRuntimeUnderUnchangedPolicy(t *testing.T) {
 			return `{"platform":"tdx","evidence":{"quote":"fake"}}`, nil
 		},
 	}
-	checker := New(cds.Client(), cds.URL, provider, api.URL())
+	checker := New(ta.Client(), ta.URL, provider, api.URL())
 	if eligible, err := checker.Check(t.Context()); !eligible || err != nil {
 		t.Fatalf("matching runtime: %v, %v", eligible, err)
 	}
@@ -188,7 +188,7 @@ func TestCheckReplaysFreshWorkerJournal(t *testing.T) {
 	api.SetVerdict(verdict)
 	launchDigest := sha512.Sum384([]byte(testutil.CDSLaunchFile))
 	policy := `{"schema_version":"2","tee":"tdx","measurements":[{"name":"worker","mrtd":"` + testutil.TestMeasurement + `","launch_file_digest":"` + hex.EncodeToString(launchDigest[:]) + `"}]}`
-	cds := servePolicy(t, policy)
+	ta := servePolicy(t, policy)
 	provider := &armtls.SelfSignedProvider{
 		Platform:         "tdx",
 		Opts:             &armtls.CertOptions{},
@@ -197,7 +197,7 @@ func TestCheckReplaysFreshWorkerJournal(t *testing.T) {
 			return `{"platform":"tdx","evidence":{"quote":"fake"}}`, nil
 		},
 	}
-	checker := New(cds.Client(), cds.URL, provider, api.URL())
+	checker := New(ta.Client(), ta.URL, provider, api.URL())
 	if eligible, err := checker.Check(t.Context()); !eligible || err != nil {
 		t.Fatalf("replaying journal: %v, %v", eligible, err)
 	}
@@ -227,11 +227,11 @@ func servePolicy(t *testing.T, body string) *httptest.Server {
 	return server
 }
 
-func newTestChecker(cds *httptest.Server, api *mockapi.Stub) *Checker {
+func newTestChecker(ta *httptest.Server, api *mockapi.Stub) *Checker {
 	provider := &armtls.SelfSignedProvider{
 		Platform:   "sev-snp",
 		Opts:       &armtls.CertOptions{},
 		AttestFunc: attestclient.MakeSNPARMTLSAttestFunc(attestclient.NewClient(""), api.URL()),
 	}
-	return New(cds.Client(), cds.URL, provider, api.URL())
+	return New(ta.Client(), ta.URL, provider, api.URL())
 }

@@ -19,7 +19,7 @@ import (
 // injection captures everything the mutator decides from pod annotations.
 type injection struct {
 	WorkloadID string
-	// SAN is the DNS SAN get-cert requests from CDS. The c8s-san annotation
+	// SAN is the DNS SAN get-cert requests from the Trust Authority. The c8s-san annotation
 	// sets it directly; otherwise Handle derives it from the workload id and
 	// pod namespace (see workloadSAN), falling back to the id verbatim.
 	SAN       string

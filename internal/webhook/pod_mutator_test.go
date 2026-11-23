@@ -64,7 +64,7 @@ func TestMutatePodInjectsCertSidecar(t *testing.T) {
 			t.Fatalf("c8s-cert args %v missing %s", cert.Args, want)
 		}
 	}
-	// get-cert's default CDS watch is the contract for injected sidecars.
+	// get-cert's default Trust Authority watch is the contract for injected sidecars.
 	for _, arg := range cert.Args {
 		if strings.HasPrefix(arg, "--ca-watch-interval") {
 			t.Fatalf("c8s-cert args %v carry %s, want get-cert's default watch", cert.Args, arg)
@@ -96,7 +96,7 @@ func TestMutatePodInjectsCertSidecar(t *testing.T) {
 	if cert.SecurityContext.RunAsNonRoot == nil || !*cert.SecurityContext.RunAsNonRoot {
 		t.Fatalf("c8s-cert does not require non-root")
 	}
-	// The credential role's reserved identity, which the node binds to the CDS
+	// The credential role's reserved identity, which the node binds to the Trust Authority
 	// address and refuses elsewhere.
 	if got := *cert.SecurityContext.RunAsUser; got != int64(workloadclaims.CredentialsUID) {
 		t.Fatalf("c8s-cert runAsUser = %d, want the reserved %d", got, workloadclaims.CredentialsUID)
@@ -1156,7 +1156,7 @@ func TestMutatePodKeepsFSGroupWithWorkloadClaims(t *testing.T) {
 }
 
 // The wait gate's timeout must comfortably exceed get-cert's initial retry so
-// a slow CDS cold start is absorbed in one wait.
+// a slow Trust Authority cold start is absorbed in one wait.
 func TestCertWaitContainerTimeout(t *testing.T) {
 	pod := &corev1.Pod{
 		Annotations: map[string]string{},
@@ -1172,7 +1172,7 @@ func TestCertWaitContainerTimeout(t *testing.T) {
 	}
 }
 
-// No injected client takes a pin as an argument: it reads the node's CDS
+// No injected client takes a pin as an argument: it reads the node's Trust Authority
 // policy from the path the enforcer mounts, which neither the pod nor the
 // control plane can choose.
 func TestInjectedClientsCarryNoCDSPins(t *testing.T) {

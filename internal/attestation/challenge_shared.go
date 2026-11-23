@@ -11,9 +11,9 @@ import (
 	"time"
 )
 
-// ErrNoChallengeKey reports a CDS HA replica holding no current cluster key.
+// ErrNoChallengeKey reports a Trust Authority HA replica holding no current cluster key.
 // It clears once the replica serves, so it is retryable.
-var ErrNoChallengeKey = errors.New("attestation: no challenge key; this CDS is not serving yet; retry")
+var ErrNoChallengeKey = errors.New("attestation: no challenge key; this Trust Authority is not serving yet; retry")
 
 // ClusterKey returns the cluster's current challenge key, or nothing while
 // this replica may not serve. It is called concurrently and must not hand
@@ -74,7 +74,7 @@ func challengeMAC(key []byte, purpose string, signed []byte) [nonceMACBytes]byte
 	return [nonceMACBytes]byte(mac.Sum(nil)[:nonceMACBytes])
 }
 
-// SharedChallenges is the challenge store of a CDS HA replica: a nonce is
+// SharedChallenges is the challenge store of a Trust Authority HA replica: a nonce is
 // self-verifying, so the replica that redeems it need not be the one that
 // minted it. Each replica redeems a given nonce once.
 type SharedChallenges struct {

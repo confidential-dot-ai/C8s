@@ -9,16 +9,16 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/readutil"
 )
 
-// PublishedKeysPath is the CDS endpoint that serves its pinned operator keys.
+// PublishedKeysPath is the Trust Authority endpoint that serves its pinned operator keys.
 const PublishedKeysPath = "/operator-keys"
 
 // MaxPublishedKeysBytes caps a PublishedKeysPath body. A key bundle is a
 // handful of PEM blocks of about 200 bytes each.
 const MaxPublishedKeysBytes = 256 << 10
 
-// ErrNoPublishedKeys reports a 404 from PublishedKeysPath: the CDS pins no
+// ErrNoPublishedKeys reports a 404 from PublishedKeysPath: the Trust Authority pins no
 // operator keys, so allowlist writes are disabled.
-var ErrNoPublishedKeys = errors.New("CDS pins no operator keys")
+var ErrNoPublishedKeys = errors.New("Trust Authority pins no operator keys")
 
 // ReadPublishedKeys reads the keys from a GET PublishedKeysPath response. It
 // returns ErrNoPublishedKeys on 404. It does not close resp.Body.

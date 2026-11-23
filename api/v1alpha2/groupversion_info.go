@@ -4,7 +4,7 @@
 // for `kubectl get td` / `kubectl get cwl` and to mirror per-pod attestation
 // state into a status surface. Sidecar injection, cert issuance, and image
 // policy enforcement do not consult these types — the webhook keys off pod
-// annotations and CDS / the NRI plugin hold the actual gates.
+// annotations and Trust Authority / the NRI plugin hold the actual gates.
 //
 // +kubebuilder:object:generate=true
 // +groupName=confidential.ai

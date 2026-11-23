@@ -3,7 +3,7 @@ package types
 import "encoding/json"
 
 // DiscoveryDocument is the /v1/discovery preflight document the router serves
-// (written by get-cert): the CDS-issued serving certificate plus the attestation
+// (written by get-cert): the Trust Authority-issued serving certificate plus the attestation
 // evidence captured at issuance. It is the wire contract shared between the
 // producer (get-cert) and consumers (c8s verify, c8s-verify-js).
 type DiscoveryDocument struct {
@@ -20,7 +20,7 @@ type PublicTLSDiscovery struct {
 	Mode     FrontDoorMode `json:"mode"`
 }
 
-// CDSTLSDiscovery carries the CDS-issued serving certificate and where it (and
+// CDSTLSDiscovery carries the Trust Authority-issued serving certificate and where it (and
 // the mesh CA) are served.
 type CDSTLSDiscovery struct {
 	CertificatePEM    string `json:"certificate_pem"`

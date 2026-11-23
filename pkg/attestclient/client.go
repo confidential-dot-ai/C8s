@@ -35,13 +35,13 @@ const maxResponseBodyBytes = 8 << 20
 // NewClientWithHTTP (or a per-call context deadline for a tighter one).
 const defaultRequestTimeout = 60 * time.Second
 
-// Client is a high-level client for the CDS attestation flow.
+// Client is a high-level client for the Trust Authority attestation flow.
 // It handles the full challenge-attest-certify flow in a single call.
 type Client struct {
 	baseURL    string
 	httpClient *http.Client
 	// attestHTTP reaches the attestation-api. It never shares httpClient's
-	// TLS settings, which verify CDS, and never uses a proxy.
+	// TLS settings, which verify Trust Authority, and never uses a proxy.
 	attestHTTP *http.Client
 
 	// MeasuredPolicies is the node's measured-policy journal that TDX
@@ -50,12 +50,12 @@ type Client struct {
 	MeasuredPolicies *armtls.Journal
 }
 
-// CertificateResult is the complete CDS challenge/attest/certify result.
-// Certificate is the PEM chain issued by CDS. Challenge, Platform, Evidence
+// CertificateResult is the complete Trust Authority challenge/attest/certify result.
+// Certificate is the PEM chain issued by the Trust Authority. Challenge, Platform, Evidence
 // and RuntimeExtensions are the attestation material that authorized issuance.
 //
 // Authenticity of Certificate on the network path is provided by the armTLS
-// handshake the caller performed against CDS (see pkg/armtls.NewClientTLSConfig);
+// handshake the caller performed against the Trust Authority (see pkg/armtls.NewClientTLSConfig);
 // callers MUST construct this client over an armTLS-verified transport.
 type CertificateResult struct {
 	Certificate string
@@ -79,9 +79,9 @@ func NewClient(baseURL string) Client {
 	}
 }
 
-// NewClientWithHTTP creates a new client that reaches CDS through httpClient.
+// NewClientWithHTTP creates a new client that reaches Trust Authority through httpClient.
 // Evidence requests to the attestation-api keep only its timeout: they verify
-// the system roots, never httpClient's CDS verification, and never use a
+// the system roots, never httpClient's Trust Authority verification, and never use a
 // proxy.
 func NewClientWithHTTP(baseURL string, httpClient *http.Client) Client {
 	return Client{
@@ -103,14 +103,14 @@ func (c Client) GenerateEvidenceContext(ctx context.Context, attestationApiURL s
 
 // ObtainCertificateWithSandboxContext performs the full attestation flow and
 // returns the issued chain with the evidence that authorized it, forwarding an
-// inventory-signed sandbox token. challenge is the base64 CDS challenge the
+// inventory-signed sandbox token. challenge is the base64 Trust Authority challenge the
 // caller already fetched (POST /authenticate); the same nonce binds the
-// evidence REPORTDATA and the sandbox token, so CDS checks both against one
+// evidence REPORTDATA and the sandbox token, so the Trust Authority checks both against one
 // single-use value. sandboxToken, when non-empty, is the token JSON
-// (workloadclaims.SignedSandboxToken) forwarded opaquely for CDS to verify and
+// (workloadclaims.SignedSandboxToken) forwarded opaquely for Trust Authority to verify and
 // stamp as the leaf's pod-sandbox-ID extension (armtls.OIDSandboxID).
 //
-// The requester never reports its own container images: CDS resolves those
+// The requester never reports its own container images: Trust Authority resolves those
 // from the inventory named by the token (docs/armtls.md, "Sandbox identity").
 func (c Client) ObtainCertificateWithSandboxContext(ctx context.Context, attestationApiURL, csrPEM, challenge string, sandboxToken json.RawMessage) (CertificateResult, error) {
 	return c.ObtainCertificateWithProfileContext(ctx, attestationApiURL, csrPEM, challenge, IssuanceProfile{
@@ -135,14 +135,14 @@ type IssuanceProfile struct {
 	// signature-checked CSR key, to challenge, the decoded nonce.
 	ReportData func(key crypto.PublicKey, challenge []byte) ([]byte, error)
 	// Request completes req once evidence from platform is in hand. An error
-	// refuses issuance before anything reaches CDS.
+	// refuses issuance before anything reaches Trust Authority.
 	Request func(platform teetypes.PlatformType, req *types.AttestRequestBody) error
 }
 
 // ObtainCertificateWithProfileContext runs one issuance round for p: it quotes
 // p.ReportData over the CSR key and the challenge, lets p complete the /attest
-// request, and returns the chain CDS issued with the material that authorized
-// it. challenge is the base64 CDS challenge the caller fetched, so one nonce
+// request, and returns the chain Trust Authority issued with the material that authorized
+// it. challenge is the base64 Trust Authority challenge the caller fetched, so one nonce
 // can bind the evidence and whatever else the profile carries.
 func (c Client) ObtainCertificateWithProfileContext(ctx context.Context, attestationApiURL string, csrPEM string, challenge string, p IssuanceProfile) (CertificateResult, error) {
 	ctx = contextOrBackground(ctx)
@@ -168,9 +168,9 @@ func (c Client) ObtainCertificateWithProfileContext(ctx context.Context, attesta
 		return CertificateResult{}, fmt.Errorf("attestation-api: %w", err)
 	}
 
-	// Submit evidence + CSR to CDS for verification and cert issuance.
+	// Submit evidence + CSR to the Trust Authority for verification and cert issuance.
 	// asResp.Evidence is the platform-specific evidence object as emitted by
-	// /attest; CDS's /attest expects it wrapped in an AttestationEvidence
+	// /attest; Trust Authority's /attest expects it wrapped in an AttestationEvidence
 	// envelope keyed by Platform.
 	req := attestRequest{Challenge: challenge, Evidence: asResp.Envelope(), CSR: csrPEM}
 	if err := p.Request(asResp.Platform, &req); err != nil {
@@ -219,7 +219,7 @@ func (c Client) AttestContext(ctx context.Context, req attestRequest) (string, e
 	return string(body), nil
 }
 
-// MeshCA fetches the mesh CA bundle CDS currently serves at /ca.
+// MeshCA fetches the mesh CA bundle Trust Authority currently serves at /ca.
 // Authenticity comes from the armTLS transport the client was constructed
 // over, the same channel that authenticates the CA trailing an issued chain.
 func (c Client) MeshCA(ctx context.Context) ([]byte, error) {

@@ -198,7 +198,7 @@ func TestSpentTokensSurviveASnapshot(t *testing.T) {
 	}
 }
 
-// A store whose spent tokens have no window is refused at open: CDS must not
+// A store whose spent tokens have no window is refused at open: Trust Authority must not
 // serve reads while every operator write fails.
 func TestStoreWithoutTheTokenWindowIsRefused(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "allowlist.db")

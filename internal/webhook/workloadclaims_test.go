@@ -51,7 +51,7 @@ func TestWorkloadClaims_NodeCVMLeavesMountToNRI(t *testing.T) {
 }
 
 // The webhook passes the pod's own init-container names so get-cert can split
-// / get-cert no longer classifies containers by role — CDS resolves a sandbox's
+// / get-cert no longer classifies containers by role — Trust Authority resolves a sandbox's
 // images from the inventory — so the webhook must not pass per-init-container
 // names it would reject as an unknown flag.
 func TestWorkloadClaims_PassesNoInitContainerNames(t *testing.T) {

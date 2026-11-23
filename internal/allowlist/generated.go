@@ -38,7 +38,7 @@ func trimBase(base string) string {
 }
 
 // componentInvocations are the executables the chart's component entries pin:
-// the C8s binary (/c8s in the operator and CDS images, /app/c8s in the mesh
+// the C8s binary (/c8s in the operator and Trust Authority images, /app/c8s in the mesh
 // and volumed images), attestation-api, and nginx through its entrypoint
 // script.
 var componentInvocations = [][]string{{secrets.InjectedBinary}, {"/app/c8s"}, {"/attestation-api"}, {"/docker-entrypoint.sh", "nginx"}}

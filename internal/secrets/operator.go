@@ -36,7 +36,7 @@ type PutResponse struct {
 	Existing Origin `json:"existing,omitempty"`
 }
 
-// OperatorHandler serves PUT on Route: an operator supplying a value CDS cannot
+// OperatorHandler serves PUT on Route: an operator supplying a value Trust Authority cannot
 // generate — an API token, a database password, a wrapped key.
 //
 // Authorization is the operator key that already roots the secrets grants, via
