@@ -81,17 +81,17 @@ func (s ImagePolicySource) ValuesExcluding(pins MeasurementPins) (refvalues.Refe
 	return s.Values()
 }
 
-// ErrCDSPinUnbound marks a pin set that does not name one CDS VM.
-var ErrCDSPinUnbound = errors.New("is not one CDS VM's identity")
+// ErrCDSPinUnbound marks a pin set that does not name one Trust Authority VM.
+var ErrCDSPinUnbound = errors.New("is not one Trust Authority VM's identity")
 
-// CDSLaunchFile is the configuration a pin set identifies its CDS by: every
+// CDSLaunchFile is the configuration a pin set identifies its Trust Authority by: every
 // entry must pin the registers its family identifies a guest by, and bind the
-// same launch file; a set binding none, or two, names no one VM. A CDS is the
+// same launch file; a set binding none, or two, names no one VM. A Trust Authority is the
 // cluster's trust root, and its image alone says nothing about the cluster it
 // serves — the configuration does, and the launch binding is what proves it.
 func CDSLaunchFile(values refvalues.ReferenceValues) ([]byte, error) {
 	if values.Empty() {
-		return nil, fmt.Errorf("%w: it pins no image, so nothing tells this cluster's CDS from any other attested TEE", ErrCDSPinUnbound)
+		return nil, fmt.Errorf("%w: it pins no image, so nothing tells this cluster's Trust Authority from any other attested TEE", ErrCDSPinUnbound)
 	}
 	if err := armtls.RequireImageRegisters(values.Family, values.Images); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrCDSPinUnbound, err)
@@ -99,16 +99,16 @@ func CDSLaunchFile(values refvalues.ReferenceValues) ([]byte, error) {
 	file := values.Images[0].LaunchFile
 	for _, image := range values.Images {
 		if len(image.LaunchFile) == 0 {
-			return nil, fmt.Errorf("%w: entry %q binds no launch file, and a CDS is pinned to the configuration it runs on", ErrCDSPinUnbound, image.Name)
+			return nil, fmt.Errorf("%w: entry %q binds no launch file, and a Trust Authority is pinned to the configuration it runs on", ErrCDSPinUnbound, image.Name)
 		}
 		if !bytes.Equal(image.LaunchFile, file) {
-			return nil, fmt.Errorf("%w: entry %q binds another configuration, and one pin names one CDS", ErrCDSPinUnbound, image.Name)
+			return nil, fmt.Errorf("%w: entry %q binds another configuration, and one pin names one Trust Authority", ErrCDSPinUnbound, image.Name)
 		}
 	}
 	return file, nil
 }
 
-// ResolveCDSPins returns the pins a client holds its CDS to, and whether the
+// ResolveCDSPins returns the pins a client holds its Trust Authority to, and whether the
 // node's own policy decided them. While the node mounts a policy it is the
 // only source and a supplied one is refused. That policy follows the
 // cluster's pin decrees while ctx runs; a supplied one never moves.
@@ -141,7 +141,7 @@ func ClientCDSPins(ctx context.Context, nodePolicy string, source ImagePolicySou
 	if err != nil {
 		return nil, err
 	}
-	slog.Info("CDS pins resolved", "from_node", fromNode)
+	slog.Info("Trust Authority pins resolved", "from_node", fromNode)
 	return pins, nil
 }
 
@@ -151,20 +151,20 @@ func suppliedPinSource(source ImagePolicySource) string {
 	if source.IsSet() {
 		return strings.Join(suppliedPolicyFlags(source), " and ")
 	}
-	return "the CDS pin set"
+	return "the Trust Authority pin set"
 }
 
-// NodeProvidesCDSPins reports whether the enforcer mounts this node's CDS pins
-// at path, so a client can say which half of its CDS configuration is short
+// NodeProvidesCDSPins reports whether the enforcer mounts this node's Trust Authority pins
+// at path, so a client can say which half of its Trust Authority configuration is short
 // before resolving either.
 func NodeProvidesCDSPins(path string) (bool, error) {
 	return nodeProvides(path)
 }
 
 // RequireNodeVerifier holds a credential client to the node's own
-// attestation-api while the enforcer mounts its CDS policy at nodePolicy and
+// attestation-api while the enforcer mounts its Trust Authority policy at nodePolicy and
 // presents that attestation-api at socket. The verifier is what decides
-// whether the CDS a client dials satisfies those pins, so a client answering
+// whether the Trust Authority a client dials satisfies those pins, so a client answering
 // to a named verifier is not pinned at all.
 //
 // Both paths are the node's own mounts, and the rule is ResolveCDSPins': while
@@ -184,7 +184,7 @@ func RequireNodeVerifier(nodePolicy, socket, supplied string) error {
 		return nil
 	}
 	if endpoint := "unix://" + socket; supplied != endpoint {
-		return fmt.Errorf("this node pins CDS in %s and serves its attestation-api at %s, so --attestation-api-url must be %s; got %q",
+		return fmt.Errorf("this node pins Trust Authority in %s and serves its attestation-api at %s, so --attestation-api-url must be %s; got %q",
 			nodePolicy, socket, endpoint, supplied)
 	}
 	return nil

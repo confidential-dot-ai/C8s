@@ -25,7 +25,7 @@ import (
 //   - a timer requests the next generation, paced by renewalInterval once one
 //     is published and by the initial-retry backoff until then;
 //   - a failed request is retried with backoff;
-//   - each --ca-watch-interval tick renews early when CDS serves a renewed CA
+//   - each --ca-watch-interval tick renews early when the Trust Authority serves a renewed CA
 //     certificate under the pod's bound key, or an allowlist policy other than
 //     the one the leaf is stamped with;
 //   - in a guest, a changed pod snapshot renews at once;
@@ -51,9 +51,9 @@ type renewer struct {
 
 	// podChanges is nil outside a guest.
 	podChanges <-chan struct{}
-	// cdsWatch and cdsTicker are nil when --ca-watch-interval is 0.
-	cdsWatch   <-chan time.Time
-	cdsTicker  *time.Ticker
+	// taWatch and taTicker are nil when --ca-watch-interval is 0.
+	taWatch    <-chan time.Time
+	taTicker   *time.Ticker
 	renewTimer *time.Timer
 	renewDue   time.Time
 
@@ -64,7 +64,7 @@ type renewer struct {
 	// renewalFailures counts consecutive failed renewals of a published
 	// generation.
 	renewalFailures int
-	// refusals counts consecutive requests CDS or the inventory refused.
+	// refusals counts consecutive requests Trust Authority or the inventory refused.
 	refusals int
 	// retryPending is set while the last request failed; a pod change does
 	// not shorten its backoff.
@@ -99,8 +99,8 @@ func newRenewer(
 	r.renewDue = time.Now().Add(first)
 
 	if cfg.CAWatchInterval > 0 {
-		r.cdsTicker = time.NewTicker(cfg.CAWatchInterval)
-		r.cdsWatch = r.cdsTicker.C
+		r.taTicker = time.NewTicker(cfg.CAWatchInterval)
+		r.taWatch = r.taTicker.C
 		slog.Info("watching cds for changes", "interval", cfg.CAWatchInterval, "ca_path", cfg.CAPath, "policy", !cfg.NoWorkloadClaims)
 	}
 	return r
@@ -126,8 +126,8 @@ func (r *renewer) takeFirstRequestDelay() time.Duration {
 
 func (r *renewer) stop() {
 	r.renewTimer.Stop()
-	if r.cdsTicker != nil {
-		r.cdsTicker.Stop()
+	if r.taTicker != nil {
+		r.taTicker.Stop()
 	}
 }
 
@@ -163,8 +163,8 @@ func (r *renewer) handleNextEvent(ctx context.Context) error {
 		}
 		r.renewOnPodChange()
 		return nil
-	case <-r.cdsWatch:
-		r.renewIfCDSChanged(requestCtx)
+	case <-r.taWatch:
+		r.renewIfTAChanged(requestCtx)
 		return nil
 	case <-r.renewTimer.C:
 		return r.renew(requestCtx)
@@ -179,9 +179,9 @@ func (r *renewer) renewOnPodChange() {
 	}
 }
 
-// renewIfCDSChanged renews when CDS serves a renewed CA certificate under the
+// renewIfTAChanged renews when the Trust Authority serves a renewed CA certificate under the
 // pod's bound key or an allowlist policy other than the leaf's stamp.
-func (r *renewer) renewIfCDSChanged(ctx context.Context) {
+func (r *renewer) renewIfTAChanged(ctx context.Context) {
 	// Until a generation is published the initial-retry backoff is already
 	// asking as fast as allowed.
 	if !r.hasPublished() {
@@ -214,7 +214,7 @@ func (r *renewer) policyCheckDue() bool {
 	return !r.cfg.NoWorkloadClaims && r.renewalFailures == 0 && !r.policyRenewalPending
 }
 
-// renewIfPolicyStale schedules a renewal when CDS serves allowlist bytes
+// renewIfPolicyStale schedules a renewal when the Trust Authority serves allowlist bytes
 // other than the ones the leaf is stamped with. An unstamped leaf is left to
 // the unnamed fast poll; a leaf naming another workload than
 // --expected-workload is still checked, since that poll may be off.
@@ -315,7 +315,7 @@ func (r *renewer) hasPublished() bool {
 
 const (
 	// minRenewalDelay floors every computed delay so an already-expired leaf
-	// cannot turn the renewal loop into a hot attestation spin against CDS. It
+	// cannot turn the renewal loop into a hot attestation spin against the Trust Authority. It
 	// never raises a delay above --renew-interval, which the operator chose.
 	minRenewalDelay = 5 * time.Second
 
@@ -340,7 +340,7 @@ const (
 
 	defaultRenewJitterPercent = 20
 
-	defaultCDSWatchInterval = time.Minute
+	defaultTAWatchInterval = time.Minute
 )
 
 // renewalRetryBase is the first delay after a failed renewal; consecutive
@@ -354,7 +354,7 @@ var renewalRetryBase = 15 * time.Second
 // generation's remaining lifetime — its leaf's or its CA's, whichever
 // expires first, so a CA renewed under the pod's bound key is picked up before
 // the previous CA certificate expires. That second bound is also what
-// keeps a leaf from expiring exactly as its renewal fires: CDS caps a named
+// keeps a leaf from expiring exactly as its renewal fires: Trust Authority caps a named
 // leaf at issuer.MaxNamedLeafTTL and nothing backdates NotBefore, so pacing on
 // the flag alone — which the chart sets below that cap — would reset the
 // timer after issuance, drift later every cycle, and leave a single failed
@@ -423,7 +423,7 @@ func unnamedPollInterval(cfg config, g *generation, unnamedRuns int) time.Durati
 }
 
 // renewalRetryInterval is the delay after a failed renewal: exponential from
-// renewalRetryBase so a CDS outage is not hammered, or refusedRetryInterval
+// renewalRetryBase so a Trust Authority outage is not hammered, or refusedRetryInterval
 // after a refusal, but never slower than the ordinary pacing, which is itself
 // bounded by the published generation's remaining lifetime.
 func renewalRetryInterval(cfg config, g *generation, failures, refusals int) time.Duration {
@@ -443,10 +443,10 @@ func renewalRetryInterval(cfg config, g *generation, failures, refusals int) tim
 	return min(delay, ceiling)
 }
 
-// refused reports whether CDS or the node inventory refused this pod (403, as
-// for a sandbox the allowlist does not admit) or CDS rate-limited its source
+// refused reports whether the Trust Authority or the node inventory refused this pod (403, as
+// for a sandbox the allowlist does not admit) or Trust Authority rate-limited its source
 // (429). Asking again soon gets the same answer, and every attempt spends the
-// per-source CDS limit that all pods of the node share, the router's renewal
+// per-source Trust Authority limit that all pods of the node share, the router's renewal
 // included.
 func refused(err error) bool {
 	var status *attestclient.StatusError
@@ -533,7 +533,7 @@ func warnUnexpectedWorkload(cfg config, leaf *x509.Certificate, warned map[strin
 }
 
 // servedCAStale detects a renewed CA certificate under the pod's bound issuer
-// key, comparing what CDS serves now with the CA the volume publishes.
+// key, comparing what Trust Authority serves now with the CA the volume publishes.
 func servedCAStale(ctx context.Context, client attestclient.Client, bound issuerKeyID, volume credentialVolume) (bool, error) {
 	currentPEM, err := client.MeshCA(ctx)
 	if err != nil {
@@ -561,7 +561,7 @@ func servedCAStale(ctx context.Context, client attestclient.Client, bound issuer
 	return !served.Equal(current), nil
 }
 
-// stampedPolicyStale reports whether the allowlist CDS serves differs from the
+// stampedPolicyStale reports whether the allowlist Trust Authority serves differs from the
 // stamped bytes, and the version it serves them at. It sends the stamped
 // digest's tag as If-None-Match, so an allowlist whose bytes are unchanged
 // costs a 304 however its version moves. The fetch rides the armTLS-verified
@@ -580,7 +580,7 @@ func stampedPolicyStale(ctx context.Context, client allowlistclient.Client, dige
 var policyRenewDelayFn = policyRenewDelay
 
 // policyRenewDelay spreads a fleet's policy-change renewals over half a watch
-// interval so one allowlist write does not land every pod on CDS at once. It
+// interval so one allowlist write does not land every pod on the Trust Authority at once. It
 // never postpones a renewal already due sooner.
 func policyRenewDelay(interval, remaining time.Duration) time.Duration {
 	delay := time.Duration(mrand.Int64N(int64(interval/2) + 1))

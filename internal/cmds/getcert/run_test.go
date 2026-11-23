@@ -41,31 +41,31 @@ import (
 
 func TestCDSHTTPClientRejectsPlainHTTP(t *testing.T) {
 	// A non-https --cds-url must be refused, not quietly served over a client
-	// that skips armTLS attestation of CDS.
+	// that skips armTLS attestation of Trust Authority.
 	for _, scheme := range []string{"http://cds:8443", "cds:8443", "tcp://cds:8443"} {
 		cfg := config{
 			CDSURL:            scheme,
 			AttestationApiURL: "http://attestation-api:8400",
 		}
-		if _, err := cdsHTTPClient(t.Context(), cfg); err == nil {
+		if _, err := taHTTPClient(t.Context(), cfg); err == nil {
 			t.Fatalf("cdsHTTPClient(%q) succeeded, want error for non-https scheme", scheme)
 		}
 	}
 }
 
-// No test host mounts a CDS endpoint, so --cds-url is the only source left and
+// No test host mounts a Trust Authority endpoint, so --cds-url is the only source left and
 // its absence is refused before the rest of the configuration is validated.
 func TestRunRequiresACDSEndpoint(t *testing.T) {
 	err := run(t.Context(), config{NoSAN: true})
-	if err == nil || err.Error() != "--ta-url is required: no node hands this client a CDS endpoint" {
+	if err == nil || err.Error() != "--ta-url is required: no node hands this client a Trust Authority endpoint" {
 		t.Fatalf("error = %v, want the missing-endpoint refusal", err)
 	}
 }
 
 func TestCDSHTTPClientUsesARMTLSForHTTPS(t *testing.T) {
-	client, err := cdsHTTPClient(t.Context(), config{
+	client, err := taHTTPClient(t.Context(), config{
 		CDSURL:                 "https://cds:8443",
-		MeasurementsConfigJSON: testCDSPin,
+		MeasurementsConfigJSON: testTAPin,
 		AttestationApiURL:      "http://attestation-api:8400",
 	})
 	if err != nil {
@@ -75,7 +75,7 @@ func TestCDSHTTPClientUsesARMTLSForHTTPS(t *testing.T) {
 		t.Fatal("client = http.DefaultClient, want armTLS client")
 	}
 	// The client is the shared armTLS shape over a transport it rebuilds as
-	// the node's pins move; a plain one would verify CDS by the system roots.
+	// the node's pins move; a plain one would verify Trust Authority by the system roots.
 	if _, plain := client.Transport.(*http.Transport); plain {
 		t.Fatalf("transport = %T, want the armTLS pin-following round-tripper", client.Transport)
 	}
@@ -115,7 +115,7 @@ func TestBuildDiscoveryDocumentIncludesCertificateAndEvidence(t *testing.T) {
 		t.Fatalf("public tls mode = %q, want webpki", doc.PublicTLS.Mode)
 	}
 	if doc.CDSTLS.CertificatePEM != certPEM {
-		t.Fatal("CDS certificate PEM not preserved")
+		t.Fatal("Trust Authority certificate PEM not preserved")
 	}
 	if len(doc.CDSTLS.CertificateSHA256) != 64 {
 		t.Fatalf("certificate sha256 = %q, want 64 hex chars", doc.CDSTLS.CertificateSHA256)
@@ -224,12 +224,12 @@ func TestDiscoveryLaunchHostnamesDoNotReplaceMeshIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	if doc.PublicTLS.Hostname != "api.confidential.ai" || cfg.SAN != "c8s.local" || doc.CDSTLS.CertificatePEM != cert {
-		t.Fatalf("public identity and CDS identity were mixed: hostname=%q SAN=%q", doc.PublicTLS.Hostname, cfg.SAN)
+		t.Fatalf("public identity and Trust Authority identity were mixed: hostname=%q SAN=%q", doc.PublicTLS.Hostname, cfg.SAN)
 	}
-	// A CDS front door still serves the CDS certificate, even if names exist.
+	// A Trust Authority front door still serves the Trust Authority certificate, even if names exist.
 	cfg.DiscoveryPublicTLSMode = "cds"
 	if err := resolveDiscoveryPublicTLSHostname(&cfg); err != nil || cfg.DiscoveryPublicTLSHostname != cfg.SAN {
-		t.Fatalf("CDS mode: %q, %v", cfg.DiscoveryPublicTLSHostname, err)
+		t.Fatalf("Trust Authority mode: %q, %v", cfg.DiscoveryPublicTLSHostname, err)
 	}
 }
 
@@ -379,17 +379,17 @@ func TestCABundleFromChain(t *testing.T) {
 	})
 }
 
-// plaintextCDSClient builds an attestclient over the default transport for
-// tests that drive the cert flow against a plaintext httptest CDS. Production
-// requires https (see cdsHTTPClient), so these tests inject the client
-// directly rather than route through newCDSClient.
-func plaintextCDSClient(cdsURL string) attestclient.Client {
-	return attestclient.NewClientWithHTTP(cdsURL, http.DefaultClient)
+// plaintextTAClient builds an attestclient over the default transport for
+// tests that drive the cert flow against a plaintext httptest Trust Authority. Production
+// requires https (see taHTTPClient), so these tests inject the client
+// directly rather than route through newTAClient.
+func plaintextTAClient(taURL string) attestclient.Client {
+	return attestclient.NewClientWithHTTP(taURL, http.DefaultClient)
 }
 
-// plaintextPolicyClient is plaintextCDSClient for the allowlist API.
-func plaintextPolicyClient(cdsURL string) allowlistclient.Client {
-	return allowlistclient.NewClientWithHTTP(cdsURL, http.DefaultClient)
+// plaintextPolicyClient is plaintextTAClient for the allowlist API.
+func plaintextPolicyClient(taURL string) allowlistclient.Client {
+	return allowlistclient.NewClientWithHTTP(taURL, http.DefaultClient)
 }
 
 func TestValidateConfigAccepts(t *testing.T) {
@@ -652,7 +652,7 @@ func TestCreateCSR(t *testing.T) {
 		return csr
 	}
 
-	// A pod without confidential.ai/cw requests no SAN at all; CDS takes
+	// A pod without confidential.ai/cw requests no SAN at all; Trust Authority takes
 	// the subject from the verified workload identity assertion.
 	t.Run("no san", func(t *testing.T) {
 		csrPEM, err := createCSR(key, "", armtlsExt)
@@ -674,7 +674,7 @@ func TestCreateCSR(t *testing.T) {
 			t.Fatalf("createCSR: %v", err)
 		}
 		csr := parseCSR(t, csrPEM)
-		// INVARIANT: the CSR carries the armTLS extension so CDS can copy it
+		// INVARIANT: the CSR carries the armTLS extension so the Trust Authority can copy it
 		// into the issued leaf for downstream armtls-mode re-verification.
 		found := false
 		for _, ext := range csr.Extensions {
@@ -700,7 +700,7 @@ func TestCreateCSR(t *testing.T) {
 		}
 	})
 
-	// get-cert embeds an armTLS attestation extension into the CSR so CDS
+	// get-cert embeds an armTLS attestation extension into the CSR so the Trust Authority
 	// copies it onto the leaf (docs/armtls.md). Confirm an extra extension
 	// survives into the request.
 	t.Run("carries extra extension", func(t *testing.T) {
@@ -819,7 +819,7 @@ func TestBuildDiscoveryDocumentRejectsUnparseableCert(t *testing.T) {
 }
 
 func TestNewCDSClientInvalidURL(t *testing.T) {
-	if _, _, err := newCDSClient(t.Context(), config{CDSURL: "://bad"}); err == nil {
+	if _, _, err := newTAClient(t.Context(), config{CDSURL: "://bad"}); err == nil {
 		t.Fatal("newCDSClient succeeded, want error for invalid URL")
 	}
 }
@@ -842,21 +842,21 @@ func TestSetupLoggingSetsLevel(t *testing.T) {
 	}
 }
 
-// startFakeServers wires up an httptest server playing the CDS role
+// startFakeServers wires up an httptest server playing the Trust Authority role
 // (/authenticate, /attest) and a separate attestation-api server (/attest).
 // The challenge is valid base64 and the attestation-api echoes evidence so the
 // full obtainCert flow can run without real TEE hardware.
-// startFakeServers is a CDS that issues the way the real one does: it reads the
+// startFakeServers is a Trust Authority that issues the way the real one does: it reads the
 // CSR and the sandbox token out of the attest request and signs a leaf for that
 // key, naming the instance the token asserts.
-func startFakeServers(t *testing.T, ca *testCA) (cdsURL, attURL string) {
+func startFakeServers(t *testing.T, ca *testCA) (taURL, attURL string) {
 	return startFakeServersRefusing(t, ca, 0)
 }
 
-// startFakeServersRefusing is startFakeServers with the CDS refusing the first
+// startFakeServersRefusing is startFakeServers with the Trust Authority refusing the first
 // refusals authentication attempts before it starts issuing, so a test can
-// watch get-cert recover from a CDS that is not yet ready to issue.
-func startFakeServersRefusing(t *testing.T, ca *testCA, refusals int) (cdsURL, attURL string) {
+// watch get-cert recover from a Trust Authority that is not yet ready to issue.
+func startFakeServersRefusing(t *testing.T, ca *testCA, refusals int) (taURL, attURL string) {
 	t.Helper()
 
 	att := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -875,7 +875,7 @@ func startFakeServersRefusing(t *testing.T, ca *testCA, refusals int) (cdsURL, a
 
 	var mu sync.Mutex
 	var asked int
-	cds := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	ta := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/authenticate":
 			mu.Lock()
@@ -900,12 +900,12 @@ func startFakeServersRefusing(t *testing.T, ca *testCA, refusals int) (cdsURL, a
 			http.NotFound(w, r)
 		}
 	}))
-	t.Cleanup(cds.Close)
+	t.Cleanup(ta.Close)
 
-	return cds.URL, att.URL
+	return ta.URL, att.URL
 }
 
-// issueForAttestRequest mints the leaf an attest request asks for: CDS stamps
+// issueForAttestRequest mints the leaf an attest request asks for: Trust Authority stamps
 // the instance the inventory's token names, which is what the pod then checks.
 func issueForAttestRequest(ca *testCA, r *http.Request) (string, error) {
 	var req struct {
@@ -955,16 +955,16 @@ func testCredentials(t *testing.T) *credentials {
 func TestObtainCertPublishesAValidatedGeneration(t *testing.T) {
 	ca := newTestCA(t)
 	stageInventory(t, testInstanceID)
-	cdsURL, attURL := startFakeServers(t, ca)
+	taURL, attURL := startFakeServers(t, ca)
 
 	cfg := config{
-		CDSURL:                cdsURL,
+		CDSURL:                taURL,
 		AttestationApiURL:     attURL,
 		SAN:                   "host.example.com",
 		WorkloadClaimsTimeout: 5 * time.Second,
 	}
 	creds := testCredentials(t)
-	if err := obtainCert(context.Background(), cfg, plaintextCDSClient(cfg.CDSURL), creds); err != nil {
+	if err := obtainCert(context.Background(), cfg, plaintextTAClient(cfg.CDSURL), creds); err != nil {
 		t.Fatalf("obtainCert: %v", err)
 	}
 	assertReaderPaths(t, creds.volume, creds.current)
@@ -984,17 +984,17 @@ func TestObtainCertPublishesAValidatedGeneration(t *testing.T) {
 // (--no-workload-claims) asks for no assertion, never dials the inventory, and
 // publishes a leaf that names no workload instance.
 func TestObtainCertWithoutClaimsPublishesAnUnassertedLeaf(t *testing.T) {
-	cdsURL, attURL := startFakeServers(t, newTestCA(t))
+	taURL, attURL := startFakeServers(t, newTestCA(t))
 
 	cfg := config{
-		CDSURL:            cdsURL,
+		CDSURL:            taURL,
 		AttestationApiURL: attURL,
 		SAN:               "host.example.com",
 		NoWorkloadClaims:  true,
 	}
 	creds := testCredentials(t)
 	creds.instanceID = ""
-	if err := obtainCert(context.Background(), cfg, plaintextCDSClient(cfg.CDSURL), creds); err != nil {
+	if err := obtainCert(context.Background(), cfg, plaintextTAClient(cfg.CDSURL), creds); err != nil {
 		t.Fatalf("obtainCert: %v", err)
 	}
 	assertReaderPaths(t, creds.volume, creds.current)
@@ -1029,15 +1029,15 @@ func TestObtainCertFailsClosedWithoutAnAssertion(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			serveSandboxRoute(t, handler)
-			cdsURL, attURL := startFakeServers(t, ca)
+			taURL, attURL := startFakeServers(t, ca)
 			cfg := config{
-				CDSURL:                cdsURL,
+				CDSURL:                taURL,
 				AttestationApiURL:     attURL,
 				SAN:                   "host.example.com",
 				WorkloadClaimsTimeout: 5 * time.Second,
 			}
 			creds := testCredentials(t)
-			if err := obtainCert(context.Background(), cfg, plaintextCDSClient(cfg.CDSURL), creds); err == nil {
+			if err := obtainCert(context.Background(), cfg, plaintextTAClient(cfg.CDSURL), creds); err == nil {
 				t.Fatal("issued without a workload identity assertion")
 			}
 			if creds.current != nil {
@@ -1047,20 +1047,20 @@ func TestObtainCertFailsClosedWithoutAnAssertion(t *testing.T) {
 	}
 }
 
-// The inventory asserts one instance and CDS names another; the pod publishes
+// The inventory asserts one instance and Trust Authority names another; the pod publishes
 // nothing.
 func TestObtainCertRejectsAnotherInstancesLeaf(t *testing.T) {
 	stageInventory(t, "f3a8c1d2e4b69075")
-	cdsURL, attURL := startFakeServers(t, newTestCA(t))
+	taURL, attURL := startFakeServers(t, newTestCA(t))
 
 	cfg := config{
-		CDSURL:                cdsURL,
+		CDSURL:                taURL,
 		AttestationApiURL:     attURL,
 		SAN:                   "host.example.com",
 		WorkloadClaimsTimeout: 5 * time.Second,
 	}
 	creds := testCredentials(t)
-	if err := obtainCert(context.Background(), cfg, plaintextCDSClient(cfg.CDSURL), creds); err == nil {
+	if err := obtainCert(context.Background(), cfg, plaintextTAClient(cfg.CDSURL), creds); err == nil {
 		t.Fatal("published a leaf naming another workload instance")
 	}
 	if _, err := storedGeneration(creds.volume); !errors.Is(err, errNoGeneration) {
@@ -1073,20 +1073,20 @@ func TestObtainCertCDSError(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"platform": "snp", "evidence": mockapi.FakeSNPEvidence(nil)})
 	}))
 	t.Cleanup(att.Close)
-	cds := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	ta := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "boom", http.StatusInternalServerError)
 	}))
-	t.Cleanup(cds.Close)
+	t.Cleanup(ta.Close)
 
 	stageInventory(t, testInstanceID)
 	cfg := config{
-		CDSURL:                cds.URL,
+		CDSURL:                ta.URL,
 		AttestationApiURL:     att.URL,
 		SAN:                   "host.example.com",
 		WorkloadClaimsTimeout: 5 * time.Second,
 	}
-	if err := obtainCert(context.Background(), cfg, plaintextCDSClient(cfg.CDSURL), testCredentials(t)); err == nil {
-		t.Fatal("obtainCert succeeded, want error when CDS fails")
+	if err := obtainCert(context.Background(), cfg, plaintextTAClient(cfg.CDSURL), testCredentials(t)); err == nil {
+		t.Fatal("obtainCert succeeded, want error when the Trust Authority fails")
 	}
 }
 
@@ -1095,7 +1095,7 @@ func TestObtainCertAttestationExtensionError(t *testing.T) {
 		http.Error(w, "attestation down", http.StatusInternalServerError)
 	}))
 	t.Cleanup(att.Close)
-	cds := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	ta := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/authenticate" {
 			http.NotFound(w, r)
 			return
@@ -1104,16 +1104,16 @@ func TestObtainCertAttestationExtensionError(t *testing.T) {
 			"challenge": base64.StdEncoding.EncodeToString([]byte("the-challenge")),
 		})
 	}))
-	t.Cleanup(cds.Close)
+	t.Cleanup(ta.Close)
 
 	stageInventory(t, testInstanceID)
 	cfg := config{
-		CDSURL:                cds.URL,
+		CDSURL:                ta.URL,
 		AttestationApiURL:     att.URL,
 		SAN:                   "host.example.com",
 		WorkloadClaimsTimeout: 5 * time.Second,
 	}
-	err := obtainCert(context.Background(), cfg, plaintextCDSClient(cfg.CDSURL), testCredentials(t))
+	err := obtainCert(context.Background(), cfg, plaintextTAClient(cfg.CDSURL), testCredentials(t))
 	if err == nil {
 		t.Fatal("obtainCert succeeded, want attestation extension error")
 	}
@@ -1124,10 +1124,10 @@ func TestObtainCertAttestationExtensionError(t *testing.T) {
 
 func TestObtainCertWithRetrySucceedsAfterTransientFailure(t *testing.T) {
 	stageInventory(t, testInstanceID)
-	cdsURL, attURL := startFakeServersRefusing(t, newTestCA(t), 1)
+	taURL, attURL := startFakeServersRefusing(t, newTestCA(t), 1)
 
 	cfg := config{
-		CDSURL:                cdsURL,
+		CDSURL:                taURL,
 		AttestationApiURL:     attURL,
 		SAN:                   "host.example.com",
 		WorkloadClaimsTimeout: 5 * time.Second,
@@ -1135,7 +1135,7 @@ func TestObtainCertWithRetrySucceedsAfterTransientFailure(t *testing.T) {
 		InitialRetryInterval:  time.Millisecond,
 	}
 	creds := testCredentials(t)
-	if err := obtainCertWithRetry(context.Background(), cfg, plaintextCDSClient(cfg.CDSURL), creds); err != nil {
+	if err := obtainCertWithRetry(context.Background(), cfg, plaintextTAClient(cfg.CDSURL), creds); err != nil {
 		t.Fatalf("obtainCertWithRetry: %v", err)
 	}
 	if creds.current == nil {
@@ -1149,21 +1149,21 @@ func TestObtainCertWithRetryNoTimeoutTriesOnce(t *testing.T) {
 	}))
 	t.Cleanup(att.Close)
 	var calls int
-	cds := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	ta := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
 		http.Error(w, "down", http.StatusServiceUnavailable)
 	}))
-	t.Cleanup(cds.Close)
+	t.Cleanup(ta.Close)
 
 	stageInventory(t, testInstanceID)
 	cfg := config{
-		CDSURL:                cds.URL,
+		CDSURL:                ta.URL,
 		AttestationApiURL:     att.URL,
 		SAN:                   "host.example.com",
 		WorkloadClaimsTimeout: 5 * time.Second,
 		InitialRetryTimeout:   0,
 	}
-	if err := obtainCertWithRetry(context.Background(), cfg, plaintextCDSClient(cfg.CDSURL), testCredentials(t)); err == nil {
+	if err := obtainCertWithRetry(context.Background(), cfg, plaintextTAClient(cfg.CDSURL), testCredentials(t)); err == nil {
 		t.Fatal("obtainCertWithRetry succeeded, want error")
 	}
 	if calls != 1 {
@@ -1188,7 +1188,7 @@ func TestRunFailsFastWithoutClaimsSocketDir(t *testing.T) {
 	dir := ramBackedDir(t)
 	err := run(t.Context(), config{
 		CDSURL:                 "https://cds:8443",
-		MeasurementsConfigJSON: testCDSPin,
+		MeasurementsConfigJSON: testTAPin,
 		AttestationApiURL:      "http://attestation-api:8400",
 		SAN:                    "host.example.com",
 		CertPath:               filepath.Join(dir, "tls.crt"),
@@ -1368,16 +1368,16 @@ func TestAssertedInstanceID(t *testing.T) {
 // with a certificate is the key that certificate was issued for.
 func TestObtainCertRenewsOnAFreshKey(t *testing.T) {
 	stageInventory(t, testInstanceID)
-	cdsURL, attURL := startFakeServers(t, newTestCA(t))
+	taURL, attURL := startFakeServers(t, newTestCA(t))
 
 	cfg := config{
-		CDSURL:                cdsURL,
+		CDSURL:                taURL,
 		AttestationApiURL:     attURL,
 		SAN:                   "host.example.com",
 		WorkloadClaimsTimeout: 5 * time.Second,
 	}
 	creds := testCredentials(t)
-	client := plaintextCDSClient(cfg.CDSURL)
+	client := plaintextTAClient(cfg.CDSURL)
 
 	first := publishOneGeneration(t, cfg, client, creds)
 	second := publishOneGeneration(t, cfg, client, creds)
@@ -1464,7 +1464,7 @@ func TestRunWithdrawsWhenResumingFails(t *testing.T) {
 	v, _, _ := publishedVolume(t, newTestCA(t))
 	cfg := config{
 		CDSURL:                 "https://cds:8443",
-		MeasurementsConfigJSON: testCDSPin,
+		MeasurementsConfigJSON: testTAPin,
 		AttestationApiURL:      "http://attestation-api:8400",
 		SAN:                    "host.example.com",
 		WorkloadClaimsTimeout:  time.Second,

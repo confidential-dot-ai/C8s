@@ -14,22 +14,22 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 )
 
-// The CDS endpoint document the enforcer hands an injected credential client:
-// one <host>:<port>, the CDS this cluster's components dial. The node writes
+// The Trust Authority endpoint document the enforcer hands an injected credential client:
+// one <host>:<port>, the Trust Authority this cluster's components dial. The node writes
 // it with FormatCDSAddress (internal/cmds/nri-image-policy) and its clients
 // read it back from workloadclaims.CDSAddressPath.
 
 // Refusals a caller can match on.
 var (
 	ErrNotHostPort     = errors.New("must be <host>:<port>")
-	ErrPortUnserved    = errors.New("no CDS serves on")
+	ErrPortUnserved    = errors.New("no Trust Authority serves on")
 	ErrNotDNSHostname  = errors.New("must be a lowercase DNS hostname")
 	ErrNotIPv4         = errors.New("must be an IPv4 address")
 	ErrNotRoutableIPv4 = errors.New("must be a unicast IPv4 address")
 )
 
 // SplitCDSAddress is the host and port of the <host>:<port> this cluster's
-// CDS serves on: a DNS name the node resolves, or an IPv4 address it dials as
+// Trust Authority serves on: a DNS name the node resolves, or an IPv4 address it dials as
 // it stands.
 func SplitCDSAddress(address string) (string, uint16, error) {
 	host, portText, err := net.SplitHostPort(address)
@@ -40,15 +40,15 @@ func SplitCDSAddress(address string) (string, uint16, error) {
 	if err != nil || port == 0 {
 		return "", 0, fmt.Errorf("%q names port %q, which %w", address, portText, ErrPortUnserved)
 	}
-	if err := validateCDSHost(host); err != nil {
+	if err := validateTAHost(host); err != nil {
 		return "", 0, err
 	}
 	return host, uint16(port), nil
 }
 
-// validateCDSHost accepts the two things a node's clients can dial: an IPv4
+// validateTAHost accepts the two things a node's clients can dial: an IPv4
 // address, and a lowercase DNS name they resolve.
-func validateCDSHost(host string) error {
+func validateTAHost(host string) error {
 	if address, err := netip.ParseAddr(host); err == nil {
 		if !address.Is4() {
 			return fmt.Errorf("%q %w", host, ErrNotIPv4)
@@ -67,7 +67,7 @@ func FormatCDSAddress(address string) []byte {
 }
 
 // ParseCDSAddress reads that document. An empty one names no endpoint, which
-// is an error rather than a default: a client with no endpoint reaches no CDS.
+// is an error rather than a default: a client with no endpoint reaches no Trust Authority.
 func ParseCDSAddress(data []byte) (string, error) {
 	address := strings.TrimSpace(string(data))
 	if address == "" {
@@ -79,18 +79,18 @@ func ParseCDSAddress(data []byte) (string, error) {
 	return address, nil
 }
 
-// CDSURL is that endpoint as the base URL a client dials. CDS is reached over
+// CDSURL is that endpoint as the base URL a client dials. Trust Authority is reached over
 // armTLS, which makes https the only scheme the endpoint can carry.
 func CDSURL(address string) string {
 	return "https://" + address
 }
 
-// CDSURLAddress is the <host>:<port> a CDS base URL names, which is what a
+// CDSURLAddress is the <host>:<port> a Trust Authority base URL names, which is what a
 // node's packet rules and its clients need out of a measured config's URL.
 func CDSURLAddress(raw string) (string, error) {
 	parsed, err := url.Parse(raw)
 	if err != nil {
-		return "", fmt.Errorf("%q must be the https URL of this cluster's CDS: %w", raw, err)
+		return "", fmt.Errorf("%q must be the https URL of this cluster's Trust Authority: %w", raw, err)
 	}
 	if parsed.Scheme != "https" {
 		return "", fmt.Errorf("%q must use https, as armTLS does", raw)
@@ -101,9 +101,9 @@ func CDSURLAddress(raw string) (string, error) {
 	return parsed.Host, nil
 }
 
-// ResolveCDSAddress returns the CDS endpoint the node mounts at path, and
+// ResolveCDSAddress returns the Trust Authority endpoint the node mounts at path, and
 // whether it mounts one at all. resolveNodePolicy states the rule; a caller
-// that is handed no endpoint and holds no --ta-url reaches no CDS.
+// that is handed no endpoint and holds no --ta-url reaches no Trust Authority.
 func ResolveCDSAddress(path, suppliedURL string) (string, bool, error) {
 	var supplied []string
 	if suppliedURL != "" {
@@ -114,7 +114,7 @@ func ResolveCDSAddress(path, suppliedURL string) (string, bool, error) {
 
 // ResolveCDSURL is the base URL a client dials: the endpoint the node mounts
 // at path, otherwise suppliedURL as it was given, and whether the node
-// decided. An empty answer names no CDS, which each client refuses in its own
+// decided. An empty answer names no Trust Authority, which each client refuses in its own
 // words.
 func ResolveCDSURL(path, suppliedURL string) (string, bool, error) {
 	address, fromNode, err := ResolveCDSAddress(path, suppliedURL)

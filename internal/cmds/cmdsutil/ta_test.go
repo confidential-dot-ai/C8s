@@ -9,12 +9,12 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
 )
 
-// boundPin is the document `c8s cds config new` writes.
+// boundPin is the document `c8s ta config new` writes.
 func boundPin() string {
 	return testutil.CDSPinDocument(testutil.TestMeasurement, testutil.CDSLaunchFile)
 }
 
-// digestOnlyPin names the CDS image and binds no launch file.
+// digestOnlyPin names the Trust Authority image and binds no launch file.
 var digestOnlyPin = fmt.Sprintf(
 	`{"schema_version":"2","tee":"sev-snp","measurements":[{"name":"cds","measurement":%q}]}`,
 	testutil.TestMeasurement,
@@ -42,14 +42,14 @@ func TestCDSParseRefusesWhatAClientCannotUse(t *testing.T) {
 		{name: "ipv6 address", address: "[2001:db8::1]:8443", want: ErrNotIPv4},
 		{name: "port zero", address: "192.0.2.50:0", want: ErrPortUnserved},
 		{name: "loopback address", address: "127.0.0.1:8443", want: ErrNotRoutableIPv4},
-		{name: "uppercase name", address: "CDS.example.com:8443", want: ErrNotDNSHostname},
+		{name: "uppercase name", address: "TA.example.com:8443", want: ErrNotDNSHostname},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cds := CDS{Address: tc.address, Measurements: boundPin()}
-			if _, err := cds.Parse(); !errors.Is(err, tc.want) {
+			ta := CDS{Address: tc.address, Measurements: boundPin()}
+			if _, err := ta.Parse(); !errors.Is(err, tc.want) {
 				t.Fatalf("Parse = %v, want %v", err, tc.want)
 			}
-			if err := cds.Validate(); !errors.Is(err, tc.want) {
+			if err := ta.Validate(); !errors.Is(err, tc.want) {
 				t.Fatalf("Validate = %v, want what Parse refuses", err)
 			}
 		})
@@ -70,29 +70,29 @@ func TestCDSParseRefusesAPinThatIsNoIdentity(t *testing.T) {
 		{name: "tdx pin without rtmr2", measurements: tdxPin(fmt.Sprintf(`[null,%q,null,null]`, testutil.TestMeasurement)), want: "leaves RTMR[2] unpinned"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cds := CDS{Address: "192.0.2.50:8443", Measurements: tc.measurements}
-			if _, err := cds.Parse(); err == nil || !strings.Contains(err.Error(), tc.want) {
+			ta := CDS{Address: "192.0.2.50:8443", Measurements: tc.measurements}
+			if _, err := ta.Parse(); err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("Parse = %v, want %q", err, tc.want)
 			}
 		})
 	}
 }
 
-// A TDX CDS is one VM once MRTD, RTMR[1] and RTMR[2] are pinned together with
+// A TDX Trust Authority is one VM once MRTD, RTMR[1] and RTMR[2] are pinned together with
 // its launch file.
 func TestCDSParseAcceptsATDXPinWithItsGuestRegisters(t *testing.T) {
 	rtmr := fmt.Sprintf(`[null,%q,%q,null]`, testutil.TestMeasurement, testutil.TestMeasurement)
-	cds := CDS{Address: "192.0.2.50:8443", Measurements: tdxPin(rtmr)}
-	if _, err := cds.Parse(); err != nil {
-		t.Fatalf("Parse = %v, want the pinned TDX CDS accepted", err)
+	ta := CDS{Address: "192.0.2.50:8443", Measurements: tdxPin(rtmr)}
+	if _, err := ta.Parse(); err != nil {
+		t.Fatalf("Parse = %v, want the pinned TDX Trust Authority accepted", err)
 	}
 }
 
-// An accepted block carries the endpoint, the policy its clients verify CDS
+// An accepted block carries the endpoint, the policy its clients verify Trust Authority
 // with, and the launch file its pin binds.
 func TestCDSCarriesTheEndpointPolicyAndLaunchFile(t *testing.T) {
-	cds := CDS{Address: "cds.example.org:8443", Measurements: boundPin()}
-	endpoint, err := cds.Parse()
+	ta := CDS{Address: "cds.example.org:8443", Measurements: boundPin()}
+	endpoint, err := ta.Parse()
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}

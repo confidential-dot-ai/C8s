@@ -20,7 +20,7 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
-// leafProvider presents the pod's CDS-issued leaf as the client certificate.
+// leafProvider presents the pod's Trust Authority-issued leaf as the client certificate.
 // It reloads from disk on each provision, so a renewal written by the cert
 // sidecar is picked up without restarting this one.
 type leafProvider struct{ certPath, keyPath string }
@@ -47,9 +47,9 @@ func LoadLeaf(certPath, keyPath string) (tls.Certificate, crypto.PublicKey, erro
 	return *leaf, parsed.PublicKey, nil
 }
 
-// NewClient builds the mTLS client to CDS and returns the leaf's public key,
+// NewClient builds the mTLS client to the Trust Authority and returns the leaf's public key,
 // which the sandbox token is bound to. The client follows pins: where the
-// node's enforcer moves them to a new CDS image, this sidecar's next request
+// node's enforcer moves them to a new Trust Authority image, this sidecar's next request
 // is made against that image.
 func NewClient(cfg Config, pins armtls.PinSource) (*http.Client, crypto.PublicKey, error) {
 	provider := leafProvider{certPath: cfg.CertPath, keyPath: cfg.KeyPath}
@@ -63,7 +63,7 @@ func NewClient(cfg Config, pins armtls.PinSource) (*http.Client, crypto.PublicKe
 			CertProvider: provider,
 		})
 		if err != nil {
-			return nil, fmt.Errorf("build CDS client: %w", err)
+			return nil, fmt.Errorf("build Trust Authority client: %w", err)
 		}
 		return &http.Transport{TLSClientConfig: tlsCfg}, nil
 	})
@@ -120,7 +120,7 @@ func Do(ctx context.Context, cfg Config, client *http.Client, pub crypto.PublicK
 		}
 		return value, resp.StatusCode, nil
 	default:
-		// The body is deliberately opaque; the reason is in the CDS log.
+		// The body is deliberately opaque; the reason is in the Trust Authority log.
 		detail, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return nil, resp.StatusCode, &StatusError{
 			Status: resp.StatusCode,
@@ -130,7 +130,7 @@ func Do(ctx context.Context, cfg Config, client *http.Client, pub crypto.PublicK
 	}
 }
 
-// StatusError is a non-2xx answer from CDS. Status is its HTTP status; Code is
+// StatusError is a non-2xx answer from the Trust Authority. Status is its HTTP status; Code is
 // the C8s error-envelope code its body named, and is empty for a body that is
 // not an envelope.
 type StatusError struct {
@@ -162,11 +162,11 @@ func RedeemToken(ctx context.Context, endpoint string, timeout time.Duration, pu
 }
 
 // NewStoreRequest builds the store request for path, which is appended to the
-// store route verbatim, carrying challenge and tokenJSON in the headers CDS
+// store route verbatim, carrying challenge and tokenJSON in the headers Trust Authority
 // reads. A nil challenge or tokenJSON leaves its header unset; only the
-// conformance probe does that, to show CDS a request a sidecar never sends.
-func NewStoreRequest(ctx context.Context, cdsURL, method, path string, challenge, tokenJSON []byte) (*http.Request, error) {
-	req, err := http.NewRequestWithContext(ctx, method, cdsURL+"/secrets"+path, nil)
+// conformance probe does that, to show Trust Authority a request a sidecar never sends.
+func NewStoreRequest(ctx context.Context, taURL, method, path string, challenge, tokenJSON []byte) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, method, taURL+"/secrets"+path, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -179,12 +179,12 @@ func NewStoreRequest(ctx context.Context, cdsURL, method, path string, challenge
 	return req, nil
 }
 
-// FetchChallenge POSTs the release-challenge route of the CDS at cdsURL and
+// FetchChallenge POSTs the release-challenge route of the Trust Authority at taURL and
 // returns the single-use challenge it answers with.
-func FetchChallenge(ctx context.Context, client *http.Client, cdsURL string, timeout time.Duration) ([]byte, error) {
+func FetchChallenge(ctx context.Context, client *http.Client, taURL string, timeout time.Duration) ([]byte, error) {
 	reqCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, cdsURL+secrets.ChallengeRoute, nil)
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, taURL+secrets.ChallengeRoute, nil)
 	if err != nil {
 		return nil, err
 	}

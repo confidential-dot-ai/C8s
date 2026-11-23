@@ -17,7 +17,7 @@ import (
 )
 
 // GuestConfig is the measured guest's credential broker. HTTPClient must
-// authenticate CDS with the signed launch's server pins; VolumeRoot must be
+// authenticate Trust Authority with the signed launch's server pins; VolumeRoot must be
 // the verified memory-backed emptyDir mounted read-only only by the mesh.
 // Commit serializes its final snapshot/liveness check and publish closure
 // with admission mutations. The closure performs only local filesystem work.
@@ -81,7 +81,7 @@ func RunGuest(ctx context.Context, guest GuestConfig) (result error) {
 		CDSURL: guest.CDSURL, AttestationApiURL: guest.AttestationAPIURL,
 		RenewInterval: time.Hour, RenewJitterPercent: defaultRenewJitterPercent,
 		InitialRetryInterval: 2 * time.Second, UnnamedRenewInterval: 30 * time.Second,
-		CAWatchInterval: defaultCDSWatchInterval, guest: &guest,
+		CAWatchInterval: defaultTAWatchInterval, guest: &guest,
 	}
 	client := attestclient.NewClientWithHTTP(guest.CDSURL, guest.HTTPClient)
 	policy := allowlistclient.NewClientWithHTTP(guest.CDSURL, guest.HTTPClient)
@@ -129,7 +129,7 @@ func obtainGuestCert(ctx context.Context, guest GuestConfig, client attestclient
 	})
 }
 
-// Lost admission evidence differs from a transient CDS outage: no generation
+// Lost admission evidence differs from a transient Trust Authority outage: no generation
 // remains advertised while the guest cannot describe its sandbox. The issuer
 // binding survives so recovery cannot silently adopt a different CA key.
 func withdrawGuestEvidence(creds *credentials, cause error) error {

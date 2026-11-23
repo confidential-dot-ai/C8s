@@ -131,7 +131,7 @@ func TestDaemonClientSelectsCompiledShape(t *testing.T) {
 	}
 }
 
-// A pin that is not one CDS VM's identity is a typo in rendered config;
+// A pin that is not one Trust Authority VM's identity is a typo in rendered config;
 // pinning nothing is not an acceptable fallback for it.
 func TestRunRejectsAPinWithoutALaunchBinding(t *testing.T) {
 	cfg := validConfig()

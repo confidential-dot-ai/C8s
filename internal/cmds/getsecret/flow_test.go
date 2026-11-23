@@ -22,8 +22,8 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
 )
 
-// fakeCDS records what it was asked and answers from a scripted sequence.
-type fakeCDS struct {
+// fakeTA records what it was asked and answers from a scripted sequence.
+type fakeTA struct {
 	mu         sync.Mutex
 	challenges int
 	requests   []string // "METHOD /path"
@@ -37,15 +37,15 @@ type reply struct {
 	code   string // C8s error-envelope code, for a non-2xx body
 }
 
-func newFakeCDS(t *testing.T, replies map[string][]reply) (*fakeCDS, string) {
+func newFakeTA(t *testing.T, replies map[string][]reply) (*fakeTA, string) {
 	t.Helper()
-	f := &fakeCDS{replies: replies}
+	f := &fakeTA{replies: replies}
 	srv := httptest.NewServer(f)
 	t.Cleanup(srv.Close)
 	return f, srv.URL
 }
 
-func (f *fakeCDS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (f *fakeTA) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -102,7 +102,7 @@ func testKey(t *testing.T) *ecdsa.PublicKey {
 // An existing secret is read and returned without a create.
 func TestFetchOneReadsExisting(t *testing.T) {
 	endpoint := "unix://" + testutil.StartInventory(t)
-	cds, url := newFakeCDS(t, map[string][]reply{
+	ta, url := newFakeTA(t, map[string][]reply{
 		"GET /secrets/api/db": {{status: http.StatusOK, value: "existing"}},
 	})
 	got, err := fetchOne(context.Background(), flowConfig(t, url), http.DefaultClient, testKey(t), endpoint, "/api/db")
@@ -112,8 +112,8 @@ func TestFetchOneReadsExisting(t *testing.T) {
 	if string(got) != "existing" {
 		t.Fatalf("value = %q, want %q", got, "existing")
 	}
-	if len(cds.requests) != 1 || cds.requests[0] != "GET /secrets/api/db" {
-		t.Fatalf("requests = %v, want a single GET", cds.requests)
+	if len(ta.requests) != 1 || ta.requests[0] != "GET /secrets/api/db" {
+		t.Fatalf("requests = %v, want a single GET", ta.requests)
 	}
 }
 
@@ -121,7 +121,7 @@ func TestFetchOneReadsExisting(t *testing.T) {
 // empty.
 func TestFetchOneCreatesWhenAbsent(t *testing.T) {
 	endpoint := "unix://" + testutil.StartInventory(t)
-	cds, url := newFakeCDS(t, map[string][]reply{
+	ta, url := newFakeTA(t, map[string][]reply{
 		"GET /secrets/api/db":  {{status: http.StatusNotFound}},
 		"POST /secrets/api/db": {{status: http.StatusCreated, value: "minted"}},
 	})
@@ -132,8 +132,8 @@ func TestFetchOneCreatesWhenAbsent(t *testing.T) {
 	if string(got) != "minted" {
 		t.Fatalf("value = %q, want %q", got, "minted")
 	}
-	if want := []string{"GET /secrets/api/db", "POST /secrets/api/db"}; !equal(cds.requests, want) {
-		t.Fatalf("requests = %v, want %v", cds.requests, want)
+	if want := []string{"GET /secrets/api/db", "POST /secrets/api/db"}; !equal(ta.requests, want) {
+		t.Fatalf("requests = %v, want %v", ta.requests, want)
 	}
 }
 
@@ -142,7 +142,7 @@ func TestFetchOneCreatesWhenAbsent(t *testing.T) {
 // the secret.
 func TestFetchOneRereadsAfterLosingCreateRace(t *testing.T) {
 	endpoint := "unix://" + testutil.StartInventory(t)
-	cds, url := newFakeCDS(t, map[string][]reply{
+	ta, url := newFakeTA(t, map[string][]reply{
 		"GET /secrets/api/db":  {{status: http.StatusNotFound}, {status: http.StatusOK, value: "winner"}},
 		"POST /secrets/api/db": {{status: http.StatusConflict}},
 	})
@@ -154,16 +154,16 @@ func TestFetchOneRereadsAfterLosingCreateRace(t *testing.T) {
 		t.Fatalf("value = %q, want the winning replica's value", got)
 	}
 	want := []string{"GET /secrets/api/db", "POST /secrets/api/db", "GET /secrets/api/db"}
-	if !equal(cds.requests, want) {
-		t.Fatalf("requests = %v, want %v", cds.requests, want)
+	if !equal(ta.requests, want) {
+		t.Fatalf("requests = %v, want %v", ta.requests, want)
 	}
 }
 
-// The ceiling clears only on a CDS restart, which empties the store, so
+// The ceiling clears only on a Trust Authority restart, which empties the store, so
 // retrying it cannot succeed.
 func TestFetchStopsRetryingWhenTheStoreIsFull(t *testing.T) {
 	endpoint := "unix://" + testutil.StartInventory(t)
-	cds, url := newFakeCDS(t, map[string][]reply{
+	ta, url := newFakeTA(t, map[string][]reply{
 		"GET /secrets/api/db":  {{status: http.StatusNotFound}},
 		"POST /secrets/api/db": {{status: http.StatusInsufficientStorage, code: types.ErrorCodeSecretStoreFull}},
 	})
@@ -180,8 +180,8 @@ func TestFetchStopsRetryingWhenTheStoreIsFull(t *testing.T) {
 		t.Fatalf("err = %v, want the refused path in the detail", err)
 	}
 	want := []string{"GET /secrets/api/db", "POST /secrets/api/db"}
-	if !equal(cds.requests, want) {
-		t.Fatalf("requests = %v, want the single pass %v", cds.requests, want)
+	if !equal(ta.requests, want) {
+		t.Fatalf("requests = %v, want the single pass %v", ta.requests, want)
 	}
 }
 
@@ -199,7 +199,7 @@ func TestFetchRetriesCreateFailuresThatCanClear(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			endpoint := "unix://" + testutil.StartInventory(t)
-			cds, url := newFakeCDS(t, map[string][]reply{
+			ta, url := newFakeTA(t, map[string][]reply{
 				"GET /secrets/api/db":  {{status: http.StatusNotFound}, {status: http.StatusNotFound}},
 				"POST /secrets/api/db": {tc.refusal, {status: http.StatusCreated, value: "minted"}},
 			})
@@ -223,8 +223,8 @@ func TestFetchRetriesCreateFailuresThatCanClear(t *testing.T) {
 				"GET /secrets/api/db", "POST /secrets/api/db",
 				"GET /secrets/api/db", "POST /secrets/api/db",
 			}
-			if !equal(cds.requests, want) {
-				t.Fatalf("requests = %v, want two passes %v", cds.requests, want)
+			if !equal(ta.requests, want) {
+				t.Fatalf("requests = %v, want two passes %v", ta.requests, want)
 			}
 		})
 	}
@@ -233,35 +233,35 @@ func TestFetchRetriesCreateFailuresThatCanClear(t *testing.T) {
 // A denial is not a create: only 404 means the path is free.
 func TestFetchOneDoesNotCreateOnDenial(t *testing.T) {
 	endpoint := "unix://" + testutil.StartInventory(t)
-	cds, url := newFakeCDS(t, map[string][]reply{
+	ta, url := newFakeTA(t, map[string][]reply{
 		"GET /secrets/api/db": {{status: http.StatusForbidden}},
 	})
 	if _, err := fetchOne(context.Background(), flowConfig(t, url), http.DefaultClient, testKey(t), endpoint, "/api/db"); err == nil {
 		t.Fatal("a denial was treated as success")
 	}
-	for _, r := range cds.requests {
+	for _, r := range ta.requests {
 		if strings.HasPrefix(r, "POST") {
-			t.Fatalf("a denial triggered a create: %v", cds.requests)
+			t.Fatalf("a denial triggered a create: %v", ta.requests)
 		}
 	}
 }
 
 // Every request takes its own challenge and its own token: both are single-use,
-// so reusing either would be refused by CDS.
+// so reusing either would be refused by the Trust Authority.
 func TestEveryRequestTakesAFreshChallengeAndToken(t *testing.T) {
 	endpoint := "unix://" + testutil.StartInventory(t)
-	cds, url := newFakeCDS(t, map[string][]reply{
+	ta, url := newFakeTA(t, map[string][]reply{
 		"GET /secrets/api/db":  {{status: http.StatusNotFound}, {status: http.StatusOK, value: "v"}},
 		"POST /secrets/api/db": {{status: http.StatusConflict}},
 	})
 	if _, err := fetchOne(context.Background(), flowConfig(t, url), http.DefaultClient, testKey(t), endpoint, "/api/db"); err != nil {
 		t.Fatal(err)
 	}
-	if cds.challenges != len(cds.requests) {
-		t.Fatalf("%d challenges for %d requests, want one each", cds.challenges, len(cds.requests))
+	if ta.challenges != len(ta.requests) {
+		t.Fatalf("%d challenges for %d requests, want one each", ta.challenges, len(ta.requests))
 	}
 	seen := map[string]bool{}
-	for _, tok := range cds.tokens {
+	for _, tok := range ta.tokens {
 		if tok == "" || !strings.HasPrefix(tok, secrets.AuthScheme) {
 			t.Fatalf("request carried no sandbox token: %q", tok)
 		}
@@ -284,7 +284,7 @@ func TestSecretValueNeverReachesTheLog(t *testing.T) {
 
 	const existing = "sentinel-existing-value"
 	const minted = "sentinel-minted-value"
-	_, url := newFakeCDS(t, map[string][]reply{
+	_, url := newFakeTA(t, map[string][]reply{
 		"GET /secrets/api/db":   {{status: http.StatusOK, value: existing}},
 		"GET /secrets/api/new":  {{status: http.StatusNotFound}},
 		"POST /secrets/api/new": {{status: http.StatusCreated, value: minted}},
@@ -306,7 +306,7 @@ func TestSecretValueNeverReachesTheLog(t *testing.T) {
 
 	// A refusal and a server failure: each attempt's error is logged, the last
 	// at ERROR.
-	_, brokenURL := newFakeCDS(t, map[string][]reply{
+	_, brokenURL := newFakeTA(t, map[string][]reply{
 		"GET /secrets/api/db": {{status: http.StatusForbidden}, {status: http.StatusInternalServerError}},
 	})
 	cfg = flowConfig(t, brokenURL)
@@ -335,7 +335,7 @@ func TestSecretValueNeverReachesTheLog(t *testing.T) {
 // pod.
 func TestFetchWithRetryRecoversOnceReleased(t *testing.T) {
 	endpoint := "unix://" + testutil.StartInventory(t)
-	cds, url := newFakeCDS(t, map[string][]reply{
+	ta, url := newFakeTA(t, map[string][]reply{
 		"GET /secrets/api/db": {
 			{status: http.StatusForbidden},
 			{status: http.StatusForbidden},
@@ -358,8 +358,8 @@ func TestFetchWithRetryRecoversOnceReleased(t *testing.T) {
 	if string(values["DB"]) != "released" {
 		t.Fatalf("value = %q", values["DB"])
 	}
-	if cds.challenges < 3 {
-		t.Fatalf("challenges = %d, want one per attempt", cds.challenges)
+	if ta.challenges < 3 {
+		t.Fatalf("challenges = %d, want one per attempt", ta.challenges)
 	}
 }
 
@@ -367,7 +367,7 @@ func TestFetchWithRetryRecoversOnceReleased(t *testing.T) {
 // pod with no secret.
 func TestFetchWithRetryGivesUp(t *testing.T) {
 	endpoint := "unix://" + testutil.StartInventory(t)
-	_, url := newFakeCDS(t, map[string][]reply{
+	_, url := newFakeTA(t, map[string][]reply{
 		"GET /secrets/api/db": {{status: http.StatusForbidden}, {status: http.StatusForbidden}},
 	})
 	cfg := flowConfig(t, url)

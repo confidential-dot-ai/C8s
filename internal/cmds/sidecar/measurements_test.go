@@ -21,16 +21,16 @@ func TestParsePinsAnnouncesTheResolvedSet(t *testing.T) {
 		t.Fatalf("ParsePins: %v", err)
 	}
 	line := logged.String()
-	if !strings.Contains(line, `msg="CDS pins resolved"`) || !strings.Contains(line, "from_node=false") {
+	if !strings.Contains(line, `msg="Trust Authority pins resolved"`) || !strings.Contains(line, "from_node=false") {
 		t.Fatalf("logged %q, want the resolved pins line", line)
 	}
 }
 
-// Where no node pins CDS and nothing names a pin, the sidecar reaches no CDS
+// Where no node pins Trust Authority and nothing names a pin, the sidecar reaches no Trust Authority
 // it can hold to anything.
 func TestParsePinsRefusesAnUnpinnedCDS(t *testing.T) {
 	if _, err := (&Config{}).ParsePins(t.Context()); err == nil || !strings.Contains(err.Error(), "pins no image") {
-		t.Fatalf("error = %v, want an unpinned-CDS refusal", err)
+		t.Fatalf("error = %v, want an unpinned-Trust Authority refusal", err)
 	}
 }
 
@@ -45,8 +45,8 @@ func TestParsePinsAcceptsAPinnedCDS(t *testing.T) {
 	}
 }
 
-// A CDS is pinned to the configuration it runs on, so a document naming only
-// its image admits any CDS VM.
+// A Trust Authority is pinned to the configuration it runs on, so a document naming only
+// its image admits any Trust Authority VM.
 func TestParsePinsRejectsAPinWithoutALaunchBinding(t *testing.T) {
 	unbound := `{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"cds","measurement":"` + testutil.TestMeasurement + `"}]}`
 	cfg := Config{MeasurementsConfigJSON: unbound}

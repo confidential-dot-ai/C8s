@@ -21,8 +21,8 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
 )
 
-// fakeCDS records what it was asked and answers from a scripted sequence.
-type fakeCDS struct {
+// fakeTA records what it was asked and answers from a scripted sequence.
+type fakeTA struct {
 	mu         sync.Mutex
 	challenges int
 	requests   []string // "METHOD /path"
@@ -35,15 +35,15 @@ type reply struct {
 	value  []byte // raw value; encoded as base64 in the response
 }
 
-func newFakeCDS(t *testing.T, replies map[string][]reply) (*fakeCDS, string) {
+func newFakeTA(t *testing.T, replies map[string][]reply) (*fakeTA, string) {
 	t.Helper()
-	f := &fakeCDS{replies: replies}
+	f := &fakeTA{replies: replies}
 	srv := httptest.NewServer(f)
 	t.Cleanup(srv.Close)
 	return f, srv.URL
 }
 
-func (f *fakeCDS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (f *fakeTA) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -77,7 +77,7 @@ func (f *fakeCDS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"value": base64.StdEncoding.EncodeToString(next.value)})
 }
 
-func (f *fakeCDS) seen() []string {
+func (f *fakeTA) seen() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.requests...)
@@ -151,7 +151,7 @@ func testKey(t *testing.T) *ecdsa.PublicKey {
 
 func TestFetchBlobReadsTheStore(t *testing.T) {
 	endpoint := "unix://" + testutil.StartInventory(t)
-	_, url := newFakeCDS(t, map[string][]reply{
+	_, url := newFakeTA(t, map[string][]reply{
 		"GET /secrets/tenant-a/volumes/weights": {{status: http.StatusOK, value: testBlobJSON(t)}},
 	})
 
@@ -170,7 +170,7 @@ func TestFetchBlobReadsTheStore(t *testing.T) {
 // real key unwritable behind a 409.
 func TestFetchBlobNeverCreates(t *testing.T) {
 	endpoint := "unix://" + testutil.StartInventory(t)
-	f, url := newFakeCDS(t, map[string][]reply{
+	f, url := newFakeTA(t, map[string][]reply{
 		"GET /secrets/tenant-a/volumes/weights": {{status: http.StatusNotFound}},
 	})
 
@@ -188,7 +188,7 @@ func TestFetchBlobNeverCreates(t *testing.T) {
 // container is admitted, so 403 is the normal early answer.
 func TestFetchBlobDoesNotWriteOnDenial(t *testing.T) {
 	endpoint := "unix://" + testutil.StartInventory(t)
-	f, url := newFakeCDS(t, map[string][]reply{
+	f, url := newFakeTA(t, map[string][]reply{
 		"GET /secrets/tenant-a/volumes/weights": {{status: http.StatusForbidden}},
 	})
 
@@ -203,7 +203,7 @@ func TestFetchBlobDoesNotWriteOnDenial(t *testing.T) {
 // A value that is not a key blob is refused rather than handed to the daemon.
 func TestFetchBlobRejectsANonBlob(t *testing.T) {
 	endpoint := "unix://" + testutil.StartInventory(t)
-	_, url := newFakeCDS(t, map[string][]reply{
+	_, url := newFakeTA(t, map[string][]reply{
 		"GET /secrets/tenant-a/volumes/weights": {{status: http.StatusOK, value: []byte(`{"type":"something/else"}`)}},
 	})
 
@@ -213,10 +213,10 @@ func TestFetchBlobRejectsANonBlob(t *testing.T) {
 }
 
 // Each request carries its own challenge and its own token; both are single-use
-// at CDS, so a reused pair is a replayed request.
+// at Trust Authority, so a reused pair is a replayed request.
 func TestEveryRequestTakesAFreshChallengeAndToken(t *testing.T) {
 	endpoint := "unix://" + testutil.StartInventory(t)
-	f, url := newFakeCDS(t, map[string][]reply{
+	f, url := newFakeTA(t, map[string][]reply{
 		"GET /secrets/tenant-a/volumes/weights": {
 			{status: http.StatusForbidden},
 			{status: http.StatusOK, value: testBlobJSON(t)},

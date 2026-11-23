@@ -25,7 +25,7 @@ func write(t *testing.T, path string, b []byte) {
 	}
 }
 
-// testPins name the guest the CDS this sidecar talks to must be running,
+// testPins name the guest the Trust Authority this sidecar talks to must be running,
 // which armTLS requires of every verifying client.
 func testPins() armtls.PinSource {
 	set, err := refvalues.Parse([]byte(testutil.CDSPinDocument(testutil.TestMeasurement, testutil.CDSLaunchFile)))
@@ -148,15 +148,15 @@ func TestFetchChallengeFailures(t *testing.T) {
 	}
 }
 
-// An unreachable CDS is an error, not a hang or a nil value.
+// An unreachable Trust Authority is an error, not a hang or a nil value.
 func TestFetchChallengeUnreachable(t *testing.T) {
 	if _, err := FetchChallenge(context.Background(), http.DefaultClient, "http://127.0.0.1:1", 200*time.Millisecond); err == nil {
-		t.Fatal("an unreachable CDS reported success")
+		t.Fatal("an unreachable Trust Authority reported success")
 	}
 }
 
 // A nil challenge or token leaves its header unset; a non-nil one is encoded
-// the way CDS decodes it. The path is not touched on the way out.
+// the way Trust Authority decodes it. The path is not touched on the way out.
 func TestNewStoreRequestHeadersAndPath(t *testing.T) {
 	req, err := NewStoreRequest(context.Background(), "https://cds.example", http.MethodGet, "/a//b%2Fc", []byte("chal"), []byte(`{"token":"x"}`))
 	if err != nil {

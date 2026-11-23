@@ -21,7 +21,7 @@ func mountPins(t *testing.T, path, measurement string) {
 }
 
 // A client re-reads the mounted policy on a pin miss, so its next request is
-// made against the image CDS now runs.
+// made against the image Trust Authority now runs.
 func TestNodePinsFollowARewrittenPolicy(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "cds-pins.json")
 	mountPins(t, path, testutil.TestMeasurement)
@@ -105,6 +105,6 @@ func TestFollowNodePinsReportsNoPolicyWhereTheNodeMountsNone(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := FollowNodePins(t.Context(), unbound); err == nil {
-		t.Fatal("a policy that is not one CDS VM's identity was accepted")
+		t.Fatal("a policy that is not one Trust Authority VM's identity was accepted")
 	}
 }

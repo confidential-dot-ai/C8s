@@ -102,7 +102,7 @@ func TestValidate(t *testing.T) {
 		mutate func(*config)
 		want   string
 	}{
-		{"no cds url", func(c *config) { c.CDSURL = "" }, "--cds-url"},
+		{"no Trust Authority URL", func(c *config) { c.CDSURL = "" }, "--ta-url"},
 		{"plaintext cds url", func(c *config) { c.CDSURL = "http://cds.example" }, "https"},
 		{"no attestation api", func(c *config) { c.AttestationApiURL = "" }, "--attestation-api-url"},
 		{"no secrets", func(c *config) { c.Secrets = nil }, "--secret"},
@@ -335,7 +335,7 @@ func openOutRoot(t *testing.T, dir string) *os.Root {
 	return root
 }
 
-// A pin that is not one CDS VM's identity is a typo in rendered config;
+// A pin that is not one Trust Authority VM's identity is a typo in rendered config;
 // pinning nothing is not an acceptable fallback for it.
 func TestRunRejectsAPinWithoutALaunchBinding(t *testing.T) {
 	cfg := validConfig(t)

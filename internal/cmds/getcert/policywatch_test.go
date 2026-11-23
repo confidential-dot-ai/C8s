@@ -22,7 +22,7 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 )
 
-// fakeAllowlist is a CDS /allowlist with HandleList's digest tag, version
+// fakeAllowlist is a Trust Authority /allowlist with HandleList's digest tag, version
 // header and 304 semantics.
 type fakeAllowlist struct {
 	mu       sync.Mutex
@@ -72,7 +72,7 @@ func (f *fakeAllowlist) handle(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(body))
 }
 
-// stampedLeaf is a leaf CDS issued under the given policy snapshot.
+// stampedLeaf is a leaf Trust Authority issued under the given policy snapshot.
 func stampedLeaf(t *testing.T, version, body string) *x509.Certificate {
 	t.Helper()
 	digest := sha256.Sum256([]byte(body))
@@ -87,7 +87,7 @@ func stampedLeaf(t *testing.T, version, body string) *x509.Certificate {
 	return &x509.Certificate{NotAfter: time.Now().Add(time.Hour), Extensions: []pkix.Extension{ext}}
 }
 
-// issueStamped mints the generation CDS returns under one policy snapshot.
+// issueStamped mints the generation Trust Authority returns under one policy snapshot.
 func issueStamped(ca *testCA, creds *credentials, version, body string, ttl time.Duration) (*generation, error) {
 	digest := sha256.Sum256([]byte(body))
 	ext, err := armtls.MarshalMatchedWorkloadExtension(&armtls.MatchedWorkload{
@@ -109,7 +109,7 @@ func issueStamped(ca *testCA, creds *credentials, version, body string, ttl time
 	return issuedGeneration(chain, key, keyPEM)
 }
 
-// policyCredentials publishes a generation whose leaf carries the stamp CDS
+// policyCredentials publishes a generation whose leaf carries the stamp Trust Authority
 // issued under the given policy snapshot.
 func policyCredentials(t *testing.T, ca *testCA, version, body string) *credentials {
 	t.Helper()
@@ -128,11 +128,11 @@ func policyCredentials(t *testing.T, ca *testCA, version, body string) *credenti
 }
 
 // stubIssueUnderCurrentPolicy makes every renewal publish a leaf stamped with
-// the policy the fake CDS serves at that moment.
-func stubIssueUnderCurrentPolicy(t *testing.T, ca *testCA, cds *fakeAllowlist) func() []time.Time {
+// the policy the fake Trust Authority serves at that moment.
+func stubIssueUnderCurrentPolicy(t *testing.T, ca *testCA, ta *fakeAllowlist) func() []time.Time {
 	t.Helper()
 	return stubObtainCertMinting(t, func(creds *credentials, _ int) (*generation, error) {
-		version, body := cds.snapshot()
+		version, body := ta.snapshot()
 		return issueStamped(ca, creds, version, body, time.Hour)
 	})
 }
@@ -148,7 +148,7 @@ func startRenewLoop(t *testing.T, cfg config, url string, creds *credentials) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
-	go func() { done <- renewLoop(ctx, cfg, plaintextCDSClient(url), plaintextPolicyClient(url), creds) }()
+	go func() { done <- renewLoop(ctx, cfg, plaintextTAClient(url), plaintextPolicyClient(url), creds) }()
 	t.Cleanup(func() {
 		cancel()
 		select {
@@ -193,29 +193,29 @@ func (f *fakeAllowlist) waitForTicks(t *testing.T, n int64) {
 // Each allowlist write re-issues the leaf exactly once; --renew-interval is an
 // hour, so any renewal inside the test can only come from the policy watch.
 func TestRenewLoopRenewsWhenAllowlistPolicyChanges(t *testing.T) {
-	cds := &fakeAllowlist{}
-	cds.set(4, policyTwoWorkloads)
-	url := cds.serve(t)
+	ta := &fakeAllowlist{}
+	ta.set(4, policyTwoWorkloads)
+	url := ta.serve(t)
 	ca := newTestCA(t)
-	attempts := stubIssueUnderCurrentPolicy(t, ca, cds)
+	attempts := stubIssueUnderCurrentPolicy(t, ca, ta)
 
 	startRenewLoop(t, policyWatchConfig(t), url, policyCredentials(t, ca, "4", policyTwoWorkloads))
 
-	cds.waitForRequests(t, 3)
+	ta.waitForRequests(t, 3)
 	if got := len(attempts()); got != 0 {
 		t.Fatalf("%d renewals while the policy matched, want 0", got)
 	}
 
-	cds.set(5, policyRouterOnly)
+	ta.set(5, policyRouterOnly)
 	waitForAttempts(t, attempts, 1)
-	cds.waitForTicks(t, 3)
+	ta.waitForTicks(t, 3)
 	if got := len(attempts()); got != 1 {
 		t.Fatalf("%d renewals after one allowlist write, want 1", got)
 	}
 
-	cds.set(6, policyWithBatch)
+	ta.set(6, policyWithBatch)
 	waitForAttempts(t, attempts, 2)
-	cds.waitForTicks(t, 3)
+	ta.waitForTicks(t, 3)
 	if got := len(attempts()); got != 2 {
 		t.Fatalf("%d renewals after two allowlist writes, want 2", got)
 	}
@@ -229,11 +229,11 @@ func TestRenewLoopWatchesCAAndPolicyOnOneTick(t *testing.T) {
 	if err := os.WriteFile(caPath, []byte(ca), 0644); err != nil {
 		t.Fatal(err)
 	}
-	cds := &fakeAllowlist{}
-	cds.set(4, policyTwoWorkloads)
+	ta := &fakeAllowlist{}
+	ta.set(4, policyTwoWorkloads)
 	var caRequests atomic.Int64
 	mux := http.NewServeMux()
-	mux.HandleFunc("/allowlist", cds.handle)
+	mux.HandleFunc("/allowlist", ta.handle)
 	mux.HandleFunc("/ca", func(w http.ResponseWriter, _ *http.Request) {
 		caRequests.Add(1)
 		_, _ = io.WriteString(w, ca)
@@ -241,13 +241,13 @@ func TestRenewLoopWatchesCAAndPolicyOnOneTick(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	signer := newTestCA(t)
-	attempts := stubIssueUnderCurrentPolicy(t, signer, cds)
+	attempts := stubIssueUnderCurrentPolicy(t, signer, ta)
 
 	cfg := policyWatchConfig(t)
 	cfg.CAPath = caPath
 	startRenewLoop(t, cfg, srv.URL, policyCredentials(t, signer, "4", policyTwoWorkloads))
 
-	cds.waitForRequests(t, 3)
+	ta.waitForRequests(t, 3)
 	if got := len(attempts()); got != 0 {
 		t.Fatalf("%d renewals while the CA and policy matched, want 0", got)
 	}
@@ -255,28 +255,28 @@ func TestRenewLoopWatchesCAAndPolicyOnOneTick(t *testing.T) {
 		t.Fatalf("%d /ca requests over three watch ticks, want at least 3", got)
 	}
 
-	cds.set(5, policyRouterOnly)
+	ta.set(5, policyRouterOnly)
 	waitForAttempts(t, attempts, 1)
 }
 
 // A write that bumps the version but keeps the bytes renews nothing and
 // fetches no body: the watch names the stamped bytes, not a version.
 func TestRenewLoopIgnoresVersionBumpWithStampedBytes(t *testing.T) {
-	cds := &fakeAllowlist{}
-	cds.set(4, policyTwoWorkloads)
-	url := cds.serve(t)
+	ta := &fakeAllowlist{}
+	ta.set(4, policyTwoWorkloads)
+	url := ta.serve(t)
 	ca := newTestCA(t)
-	attempts := stubIssueUnderCurrentPolicy(t, ca, cds)
+	attempts := stubIssueUnderCurrentPolicy(t, ca, ta)
 
 	startRenewLoop(t, policyWatchConfig(t), url, policyCredentials(t, ca, "4", policyTwoWorkloads))
-	cds.waitForRequests(t, 1)
+	ta.waitForRequests(t, 1)
 
-	cds.set(5, policyTwoWorkloads)
-	cds.waitForTicks(t, 3)
+	ta.set(5, policyTwoWorkloads)
+	ta.waitForTicks(t, 3)
 	if got := len(attempts()); got != 0 {
 		t.Fatalf("%d renewals after a write with unchanged bytes, want 0", got)
 	}
-	if got := cds.bodies.Load(); got != 0 {
+	if got := ta.bodies.Load(); got != 0 {
 		t.Fatalf("%d polls fetched the body, want 0", got)
 	}
 }
@@ -284,18 +284,18 @@ func TestRenewLoopIgnoresVersionBumpWithStampedBytes(t *testing.T) {
 // stubIssueCountingPolls is stubIssueUnderCurrentPolicy that also records how
 // many /allowlist requests the fake had served when each renewal started.
 // fail reports whether renewal n fails.
-func stubIssueCountingPolls(t *testing.T, ca *testCA, cds *fakeAllowlist, fail func(n int) bool) (func() []time.Time, func() []int64) {
+func stubIssueCountingPolls(t *testing.T, ca *testCA, ta *fakeAllowlist, fail func(n int) bool) (func() []time.Time, func() []int64) {
 	t.Helper()
 	var mu sync.Mutex
 	var polls []int64
 	attempts := stubObtainCertMinting(t, func(creds *credentials, n int) (*generation, error) {
 		mu.Lock()
-		polls = append(polls, cds.requests.Load())
+		polls = append(polls, ta.requests.Load())
 		mu.Unlock()
 		if fail(n) {
 			return nil, errors.New("stubbed renewal failure")
 		}
-		version, body := cds.snapshot()
+		version, body := ta.snapshot()
 		return issueStamped(ca, creds, version, body, time.Hour)
 	})
 	return attempts, func() []int64 {
@@ -313,11 +313,11 @@ func TestRenewLoopDebouncesPolicyRenewal(t *testing.T) {
 	policyRenewDelayFn = func(time.Duration, time.Duration) time.Duration { return pending }
 	t.Cleanup(func() { policyRenewDelayFn = old })
 
-	cds := &fakeAllowlist{}
-	cds.set(5, policyRouterOnly)
-	url := cds.serve(t)
+	ta := &fakeAllowlist{}
+	ta.set(5, policyRouterOnly)
+	url := ta.serve(t)
 	ca := newTestCA(t)
-	attempts, polls := stubIssueCountingPolls(t, ca, cds, func(int) bool { return false })
+	attempts, polls := stubIssueCountingPolls(t, ca, ta, func(int) bool { return false })
 
 	start := time.Now()
 	startRenewLoop(t, policyWatchConfig(t), url, policyCredentials(t, ca, "4", policyTwoWorkloads))
@@ -329,7 +329,7 @@ func TestRenewLoopDebouncesPolicyRenewal(t *testing.T) {
 	if got := polls()[0]; got != 1 {
 		t.Fatalf("%d /allowlist polls before the pending renewal fired, want 1 (the detection)", got)
 	}
-	cds.waitForTicks(t, 3)
+	ta.waitForTicks(t, 3)
 	if got := len(attempts()); got != 1 {
 		t.Fatalf("%d renewals for one change, want 1", got)
 	}
@@ -342,11 +342,11 @@ func TestRenewLoopPolicyWatchHoldsOffDuringRetry(t *testing.T) {
 	renewalRetryBase = 200 * time.Millisecond
 	t.Cleanup(func() { renewalRetryBase = oldBase })
 
-	cds := &fakeAllowlist{}
-	cds.set(5, policyRouterOnly)
-	url := cds.serve(t)
+	ta := &fakeAllowlist{}
+	ta.set(5, policyRouterOnly)
+	url := ta.serve(t)
 	ca := newTestCA(t)
-	attempts, polls := stubIssueCountingPolls(t, ca, cds, func(n int) bool { return n == 1 })
+	attempts, polls := stubIssueCountingPolls(t, ca, ta, func(n int) bool { return n == 1 })
 
 	startRenewLoop(t, policyWatchConfig(t), url, policyCredentials(t, ca, "4", policyTwoWorkloads))
 
@@ -357,7 +357,7 @@ func TestRenewLoopPolicyWatchHoldsOffDuringRetry(t *testing.T) {
 	if got := polls(); got[1] != got[0] {
 		t.Fatalf("/allowlist polled %d times while the retry was pending, want 0", got[1]-got[0])
 	}
-	cds.waitForTicks(t, 3)
+	ta.waitForTicks(t, 3)
 	if got := len(attempts()); got != 2 {
 		t.Fatalf("%d renewals for one change and one failure, want 2", got)
 	}
@@ -365,9 +365,9 @@ func TestRenewLoopPolicyWatchHoldsOffDuringRetry(t *testing.T) {
 
 // The scheduled renewal lands after several watch ticks; none of them polls.
 func TestRenewLoopPolicyWatchIgnoresUnnamedLeaf(t *testing.T) {
-	cds := &fakeAllowlist{}
-	cds.set(5, policyRouterOnly)
-	url := cds.serve(t)
+	ta := &fakeAllowlist{}
+	ta.set(5, policyRouterOnly)
+	url := ta.serve(t)
 	ca := newTestCA(t)
 	attempts := stubObtainCert(t, ca, func(int) (time.Duration, error) { return time.Hour, nil })
 
@@ -376,7 +376,7 @@ func TestRenewLoopPolicyWatchIgnoresUnnamedLeaf(t *testing.T) {
 	startRenewLoop(t, cfg, url, publishedCredentials(t, ca, time.Hour))
 
 	waitForAttempts(t, attempts, 1)
-	if got := cds.requests.Load(); got != 0 {
+	if got := ta.requests.Load(); got != 0 {
 		t.Fatalf("%d /allowlist polls for an unnamed leaf, want 0", got)
 	}
 }
@@ -385,21 +385,21 @@ func TestRenewLoopPolicyWatchIgnoresUnnamedLeaf(t *testing.T) {
 // policy change: with the fast poll off, nothing else would re-issue it before
 // --renew-interval.
 func TestRenewLoopPolicyWatchRenewsUnexpectedWorkload(t *testing.T) {
-	cds := &fakeAllowlist{}
-	cds.set(4, policyTwoWorkloads)
-	url := cds.serve(t)
+	ta := &fakeAllowlist{}
+	ta.set(4, policyTwoWorkloads)
+	url := ta.serve(t)
 	ca := newTestCA(t)
-	attempts := stubIssueUnderCurrentPolicy(t, ca, cds)
+	attempts := stubIssueUnderCurrentPolicy(t, ca, ta)
 
 	cfg := policyWatchConfig(t)
 	cfg.ExpectedWorkload = "worker"
 	startRenewLoop(t, cfg, url, policyCredentials(t, ca, "4", policyTwoWorkloads))
 
-	cds.waitForTicks(t, 2)
+	ta.waitForTicks(t, 2)
 	if got := len(attempts()); got != 0 {
 		t.Fatalf("%d renewals before the allowlist changed, want 0", got)
 	}
-	cds.set(5, policyRouterOnly)
+	ta.set(5, policyRouterOnly)
 	waitForAttempts(t, attempts, 1)
 }
 
@@ -418,26 +418,26 @@ func TestStampedPolicyStale(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cds := &fakeAllowlist{}
-			cds.set(tt.served, tt.body)
+			ta := &fakeAllowlist{}
+			ta.set(tt.served, tt.body)
 			stamp, err := armtls.MatchedWorkloadFromCert(stampedLeaf(t, "4", policyTwoWorkloads))
 			if err != nil {
 				t.Fatal(err)
 			}
-			served, stale, err := stampedPolicyStale(context.Background(), plaintextPolicyClient(cds.serve(t)), stamp.AllowlistDigest)
+			served, stale, err := stampedPolicyStale(context.Background(), plaintextPolicyClient(ta.serve(t)), stamp.AllowlistDigest)
 			if err != nil {
 				t.Fatalf("stampedPolicyStale: %v", err)
 			}
 			if served != tt.wantVersion || stale != tt.want {
 				t.Fatalf("stampedPolicyStale = %q, %v, want %q, %v", served, stale, tt.wantVersion, tt.want)
 			}
-			if got := cds.notModified.Load() == 1; got != tt.want304 {
+			if got := ta.notModified.Load() == 1; got != tt.want304 {
 				t.Fatalf("answered 304: %v, want %v", got, tt.want304)
 			}
 		})
 	}
 
-	// A CDS released before the version header tags by version, so no
+	// A Trust Authority released before the version header tags by version, so no
 	// request is a 304 and the digest alone decides.
 	for _, tt := range []struct {
 		body string
@@ -536,7 +536,7 @@ func TestCDSWatchInterval(t *testing.T) {
 			cfg := base
 			cfg.CAWatchInterval = interval
 			tt.mutate(&cfg)
-			applyCDSWatchDefault(&cfg, flags)
+			applyTAWatchDefault(&cfg, flags)
 			if cfg.CAWatchInterval != tt.want {
 				t.Errorf("applyCDSWatchDefault(%v) interval = %v, want %v", tt.args, cfg.CAWatchInterval, tt.want)
 			}
@@ -547,7 +547,7 @@ func TestCDSWatchInterval(t *testing.T) {
 	}
 }
 
-// A watch tick before the first generation lands polls no CDS route.
+// A watch tick before the first generation lands polls no Trust Authority route.
 func TestRenewLoopSkipsWatchUntilFirstGeneration(t *testing.T) {
 	var requests atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

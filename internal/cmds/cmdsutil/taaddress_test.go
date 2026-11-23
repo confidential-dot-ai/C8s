@@ -9,7 +9,7 @@ import (
 )
 
 // The node's endpoint mount decides, and an argument beside it is refused: a
-// pod must not be able to be pointed at a CDS of the control plane's choosing.
+// pod must not be able to be pointed at a Trust Authority of the control plane's choosing.
 func TestResolveCDSAddress(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -46,7 +46,7 @@ func TestResolveCDSAddress(t *testing.T) {
 		{
 			name:    "an endpoint on port 0",
 			mounted: "10.1.2.3:0\n",
-			wants:   "no CDS serves on",
+			wants:   "no Trust Authority serves on",
 		},
 		{
 			name:    "an endpoint that is a URL",
@@ -146,7 +146,7 @@ func TestResolveCDSURLPrefersTheNodesEndpoint(t *testing.T) {
 	}
 }
 
-// Where this cluster's CDS serves is one host and one port: the host a name
+// Where this cluster's Trust Authority serves is one host and one port: the host a name
 // a client resolves or an address it dials as it stands, so a node's packet
 // rules can admit the port and nothing wider.
 func TestSplitCDSAddress(t *testing.T) {
@@ -161,12 +161,12 @@ func TestSplitCDSAddress(t *testing.T) {
 		{address: "cds:8443", host: "cds", port: 8443},
 		{address: "10.9.9.9", wants: "must be <host>:<port>"},
 		{address: "cds.example.org", wants: "must be <host>:<port>"},
-		{address: "10.9.9.9:0", wants: "no CDS serves on"},
-		{address: "10.9.9.9:https", wants: "no CDS serves on"},
-		{address: "10.9.9.9:70000", wants: "no CDS serves on"},
+		{address: "10.9.9.9:0", wants: "no Trust Authority serves on"},
+		{address: "10.9.9.9:https", wants: "no Trust Authority serves on"},
+		{address: "10.9.9.9:70000", wants: "no Trust Authority serves on"},
 		{address: "127.0.0.1:8443", host: "127.0.0.1", port: 8443},
 		{address: "[2001:db8::1]:8443", wants: "must be an IPv4 address"},
-		{address: "CDS.example.org:8443", wants: "lowercase DNS name"},
+		{address: "TA.example.org:8443", wants: "lowercase DNS name"},
 		{address: "cds_one.example.org:8443", wants: "lowercase DNS name"},
 		{address: ":8443", wants: "lowercase DNS name"},
 	} {
@@ -185,7 +185,7 @@ func TestSplitCDSAddress(t *testing.T) {
 	}
 }
 
-// A measured config names the CDS by URL, and what a node's rules and its
+// A measured config names the Trust Authority by URL, and what a node's rules and its
 // clients need out of it is the endpoint.
 func TestCDSURLAddress(t *testing.T) {
 	for _, tc := range []struct {

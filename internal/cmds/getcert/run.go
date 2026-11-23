@@ -1,5 +1,5 @@
 // Package getcert implements the get-cert subcommand: it requests a TLS
-// certificate from CDS by proving the caller runs inside a TEE.
+// certificate from the Trust Authority by proving the caller runs inside a TEE.
 package getcert
 
 import (
@@ -66,7 +66,7 @@ type config struct {
 	// DiscoveryPublicTLSModeFile, when set, replaces DiscoveryPublicTLSMode
 	// with the file's content (a node image's launch-selected mode).
 	DiscoveryPublicTLSModeFile string
-	// Public hostnames can differ from the CDS mesh certificate SAN.
+	// Public hostnames can differ from the Trust Authority mesh certificate SAN.
 	DiscoveryPublicTLSHostnamesFile string
 	DiscoveryPublicTLSHostname      string
 	WorkloadClaimsTimeout           time.Duration
@@ -108,13 +108,13 @@ func NewCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "get-cert",
-		Short: "Obtain a signed certificate via the CDS attestation flow",
-		Long: `get-cert requests a TLS certificate from the Certificate Distribution Service (CDS)
+		Short: "Obtain a signed certificate via the Trust Authority attestation flow",
+		Long: `get-cert requests a TLS certificate from the Certificate Distribution Service (Trust Authority)
 by proving it is running in a Trusted Execution Environment (TEE).
 
 It generates an ECDSA P-256 key pair in memory for every certificate it
 requests, creates a CSR with the selected SAN (Subject Alternative Name), and
-uses the CDS attestation flow to obtain a signed certificate. The P-384 keypair used elsewhere in c8s is limited
+uses the Trust Authority attestation flow to obtain a signed certificate. The P-384 keypair used elsewhere in c8s is limited
 to mesh CA rotation; get-cert leaf keys stay P-256.
 
 The leaf, key and CA are validated and stored as one generation on the pod's
@@ -126,14 +126,14 @@ This tool is designed to run as a native sidecar alongside the credential
 consumers that read that volume.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			setupLogging(cfg.Verbose)
-			applyCDSWatchDefault(&cfg, cmd.Flags())
+			applyTAWatchDefault(&cfg, cmd.Flags())
 			return run(cmd.Context(), cfg)
 		},
 		SilenceUsage: true,
 	}
 
 	flags := cmd.Flags()
-	cmdsutil.BindTAImagePolicyFlags(flags, &cfg.MeasurementsConfig, &cfg.MeasurementsConfigJSON, "pins the Trust Authority endpoint, every entry bound to the launch file that CDS runs on; required unless the node pins CDS")
+	cmdsutil.BindTAImagePolicyFlags(flags, &cfg.MeasurementsConfig, &cfg.MeasurementsConfigJSON, "pins the Trust Authority endpoint, every entry bound to the launch file that Trust Authority runs on; required unless the node pins Trust Authority")
 	flags.StringVar(&cfg.CDSURL, "ta-url", "", "URL of the Trust Authority (e.g. https://cds:8443); refused in an injected sidecar, which dials the endpoint the node mounts")
 	cmdsutil.AliasFlag(flags, "ta-url", "cds-url")
 	flags.StringVar(&cfg.AttestationApiURL, "attestation-api-url", "", "URL of the node-local attestation-api (http://localhost:8400, or unix:// plus the on-node socket path the chart wires)"+cmdsutil.NodeAddressHelp)
@@ -142,21 +142,21 @@ consumers that read that volume.`,
 	flags.StringVar(&cfg.KeyPath, "key-path", "", "Path where the private key PEM of the published generation is read, mode 0600 (0640 in shared setgid directories); must be in the --cert-path directory, on a memory-backed filesystem")
 	flags.StringVar(&cfg.SAN, "san", "", "Subject Alternative Name for the certificate (IP address or hostname)")
 	flags.StringVar(&cfg.SANFile, "san-file", "", "Path to a file containing the certificate SAN")
-	flags.BoolVar(&cfg.NoSAN, "no-san", false, "Request a certificate with no SAN, for a pod without confidential.ai/cw; CDS takes the subject from the verified workload identity instead")
+	flags.BoolVar(&cfg.NoSAN, "no-san", false, "Request a certificate with no SAN, for a pod without confidential.ai/cw; Trust Authority takes the subject from the verified workload identity instead")
 	flags.BoolVarP(&cfg.Verbose, "verbose", "v", false, "Enable debug logging")
 	flags.DurationVar(&cfg.RenewInterval, "renew-interval", 0, "Re-obtain the certificate at this interval (0 = run once and exit)")
 	flags.IntVar(&cfg.RenewJitterPercent, "renew-jitter-percent", defaultRenewJitterPercent, "Shorten each renewal delay by a random fraction of itself, up to this percent, so certificates issued together do not refresh in lockstep (0 = no jitter)")
-	flags.DurationVar(&cfg.InitialRetryTimeout, "initial-retry-timeout", 2*time.Minute, "Retry the first certificate request in-process for up to this long before failing, so a transient CDS/mesh outage during a roll does not crash the init container into kubelet backoff (0 = try once)")
-	flags.DurationVar(&cfg.InitialRetryInterval, "initial-retry-interval", defaultInitialRetryInterval, "Delay between in-process retries of the first certificate request. A refusal from CDS or the node inventory (403) or a CDS rate limit (429) backs off from here, doubling with jitter up to 5m")
+	flags.DurationVar(&cfg.InitialRetryTimeout, "initial-retry-timeout", 2*time.Minute, "Retry the first certificate request in-process for up to this long before failing, so a transient Trust Authority/mesh outage during a roll does not crash the init container into kubelet backoff (0 = try once)")
+	flags.DurationVar(&cfg.InitialRetryInterval, "initial-retry-interval", defaultInitialRetryInterval, "Delay between in-process retries of the first certificate request. A refusal from the Trust Authority or the node inventory (403) or a Trust Authority rate limit (429) backs off from here, doubling with jitter up to 5m")
 	flags.BoolVar(&cfg.ContinueOnInitialError, "continue-on-initial-error", false, "In renewal mode, keep running when the first certificate request fails, retrying on a capped backoff until a certificate is issued")
-	flags.DurationVar(&cfg.CAWatchInterval, "ca-watch-interval", defaultCDSWatchInterval, "Poll CDS at this interval and renew when the published certificate falls behind it. Renew immediately when CDS serves a renewed certificate under the pod's bound CA key. A replacement CA key requires pod recreation. With a workload identity assertion, renew after a random delay of up to half the interval when the allowlist policy CDS serves no longer matches the snapshot stamped in the leaf, which strict clients reject. The default applies only with --renew-interval; otherwise the watch is off (0 = disabled, otherwise minimum 1s)")
+	flags.DurationVar(&cfg.CAWatchInterval, "ca-watch-interval", defaultTAWatchInterval, "Poll Trust Authority at this interval and renew when the published certificate falls behind it. Renew immediately when the Trust Authority serves a renewed certificate under the pod's bound CA key. A replacement CA key requires pod recreation. With a workload identity assertion, renew after a random delay of up to half the interval when the allowlist policy Trust Authority serves no longer matches the snapshot stamped in the leaf, which strict clients reject. The default applies only with --renew-interval; otherwise the watch is off (0 = disabled, otherwise minimum 1s)")
 	flags.StringVar(&cfg.DiscoveryOutPath, "discovery-out", "", "Path to write JSON discovery metadata for the issued certificate and attestation evidence")
 	flags.StringVar(&cfg.DiscoveryCDSCertURL, "discovery-ta-cert-url", "", "Public URL path where the Trust Authority certificate PEM is served")
 	cmdsutil.AliasFlag(flags, "discovery-ta-cert-url", "discovery-cds-cert-url")
 	flags.StringVar(&cfg.DiscoveryMeshCAURL, "discovery-mesh-ca-url", "", "Public URL path where the mesh CA PEM is served")
 	flags.StringVar(&cfg.DiscoveryPublicTLSMode, "discovery-public-tls-mode", "cds", "Public TLS mode to report in discovery metadata (cds, webpki, or acme)")
 	flags.StringVar(&cfg.DiscoveryPublicTLSModeFile, "discovery-public-tls-mode-file", "", "File holding the public TLS mode to report in discovery metadata, read at start; replaces --discovery-public-tls-mode")
-	flags.StringVar(&cfg.DiscoveryPublicTLSHostnamesFile, "discovery-public-tls-hostnames-file", "", "File holding launch-selected public hostnames; report the first name in discovery without changing the CDS certificate SAN")
+	flags.StringVar(&cfg.DiscoveryPublicTLSHostnamesFile, "discovery-public-tls-hostnames-file", "", "File holding launch-selected public hostnames; report the first name in discovery without changing the Trust Authority certificate SAN")
 	flags.DurationVar(&cfg.WorkloadClaimsTimeout, "workload-claims-timeout", 5*time.Second, "Timeout for the admission inventory request")
 	flags.BoolVar(&cfg.NoWorkloadClaims, "no-workload-claims", false, "Request certificates without a workload identity assertion, for a pod whose node runs no admission inventory. The leaf then carries no workload instance, so nothing binds it to this pod's sandbox; injected workloads never set it")
 	flags.DurationVar(&cfg.UnnamedRenewInterval, "unnamed-renew-interval", 30*time.Second, "With --renew-interval, renew while the published leaf carries no matched-workload stamp at most this far apart (plus jitter), starting at 2s and doubling, so a pod picks up its name at the first post-completion renewal instead of waiting a full interval; settles to --renew-interval once named, and backs off toward it for a pod that stays unnamed. Poll timing never changes the match decision. 0 disables the fast poll")
@@ -180,10 +180,10 @@ func setupLogging(verbose bool) {
 	slog.SetDefault(slog.New(handler))
 }
 
-// newCDSClient builds the attest and allowlist clients over one armTLS-pinned
-// HTTP client, so the policy watch trusts CDS exactly as issuance does.
-func newCDSClient(ctx context.Context, cfg config) (attestclient.Client, allowlistclient.Client, error) {
-	httpClient, err := cdsHTTPClient(ctx, cfg)
+// newTAClient builds the attest and allowlist clients over one armTLS-pinned
+// HTTP client, so the policy watch trusts Trust Authority exactly as issuance does.
+func newTAClient(ctx context.Context, cfg config) (attestclient.Client, allowlistclient.Client, error) {
+	httpClient, err := taHTTPClient(ctx, cfg)
 	if err != nil {
 		return attestclient.Client{}, allowlistclient.Client{}, err
 	}
@@ -192,13 +192,13 @@ func newCDSClient(ctx context.Context, cfg config) (attestclient.Client, allowli
 	return client, allowlistclient.NewClientWithHTTP(cfg.CDSURL, httpClient), nil
 }
 
-func cdsHTTPClient(ctx context.Context, cfg config) (*http.Client, error) {
+func taHTTPClient(ctx context.Context, cfg config) (*http.Client, error) {
 	parsed, err := url.Parse(cfg.CDSURL)
 	if err != nil {
 		return nil, fmt.Errorf("--ta-url: %w", err)
 	}
-	// CDS is reached over armTLS: the scheme MUST be https so the client
-	// verifies CDS's TEE attestation. A plaintext http:// URL would fall back
+	// Trust Authority is reached over armTLS: the scheme MUST be https so the client
+	// verifies Trust Authority's TEE attestation. A plaintext http:// URL would fall back
 	// to a client that skips attestation entirely and impersonation by any
 	// on-path peer becomes trivial. The chart only ever renders https URLs, so
 	// a non-https value is a misconfiguration, not a supported mode.
@@ -206,7 +206,7 @@ func cdsHTTPClient(ctx context.Context, cfg config) (*http.Client, error) {
 		return nil, fmt.Errorf("--ta-url must use https (armTLS); got scheme %q", parsed.Scheme)
 	}
 
-	pins, err := cdsPins(ctx, cfg)
+	pins, err := taPins(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -217,7 +217,7 @@ func cdsHTTPClient(ctx context.Context, cfg config) (*http.Client, error) {
 	return client, nil
 }
 
-func cdsPins(ctx context.Context, cfg config) (armtls.PinSource, error) {
+func taPins(ctx context.Context, cfg config) (armtls.PinSource, error) {
 	return cmdsutil.ClientCDSPins(ctx, workloadclaims.CDSPinsPath,
 		cmdsutil.ImagePolicySource{
 			File: cfg.MeasurementsConfig,
@@ -240,13 +240,13 @@ func run(ctx context.Context, cfg config) error {
 	if err := resolveDiscoveryPublicTLSHostname(&cfg); err != nil {
 		return err
 	}
-	cdsURL, fromNode, err := cmdsutil.ResolveCDSURL(workloadclaims.CDSAddressPath, cfg.CDSURL)
+	taURL, fromNode, err := cmdsutil.ResolveCDSURL(workloadclaims.CDSAddressPath, cfg.CDSURL)
 	if err != nil {
 		return err
 	}
-	cfg.CDSURL = cdsURL
+	cfg.CDSURL = taURL
 	if cfg.CDSURL == "" {
-		return errors.New("--ta-url is required: no node hands this client a CDS endpoint")
+		return errors.New("--ta-url is required: no node hands this client a Trust Authority endpoint")
 	}
 	slog.Info("starting get-cert", "san", cfg.SAN, "cds_url", cfg.CDSURL, "cds_from_node", fromNode)
 
@@ -277,7 +277,7 @@ func run(ctx context.Context, cfg config) error {
 
 	ctx = cmdsutil.WatchNodeIP(ctx, rawAttestationURL, attestationURL)
 
-	client, policyClient, err := newCDSClient(ctx, cfg)
+	client, policyClient, err := newTAClient(ctx, cfg)
 	if err != nil {
 		return err
 	}
@@ -386,7 +386,7 @@ func generationValidityContext(ctx context.Context, g *generation) (context.Cont
 
 // obtainCertWithRetry runs the first certificate request, retrying in-process
 // on a fixed cadence until it succeeds, InitialRetryTimeout elapses, or the
-// context is cancelled. During a full-stack roll CDS and the mesh are briefly
+// context is cancelled. During a full-stack roll Trust Authority and the mesh are briefly
 // unavailable; retrying here keeps a transient failure from exiting the init
 // container into kubelet's minutes-long CrashLoopBackOff. It still fails closed:
 // once the deadline passes the last error is returned and the pod publishes
@@ -437,7 +437,7 @@ func obtainCert(ctx context.Context, cfg config, client attestclient.Client, cre
 		return err
 	}
 
-	// Fetch the CDS challenge up front so one single-use nonce binds both the
+	// Fetch the Trust Authority challenge up front so one single-use nonce binds both the
 	// sandbox token and the evidence REPORTDATA — freshness without a clock
 	// (docs/armtls.md, "Sandbox identity").
 	challenge, err := client.AuthenticateContext(ctx)
@@ -495,11 +495,11 @@ func obtainCert(ctx context.Context, cfg config, client attestclient.Client, cre
 
 // fetchSandboxToken redeems this pod's kernel peer credentials at the
 // inventory for a signed token naming its sandbox (docs/armtls.md, "Sandbox
-// identity"). pub is the CSR key the token is bound to; nonce is the CDS
-// challenge it must carry for CDS to accept it as fresh.
+// identity"). pub is the CSR key the token is bound to; nonce is the Trust Authority
+// challenge it must carry for Trust Authority to accept it as fresh.
 //
 // get-cert never reports its pod's images: the token names the sandbox and the
-// inventory that admitted it, and CDS asks that inventory directly. So this
+// inventory that admitted it, and Trust Authority asks that inventory directly. So this
 // resolves at first issuance — the sidecar's own container is already tracked
 // — where a self-reported image set would still be empty.
 //
@@ -522,10 +522,10 @@ func fetchSandboxToken(ctx context.Context, cfg config, pub crypto.PublicKey, no
 	return raw, asserted, nil
 }
 
-// applyCDSWatchDefault turns off the implicit --ca-watch-interval default when
+// applyTAWatchDefault turns off the implicit --ca-watch-interval default when
 // there is no renewal loop; a value set in flags is left for validateConfig to
 // judge.
-func applyCDSWatchDefault(cfg *config, flags *pflag.FlagSet) {
+func applyTAWatchDefault(cfg *config, flags *pflag.FlagSet) {
 	if !flags.Changed("ca-watch-interval") && cfg.RenewInterval <= 0 {
 		cfg.CAWatchInterval = 0
 	}
@@ -554,7 +554,7 @@ func validateConfig(cfg config) error {
 			return fmt.Errorf("%w: --discovery-public-tls-mode must be 'cds', 'webpki', or 'acme', got %q", errInvalidDiscoveryPublicTLSMode, cfg.DiscoveryPublicTLSMode)
 		}
 	}
-	// Each tick is a CDS round-trip, so a sub-second watch is never what an
+	// Each tick is a Trust Authority round-trip, so a sub-second watch is never what an
 	// operator means; 0 is the documented "disabled".
 	if cfg.CAWatchInterval != 0 && cfg.CAWatchInterval < time.Second {
 		return fmt.Errorf("%w: --ca-watch-interval must be 0 (disabled) or at least 1s, got %v", errInvalidCAWatchInterval, cfg.CAWatchInterval)
@@ -601,7 +601,7 @@ func resolveDiscoveryPublicTLSMode(cfg *config) error {
 }
 
 // resolveSAN loads the configured identity once, before network or output work.
-// --no-san is the pod that asks for none, and CDS then takes the subject from
+// --no-san is the pod that asks for none, and Trust Authority then takes the subject from
 // the verified workload identity assertion instead.
 func resolveSAN(cfg config) (string, error) {
 	switch {
@@ -696,7 +696,7 @@ func generateKey() (*ecdsa.PrivateKey, []byte, error) {
 
 // createCSR builds a PEM-encoded certificate signing request with the given
 // SAN. extraExts are carried as CSR extensions (e.g. the armTLS attestation
-// extension CDS copies onto the leaf); nil for the plain flow.
+// extension Trust Authority copies onto the leaf); nil for the plain flow.
 func createCSR(key *ecdsa.PrivateKey, san string, extraExts ...pkix.Extension) ([]byte, error) {
 	template := x509.CertificateRequest{
 		Subject:         pkix.Name{},
@@ -726,8 +726,8 @@ func createCSR(key *ecdsa.PrivateKey, san string, extraExts ...pkix.Extension) (
 	return csrPEM, nil
 }
 
-// caBundleFromChain returns the issuer (CA) portion of a CDS-issued PEM chain:
-// every CERTIFICATE block after the first. CDS serves leaf-first, CA-last
+// caBundleFromChain returns the issuer (CA) portion of a Trust Authority-issued PEM chain:
+// every CERTIFICATE block after the first. Trust Authority serves leaf-first, CA-last
 // (see the /attest handler), so the leaf is dropped and the remaining blocks
 // — the mesh CA bundle — are re-emitted. Errors if no issuer block is present.
 func caBundleFromChain(chainPEM []byte) ([]byte, error) {
@@ -824,7 +824,7 @@ func buildDiscoveryDocument(cfg config, result attestclient.CertificateResult) (
 }
 
 // resolveDiscoveryPublicTLSHostname uses the same launch input as ACME.
-// An empty list is valid only in CDS mode, which serves the mesh certificate.
+// An empty list is valid only in Trust Authority mode, which serves the mesh certificate.
 func resolveDiscoveryPublicTLSHostname(cfg *config) error {
 	if cfg.DiscoveryPublicTLSHostnamesFile == "" {
 		cfg.DiscoveryPublicTLSHostname = cfg.SAN

@@ -7,29 +7,29 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 )
 
-var ErrNoCDSAddress = errors.New("names no <host>:<port> a CDS serves on")
+var ErrNoCDSAddress = errors.New("names no <host>:<port> a Trust Authority serves on")
 
 // ClusterVersion counts the pin decrees this cluster's operator has signed.
 type ClusterVersion uint64
 
-// CDS is the confidential data service a node's clients reach. It runs on a
+// CDS names the Trust Authority a node's clients reach. It runs on a
 // confidential VM of its own, so its TEE family is that VM's.
 type CDS struct {
 	// Address is a DNS name its clients resolve or an IPv4 address they dial.
 	Address string `yaml:"address" json:"address"`
-	// Measurements is a measurements document binding the CDS image to its
+	// Measurements is a measurements document binding the Trust Authority image to its
 	// launch file.
 	Measurements string `yaml:"measurements" json:"measurements"`
 	// PinFloor is the lowest cluster version this node takes a pin decree at.
 	PinFloor ClusterVersion `yaml:"pinFloor,omitempty" json:"pin_floor,omitempty"`
 }
 
-// CDSEndpoint is an accepted CDS block.
+// CDSEndpoint is an accepted Trust Authority block.
 type CDSEndpoint struct {
 	Host string
 	// Port is what a pod ruleset admits outside the cluster.
 	Port uint16
-	// Pins are launch identities of the CDS image, each bound to LaunchFile.
+	// Pins are launch identities of the Trust Authority image, each bound to LaunchFile.
 	Pins       refvalues.ReferenceValues
 	LaunchFile []byte
 }
@@ -72,7 +72,7 @@ func (c CDS) Validate() error {
 	return err
 }
 
-// Policy is the measurements document a node's clients verify CDS with.
+// Policy is the measurements document a node's clients verify Trust Authority with.
 func (e CDSEndpoint) Policy() ([]byte, error) {
 	return refvalues.Format(e.Pins)
 }

@@ -40,7 +40,7 @@ func TestResolveCDSEndpointTakesTheNodesEndpoint(t *testing.T) {
 		t.Fatalf("CDSURL = %q, want the node's endpoint", injected.CDSURL)
 	}
 	line := logged.String()
-	if !strings.Contains(line, `msg="CDS endpoint resolved"`) ||
+	if !strings.Contains(line, `msg="Trust Authority endpoint resolved"`) ||
 		!strings.Contains(line, "cds_url=https://cds.example.org:30808") ||
 		!strings.Contains(line, "from_node=true") {
 		t.Fatalf("logged %q, want the resolved endpoint line", line)

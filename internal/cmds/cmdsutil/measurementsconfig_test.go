@@ -187,8 +187,8 @@ func TestImagePolicyFlagsRejectRemovedAliases(t *testing.T) {
 	}
 }
 
-// writeCDSPins stages a CDS pin document where the enforcer mounts one.
-func writeCDSPins(t *testing.T, document string) string {
+// writeTAPins stages a Trust Authority pin document where the enforcer mounts one.
+func writeTAPins(t *testing.T, document string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "cds-pins.json")
 	if err := os.WriteFile(path, []byte(document), 0o644); err != nil {
@@ -197,11 +197,11 @@ func writeCDSPins(t *testing.T, document string) string {
 	return path
 }
 
-// An injected client holds its CDS to the node's policy, not to anything its
+// An injected client holds its Trust Authority to the node's policy, not to anything its
 // pod or the control plane passes: while the mount is there the arguments are
 // refused, so a weaker pin cannot replace a measured one silently.
 func TestResolveCDSPinsPrefersTheNodePolicy(t *testing.T) {
-	path := writeCDSPins(t, testutil.CDSPinDocument(testutil.TestMeasurement, testutil.CDSLaunchFile))
+	path := writeTAPins(t, testutil.CDSPinDocument(testutil.TestMeasurement, testutil.CDSLaunchFile))
 
 	pins, fromNode, err := ResolveCDSPins(t.Context(), path, ImagePolicySource{})
 	if err != nil {
@@ -227,18 +227,18 @@ func TestResolveCDSPinsPrefersTheNodePolicy(t *testing.T) {
 	}
 }
 
-// A CDS is pinned to the configuration it runs on, so a document naming only
-// its image admits any CDS VM, whichever cluster it was launched for.
+// A Trust Authority is pinned to the configuration it runs on, so a document naming only
+// its image admits any Trust Authority VM, whichever cluster it was launched for.
 func TestResolveCDSPinsRequiresALaunchBinding(t *testing.T) {
 	unbound := `{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"cds","measurement":"` + testutil.TestMeasurement + `"}]}`
 	for name, path := range map[string]string{
-		"node policy":         writeCDSPins(t, unbound),
+		"node policy":         writeTAPins(t, unbound),
 		"no policy at all":    filepath.Join(t.TempDir(), "absent.json"),
-		"empty node document": writeCDSPins(t, `{"schema_version":"1","tee":"sev-snp","measurements":[]}`),
+		"empty node document": writeTAPins(t, `{"schema_version":"1","tee":"sev-snp","measurements":[]}`),
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, _, err := ResolveCDSPins(t.Context(), path, ImagePolicySource{}); err == nil {
-				t.Fatal("a pin that is not one CDS VM's identity was accepted")
+				t.Fatal("a pin that is not one Trust Authority VM's identity was accepted")
 			}
 		})
 	}
@@ -260,7 +260,7 @@ func TestResolveCDSPinsFallsBackToTheArgument(t *testing.T) {
 }
 
 // A credential client says which set it resolved and who decided it, so a
-// pod's log names the CDS image it will accept.
+// pod's log names the Trust Authority image it will accept.
 func TestClientCDSPinsLogsWhatItResolved(t *testing.T) {
 	document := testutil.CDSPinDocument(testutil.TestMeasurement, testutil.CDSLaunchFile)
 	mounted := filepath.Join(t.TempDir(), "cds-pins.json")
@@ -298,16 +298,16 @@ func TestClientCDSPinsLogsWhatItResolved(t *testing.T) {
 				t.Fatalf("policy images = %+v, want the one pinned image", images)
 			}
 			line := logged.String()
-			if !strings.Contains(line, `msg="CDS pins resolved"`) || !strings.Contains(line, tc.want) {
+			if !strings.Contains(line, `msg="Trust Authority pins resolved"`) || !strings.Contains(line, tc.want) {
 				t.Fatalf("logged %q, want the resolved line with %s", line, tc.want)
 			}
 		})
 	}
 }
 
-// The verifier decides whether the CDS a client dials satisfies the node's
-// pins, so a pod that named its own verifier would hold CDS to nothing. While
-// the node pins CDS and serves its own attestation-api, that socket is the
+// The verifier decides whether the Trust Authority a client dials satisfies the node's
+// pins, so a pod that named its own verifier would hold Trust Authority to nothing. While
+// the node pins Trust Authority and serves its own attestation-api, that socket is the
 // only verifier.
 func TestRequireNodeVerifierRefusesANamedVerifier(t *testing.T) {
 	dir := t.TempDir()
@@ -331,7 +331,7 @@ func TestRequireNodeVerifierRefusesANamedVerifier(t *testing.T) {
 	} {
 		err := RequireNodeVerifier(policy, socket, verifier)
 		if err == nil {
-			t.Fatalf("verifier %q was accepted while the node pins CDS", verifier)
+			t.Fatalf("verifier %q was accepted while the node pins Trust Authority", verifier)
 		}
 		if !strings.Contains(err.Error(), "unix://"+socket) {
 			t.Fatalf("error %q should name the verifier to use", err)
@@ -354,7 +354,7 @@ func TestRequireNodeVerifierFallsBackToTheArgument(t *testing.T) {
 		t.Fatalf("a node serving no attestation-api must leave the argument: %v", err)
 	}
 	if err := RequireNodeVerifier(filepath.Join(dir, "absent.json"), socket, "http://$(HOST_IP):8400"); err != nil {
-		t.Fatalf("a node pinning no CDS must leave the argument: %v", err)
+		t.Fatalf("a node pinning no Trust Authority must leave the argument: %v", err)
 	}
 }
 

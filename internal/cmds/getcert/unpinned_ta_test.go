@@ -8,18 +8,18 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
 )
 
-// testCDSPin is the identity these tests hold CDS to: one image bound to the
-// exact launch file that CDS runs on, the only pin a client accepts.
-var testCDSPin = testutil.CDSPinDocument(testutil.TestMeasurement, testutil.CDSLaunchFile)
+// testTAPin is the identity these tests hold Trust Authority to: one image bound to the
+// exact launch file that Trust Authority runs on, the only pin a client accepts.
+var testTAPin = testutil.CDSPinDocument(testutil.TestMeasurement, testutil.CDSLaunchFile)
 
-// Without a pin armTLS accepts any attested CDS, so the client is not built.
+// Without a pin armTLS accepts any attested Trust Authority, so the client is not built.
 func TestUnpinnedCDSRefused(t *testing.T) {
 	cfg := config{
 		CDSURL:            "https://cds:8443",
 		AttestationApiURL: "http://attestation-api:8400",
 		SAN:               "host.example.com",
 	}
-	if _, err := cdsHTTPClient(t.Context(), cfg); !errors.Is(err, cmdsutil.ErrCDSPinUnbound) {
+	if _, err := taHTTPClient(t.Context(), cfg); !errors.Is(err, cmdsutil.ErrCDSPinUnbound) {
 		t.Fatalf("err = %v, want errors.Is cmdsutil.ErrCDSPinUnbound", err)
 	}
 }
@@ -30,9 +30,9 @@ func TestPinnedCDSAccepted(t *testing.T) {
 		CDSURL:                 "https://cds:8443",
 		AttestationApiURL:      "http://attestation-api:8400",
 		SAN:                    "host.example.com",
-		MeasurementsConfigJSON: testCDSPin,
+		MeasurementsConfigJSON: testTAPin,
 	}
-	if _, err := cdsHTTPClient(t.Context(), cfg); err != nil {
+	if _, err := taHTTPClient(t.Context(), cfg); err != nil {
 		t.Fatalf("cdsHTTPClient: %v", err)
 	}
 }
