@@ -35,6 +35,11 @@ var testPeerAddress = podAddresses{netip.MustParseAddr("10.42.0.7")}
 // destination is supplied by the test instead of by the kernel.
 func startTestEndpoint(t *testing.T, volume meshVolume, own podAddresses, captured string, peers ...string) (*podEndpoint, podListeners) {
 	t.Helper()
+	return startTestEndpointWithDestination(t, volume, own, func(net.Conn) (string, error) { return captured, nil }, peers...)
+}
+
+func startTestEndpointWithDestination(t *testing.T, volume meshVolume, own podAddresses, destination origDstFunc, peers ...string) (*podEndpoint, podListeners) {
+	t.Helper()
 	e := &podEndpoint{
 		peerWorkloads: peers,
 		credentials: &credentials{
@@ -42,7 +47,7 @@ func startTestEndpoint(t *testing.T, volume meshVolume, own podAddresses, captur
 			logger: discardLogger(),
 		},
 		own:     own,
-		origDst: func(net.Conn) (string, error) { return captured, nil },
+		origDst: destination,
 		logger:  discardLogger(),
 		bufPool: newBufPool(),
 	}

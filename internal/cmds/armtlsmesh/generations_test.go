@@ -3,6 +3,7 @@
 package armtlsmesh
 
 import (
+	"cmp"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -60,6 +61,7 @@ func newMeshCA(t *testing.T, validFor time.Duration) meshCA {
 // hour of validity around now.
 type leafSpec struct {
 	key            *ecdsa.PrivateKey
+	instanceID     string
 	notBefore      time.Time
 	notAfter       time.Time
 	purposes       []x509.ExtKeyUsage
@@ -98,7 +100,7 @@ func (ca meshCA) issue(t *testing.T, spec leafSpec) credvolume.Set {
 		ExtKeyUsage:  spec.purposes,
 	}
 	if !spec.omitInstanceID {
-		ext, err := armtls.MarshalSandboxIDExtension(testInstanceID)
+		ext, err := armtls.MarshalSandboxIDExtension(cmp.Or(spec.instanceID, testInstanceID))
 		if err != nil {
 			t.Fatal(err)
 		}
