@@ -2,9 +2,12 @@
 # flags in scripts/mutation-check.sh.
 unleash:
   exclude-files:
-    # helmchart tests exec a real helm binary the mutation CI job does not
-    # install; deepcopy is generated code; test/ holds mock servers whose
-    # mutants grade the fixtures, not the product.
+    # helmchart is under 200 lines of Go whose tests render the chart with a
+    # real helm binary, tens of seconds a mutant; deepcopy is generated code;
+    # test/ holds mock servers whose mutants grade the fixtures, not the
+    # product; internal/testutil is test helpers, run only by other packages'
+    # tests.
     - "internal/helmchart/.*"
     - "api/v1alpha2/zz_generated.deepcopy.go"
     - "test/.*"
+    - "internal/testutil/.*"
