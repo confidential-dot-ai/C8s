@@ -8,7 +8,7 @@ import (
 )
 
 // devTag swaps the CDS replica set's timers for ones fast enough to test with
-// (internal/cmds/cds/ha_dev.go). A shipped binary that carried the tag would
+// (internal/cmds/ta/ha_dev.go). A shipped binary that carried the tag would
 // run its elections and leases on those timers.
 const devTag = "c8s_dev"
 

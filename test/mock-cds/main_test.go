@@ -18,7 +18,7 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
-// TestClassifyVerifyError mirrors internal/cmds/cds.TestClassifyVerifyError: a
+// TestClassifyVerifyError mirrors internal/cmds/ta.TestClassifyVerifyError: a
 // rejected verdict is the caller's 401/422, only a transport or 5xx/408/429
 // outage is a 502. The api-422 row is the shape mock-attestation returns for a
 // report-data mismatch or garbage evidence. The non-json rows are the second

@@ -12,7 +12,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cdsconn"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/taconn"
 	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
@@ -324,7 +324,7 @@ func TestWorkloadEditKeepsTheEditWhenTheWriteFails(t *testing.T) {
 	dir := t.TempDir()
 	keyPath, pub := newOperatorKeypair(t, dir, "op.key")
 	unpinnedKeyPath, _ := newOperatorKeypair(t, dir, "unpinned.key")
-	t.Setenv(cdsconn.EnvOperatorKey, "")
+	t.Setenv(taconn.EnvOperatorKey, "")
 
 	cases := []struct {
 		name     string

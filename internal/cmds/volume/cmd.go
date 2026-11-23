@@ -10,15 +10,15 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cdsconn"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/taconn"
 	intsecrets "github.com/confidential-dot-ai/confidential-kubernetes/internal/secrets"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
 )
 
 // options holds the flags every subcommand shares.
 type options struct {
-	cdsconn.Options
+	taconn.Options
 }
 
 // NewCmd returns the `c8s volume` command tree.
@@ -26,8 +26,8 @@ func NewCmd() *cobra.Command {
 	return newCmd(nil)
 }
 
-func newCmd(verifier cdsconn.PinVerifier) *cobra.Command {
-	o := &options{Options: cdsconn.Options{Verifier: verifier, DirectCDS: true}}
+func newCmd(verifier taconn.PinVerifier) *cobra.Command {
+	o := &options{Options: taconn.Options{Verifier: verifier, DirectCDS: true}}
 	cmd := &cobra.Command{
 		Use:   "volume",
 		Short: "Build encrypted volumes and store their keys in CDS",
@@ -57,7 +57,7 @@ volume in the cluster unopenable until its key is written again. Keep the escrow
 file 'create' writes.`,
 		SilenceUsage: true,
 	}
-	cdsconn.BindFlags(cmd.PersistentFlags(), &o.Options)
+	taconn.BindFlags(cmd.PersistentFlags(), &o.Options)
 	cmd.AddCommand(newCreateCmd(o))
 	attach, detach := newAttachCmd(Attacher{}), newDetachCmd(Attacher{})
 	cmdsutil.HideUnreadFlags(attach, cmd.PersistentFlags())

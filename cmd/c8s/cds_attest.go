@@ -1,7 +1,7 @@
 package main
 
-import "github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cdsattest"
+import "github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/taattest"
 
 func init() {
-	rootCmd.AddCommand(cdsattest.NewCmd())
+	rootCmd.AddCommand(taattest.NewCmd())
 }

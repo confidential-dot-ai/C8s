@@ -7,7 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cdsconn"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/taconn"
 	intsecrets "github.com/confidential-dot-ai/confidential-kubernetes/internal/secrets"
 	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
@@ -17,7 +17,7 @@ func newPutCmd(o *options) *cobra.Command {
 		fromFile  string
 		overwrite bool
 		dryRun    bool
-		gate      = cdsconn.MeshCAGate{
+		gate      = taconn.MeshCAGate{
 			What:      "secret",
 			ForceNote: "Unrelated to --overwrite, which governs replacing an existing value",
 		}

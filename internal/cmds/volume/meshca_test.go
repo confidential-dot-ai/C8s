@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cdsconn"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/taconn"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
 )
 
@@ -57,7 +57,7 @@ func newAttestedCDS(t *testing.T, caDER []byte) (*keyStore, *httptest.Server) {
 // only thing under test is the mesh-CA gate.
 func attestedOptions(t *testing.T, url, dir string) *options {
 	t.Helper()
-	return &options{Options: cdsconn.Options{
+	return &options{Options: taconn.Options{
 		URL:                url,
 		MeasurementsConfig: testutil.CDSPinFile(t),
 		Timeout:            5 * time.Second,
@@ -102,13 +102,13 @@ func TestRunCreateRefusesBeforeBuilding(t *testing.T) {
 		"unpinned endpoint":          func(o *options) { o.MeasurementsConfig = "" },
 	} {
 		t.Run(name, func(t *testing.T) {
-			t.Setenv(cdsconn.EnvOperatorKey, "")
+			t.Setenv(taconn.EnvOperatorKey, "")
 			f := newFlowFixture(t)
 			_, srv := newAttestedCDS(t, ca)
 			o := attestedOptions(t, srv.URL, f.dir)
 			mutate(o)
 			cfg := f.config(newFake())
-			cfg.gate = cdsconn.MeshCAGate{What: "volume key", Bundle: writeBundle(t, ca)}
+			cfg.gate = taconn.MeshCAGate{What: "volume key", Bundle: writeBundle(t, ca)}
 
 			cmd, _ := captureCmd()
 			if err := runCreate(cmd, o, cfg); err == nil {
@@ -125,7 +125,7 @@ func TestRunCreateRefusesARouterBeforeBuilding(t *testing.T) {
 	f := newFlowFixture(t)
 	ca := testutil.MeshCA(t, "cds-m")
 	cfg := f.config(newFake())
-	cfg.gate = cdsconn.MeshCAGate{What: "volume key", Bundle: writeBundle(t, ca)}
+	cfg.gate = taconn.MeshCAGate{What: "volume key", Bundle: writeBundle(t, ca)}
 	router := testutil.NewRouterServer(t)
 
 	cmd, _ := captureCmd()
@@ -142,7 +142,7 @@ func TestRunCreateRefusesAnotherCDSsMeshCA(t *testing.T) {
 	f := newFlowFixture(t)
 	keys, srv := newAttestedCDS(t, testutil.MeshCA(t, "cds-n"))
 	cfg := f.config(newFake())
-	cfg.gate = cdsconn.MeshCAGate{What: "volume key", Bundle: writeBundle(t, testutil.MeshCA(t, "cds-m"))}
+	cfg.gate = taconn.MeshCAGate{What: "volume key", Bundle: writeBundle(t, testutil.MeshCA(t, "cds-m"))}
 
 	cmd, _ := captureCmd()
 	err := runCreate(cmd, attestedOptions(t, srv.URL, f.dir), cfg)
@@ -169,7 +169,7 @@ func TestRunCreateUnreadableCAHintsARetry(t *testing.T) {
 	ca := testutil.MeshCA(t, "cds-m")
 	srv := testutil.NewARMTLSServer(t, http.NotFoundHandler())
 	cfg := f.config(newFake())
-	cfg.gate = cdsconn.MeshCAGate{What: "volume key", Bundle: writeBundle(t, ca)}
+	cfg.gate = taconn.MeshCAGate{What: "volume key", Bundle: writeBundle(t, ca)}
 
 	cmd, _ := captureCmd()
 	err := runCreate(cmd, attestedOptions(t, srv.URL, f.dir), cfg)
@@ -183,7 +183,7 @@ func TestRunCreateAcceptsThePinnedMeshCA(t *testing.T) {
 	ca := testutil.MeshCA(t, "cds-m")
 	keys, srv := newAttestedCDS(t, ca)
 	cfg := f.config(newFake())
-	cfg.gate = cdsconn.MeshCAGate{What: "volume key", Bundle: writeBundle(t, ca)}
+	cfg.gate = taconn.MeshCAGate{What: "volume key", Bundle: writeBundle(t, ca)}
 
 	cmd, out := captureCmd()
 	if err := runCreate(cmd, attestedOptions(t, srv.URL, f.dir), cfg); err != nil {
@@ -214,7 +214,7 @@ func TestRunCreateRefusesAWriteThatRedialsToAnotherPeer(t *testing.T) {
 	})
 	proxy = testutil.NewReroutingProxy(t, testutil.NewARMTLSServer(t, mux))
 	cfg := f.config(newFake())
-	cfg.gate = cdsconn.MeshCAGate{What: "volume key", Bundle: writeBundle(t, ca)}
+	cfg.gate = taconn.MeshCAGate{What: "volume key", Bundle: writeBundle(t, ca)}
 
 	cmd, _ := captureCmd()
 	err := runCreate(cmd, attestedOptions(t, proxy.URL, f.dir), cfg)
@@ -231,7 +231,7 @@ func TestRunCreateForceSkipsTheCheckLoudly(t *testing.T) {
 	f := newFlowFixture(t)
 	keys, srv := newAttestedCDS(t, testutil.MeshCA(t, "cds-n"))
 	cfg := f.config(newFake())
-	cfg.gate = cdsconn.MeshCAGate{What: "volume key", Force: true}
+	cfg.gate = taconn.MeshCAGate{What: "volume key", Force: true}
 
 	cmd, out := captureCmd()
 	if err := runCreate(cmd, attestedOptions(t, srv.URL, f.dir), cfg); err != nil {
@@ -250,7 +250,7 @@ func TestRunCreateRefusesAnUnusableBundleBeforeBuilding(t *testing.T) {
 	f := newFlowFixture(t)
 	_, srv := newAttestedCDS(t, testutil.MeshCA(t, "cds-m"))
 	cfg := f.config(newFake())
-	cfg.gate = cdsconn.MeshCAGate{What: "volume key", Bundle: filepath.Join(f.dir, "nope.pem")}
+	cfg.gate = taconn.MeshCAGate{What: "volume key", Bundle: filepath.Join(f.dir, "nope.pem")}
 
 	cmd, _ := captureCmd()
 	if err := runCreate(cmd, attestedOptions(t, srv.URL, f.dir), cfg); err == nil {

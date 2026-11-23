@@ -1,0 +1,154 @@
+// Package cds implements the Trust Authority subcommand:
+// the C8s trust root (attestation, mesh CA, leaf signing).
+package ta
+
+import (
+	"time"
+
+	"github.com/spf13/cobra"
+
+	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsconfig"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/taca"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/talaunch"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/verify"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/issuer"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/secrets"
+)
+
+const (
+	defaultHTTPReadTimeout       = 10 * time.Second
+	defaultHTTPReadHeaderTimeout = 5 * time.Second
+	defaultHTTPWriteTimeout      = 10 * time.Second
+	defaultHTTPIdleTimeout       = 20 * time.Second
+	defaultHTTPMaxHeaderBytes    = 1 << 20
+)
+
+// NewCmd returns the cobra subcommand.
+func NewCmd() *cobra.Command {
+	var cfg config
+	cmd := &cobra.Command{
+		Use:     "ta",
+		Aliases: []string{"cds"},
+		Short:   "Run the Trust Authority",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runMeasuredConfig(cmd.Context(), cfg)
+		},
+	}
+
+	flags := cmd.Flags()
+
+	flags.StringVar(&cfg.configPath, "config", "", "path to the CDS configuration document (c8s-cds/v1) this VM was launched with (REQUIRED). CDS serves the cluster it describes only if a verified self-report binds the file byte for byte")
+	flags.StringVar(&cfg.host, "host", "0.0.0.0", "listen address; auto selects this VM's primary IPv4 address")
+	flags.IntVarP(&cfg.port, "port", "p", 8443, "listen port")
+	flags.StringVar(&cfg.logLevel, "log-level", "info", "log level: debug, info, warn, error")
+
+	flags.StringVar(&cfg.attestationApiURL, "attestation-api-url", "", "URL of this VM's own attestation-api (REQUIRED); it must name a loopback address")
+	flags.StringVar(&cfg.caCommonName, "ca-common-name", issuer.DefaultCACommonName, "common name for the in-memory generated mesh CA")
+	flags.DurationVar(&cfg.caCertValidity, "ca-cert-validity", 8760*time.Hour, "validity period of each in-memory mesh CA certificate; past half of it CDS renews the certificate under the same key")
+
+	flags.Int64Var(&cfg.jwtClockSkew, "jwt-clock-skew", 30, "operator JWT clock skew tolerance in seconds; without --allowlist-persistent, CDS also refuses operator-token requests (allowlist, routes, secrets) for this long after it starts")
+	flags.DurationVar(&cfg.certTTL, "cert-ttl", 24*time.Hour, "TTL of an issued mesh leaf, capped at 24h; a named leaf is further capped by --named-cert-ttl")
+	flags.DurationVar(&cfg.namedCertTTL, "named-cert-ttl", issuer.MaxNamedLeafTTL, "upper bound on the TTL of a leaf carrying a matched-workload stamp — the documented stale-identity bound for a named leaf (never applied to membership-only leaves). Must be positive and may only shorten the built-in ceiling, never raise it")
+	flags.DurationVar(&cfg.routerCertTTL, "router-cert-ttl", 20*time.Second, "TTL of a leaf issued to a router sandbox; must be shorter than --allowlist-node-delay, so every router advertises an allowlist write before it takes effect")
+	flags.DurationVar(&cfg.allowlistNodeDelay, "allowlist-node-delay", 30*time.Second, "how long after it is written an allowlist write takes effect on nodes; a write replaced before then never does")
+	flags.DurationVar(&cfg.challengeTTL, "challenge-ttl", 60*time.Second, "how long an attestation nonce CDS hands out stays redeemable")
+	flags.DurationVar(&cfg.requestTimeout, "request-timeout", 5*time.Second, "per-request /attest timeout (0 disables)")
+	flags.Int64Var(&cfg.maxRequestSize, "max-request-size", 65536, "max request body bytes on /attest, /authenticate and the workload secret routes")
+	flags.DurationVar(&cfg.readTimeout, "read-timeout", defaultHTTPReadTimeout, "HTTP server read timeout")
+	flags.DurationVar(&cfg.readHeaderTimeout, "read-header-timeout", defaultHTTPReadHeaderTimeout, "HTTP server read-header timeout")
+	flags.DurationVar(&cfg.writeTimeout, "write-timeout", defaultHTTPWriteTimeout, "HTTP server write timeout")
+	flags.DurationVar(&cfg.idleTimeout, "idle-timeout", defaultHTTPIdleTimeout, "HTTP server idle timeout")
+	flags.IntVar(&cfg.maxHeaderBytes, "max-header-bytes", defaultHTTPMaxHeaderBytes, "maximum HTTP request header bytes")
+
+	flags.BoolVar(&cfg.sanValidation, "san-validation", true, "require CSR IP SANs to equal the request source IP (false rejects CSRs carrying IP SANs)")
+	flags.StringVar(&cfg.allowedCNPattern, "allowed-cn-pattern", "", "regex the CSR Subject CN must match in full (empty disables)")
+	flags.DurationVar(&cfg.readinessInterval, "readiness-interval", 10*time.Second, "how often /readyz probes the attestation-api health; must be positive")
+	flags.DurationVar(&cfg.minCAValidity, "min-ca-validity", time.Hour, "/readyz fails when the current mesh CA certificate has less than this remaining lifetime")
+	flags.StringVar(&cfg.allowlistDB, "allowlist-db", "", "Path to the allowlist SQLite database")
+	flags.BoolVar(&cfg.allowlistPersistent, "allowlist-persistent", false, "whether --allowlist-db is on durable storage; false makes CDS warn at startup that operator-added digests, the allowlist history, spent operator tokens, the route manifest and the mesh CA do not survive a restart")
+
+	flags.Float64Var(&cfg.rateLimit, "rate-limit", 10, "max requests per second per source IP on attestation endpoints")
+	flags.IntVar(&cfg.rateBurst, "rate-burst", 20, "max burst size per source IP")
+	flags.IntVar(&cfg.rateLimiterMax, "rate-limiter-max-entries", 10000, "max entries in the per-IP rate limiter; once full, a new source evicts the least recently seen one")
+	flags.DurationVar(&cfg.rateLimiterEvictInterval, "rate-limiter-evict-interval", time.Minute, "interval for per-IP rate limiter eviction sweep")
+	flags.DurationVar(&cfg.rateLimiterIdleTimeout, "rate-limiter-idle-timeout", 5*time.Minute, "idle duration before a per-IP rate limiter entry is evicted")
+
+	flags.IntVar(&cfg.secretsMaxPaths, "secrets-max-paths", 1024, "max distinct secret paths held in memory across every workload")
+	flags.IntVar(&cfg.secretsMaxPathsPerWorkload, "secrets-max-paths-per-workload", secrets.DefaultMaxPathsPerHolder, "max secret paths one allowlist entry may hold")
+	flags.IntVar(&cfg.secretsMaxValueBytes, "secrets-max-value-bytes", 4096, "max bytes in one secret value")
+	flags.IntVar(&cfg.sandboxLedgerMax, "sandbox-ledger-max-entries", 10000, "max sandbox-to-inventory bindings held in memory")
+
+	flags.DurationVar(&cfg.armtlsCertTTL, "armtls-cert-ttl", 24*time.Hour, "lifetime of CDS's self-attested armTLS serving certificate")
+
+	cmdsutil.RequireFlags(cmd, "config", "attestation-api-url", "allowlist-db")
+
+	// `c8s ta verify` — a shorthand for `c8s verify --kind ta`, sharing the
+	// same implementation. Running CDS (the server) stays `c8s ta`.
+	//
+	// Mode is intentionally left at auto: resolveMode derives it from --kind
+	// (ta → armtls-cert, lb → discovery), so `c8s ta verify --kind lb` targets
+	// the LB's discovery doc. Presetting Mode: "armtls-cert" here would shadow
+	// that and make --kind lb dial for the embedded armTLS extension the LB
+	// front door never serves.
+	cmd.AddCommand(verify.NewCmd(verify.Defaults{
+		Use:         "verify [target]",
+		Short:       "Verify a Trust Authority endpoint's TEE attestation",
+		Kind:        "ta",
+		DefaultPort: 8443,
+	}))
+
+	cmd.AddCommand(taca.NewCmd())
+	cmd.AddCommand(talaunch.NewCmd())
+	cmd.AddCommand(newHACmd())
+
+	return cmd
+}
+
+type config struct {
+	configPath          string
+	host                string
+	port                int
+	logLevel            string
+	attestationApiURL   string
+	caCommonName        string
+	caCertValidity      time.Duration
+	jwtClockSkew        int64
+	certTTL             time.Duration
+	namedCertTTL        time.Duration
+	routerCertTTL       time.Duration
+	allowlistNodeDelay  time.Duration
+	challengeTTL        time.Duration
+	requestTimeout      time.Duration
+	maxRequestSize      int64
+	readTimeout         time.Duration
+	readHeaderTimeout   time.Duration
+	writeTimeout        time.Duration
+	idleTimeout         time.Duration
+	maxHeaderBytes      int
+	sanValidation       bool
+	allowedCNPattern    string
+	readinessInterval   time.Duration
+	minCAValidity       time.Duration
+	allowlistDB         string
+	allowlistPersistent bool
+	armtlsPlatform      teetypes.Family
+	armtlsCertTTL       time.Duration
+
+	rateLimit                float64
+	rateBurst                int
+	rateLimiterMax           int
+	rateLimiterEvictInterval time.Duration
+	rateLimiterIdleTimeout   time.Duration
+
+	secretsMaxPaths            int
+	secretsMaxPathsPerWorkload int
+	secretsMaxValueBytes       int
+	sandboxLedgerMax           int
+
+	// measured is the configuration document this VM was launched with, and
+	// measuredFile the bytes its launch bound and a cluster's decrees pin.
+	measured     *cdsconfig.Config
+	measuredFile []byte
+}

@@ -35,7 +35,7 @@ type Store struct {
 	uri string
 	// gen counts committed mutations in this process. It is the invalidation
 	// signal for a reader that memoizes a whole-document snapshot
-	// (internal/cmds/cds).
+	// (internal/cmds/ta).
 	gen uint64
 	// Kept current by every write (digest.go).
 	dig *contentDigest

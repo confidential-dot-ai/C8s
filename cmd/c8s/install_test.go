@@ -25,9 +25,9 @@ import (
 	sigsyaml "sigs.k8s.io/yaml"
 
 	"github.com/confidential-dot-ai/confidential-kubernetes/charts"
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cdsca"
 	nriimagepolicy "github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/nri-image-policy"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/routes"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/taca"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/verify"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/helmchart"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/webhook"
@@ -1672,7 +1672,7 @@ func TestVerifyHintPrintsRunnableCommands(t *testing.T) {
 	}
 
 	anchorArgs := hintCommandArgs(t, buf.String(), "c8s cds ca")
-	if err := cdsca.NewCmd().ParseFlags(anchorArgs); err != nil {
+	if err := taca.NewCmd().ParseFlags(anchorArgs); err != nil {
 		t.Errorf("c8s cds ca %s: %v", strings.Join(anchorArgs, " "), err)
 	}
 	for _, want := range []string{cdsURL, cdsPin} {

@@ -14,7 +14,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cdsconn"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/taconn"
 	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
@@ -95,7 +95,7 @@ func TestClientRejectsUnknownScheme(t *testing.T) {
 // --- signer error paths ---
 
 func TestSignerMissingKeyFile(t *testing.T) {
-	o := &options{Options: cdsconn.Options{OperatorKey: filepath.Join(t.TempDir(), "nope.key")}}
+	o := &options{Options: taconn.Options{OperatorKey: filepath.Join(t.TempDir(), "nope.key")}}
 	if _, err := o.signer(); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expected a read error, got %v", err)
 	}
@@ -107,7 +107,7 @@ func TestSignerRejectsGarbagePEM(t *testing.T) {
 	if err := os.WriteFile(path, []byte("not a pem"), 0o600); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	o := &options{Options: cdsconn.Options{OperatorKey: path, Measurements: []string{"abababababababababababababababababababababababababababababababababababababababababababababababab"}}}
+	o := &options{Options: taconn.Options{OperatorKey: path, Measurements: []string{"abababababababababababababababababababababababababababababababababababababababababababababababab"}}}
 	if _, err := o.signer(); err == nil || !strings.Contains(err.Error(), "no PEM block") {
 		t.Fatalf("expected a key-parse error, got %v", err)
 	}

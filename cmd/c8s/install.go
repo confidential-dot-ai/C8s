@@ -22,7 +22,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cdsconn"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/taconn"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/fileutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/helmchart"
 )
@@ -920,7 +920,7 @@ func init() {
 	installCmd.Flags().BoolVar(&installVolumes, "volumes", false, "serve encrypted volumes (docs/volumes.md): deploy volumed, the node agent that opens a pod's volume devices, and pin its image into the NRI allowlist. Off by default — it runs privileged, with hostPID and a writable bind of the kubelet directory")
 	installCmd.Flags().StringSliceVar(&installWorkloadRefs, flagWorkloadRef, nil, "existing workload to adopt as a c8s confidential workload, as <cw-id>=<namespace>/<kind>/<name>[:<port>]; repeatable. Kind is any resource exposing a pod template at spec.template (deployment, statefulset, daemonset, or an operator CRD such as <kind>.<group>). The optional :<port> is the port the workload serves TLS on with its get-cert certificate, needed on the ref --upstream selects")
 	installCmd.Flags().StringVar(&installUpstream, flagUpstream, "", "confidential.ai/cw id of the adopted --workload-ref workload to route / to: writes a route manifest naming c8s-<id>.<ns>.svc.cluster.local:<port> (that ref's :<port>, serving TLS on its get-cert certificate) and the allowlist entry <id>, for every router.san DNS name")
-	installCmd.Flags().StringVar(&installOperatorKey, flagOperatorKey, "", "operator EC private key PEM (env "+cdsconn.EnvOperatorKey+") that signs the --upstream route manifest; install then stores it on CDS, pinned by --cds-pin. Without it the manifest goes to --routes-out. Requires --upstream")
+	installCmd.Flags().StringVar(&installOperatorKey, flagOperatorKey, "", "operator EC private key PEM (env "+taconn.EnvOperatorKey+") that signs the --upstream route manifest; install then stores it on CDS, pinned by --cds-pin. Without it the manifest goes to --routes-out. Requires --upstream")
 	installCmd.Flags().StringVar(&installRoutesOut, "routes-out", "routes.json", "file the --upstream route manifest is written to when no --operator-key signs it, or when install cannot store it on CDS")
 	installCmd.Flags().Uint64Var(&installRoutesRevision, "routes-revision", 0, "revision of the --upstream route manifest, above the one CDS stores; default the later of the stored revision plus one and the current Unix time. After a CDS reset, pass one above the highest revision any router applied")
 	installCmd.Flags().DurationVar(&installRoutesMaxAge, "routes-max-age", 24*time.Hour, "maxAgeSeconds of a new --upstream route manifest: how long the router admits new attested sessions by it without a successful fetch from CDS; application routing goes on regardless. A manifest CDS already stores keeps its own")

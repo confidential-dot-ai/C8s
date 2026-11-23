@@ -17,9 +17,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cdsconn"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
 	cliroutes "github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/routes"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/taconn"
 	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlistclient"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
@@ -136,17 +136,17 @@ func installOperatorKeyPath() string {
 	if installOperatorKey != "" {
 		return installOperatorKey
 	}
-	return os.Getenv(cdsconn.EnvOperatorKey)
+	return os.Getenv(taconn.EnvOperatorKey)
 }
 
 // installCDSConn is how install reaches CDS: under the pin document the chart
 // holds it to.
-func installCDSConn(url string) *cdsconn.Options {
+func installCDSConn(url string) *taconn.Options {
 	pin := ""
 	if installCDS != nil {
 		pin = installCDS.path
 	}
-	return &cdsconn.Options{
+	return &taconn.Options{
 		URL:                url,
 		MeasurementsConfig: pin,
 		OperatorKey:        installOperatorKeyPath(),

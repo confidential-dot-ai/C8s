@@ -23,7 +23,7 @@ import (
 )
 
 // The process exits on it, and the restart rejoins the cluster as a new
-// member with the cluster's state (internal/cmds/cds).
+// member with the cluster's state (internal/cmds/ta).
 var ErrLeftItsCluster = errors.New("cds-ha: this replica left its cluster")
 
 // Often enough that an alarm over a window of time sees it.

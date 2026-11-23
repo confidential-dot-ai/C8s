@@ -17,8 +17,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cdsconn"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/taconn"
 	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlistclient"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
@@ -36,7 +36,7 @@ var defaultRequiredComponents = []string{
 
 // options holds the flags shared by every subcommand.
 type options struct {
-	cdsconn.Options
+	taconn.Options
 
 	output string // "text" | "json"
 }
@@ -47,8 +47,8 @@ func NewCmd() *cobra.Command {
 }
 
 // newCmd is the injectable constructor behind NewCmd.
-func newCmd(verifier cdsconn.PinVerifier) *cobra.Command {
-	o := &options{Options: cdsconn.Options{Verifier: verifier}}
+func newCmd(verifier taconn.PinVerifier) *cobra.Command {
+	o := &options{Options: taconn.Options{Verifier: verifier}}
 	cmd := &cobra.Command{
 		Use:   "allowlist",
 		Short: "Manage the CDS image allowlist",
@@ -78,7 +78,7 @@ allowlist").`,
 	}
 
 	pf := cmd.PersistentFlags()
-	cdsconn.BindFlags(pf, &o.Options)
+	taconn.BindFlags(pf, &o.Options)
 	pf.StringVarP(&o.output, "output", "o", "text", "output format: text or json")
 
 	derive, lint, inspectImage := newDeriveCmd(o), newLintCmd(o), newInspectImageCmd(o)

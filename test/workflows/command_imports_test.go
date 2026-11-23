@@ -38,15 +38,15 @@ type importRules struct {
 
 var commandImportRules = importRules{
 	librariesUnderCmds: []string{
-		"internal/cmds/cdsconn",
+		"internal/cmds/taconn",
 		"internal/cmds/cmdsutil",
 		"internal/cmds/nodeservices",
 		"internal/cmds/sidecar",
 	},
 	subcommandMounts: []string{
-		"internal/cmds/cds imports internal/cmds/cdsca",
-		"internal/cmds/cds imports internal/cmds/cdslaunch",
-		"internal/cmds/cds imports internal/cmds/verify",
+		"internal/cmds/ta imports internal/cmds/taca",
+		"internal/cmds/ta imports internal/cmds/talaunch",
+		"internal/cmds/ta imports internal/cmds/verify",
 	},
 	knownDebt: []string{
 		"internal/cdsconfig imports internal/cmds/cmdsutil",
@@ -59,7 +59,7 @@ var commandImportRules = importRules{
 		"internal/podprovider imports internal/cmds/podstatus",
 		"internal/webhook imports internal/cmds/volume",
 		"internal/cmds/c8srunc imports internal/cmds/nri-image-policy",
-		"internal/cmds/cds imports internal/cmds/worker",
+		"internal/cmds/ta imports internal/cmds/worker",
 		"internal/cmds/getvolume imports internal/cmds/volume",
 		"internal/cmds/getvolume imports internal/cmds/volumed",
 		"internal/cmds/nodeservices imports internal/cmds/nri-image-policy",

@@ -1,5 +1,5 @@
 // mock-cds is a fake CDS for integration testing: it serves the production
-// wire contract (armTLS, /authenticate, /attest — internal/cmds/cds) backed
+// wire contract (armTLS, /authenticate, /attest — internal/cmds/ta) backed
 // by the mock attestation-api instead of a TEE, and signs CSRs with an
 // ephemeral CA. Use only in test environments.
 package main
@@ -216,7 +216,7 @@ func handleAttest(store *challengeStore, verifier remote.Client) http.HandlerFun
 		}
 
 		// Sandbox identity before the evidence round-trip, in the order
-		// production checks it (internal/cmds/cds/attest.go). Every issuance
+		// production checks it (internal/cmds/ta/attest.go). Every issuance
 		// needs a token: this mock signs no leaf it cannot name a sandbox for.
 		sandboxID, err := verifySandboxToken(r.Context(), req.SandboxToken, csrPubKey, challengeBytes)
 		if err != nil {
@@ -302,7 +302,7 @@ func handleAttest(store *challengeStore, verifier remote.Client) http.HandlerFun
 }
 
 // verifySandboxToken checks the inventory-signed sandbox token as production
-// CDS does (internal/cmds/cds/attest.go, verifySandboxToken): the signing key
+// CDS does (internal/cmds/ta/attest.go, verifySandboxToken): the signing key
 // comes from the endpoint the token names, that key must sign the token, its
 // nonce must be the challenge being consumed, and its key digest must name the
 // requester's CSR key. The key arrives over plain HTTP, since the lane has no
@@ -372,7 +372,7 @@ func inventoryKey(ctx context.Context, addr string) (*ecdsa.PublicKey, error) {
 }
 
 // classifyVerifyError maps a VerifyEnforced error to the status/code/message
-// production CDS answers /attest with (internal/cmds/cds/attest.go): 401 bad
+// production CDS answers /attest with (internal/cmds/ta/attest.go): 401 bad
 // signature/report-data, 422 api evidence refusal or request rejection, 502
 // transport or 5xx outage.
 func classifyVerifyError(err error) (int, string, string) {

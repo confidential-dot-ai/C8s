@@ -128,7 +128,7 @@ func TestAVoterLeavesOnlyOnTheWordOfItsLeader(t *testing.T) {
 }
 
 // Run ends a stuck replica from its own loop, and that loop can be the one
-// waiting behind the fault (internal/cmds/cds).
+// waiting behind the fault (internal/cmds/ta).
 func TestAReplicaOverdueToLeaveIsReportedWithoutItsLoop(t *testing.T) {
 	timing := testTiming
 	timing.DeadAfter = 200 * time.Millisecond

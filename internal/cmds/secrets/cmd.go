@@ -14,12 +14,12 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cdsconn"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/taconn"
 )
 
 // options holds the flags shared by every subcommand.
 type options struct {
-	cdsconn.Options
+	taconn.Options
 }
 
 // NewCmd returns the `c8s secrets` command tree.
@@ -28,8 +28,8 @@ func NewCmd() *cobra.Command {
 }
 
 // newCmd is the injectable constructor behind NewCmd.
-func newCmd(verifier cdsconn.PinVerifier) *cobra.Command {
-	o := &options{Options: cdsconn.Options{Verifier: verifier, DirectCDS: true}}
+func newCmd(verifier taconn.PinVerifier) *cobra.Command {
+	o := &options{Options: taconn.Options{Verifier: verifier, DirectCDS: true}}
 	cmd := &cobra.Command{
 		Use:   "secrets",
 		Short: "Manage the CDS secret store",
@@ -50,7 +50,7 @@ docs/secrets.md).`,
 		SilenceUsage: true,
 	}
 
-	cdsconn.BindFlags(cmd.PersistentFlags(), &o.Options)
+	taconn.BindFlags(cmd.PersistentFlags(), &o.Options)
 	cmd.AddCommand(newPutCmd(o), newExplainCmd(o))
 	return cmd
 }

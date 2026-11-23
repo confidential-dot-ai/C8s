@@ -14,7 +14,7 @@ import (
 	"github.com/spf13/cobra"
 	"k8s.io/apimachinery/pkg/api/resource"
 
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cdsconn"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/taconn"
 	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
@@ -31,7 +31,7 @@ type createConfig struct {
 	jobs      int
 	mutable   bool
 	dryRun    bool
-	gate      cdsconn.MeshCAGate
+	gate      taconn.MeshCAGate
 
 	// run executes the build tools. Not a flag: tests set it so the whole
 	// create flow is exercised without erofs-utils and cryptsetup installed.
@@ -39,7 +39,7 @@ type createConfig struct {
 }
 
 func newCreateCmd(o *options) *cobra.Command {
-	cfg := createConfig{gate: cdsconn.MeshCAGate{What: "volume key"}}
+	cfg := createConfig{gate: taconn.MeshCAGate{What: "volume key"}}
 	cmd := &cobra.Command{
 		Use:   "create",
 		Short: "Build an encrypted volume and store its key",
@@ -162,7 +162,7 @@ func runCreate(cmd *cobra.Command, o *options, cfg createConfig) error {
 	}
 
 	if err := cfg.gate.Check(cmd.Context(), cmd.ErrOrStderr(), hc, o.URL); err != nil {
-		if errors.Is(err, cdsconn.ErrMeshCAMismatch) {
+		if errors.Is(err, taconn.ErrMeshCAMismatch) {
 			return notStored(err, cfg, path, "once you reach the CDS your bundle names, store it with")
 		}
 		return notStored(err, cfg, path, "retry with")

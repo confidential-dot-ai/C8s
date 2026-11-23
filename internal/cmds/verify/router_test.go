@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cdsattest"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/taattest"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/routing"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/routes"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
@@ -75,8 +75,8 @@ func productionRouter(t *testing.T, operator operatorSigner, afterResponse func(
 	// A cds front door serves the mesh identity leaf itself.
 	meshCertFile := writePEM(t, "mesh.pem", "CERTIFICATE", id.leaf.Raw)
 	prov := &recordingProvider{}
-	bindings := cdsattest.NewBindings()
-	handler := cdsattest.NewServer(cdsattest.Config{
+	bindings := taattest.NewBindings()
+	handler := taattest.NewServer(taattest.Config{
 		Evidence:             prov,
 		FrontDoorMode:        types.FrontDoorModeCDS,
 		ServingCertFile:      meshCertFile,

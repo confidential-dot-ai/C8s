@@ -24,7 +24,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cdsconn"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/taconn"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/crane/cranetest"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/localverify"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
@@ -313,7 +313,7 @@ func TestDiffNoChanges(t *testing.T) {
 func TestWriteRequiresOperatorCredential(t *testing.T) {
 	url, _ := recordingCDS(t)
 	// No key and no env: a write must fail before reaching CDS.
-	t.Setenv(cdsconn.EnvOperatorKey, "")
+	t.Setenv(taconn.EnvOperatorKey, "")
 	_, _, err := runCmd("delete", "app", "--url", url, "--insecure")
 	if err == nil {
 		t.Fatal("expected a write without an operator key to fail")
@@ -323,9 +323,9 @@ func TestWriteRequiresOperatorCredential(t *testing.T) {
 func TestSignerPrefersFlagOverEnv(t *testing.T) {
 	dir := t.TempDir()
 	keyPath := writeOperatorKey(t, dir)
-	t.Setenv(cdsconn.EnvOperatorKey, filepath.Join(dir, "nonexistent.key"))
+	t.Setenv(taconn.EnvOperatorKey, filepath.Join(dir, "nonexistent.key"))
 
-	o := &options{Options: cdsconn.Options{OperatorKey: keyPath, Measurements: []string{"abababababababababababababababababababababababababababababababababababababababababababababababab"}}}
+	o := &options{Options: taconn.Options{OperatorKey: keyPath, Measurements: []string{"abababababababababababababababababababababababababababababababababababababababababababababababab"}}}
 	if _, err := o.signer(); err != nil {
 		t.Fatalf("flag should take precedence over (broken) env, got %v", err)
 	}
@@ -334,9 +334,9 @@ func TestSignerPrefersFlagOverEnv(t *testing.T) {
 func TestSignerFallsBackToEnv(t *testing.T) {
 	dir := t.TempDir()
 	keyPath := writeOperatorKey(t, dir)
-	t.Setenv(cdsconn.EnvOperatorKey, keyPath)
+	t.Setenv(taconn.EnvOperatorKey, keyPath)
 
-	o := &options{Options: cdsconn.Options{Measurements: []string{"abababababababababababababababababababababababababababababababababababababababababababababababab"}}} // no key flag
+	o := &options{Options: taconn.Options{Measurements: []string{"abababababababababababababababababababababababababababababababababababababababababababababababab"}}} // no key flag
 	if _, err := o.signer(); err != nil {
 		t.Fatalf("env fallback should work, got %v", err)
 	}
@@ -348,7 +348,7 @@ func stubVerify(context.Context, string, json.RawMessage, localverify.Params) (*
 }
 
 func TestClientRefusesAnUnpinnedEndpoint(t *testing.T) {
-	base := options{Options: cdsconn.Options{URL: "https://127.0.0.1:1", Timeout: 2 * time.Second, Verifier: testutil.VerifierStub(stubVerify)}, output: "text"}
+	base := options{Options: taconn.Options{URL: "https://127.0.0.1:1", Timeout: 2 * time.Second, Verifier: testutil.VerifierStub(stubVerify)}, output: "text"}
 
 	t.Run("unpinned refused", func(t *testing.T) {
 		o := base

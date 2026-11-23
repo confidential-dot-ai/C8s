@@ -2,8 +2,8 @@
 
 package main
 
-import "github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cds"
+import "github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/ta"
 
 func init() {
-	rootCmd.AddCommand(cds.NewCmd())
+	rootCmd.AddCommand(ta.NewCmd())
 }

@@ -3,7 +3,7 @@
 //
 // show and digest only read. put, add and rm send a manifest signed with the
 // operator key, through the same connection and credential flags as
-// `c8s allowlist` (internal/cmds/cdsconn).
+// `c8s allowlist` (internal/cmds/taconn).
 package routes
 
 import (
@@ -18,15 +18,15 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cdsconn"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/taconn"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
 	pkgroutes "github.com/confidential-dot-ai/confidential-kubernetes/pkg/routes"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/routesclient"
 )
 
 type options struct {
-	cdsconn.Options
+	taconn.Options
 
 	// operatorKeys is a PEM file of trusted operator public keys. When set,
 	// every fetched manifest is verified as W2 requires.
@@ -38,8 +38,8 @@ func NewCmd() *cobra.Command {
 	return newCmd(nil)
 }
 
-func newCmd(verifier cdsconn.PinVerifier) *cobra.Command {
-	o := &options{Options: cdsconn.Options{Verifier: verifier}}
+func newCmd(verifier taconn.PinVerifier) *cobra.Command {
+	o := &options{Options: taconn.Options{Verifier: verifier}}
 	cmd := &cobra.Command{
 		Use:   "routes",
 		Short: "Manage the signed route manifest on CDS",
@@ -70,7 +70,7 @@ Point --url at CDS itself, with no path, because the router does not relay
 		SilenceUsage: true,
 	}
 	pf := cmd.PersistentFlags()
-	cdsconn.BindFlags(pf, &o.Options)
+	taconn.BindFlags(pf, &o.Options)
 	pf.StringVar(&o.operatorKeys, "operator-keys", "", "PEM file of trusted operator public keys; verifies the write token of every fetched route manifest")
 
 	digest := newDigestCmd()
