@@ -56,8 +56,9 @@ type verityTarget struct {
 
 type verityCheckKey struct{}
 
-// withVerityCheck starts the fs-verity measurements of one check. Mounts
-// observed under a context without one carry no fs-verity evidence.
+// withVerityCheck starts the fs-verity measurements of one check: one
+// container start, or the whole recovery and startup check of a Synchronize.
+// Mounts observed under a context without one carry no fs-verity evidence.
 func (p *plugin) withVerityCheck(ctx context.Context) context.Context {
 	return context.WithValue(ctx, verityCheckKey{}, &verityCheck{
 		logger:   p.logger,

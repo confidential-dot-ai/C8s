@@ -227,3 +227,41 @@ func TestObservedMountsMeasureOnlyInACheck(t *testing.T) {
 		t.Fatalf("observedMounts(check) = %+v, want digest %s", got, testVerityDigest)
 	}
 }
+
+// Synchronize answers within one NRI request timeout, so its containers share
+// one measurement budget: a hung filesystem costs it once, not per container.
+func TestSynchronizeSharesOneVerityBudget(t *testing.T) {
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	calls := stubMeasurement(t, func(uint32, string, string) (string, error) {
+		<-release
+		return testVerityDigest, nil
+	})
+	original := verityBudget
+	verityBudget = 20 * time.Millisecond
+	t.Cleanup(func() { verityBudget = original })
+
+	al := workloadAllowlist(t, pushDigestA, pushDigestB, []string{"/bin/app"})
+	al.Workloads["w"].Containers[0].Mounts = allowlist.MountPolicy{Policy: allowlist.PolicyExact, Rules: []allowlist.MountRule{{Destination: verityTestDestination, Kind: allowlist.MountFSVerityFile, Source: verityTestSource, ReadOnly: true, VerityDigest: testVerityDigest}}}
+	if err := al.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	p, _ := newCachedPlugin(&config{Policy: policyConfig{Mode: ModeAudit}, Allowlist: allowlistConfig{Pull: pullConfig{URL: "https://cds"}}}, al)
+	p.SetReady()
+	p.inventory = newAdmissionInventory(t.TempDir())
+	pod := makePod("default", "pod")
+	var ctrs []*api.Container
+	for i, name := range []string{"a", "b"} {
+		ctr := makeCtrWithImage(pod.Id, name, "registry/repo@"+pushDigestB)
+		ctr.Pid = uint32(42 + i)
+		ctr.State = api.ContainerState_CONTAINER_RUNNING
+		ctr.Mounts = []*api.Mount{{Type: "bind", Source: verityTestSource, Destination: verityTestDestination, Options: []string{"rbind", "ro"}}}
+		ctrs = append(ctrs, ctr)
+	}
+	if _, err := p.Synchronize(t.Context(), []*api.PodSandbox{pod}, ctrs); err != nil {
+		t.Fatal(err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("measurements on a hung filesystem = %d, want 1: one budget per Synchronize", got)
+	}
+}
