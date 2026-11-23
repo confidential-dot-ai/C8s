@@ -3,7 +3,7 @@ package secrets
 import (
 	"sync"
 
-	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
 // allowlistStore is the persistent allowlist, as internal/allowlist.Store

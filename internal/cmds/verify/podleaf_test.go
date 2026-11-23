@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 )
 
 const podInstance = "pcvm-5ac26a2af8d068221a3001879b991e7d95b620edc116e93c4ff7f92312c1eb9d"

@@ -1,3 +1,3 @@
-module github.com/confidential-dot-ai/c8s/test/mock-cloud
+module github.com/confidential-dot-ai/confidential-kubernetes/test/mock-cloud
 
 go 1.27.3

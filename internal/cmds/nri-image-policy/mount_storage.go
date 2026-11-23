@@ -1,6 +1,6 @@
 package nriimagepolicy
 
-import "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+import "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 
 // mountStorageInspector proves a storage property from the mounted source.
 // Implementations return Unknown whenever the complete proof is unavailable.

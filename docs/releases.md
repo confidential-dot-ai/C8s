@@ -65,7 +65,7 @@ Each release from `v0.36.0` on has a GitHub release carrying
 `release-statement.json`:
 
 ```json
-{"allowlistSeeds":{"sev-snp":{"asset":"allowlist-seed-sev-snp.json","sha256":"<HEX>"},"tdx":{"asset":"allowlist-seed-tdx.json","sha256":"<HEX>"}},"chart":"ghcr.io/confidential-dot-ai/charts/c8s-cloud@sha256:<DIGEST>","cli":{"darwin-arm64":{"asset":"c8s-darwin-arm64","sha256":"<HEX>"},"linux-amd64":{"asset":"c8s-linux-amd64","sha256":"<HEX>"}},"commit":"<SHA>","repository":"confidential-dot-ai/C8s","tag":"vX.Y.Z"}
+{"allowlistSeeds":{"sev-snp":{"asset":"allowlist-seed-sev-snp.json","sha256":"<HEX>"},"tdx":{"asset":"allowlist-seed-tdx.json","sha256":"<HEX>"}},"chart":"ghcr.io/confidential-dot-ai/charts/c8s-cloud@sha256:<DIGEST>","cli":{"darwin-arm64":{"asset":"c8s-darwin-arm64","sha256":"<HEX>"},"linux-amd64":{"asset":"c8s-linux-amd64","sha256":"<HEX>"}},"commit":"<SHA>","repository":"confidential-dot-ai/confidential-kubernetes","tag":"vX.Y.Z"}
 ```
 
 `chart` names the published chart by its manifest digest, which a Flux
@@ -94,11 +94,11 @@ TAG=<RELEASE_TAG>
 statement and its bundle, then verify the signature:
 
 ```sh
-gh release download "$TAG" --repo confidential-dot-ai/C8s \
+gh release download "$TAG" --repo confidential-dot-ai/confidential-kubernetes \
   --pattern release-statement.json --pattern release-statement.sigstore.json
 cosign verify-blob \
   --bundle release-statement.sigstore.json \
-  --certificate-identity https://github.com/confidential-dot-ai/C8s/.github/workflows/semver-tag.yml@refs/heads/main \
+  --certificate-identity https://github.com/confidential-dot-ai/confidential-kubernetes/.github/workflows/semver-tag.yml@refs/heads/main \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   release-statement.json
 ```
@@ -107,19 +107,20 @@ cosign verify-blob \
 Verified OK
 ```
 
-A download failure means the tag has no release. The capital C in
-`confidential-dot-ai/C8s`, in the identity above and in the statement's
-`repository` field, matters to cosign: Fulcio (Sigstore's certificate
-authority) keeps the case and cosign compares the identity exactly.
+A download failure means the tag has no release. cosign compares the
+identity exactly. Releases published while the repository was named
+`confidential-dot-ai/C8s` were signed under that name: download them with the
+commands as written, and put `confidential-dot-ai/C8s` in the
+`--certificate-identity` and in the `.repository` check below.
 
 The signature proves only that the statement came from `semver-tag.yml` on
 `main`. Check its fields against the tag, parsing them rather than comparing
 file bytes:
 
 ```sh
-COMMIT=$(gh api "repos/confidential-dot-ai/C8s/commits/$TAG" --jq .sha)
+COMMIT=$(gh api "repos/confidential-dot-ai/confidential-kubernetes/commits/$TAG" --jq .sha)
 jq -e --arg tag "$TAG" --arg commit "$COMMIT" \
-  '.repository == "confidential-dot-ai/C8s" and .tag == $tag and .commit == $commit' \
+  '.repository == "confidential-dot-ai/confidential-kubernetes" and .tag == $tag and .commit == $commit' \
   release-statement.json
 ```
 
@@ -135,7 +136,7 @@ it with the digest the statement lists. `PLATFORM` is `linux-amd64` or
 
 ```sh
 PLATFORM=linux-amd64
-gh release download "$TAG" --repo confidential-dot-ai/C8s --pattern "c8s-$PLATFORM"
+gh release download "$TAG" --repo confidential-dot-ai/confidential-kubernetes --pattern "c8s-$PLATFORM"
 jq -r --arg p "$PLATFORM" '.cli[$p] | "\(.sha256)  \(.asset)"' release-statement.json \
   | sha256sum -c -
 chmod +x "c8s-$PLATFORM"
@@ -170,7 +171,7 @@ worker image and compare it with the digest the statement lists. `PLATFORM` is
 
 ```sh
 PLATFORM=tdx
-gh release download "$TAG" --repo confidential-dot-ai/C8s --pattern "allowlist-seed-$PLATFORM.json"
+gh release download "$TAG" --repo confidential-dot-ai/confidential-kubernetes --pattern "allowlist-seed-$PLATFORM.json"
 jq -r --arg p "$PLATFORM" '.allowlistSeeds[$p] | "\(.sha256)  \(.asset)"' release-statement.json \
   | sha256sum -c -
 ```

@@ -8,9 +8,9 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/confidential-dot-ai/c8s/internal/readutil"
-	intsecrets "github.com/confidential-dot-ai/c8s/internal/secrets"
-	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/readutil"
+	intsecrets "github.com/confidential-dot-ai/confidential-kubernetes/internal/secrets"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
 )
 
 // client writes secrets to CDS over an attested channel.

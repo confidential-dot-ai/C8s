@@ -14,8 +14,8 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
-	"github.com/confidential-dot-ai/c8s/internal/cdsha"
-	"github.com/confidential-dot-ai/c8s/internal/testutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsha"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
 )
 
 // A replica serves at its own address, because its peers, the nodes and the

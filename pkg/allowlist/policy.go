@@ -3,7 +3,7 @@ package allowlist
 import (
 	"slices"
 
-	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
 )
 
 // Index answers admission queries for enforcers in O(1). Build it once from a

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/confidential-dot-ai/c8s/internal/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/allowlist"
 )
 
 // refusing is a cluster that refuses every command with err.

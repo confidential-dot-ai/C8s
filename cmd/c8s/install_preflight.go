@@ -15,8 +15,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	k8sversion "k8s.io/apimachinery/pkg/util/version"
 
-	"github.com/confidential-dot-ai/c8s/internal/helmchart"
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/helmchart"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 // cdsPreflight refuses an install that names no CDS: no --cds-address and

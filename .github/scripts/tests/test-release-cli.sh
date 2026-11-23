@@ -58,7 +58,7 @@ grep -Fxq "env darwin arm64 $fixed" "$work/go.log" ||
   fail "darwin-arm64 did not build with the fixed environment"
 pass
 
-args="args build -trimpath -buildvcs=false -ldflags=-s -w -buildid= -X github.com/confidential-dot-ai/c8s/internal/version.Version=v1.2.3 -o $work/out/c8s-linux-amd64 ./cmd/c8s"
+args="args build -trimpath -buildvcs=false -ldflags=-s -w -buildid= -X github.com/confidential-dot-ai/confidential-kubernetes/internal/version.Version=v1.2.3 -o $work/out/c8s-linux-amd64 ./cmd/c8s"
 grep -Fxq -- "$args" "$work/go.log" || fail "unexpected build arguments: $(cat "$work/go.log")"
 pass
 

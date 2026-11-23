@@ -6,7 +6,7 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
-	"github.com/confidential-dot-ai/c8s/internal/podprovider"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/podprovider"
 )
 
 func TestPodProviderSetupRequiresTrustedNamespaceAndWebhooks(t *testing.T) {

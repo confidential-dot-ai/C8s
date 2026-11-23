@@ -1,6 +1,6 @@
 package main
 
-import "github.com/confidential-dot-ai/c8s/internal/podlaunch"
+import "github.com/confidential-dot-ai/confidential-kubernetes/internal/podlaunch"
 
 func init() {
 	rootCmd.AddCommand(podlaunch.NewCmd())

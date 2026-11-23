@@ -12,7 +12,7 @@ import (
 	"github.com/google/nftables"
 	"github.com/google/nftables/expr"
 
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 func guestPolicy() GuestPolicy {

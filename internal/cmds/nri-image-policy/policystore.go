@@ -4,7 +4,7 @@ import (
 	"maps"
 	"sync/atomic"
 
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
 // policySnapshot is an immutable admission view: an Index built from the

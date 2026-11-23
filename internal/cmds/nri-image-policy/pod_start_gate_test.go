@@ -12,7 +12,7 @@ import (
 	"github.com/containerd/nri/pkg/api"
 
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
-	"github.com/confidential-dot-ai/c8s/internal/podstart"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/podstart"
 )
 
 func podStartFixture(t *testing.T, ready bool) (*plugin, *api.PodSandbox, *api.Container, *fakeRegister) {

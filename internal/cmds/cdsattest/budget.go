@@ -9,7 +9,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/api/resource"
 
-	"github.com/confidential-dot-ai/c8s/internal/routing"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/routing"
 )
 
 // cgroupMemoryMax is the container's cgroup v2 memory limit.

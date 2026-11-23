@@ -9,7 +9,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
 )
 
 // fakeBindings is a binding store that counts holds and their releases and

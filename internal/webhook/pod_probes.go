@@ -5,7 +5,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
-	"github.com/confidential-dot-ai/c8s/internal/podmesh"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/podmesh"
 )
 
 // A member pod's probes are rewritten and validated by internal/podmesh, the

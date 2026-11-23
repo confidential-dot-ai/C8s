@@ -1,6 +1,6 @@
 package main
 
-import "github.com/confidential-dot-ai/c8s/internal/cmds/getsecret"
+import "github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/getsecret"
 
 func init() {
 	rootCmd.AddCommand(getsecret.NewCmd())

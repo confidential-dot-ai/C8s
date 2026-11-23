@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 )
 
 // The webhook renders these flags, so a malformed --secret has to fail at parse

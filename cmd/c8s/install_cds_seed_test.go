@@ -15,7 +15,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
-	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
 // A component entry the CDS does not serve is a component no node would admit.

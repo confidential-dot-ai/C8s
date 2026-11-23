@@ -20,11 +20,11 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/confidential-dot-ai/c8s/internal/crane"
-	"github.com/confidential-dot-ai/c8s/internal/version"
-	"github.com/confidential-dot-ai/c8s/internal/webhook"
-	pkgroutes "github.com/confidential-dot-ai/c8s/pkg/routes"
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/crane"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/version"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/webhook"
+	pkgroutes "github.com/confidential-dot-ai/confidential-kubernetes/pkg/routes"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 const testDigest = "sha256:abababababababababababababababababababababababababababababababab"

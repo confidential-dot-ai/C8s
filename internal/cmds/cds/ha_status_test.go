@@ -12,8 +12,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/confidential-dot-ai/c8s/internal/cdsha"
-	"github.com/confidential-dot-ai/c8s/internal/testutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsha"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
 )
 
 // A cluster whose configuration names the replica set a read command covers.

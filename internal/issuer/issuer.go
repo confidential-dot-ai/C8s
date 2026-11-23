@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/pkg/certutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
 )
 
 // DefaultCACommonName is the CN for the cluster-wide mesh CA when the caller

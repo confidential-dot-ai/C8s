@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"sync"
 
-	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
 // PolicySnapshot is one immutable allowlist state a certificate-issuance

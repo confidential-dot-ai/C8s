@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/internal/credvolume"
-	"github.com/confidential-dot-ai/c8s/pkg/certutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/credvolume"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
 )
 
 // MeshCredential is one credential generation as a backend connection uses

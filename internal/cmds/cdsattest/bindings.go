@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/internal/routing"
-	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/routing"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
 )
 
 var (

@@ -13,8 +13,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	"github.com/confidential-dot-ai/c8s/api/v1alpha2"
-	"github.com/confidential-dot-ai/c8s/internal/webhook"
+	"github.com/confidential-dot-ai/confidential-kubernetes/api/v1alpha2"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/webhook"
 )
 
 // resolveWorkloadCWID maps the CW's spec.workloadRef to the cw id stamped on

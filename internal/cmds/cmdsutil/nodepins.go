@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 )
 
 // NodePins is a client's CDS pin set as the node's enforcer mounts it. The

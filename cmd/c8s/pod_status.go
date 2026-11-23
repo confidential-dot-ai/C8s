@@ -1,6 +1,6 @@
 package main
 
-import "github.com/confidential-dot-ai/c8s/internal/cmds/podstatus"
+import "github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/podstatus"
 
 func init() {
 	rootCmd.AddCommand(podstatus.NewCmd())

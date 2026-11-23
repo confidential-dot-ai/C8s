@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
 // newPodPolicyPlugin is a Pod-role plugin applyPodPolicy installs onto.

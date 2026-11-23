@@ -23,7 +23,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 // sandboxID is shaped like a containerd sandbox ID (64 hex characters), so the

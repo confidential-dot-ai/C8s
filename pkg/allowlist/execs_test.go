@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
 )
 
 var probeExecs = [][]string{{"kubectl", "get", "--raw=/livez"}, {"kubectl", "get", "--raw=/readyz"}}

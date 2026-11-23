@@ -8,8 +8,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/confidential-dot-ai/c8s/internal/routing"
-	"github.com/confidential-dot-ai/c8s/pkg/routes"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/routing"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/routes"
 )
 
 func getPublication(t *testing.T, srv *Server) (*http.Response, []byte) {

@@ -14,8 +14,8 @@ import (
 
 	sigsjson "sigs.k8s.io/json"
 
-	"github.com/confidential-dot-ai/c8s/internal/podassign"
-	"github.com/confidential-dot-ai/c8s/internal/podlaunch"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/podassign"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/podlaunch"
 )
 
 var ErrAlreadyAssigned = errors.New("guest already holds a Pod")

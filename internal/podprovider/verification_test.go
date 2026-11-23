@@ -12,7 +12,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/podstatus"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/podstatus"
 )
 
 func refusingGuest(context.Context, *record, string) (podstatus.PodProjection, error) {

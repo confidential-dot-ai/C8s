@@ -43,13 +43,13 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
-	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
-	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
-	"github.com/confidential-dot-ai/c8s/internal/cdsha"
-	"github.com/confidential-dot-ai/c8s/internal/testutil"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
-	"github.com/confidential-dot-ai/c8s/pkg/certutil"
-	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsconfig"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsdecree"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsha"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
 )
 
 const (
@@ -152,8 +152,8 @@ func TestMain(m *testing.M) {
 		logs: filepath.Join(dir, "logs"),
 	}
 	for _, build := range [][]string{
-		{"build", "-tags", "c8s_dev", "-o", built.cds, "github.com/confidential-dot-ai/c8s/cmd/c8s"},
-		{"build", "-o", built.api, "github.com/confidential-dot-ai/c8s/test/mock-attestation"},
+		{"build", "-tags", "c8s_dev", "-o", built.cds, "github.com/confidential-dot-ai/confidential-kubernetes/cmd/c8s"},
+		{"build", "-o", built.api, "github.com/confidential-dot-ai/confidential-kubernetes/test/mock-attestation"},
 	} {
 		cmd := exec.Command("go", build...)
 		cmd.Stdout = os.Stdout

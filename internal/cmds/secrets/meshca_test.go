@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	intsecrets "github.com/confidential-dot-ai/c8s/internal/secrets"
-	"github.com/confidential-dot-ai/c8s/internal/testutil"
+	intsecrets "github.com/confidential-dot-ai/confidential-kubernetes/internal/secrets"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
 )
 
 func writePEM(t *testing.T, name string, ders ...[]byte) string {

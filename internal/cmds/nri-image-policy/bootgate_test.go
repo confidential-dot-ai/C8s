@@ -14,7 +14,7 @@ import (
 
 	"github.com/containerd/nri/pkg/api"
 
-	"github.com/confidential-dot-ai/c8s/internal/audit"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/audit"
 )
 
 // fatalRecorder stands in for powering the node off.

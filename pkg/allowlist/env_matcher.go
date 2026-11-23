@@ -6,7 +6,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/confidential-dot-ai/c8s/internal/strictjson"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/strictjson"
 )
 
 // EnvMatcher holds one exact-value or presence matcher.

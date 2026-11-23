@@ -15,7 +15,7 @@ import (
 	"github.com/cenkalti/backoff/v5"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-	"github.com/confidential-dot-ai/c8s/pkg/certutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
 )
 
 // Logger is an optional structured logger for armTLS operations.

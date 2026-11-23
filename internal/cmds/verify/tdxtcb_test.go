@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-	"github.com/confidential-dot-ai/c8s/internal/localverify"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/localverify"
 )
 
 const tdxFixtureReportData = "b8b9e582d1efb326120f7215e75a2ac2327da81aa5b44209f69460ae5af99e00"
