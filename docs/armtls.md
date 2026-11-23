@@ -153,6 +153,25 @@ Loopback stays reachable.
 
 ### The mesh endpoint profile
 
+A workload can restrict captured outbound peers by setting
+`C8S_MESH_PEER_WORKLOADS` to comma-separated allowlist entry names, for example
+`worker-a,worker-b`. Pin the exact variable in each application container's
+allowlist environment. The injector copies the requirement to the endpoint;
+the measured node checks the final environments before the application starts,
+on endpoint replacement, and during recovery. Removing the injected value does
+not remove the application's requirement.
+
+With this value set, the endpoint requires both leaves to carry matched-workload
+stamps. The peer's name must be listed and its allowlist digest must equal the
+local stamp's digest. It checks after normal mesh authentication and before
+forwarding application bytes. A missing or malformed stamp refuses the
+connection. Unset leaves the existing mesh-membership check in effect.
+
+This is destination authorization, not request routing. Declared exits bypass
+the mesh, so do not declare an exit to a destination this check must protect.
+The check applies to new connections; existing streams are not revoked by a
+policy update.
+
 A mesh endpoint presents its pod's CDS-issued leaf and authenticates peers on
 the chain path alone. It accepts a peer only when the leaf chains to the mesh CA
 it holds at the current time, permits the purpose the peer's role needs

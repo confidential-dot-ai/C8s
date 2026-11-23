@@ -84,8 +84,9 @@ func (c nodeCVM) enforcerMounts() enforcerMounts {
 	}
 }
 
-func (nodeCVM) gateStart(context.Context, *api.PodSandbox, *api.Container, string) (string, error) {
-	return "", nil
+func (c nodeCVM) gateStart(ctx context.Context, pod *api.PodSandbox, ctr *api.Container, imageRef string) (string, error) {
+	launch := c.p.observedLaunch(ctx, c.p.observeContainer(pod, ctr, imageRef))
+	return "", c.p.mesh.requireFinalPeerWorkloads(pod, ctr, c.p.roleOf(launch))
 }
 
 func (nodeCVM) finishStart(context.Context, *api.PodSandbox, *api.Container, string) error {

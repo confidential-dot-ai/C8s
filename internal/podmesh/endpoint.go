@@ -90,6 +90,9 @@ func ValidateWorkloadPod(pod *corev1.Pod) error {
 	if err := RejectRenderedProbeInput(pod); err != nil {
 		return err
 	}
+	if _, err := PeerWorkloadEnv(pod); err != nil {
+		return err
+	}
 	return ValidateProbes(pod)
 }
 
@@ -102,7 +105,12 @@ func InjectEndpoint(pod *corev1.Pod, image string) error {
 	if err := ValidateWorkloadPod(pod); err != nil {
 		return err
 	}
+	peerEnv, err := PeerWorkloadEnv(pod)
+	if err != nil {
+		return err
+	}
 	endpoint := Endpoint(image, RewriteProbes(pod))
+	endpoint.Env = append(endpoint.Env, peerEnv...)
 	pod.Spec.InitContainers = append([]corev1.Container{endpoint}, pod.Spec.InitContainers...)
 	pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{Name: CertVolumeName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{Medium: corev1.StorageMediumMemory}}})
 	pod.Spec.EnableServiceLinks = new(false)

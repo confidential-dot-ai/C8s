@@ -33,9 +33,10 @@ var testPeerAddress = podAddresses{netip.MustParseAddr("10.42.0.7")}
 
 // startTestEndpoint runs an endpoint on ephemeral ports whose captured
 // destination is supplied by the test instead of by the kernel.
-func startTestEndpoint(t *testing.T, volume meshVolume, own podAddresses, captured string) (*podEndpoint, podListeners) {
+func startTestEndpoint(t *testing.T, volume meshVolume, own podAddresses, captured string, peers ...string) (*podEndpoint, podListeners) {
 	t.Helper()
 	e := &podEndpoint{
+		peerWorkloads: peers,
 		credentials: &credentials{
 			volume: volume.Volume,
 			logger: discardLogger(),
