@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/confidential-dot-ai/c8s/internal/fileutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/fileutil"
 )
 
 // PodMarker is written last by Stage: the pod boot's authorization verdict.

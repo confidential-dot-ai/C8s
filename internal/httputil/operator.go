@@ -4,7 +4,7 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
 )
 
 // RefuseOperatorToken answers a request whose operator token was refused: 409

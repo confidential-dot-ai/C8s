@@ -2,7 +2,7 @@
 
 package main
 
-import "github.com/confidential-dot-ai/c8s/internal/cmds/armtlsmesh"
+import "github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/armtlsmesh"
 
 func init() {
 	rootCmd.AddCommand(wrapFlagBinary(

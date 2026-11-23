@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/confidential-dot-ai/c8s/internal/podassign"
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/podassign"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
 // AssignedPod is a generic pod document together with the pod assigned to the

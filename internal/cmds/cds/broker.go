@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/pkg/secretbroker"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/secretbroker"
 )
 
 // brokerCertTTL is the lifetime of a broker certificate. One is reissued when

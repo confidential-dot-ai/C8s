@@ -8,7 +8,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/volume"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/volume"
 )
 
 // emptyDirSubdir is where kubelet materializes an emptyDir volume under a pod's

@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/volume"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/volume"
 )
 
 // cleanupTimeout bounds an unwind that no longer has a caller waiting on it.

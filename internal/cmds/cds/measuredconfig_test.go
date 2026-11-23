@@ -20,7 +20,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
-	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsconfig"
 )
 
 // nodeMRTD is the TDVF firmware measurement the node images in these tests

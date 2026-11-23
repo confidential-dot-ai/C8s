@@ -7,7 +7,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/confidential-dot-ai/c8s/internal/readutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/readutil"
 )
 
 // ReadSANFile reads one fixed identity name from a regular, bounded file.

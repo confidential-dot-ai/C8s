@@ -26,7 +26,7 @@ import (
 	"fmt"
 	"regexp"
 
-	"github.com/confidential-dot-ai/c8s/pkg/workloadname"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadname"
 )
 
 // OIDMatchedWorkload identifies the matched-workload extension (see

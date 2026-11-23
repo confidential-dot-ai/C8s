@@ -3,7 +3,7 @@ package getcert
 import (
 	"testing"
 
-	"github.com/confidential-dot-ai/c8s/internal/testutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
 )
 
 // A client holds CDS to the configuration it runs on, so the pin must name one

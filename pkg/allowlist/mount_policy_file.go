@@ -3,7 +3,7 @@ package allowlist
 import (
 	"fmt"
 
-	"github.com/confidential-dot-ai/c8s/internal/strictjson"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/strictjson"
 )
 
 // ParseMountPoliciesJSON reads a map of container names to explicit mount policies.

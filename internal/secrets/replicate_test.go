@@ -9,7 +9,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
 )
 
 // cluster commits every command to every replica's store and answers with

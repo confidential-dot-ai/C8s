@@ -10,9 +10,9 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/confidential-dot-ai/c8s/internal/allowlist"
-	"github.com/confidential-dot-ai/c8s/internal/sandboxledger"
-	"github.com/confidential-dot-ai/c8s/internal/secrets"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/sandboxledger"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/secrets"
 )
 
 // A committed entry this replica's own database could not take is not an

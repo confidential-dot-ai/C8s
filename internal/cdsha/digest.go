@@ -24,7 +24,7 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/confidential-dot-ai/c8s/internal/issuer"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/issuer"
 )
 
 // Hex in JSON, so what a replica reports reads as what an operator compares.

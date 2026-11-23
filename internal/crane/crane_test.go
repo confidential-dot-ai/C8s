@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/internal/crane/cranetest"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/crane/cranetest"
 )
 
 func TestDigest(t *testing.T) {

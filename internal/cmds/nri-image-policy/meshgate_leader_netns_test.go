@@ -40,6 +40,9 @@ func init() {
 
 func TestMain(m *testing.M) {
 	if leaderThreadSandbox == "" {
+		// A test that guards exits names a node namespace of its own; none
+		// writes to the namespace of the machine running it.
+		nodeNetworkNamespace = "/nonexistent/node-network-namespace"
 		os.Exit(m.Run())
 	}
 	if err := proveWithTheLeaderThreadAttached(leaderThreadSandbox); err != nil {

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 )
 
 // bareSnpEvidence strips cert_chain from the real Zen4c/Genoa fixture, yielding
@@ -47,7 +47,7 @@ func TestVerifyInProcess_KDSFetchBoundedByContext(t *testing.T) {
 	cancel()
 
 	start := time.Now()
-	_, err := verifyInProcess(ctx, bareSnpEvidence(t), &armtls.VerifyPolicy{}, nil, nil)
+	_, _, err := verifyInProcess(ctx, bareSnpEvidence(t), &verifyPlan{policy: &armtls.VerifyPolicy{}}, nil)
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
 		t.Fatalf("expired ctx took %v, want prompt return", elapsed)
 	}

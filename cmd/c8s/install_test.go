@@ -24,15 +24,15 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	sigsyaml "sigs.k8s.io/yaml"
 
-	"github.com/confidential-dot-ai/c8s/charts"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/cdsca"
-	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/routes"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/verify"
-	"github.com/confidential-dot-ai/c8s/internal/helmchart"
-	"github.com/confidential-dot-ai/c8s/internal/webhook"
-	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/confidential-kubernetes/charts"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cdsca"
+	nriimagepolicy "github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/nri-image-policy"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/routes"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/verify"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/helmchart"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/webhook"
+	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 var errTestResolve = errors.New("simulated resolve failure")

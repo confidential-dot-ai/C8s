@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 )
 
 // fakeReport is an all-zero SEV-SNP report: the tool never verifies evidence,

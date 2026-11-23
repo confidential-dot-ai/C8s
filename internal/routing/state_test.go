@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/pkg/routes"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/routes"
 )
 
 func simpleManifest(revision uint64, address string) manifestSpec {

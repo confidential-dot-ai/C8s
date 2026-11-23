@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/attestation-go/remote"
-	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsdecree"
 )
 
 // maxPostedDecrees is how many decrees a replica holds. Every one of them is

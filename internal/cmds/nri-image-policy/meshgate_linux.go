@@ -5,12 +5,16 @@ package nriimagepolicy
 import (
 	"fmt"
 
-	"github.com/confidential-dot-ai/c8s/internal/podmesh"
-	"github.com/confidential-dot-ai/c8s/internal/podmesh/ruleset"
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/podmesh"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/podmesh/ruleset"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 var guestNetworkNamespace = "/proc/1/ns/net"
+
+// nodeNetworkNamespace is where the node translates Service addresses, and so
+// where the exit guards live.
+var nodeNetworkNamespace = "/proc/1/ns/net"
 
 // installPodRuleset puts the ruleset trusted policy defines for a pod of that
 // Kubernetes namespace into the network namespace the enforcer proved.
@@ -35,6 +39,11 @@ func verifyPodRuleset(netns podNamespace, policy meshPolicy, namespace string, e
 	if err := ruleset.Verify(netns.path, policy.podRuleset(namespace, exits)); err != nil {
 		return err
 	}
+	if len(exits) > 0 {
+		if err := ruleset.VerifyExitGuard(nodeNetworkNamespace, netns.path, rulesetExits(exits)); err != nil {
+			return err
+		}
+	}
 	if policy.Pod != nil {
 		return ruleset.VerifyGuest(guestNetworkNamespace, policy.guestRuleset())
 	}
@@ -42,12 +51,23 @@ func verifyPodRuleset(netns podNamespace, policy meshPolicy, namespace string, e
 }
 
 // extendPodRuleset adds a pod's granted exits to the ruleset it was protected
-// with.
+// with, once the node drops any translation of them.
 func extendPodRuleset(netns podNamespace, policy meshPolicy, namespace string, exits []exit) error {
 	if err := requireSameNamespace(netns); err != nil {
 		return err
 	}
+	if err := ruleset.GuardExits(nodeNetworkNamespace, netns.path, rulesetExits(exits)); err != nil {
+		return err
+	}
 	return ruleset.Extend(netns.path, policy.podRuleset(namespace, nil), rulesetExits(exits))
+}
+
+func exitGuards() ([]uint64, error) {
+	return ruleset.ExitGuards(nodeNetworkNamespace)
+}
+
+func releaseExitGuard(inode uint64) error {
+	return ruleset.ReleaseExitGuard(nodeNetworkNamespace, inode)
 }
 
 func requireSameNamespace(netns podNamespace) error {

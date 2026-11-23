@@ -4,7 +4,7 @@ import (
 	"sync"
 	"testing"
 
-	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
 // countingStore is a fakeStore that counts LoadAll calls and carries a

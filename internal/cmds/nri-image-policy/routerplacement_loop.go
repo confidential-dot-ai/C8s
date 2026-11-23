@@ -15,9 +15,9 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	coreclient "k8s.io/client-go/kubernetes/typed/core/v1"
 
-	"github.com/confidential-dot-ai/c8s/internal/workerauthorization"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
-	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/workerauthorization"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/attestclient"
 )
 
 const workerKubeletEnvironment = "/run/kubernetes/kubelet.env"

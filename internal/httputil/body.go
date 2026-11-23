@@ -6,7 +6,7 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/confidential-dot-ai/c8s/internal/readutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/readutil"
 )
 
 // ReadCappedBody reads up to maxBytes from r.Body. On read failure it

@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
 // historyCacheSize bounds the allowlist documents entryDocs keeps by digest.

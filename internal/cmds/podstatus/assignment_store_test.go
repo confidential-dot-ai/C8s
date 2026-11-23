@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/confidential-dot-ai/c8s/internal/podassign"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/podassign"
 )
 
 // A directory not owned by root is never trusted, and the store cannot be

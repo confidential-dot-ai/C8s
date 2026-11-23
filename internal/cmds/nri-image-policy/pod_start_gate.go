@@ -9,7 +9,7 @@ import (
 
 	"github.com/containerd/nri/pkg/api"
 
-	"github.com/confidential-dot-ai/c8s/internal/podstart"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/podstart"
 )
 
 const podStartLifetime = 30 * time.Second

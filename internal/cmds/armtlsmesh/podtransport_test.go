@@ -27,9 +27,9 @@ import (
 	"github.com/vishvananda/netns"
 	"golang.org/x/sys/unix"
 
-	"github.com/confidential-dot-ai/c8s/internal/credvolume"
-	"github.com/confidential-dot-ai/c8s/internal/podmesh"
-	"github.com/confidential-dot-ai/c8s/internal/podmesh/ruleset"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/credvolume"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/podmesh"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/podmesh/ruleset"
 )
 
 // transportNS keeps its namespace alive on a dedicated thread. Production

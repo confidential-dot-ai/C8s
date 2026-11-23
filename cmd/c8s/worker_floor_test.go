@@ -11,8 +11,8 @@ import (
 
 	yamlv3 "gopkg.in/yaml.v3"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/worker"
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/worker"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
 // The worker chart's router pins its launch and reads only files worker stage

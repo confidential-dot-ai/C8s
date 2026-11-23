@@ -69,7 +69,7 @@ selftest() { # summary must handle survivors, zero mutants, and a missing report
   # committed to the repo.
   cat > "$dir/summary-sample.json" <<'JSON'
 {
-  "go_module": "github.com/confidential-dot-ai/c8s",
+  "go_module": "github.com/confidential-dot-ai/confidential-kubernetes",
   "files": [
     {
       "file_name": "calc.go",

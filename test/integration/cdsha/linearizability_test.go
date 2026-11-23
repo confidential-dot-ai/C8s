@@ -19,7 +19,7 @@ import (
 
 	"github.com/anishathalye/porcupine"
 
-	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
 )
 
 const (

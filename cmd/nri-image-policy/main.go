@@ -3,8 +3,8 @@
 package main
 
 import (
-	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
-	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
+	nriimagepolicy "github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/nri-image-policy"
 )
 
 func main() { cmdsutil.RunMain(nriimagepolicy.Run) }

@@ -11,7 +11,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/volume"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/volume"
 )
 
 // fakeOps records every privileged call and can be told to fail one step.

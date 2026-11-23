@@ -5,7 +5,7 @@ package cds
 import (
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/internal/cdsha"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsha"
 )
 
 // haTimingOverride runs the replicas fast enough for a test to watch an

@@ -26,7 +26,7 @@ import (
 	"k8s.io/client-go/util/certificate/csr"
 	"k8s.io/client-go/util/keyutil"
 
-	"github.com/confidential-dot-ai/c8s/internal/fileutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/fileutil"
 )
 
 // operatorUser is the user c8s's operator authenticates as, beside the

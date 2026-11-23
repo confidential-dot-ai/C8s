@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
 )
 
 func TestObtainCertificateRejectsInvalidCSRBeforeEvidence(t *testing.T) {

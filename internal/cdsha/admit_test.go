@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsdecree"
 )
 
 // What a replica admits before it joins a cluster: its own image, and the

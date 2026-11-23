@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/internal/routerdiscovery"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/routerdiscovery"
 )
 
 func TestEvidenceFromDiscovery_Malformed(t *testing.T) {

@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/confidential-dot-ai/c8s/internal/podassign"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/podassign"
 )
 
 func key(t *testing.T, curve elliptic.Curve) *ecdsa.PrivateKey {

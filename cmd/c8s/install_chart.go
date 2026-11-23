@@ -11,8 +11,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/confidential-dot-ai/c8s/internal/helmchart"
-	"github.com/confidential-dot-ai/c8s/internal/version"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/helmchart"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/version"
 )
 
 // releaseChartRepository is the cloud chart each release publishes at its own version.

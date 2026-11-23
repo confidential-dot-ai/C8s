@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
 )
 
 func testDocumentFor(t *testing.T, operatorPEM string, anchorPEM string) Document {

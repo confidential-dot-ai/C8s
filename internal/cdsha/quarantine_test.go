@@ -9,7 +9,7 @@ import (
 
 	"github.com/hashicorp/raft"
 
-	"github.com/confidential-dot-ai/c8s/internal/secrets"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/secrets"
 )
 
 func quarantine(n *Node) {

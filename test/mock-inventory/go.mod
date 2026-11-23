@@ -1,8 +1,8 @@
-module github.com/confidential-dot-ai/c8s/test/mock-inventory
+module github.com/confidential-dot-ai/confidential-kubernetes/test/mock-inventory
 
 go 1.27.3
 
-require github.com/confidential-dot-ai/c8s v0.0.0
+require github.com/confidential-dot-ai/confidential-kubernetes v0.0.0
 
 require (
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
@@ -38,4 +38,4 @@ require (
 	sigs.k8s.io/structured-merge-diff/v6 v6.4.2 // indirect
 )
 
-replace github.com/confidential-dot-ai/c8s => ../..
+replace github.com/confidential-dot-ai/confidential-kubernetes => ../..

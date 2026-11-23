@@ -11,8 +11,8 @@ import (
 	"github.com/containerd/errdefs"
 	"github.com/containerd/nri/pkg/api"
 
-	ctrdresolver "github.com/confidential-dot-ai/c8s/internal/containerd"
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	ctrdresolver "github.com/confidential-dot-ai/confidential-kubernetes/internal/containerd"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
 // The front door's mapping, as containerd records it and as an entry declares it.

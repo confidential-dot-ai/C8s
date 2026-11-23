@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-	"github.com/confidential-dot-ai/c8s/internal/localverify"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/localverify"
 )
 
 // VerifierStub adapts a test callback to an evidence verifier's Verify method.

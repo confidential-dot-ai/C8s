@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/confidential-dot-ai/c8s/pkg/certutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
 )
 
 // LoadOperatorKey reads the key an operator signs with: the private half of

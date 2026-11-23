@@ -28,12 +28,12 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	sigsyaml "sigs.k8s.io/yaml"
 
-	acmecmd "github.com/confidential-dot-ai/c8s/internal/cmds/acme"
-	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
-	"github.com/confidential-dot-ai/c8s/internal/testutil"
-	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	acmecmd "github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/acme"
+	nriimagepolicy "github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/nri-image-policy"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
+	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 // containerArgs returns the args of the named container, main or init, after

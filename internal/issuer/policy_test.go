@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/confidential-dot-ai/c8s/internal/issuer"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/issuer"
 )
 
 func TestValidateCSR(t *testing.T) {

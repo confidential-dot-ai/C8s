@@ -7,8 +7,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/confidential-dot-ai/c8s/internal/helmchart"
-	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/helmchart"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
 )
 
 // validateOperatorKeysFile returns the PEM bundle for cds.operatorKeys, which

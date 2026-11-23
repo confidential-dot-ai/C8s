@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlistclient"
 )
 
 type pullArgs struct {

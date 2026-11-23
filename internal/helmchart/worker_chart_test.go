@@ -14,7 +14,7 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	sigsyaml "sigs.k8s.io/yaml"
 
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 // workerChart is the c8s-worker chart in the repository layout.
