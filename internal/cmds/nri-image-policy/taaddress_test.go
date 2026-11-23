@@ -32,9 +32,9 @@ func renderInTempDir(t *testing.T) {
 	t.Cleanup(func() { enforcerRuntimeDir = previous })
 }
 
-// installedCDSAddress is an install's address file, naming the CDS this
+// installedTAAddress is an install's address file, naming the Trust Authority this
 // cluster trusts, as the installer copies it beside the plugin's config.
-func installedCDSAddress(t *testing.T, address string) allowlistConfig {
+func installedTAAddress(t *testing.T, address string) allowlistConfig {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "cds-address")
 	if err := os.WriteFile(path, []byte(address+"\n"), 0o644); err != nil {
@@ -43,9 +43,9 @@ func installedCDSAddress(t *testing.T, address string) allowlistConfig {
 	return allowlistConfig{Pull: pullConfig{CDSAddressFile: path}}
 }
 
-// measuredCDSPolicy is a baked node's mesh policy: boot preparation bound the
-// credential role to the port the CDS staged at launch serves on.
-func measuredCDSPolicy(port uint16) *meshPolicy {
+// measuredTAPolicy is a baked node's mesh policy: boot preparation bound the
+// credential role to the port the Trust Authority staged at launch serves on.
+func measuredTAPolicy(port uint16) *meshPolicy {
 	policy := meshRoles()
 	policy.Roles = append(policy.Roles, roleBinding{
 		Name: CredentialRole,
@@ -60,14 +60,14 @@ func measuredCDSPolicy(port uint16) *meshPolicy {
 func TestMeasuredPolicyDecidesTheCredentialPort(t *testing.T) {
 	cfg := &config{
 		WorkloadClaims: workloadClaimsConfig{SocketDir: nodeDir(t, "10.0.0.7")},
-		Allowlist:      installedCDSAddress(t, "cds.example.org:8443"),
-		Mesh:           measuredCDSPolicy(30808),
+		Allowlist:      installedTAAddress(t, "cds.example.org:8443"),
+		Mesh:           measuredTAPolicy(30808),
 	}
-	address, err := loadCDSAddress(cfg.Allowlist.Pull)
+	address, err := loadTAAddress(cfg.Allowlist.Pull)
 	if err != nil {
 		t.Fatalf("loadCDSAddress: %v", err)
 	}
-	cfg.cdsAddress = address
+	cfg.taAddress = address
 	if err := bindCredentialRole(cfg); err != nil {
 		t.Fatalf("bindCredentialRole: %v", err)
 	}
@@ -80,25 +80,25 @@ func TestMeasuredPolicyDecidesTheCredentialPort(t *testing.T) {
 	if err := p.prepareCDSAddress(); err != nil {
 		t.Fatalf("prepareCDSAddress: %v", err)
 	}
-	if got := readAddress(t, p.cdsAddress); got != "cds.example.org:8443" {
-		t.Fatalf("handed address = %q, want the CDS this node reaches", got)
+	if got := readAddress(t, p.taAddress); got != "cds.example.org:8443" {
+		t.Fatalf("handed address = %q, want the Trust Authority this node reaches", got)
 	}
 }
 
 // An install's policy binds no credential role, so the node binds it to the
-// port the address file's CDS serves on, pulls from that same CDS, and hands
+// port the address file's Trust Authority serves on, pulls from that same Trust Authority, and hands
 // its clients its name to dial.
 func TestInstallBindsTheCredentialRoleToItsAddressFile(t *testing.T) {
 	cfg := &config{
 		WorkloadClaims: workloadClaimsConfig{SocketDir: nodeDir(t, "10.0.0.7")},
-		Allowlist:      installedCDSAddress(t, "cds.example.org:8443"),
+		Allowlist:      installedTAAddress(t, "cds.example.org:8443"),
 		Mesh:           meshRoles(),
 	}
-	address, err := loadCDSAddress(cfg.Allowlist.Pull)
+	address, err := loadTAAddress(cfg.Allowlist.Pull)
 	if err != nil {
 		t.Fatalf("loadCDSAddress: %v", err)
 	}
-	cfg.cdsAddress = address
+	cfg.taAddress = address
 	if got := cfg.pullURL(); got != "https://cds.example.org:8443" {
 		t.Fatalf("pull URL = %q, want the endpoint the file names", got)
 	}
@@ -110,7 +110,7 @@ func TestInstallBindsTheCredentialRoleToItsAddressFile(t *testing.T) {
 		t.Fatalf("credential role = %+v, want it bound to uid %d", role, workloadclaims.CredentialsUID)
 	}
 	if role.Port != 8443 {
-		t.Fatalf("credential role port = %d, want the port the address file's CDS serves on", role.Port)
+		t.Fatalf("credential role port = %d, want the port the address file's Trust Authority serves on", role.Port)
 	}
 	if err := cfg.Mesh.validate(); err != nil {
 		t.Fatalf("the completed policy no longer validates: %v", err)
@@ -120,23 +120,23 @@ func TestInstallBindsTheCredentialRoleToItsAddressFile(t *testing.T) {
 	if err := p.prepareCDSAddress(); err != nil {
 		t.Fatalf("prepareCDSAddress: %v", err)
 	}
-	if got := readAddress(t, p.cdsAddress); got != "cds.example.org:8443" {
-		t.Fatalf("handed address = %q, want the CDS the address file names", got)
+	if got := readAddress(t, p.taAddress); got != "cds.example.org:8443" {
+		t.Fatalf("handed address = %q, want the Trust Authority the address file names", got)
 	}
 }
 
-// A node that injects credential clients and knows no CDS endpoint refuses to
-// start: a client with no address reaches no CDS at all.
+// A node that injects credential clients and knows no Trust Authority endpoint refuses to
+// start: a client with no address reaches no Trust Authority at all.
 func TestCDSEndpointIsRequiredWhereClientsAreInjected(t *testing.T) {
 	renderInTempDir(t)
 	cfg := &config{WorkloadClaims: workloadClaimsConfig{SocketDir: t.TempDir()}, Mesh: meshRoles()}
 	p := &plugin{cfg: cfg}
 	err := p.prepareCDSAddress()
 	if err == nil {
-		t.Fatal("a node with no CDS endpoint started")
+		t.Fatal("a node with no Trust Authority endpoint started")
 	}
-	if !strings.Contains(err.Error(), "nothing names the CDS") {
-		t.Fatalf("error = %v, want it to name the missing CDS", err)
+	if !strings.Contains(err.Error(), "nothing names the Trust Authority") {
+		t.Fatalf("error = %v, want it to name the missing Trust Authority", err)
 	}
 }
 
@@ -154,13 +154,13 @@ func TestAddressFileMustNameAnEndpoint(t *testing.T) {
 		{name: "empty", address: ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := loadCDSAddress(installedCDSAddress(t, tc.address).Pull); err == nil {
+			if _, err := loadTAAddress(installedTAAddress(t, tc.address).Pull); err == nil {
 				t.Fatalf("address %q accepted", tc.address)
 			}
 		})
 	}
 	absent := pullConfig{CDSAddressFile: filepath.Join(t.TempDir(), "absent")}
-	if _, err := loadCDSAddress(absent); err == nil {
+	if _, err := loadTAAddress(absent); err == nil {
 		t.Fatal("a missing address file was accepted")
 	}
 }
@@ -173,27 +173,27 @@ func TestRenderedDocumentsAreOutsideTheMountedSocketDirectory(t *testing.T) {
 	cfg := &config{
 		Platform:       "sev-snp",
 		WorkloadClaims: workloadClaimsConfig{SocketDir: socketDir},
-		Allowlist:      installedCDSAddress(t, "cds.example.org:8443"),
+		Allowlist:      installedTAAddress(t, "cds.example.org:8443"),
 		Mesh:           meshRoles(),
 	}
-	cfg.Allowlist.Pull.CDSMeasurementsConfig = testCDSPinFile(t)
-	address, err := loadCDSAddress(cfg.Allowlist.Pull)
+	cfg.Allowlist.Pull.CDSMeasurementsConfig = testTAPinFile(t)
+	address, err := loadTAAddress(cfg.Allowlist.Pull)
 	if err != nil {
 		t.Fatalf("loadCDSAddress: %v", err)
 	}
-	cfg.cdsAddress = address
+	cfg.taAddress = address
 	if err := bindCredentialRole(cfg); err != nil {
 		t.Fatalf("bindCredentialRole: %v", err)
 	}
 	renderInTempDir(t)
 	p := &plugin{cfg: cfg}
-	if err := p.prepareCDSPins(nodeCDSPins(t, p)); err != nil {
+	if err := p.prepareTAPins(nodeTAPins(t, p)); err != nil {
 		t.Fatalf("prepareCDSPins: %v", err)
 	}
 	if err := p.prepareCDSAddress(); err != nil {
 		t.Fatalf("prepareCDSAddress: %v", err)
 	}
-	for _, rendered := range []string{p.cdsPins, p.cdsAddress} {
+	for _, rendered := range []string{p.taPins, p.taAddress} {
 		if strings.HasPrefix(rendered, socketDir) {
 			t.Fatalf("document %s sits in the mounted socket directory %s", rendered, socketDir)
 		}
@@ -207,8 +207,8 @@ func TestNoInjectedClientsNoAddress(t *testing.T) {
 	if err := p.prepareCDSAddress(); err != nil {
 		t.Fatalf("prepareCDSAddress: %v", err)
 	}
-	if p.cdsAddress != "" {
-		t.Fatalf("address path = %q, want none", p.cdsAddress)
+	if p.taAddress != "" {
+		t.Fatalf("address path = %q, want none", p.taAddress)
 	}
 }
 
@@ -216,12 +216,12 @@ func TestNoInjectedClientsNoAddress(t *testing.T) {
 // the path its client reads, and no other container.
 func TestCDSAddressIsMountedIntoCredentialSidecars(t *testing.T) {
 	p := &plugin{
-		cfg:        &config{},
-		cdsAddress: "/var/run/nri-image-policy/cds-address",
+		cfg:       &config{},
+		taAddress: "/var/run/nri-image-policy/cds-address",
 	}
 	pod := &api.PodSandbox{Annotations: map[string]string{workloadclaims.AnnotationInjected: "true"}}
 	mount := addressMount(t, mustCredentialMounts(t, p, pod, &api.Container{Name: workloadclaims.CertContainerName}))
-	if mount.GetSource() != p.cdsAddress {
+	if mount.GetSource() != p.taAddress {
 		t.Fatalf("source = %q, want the plugin's own file", mount.GetSource())
 	}
 	if !slices.Contains(mount.GetOptions(), "ro") {
@@ -233,18 +233,18 @@ func TestCDSAddressIsMountedIntoCredentialSidecars(t *testing.T) {
 }
 
 // The upstream identity reads the endpoint at the same path, and that
-// endpoint alone: it polls the signed route manifest from the one CDS its
+// endpoint alone: it polls the signed route manifest from the one Trust Authority its
 // node admits for it, and takes its pins from the measured base.
 func TestCDSAddressIsMountedIntoTheRoutingRole(t *testing.T) {
 	p := &plugin{
-		cfg:        &config{},
-		cdsAddress: "/var/run/nri-image-policy/cds-address",
+		cfg:       &config{},
+		taAddress: "/var/run/nri-image-policy/cds-address",
 	}
 	pod := &api.PodSandbox{Namespace: routerNamespace}
 	routing := &api.Container{Name: workloadclaims.AttestContainerName, User: &api.User{Uid: workloadclaims.UpstreamUID}}
 	adjustment := mustCredentialMounts(t, p, pod, routing)
 	mount := addressMount(t, adjustment)
-	if mount.GetSource() != p.cdsAddress {
+	if mount.GetSource() != p.taAddress {
 		t.Fatalf("source = %q, want the plugin's own file", mount.GetSource())
 	}
 	if !slices.Contains(mount.GetOptions(), "ro") {

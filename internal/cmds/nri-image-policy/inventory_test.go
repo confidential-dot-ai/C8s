@@ -162,7 +162,7 @@ func TestInventoryPermanentDenialDominatesCreationRetries(t *testing.T) {
 	}
 }
 
-// sandboxDigestsFor walks the production path CDS drives: bind the caller by
+// sandboxDigestsFor walks the production path Trust Authority drives: bind the caller by
 // kernel credentials to its sandbox, then list what that sandbox runs.
 func sandboxDigestsFor(b *admissionInventory, pid int) ([]string, error) {
 	sandboxID, err := b.sandboxForPeer(workloadclaims.PeerForPID(pid))
@@ -450,7 +450,7 @@ func TestInventorySandboxLifecycle(t *testing.T) {
 // Two admissions whose argv differ only in how a separator byte falls must both
 // survive in the high-water mark. Under a separator argv can carry, the second
 // record overwrote the first — and it vanished from the digests view too, so
-// CDS's cross-check between the two views still agreed and the sandbox stayed
+// Trust Authority's cross-check between the two views still agreed and the sandbox stayed
 // eligible to be named for a workload it had not run.
 func TestInventoryArgvSeparatorDoesNotEraseAdmissions(t *testing.T) {
 	b := newAdmissionInventory(t.TempDir())

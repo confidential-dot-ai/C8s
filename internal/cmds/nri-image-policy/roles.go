@@ -23,7 +23,7 @@ const (
 	// rest of the pod.
 	meshRole = workloadclaims.MeshRole
 	// CredentialRole is the role of the injected credential clients. A node's
-	// boot preparation binds it to that cluster's CDS address, so the name is
+	// boot preparation binds it to that cluster's Trust Authority address, so the name is
 	// shared rather than written twice.
 	CredentialRole = workloadclaims.CredentialsRole
 	// routerRole answers the cluster's external traffic on ports of its own,
@@ -114,7 +114,7 @@ type capturePorts struct {
 }
 
 // roleBinding binds a dialing role to its reserved UID and the port it
-// reaches outside this cluster: where this cluster's CDS serves, which the
+// reaches outside this cluster: where this cluster's Trust Authority serves, which the
 // role's clients dial by name. The mesh endpoint names no port: the enforcer
 // installs the pod ruleset, so the endpoint only proxies.
 type roleBinding struct {

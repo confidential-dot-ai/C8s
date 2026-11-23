@@ -25,7 +25,7 @@ const workerKubeletEnvironment = "/run/kubernetes/kubelet.env"
 func workerPolicyCheck(cfg *config, client *http.Client) func(context.Context) (bool, error) {
 	if client == nil {
 		return func(context.Context) (bool, error) {
-			return false, fmt.Errorf("worker has no authenticated CDS connection")
+			return false, fmt.Errorf("worker has no authenticated Trust Authority connection")
 		}
 	}
 	evidence := &armtls.SelfSignedProvider{

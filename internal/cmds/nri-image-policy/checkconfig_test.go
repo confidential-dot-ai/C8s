@@ -10,8 +10,8 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
 )
 
-// withCDSPin names pin as the CDS pin file of a boot config document.
-func withCDSPin(document, pin string) string {
+// withTAPin names pin as the Trust Authority pin file of a boot config document.
+func withTAPin(document, pin string) string {
 	return strings.Replace(document, "  pull:\n", "  pull:\n    cds_measurements_config: "+pin+"\n", 1)
 }
 
@@ -35,22 +35,22 @@ func TestRunCheckConfig(t *testing.T) {
 	}{
 		{
 			"a config the plugin starts with",
-			withSyslog(t, withCDSPin(bootConfigDocument("[kube-system]", "[kube-system]"), testCDSPinFile(t))),
+			withSyslog(t, withTAPin(bootConfigDocument("[kube-system]", "[kube-system]"), testTAPinFile(t))),
 			"",
 		},
 		{
 			"an exemption the mesh does not exempt",
-			withSyslog(t, withCDSPin(bootConfigDocument("[gmp-system]", "[kube-system]"), testCDSPinFile(t))),
+			withSyslog(t, withTAPin(bootConfigDocument("[gmp-system]", "[kube-system]"), testTAPinFile(t))),
 			"must also be in mesh.exempt_namespaces",
 		},
 		{
-			"a CDS pin file that pins no image",
-			withSyslog(t, withCDSPin(bootConfigDocument("[kube-system]", "[kube-system]"), cdsPinFile(t, `{"schema_version":"1","tee":"sev-snp"}`))),
+			"a Trust Authority pin file that pins no image",
+			withSyslog(t, withTAPin(bootConfigDocument("[kube-system]", "[kube-system]"), taPinFile(t, `{"schema_version":"1","tee":"sev-snp"}`))),
 			"allowlist.pull",
 		},
 		{
 			"a syslog socket nothing listens on",
-			withCDSPin(bootConfigDocument("[kube-system]", "[kube-system]"), testCDSPinFile(t)) + "logging:\n  syslog: " + filepath.Join(t.TempDir(), "log") + "\n",
+			withTAPin(bootConfigDocument("[kube-system]", "[kube-system]"), testTAPinFile(t)) + "logging:\n  syslog: " + filepath.Join(t.TempDir(), "log") + "\n",
 			"logging.syslog",
 		},
 	} {

@@ -10,9 +10,9 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 )
 
-// renderedCDSPinsName is the policy document the plugin hands its injected
+// renderedTAPinsName is the policy document the plugin hands its injected
 // credential clients (renderNodeDocument).
-const renderedCDSPinsName = "cds-pins.json"
+const renderedTAPinsName = "cds-pins.json"
 
 // EnforcerRuntimeDir is the plugin's own directory on the node, holding the
 // documents it hands its injected credential clients: no pod can write it, and
@@ -38,24 +38,24 @@ func renderNodeDocument(name string, document []byte) (string, error) {
 	return path, nil
 }
 
-// prepareCDSPins writes the CDS attestation policy this node hands its
+// prepareTAPins writes the Trust Authority attestation policy this node hands its
 // injected credential clients, before any container can be created. Whichever
-// form the node's config names its CDS identities in, they reach every client
+// form the node's config names its Trust Authority identities in, they reach every client
 // as one rendered document, and a set no client could load fails here instead
 // of in every pod.
-func (p *plugin) prepareCDSPins(cdsPins armtls.PinSource) error {
+func (p *plugin) prepareTAPins(taPins armtls.PinSource) error {
 	if !p.cfg.injectsCredentialClients() {
 		// This boot supplies no node credential clients.
 		return nil
 	}
-	document, err := refvalues.Format(cdsPins.Current())
+	document, err := refvalues.Format(taPins.Current())
 	if err != nil {
-		return fmt.Errorf("render the node's CDS pins: %w", err)
+		return fmt.Errorf("render the node's Trust Authority pins: %w", err)
 	}
-	path, err := renderNodeDocument(renderedCDSPinsName, document)
+	path, err := renderNodeDocument(renderedTAPinsName, document)
 	if err != nil {
 		return err
 	}
-	p.cdsPins = path
+	p.taPins = path
 	return nil
 }

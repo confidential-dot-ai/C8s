@@ -113,8 +113,8 @@ func podRoleInputs(t *testing.T) (string, *podlaunch.AssignedPod) {
 		t.Fatal(err)
 	}
 	podKey := string(pins.Images[1].Anchor)
-	// The independent CDS VM uses SNP even when the Pod uses TDX.
-	cdsPolicy := testutil.CDSPinDocument(testutil.TestMeasurement, testutil.CDSLaunchFile)
+	// The independent Trust Authority VM uses SNP even when the Pod uses TDX.
+	taPolicy := testutil.CDSPinDocument(testutil.TestMeasurement, testutil.CDSLaunchFile)
 	containers := []string{}
 	for _, name := range []string{"app", "unknown"} {
 		containers = append(containers, fmt.Sprintf(`{"name":%q,"image":"busybox@%s"}`, name, podImageDigest))
@@ -125,7 +125,7 @@ func podRoleInputs(t *testing.T) (string, *podlaunch.AssignedPod) {
 	assigned := &podlaunch.AssignedPod{
 		Document: podlaunch.Document{
 			Role:                 podlaunch.Pod,
-			CDS:                  cmdsutil.CDS{Address: "cds.example.test:8443", Measurements: cdsPolicy},
+			CDS:                  cmdsutil.CDS{Address: "cds.example.test:8443", Measurements: taPolicy},
 			PodOperatorPublicKey: podKey,
 			Image:                podlaunch.Image{Platform: "tdx"},
 			Node:                 podlaunch.Node{Name: "p-pod"},
@@ -158,7 +158,7 @@ func installPodRole(t *testing.T, root string, assigned *podlaunch.AssignedPod) 
 }
 
 // Exercise the installed policy through the production startup path and an NRI
-// runtime connection, including admission before CDS becomes available.
+// runtime connection, including admission before Trust Authority becomes available.
 func TestNodeImagePodRoleConfig_StartsAndRetainsServedPolicy(t *testing.T) {
 	root, assigned := podRoleInputs(t)
 	installPodRole(t, root, assigned)

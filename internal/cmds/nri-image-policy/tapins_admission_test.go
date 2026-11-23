@@ -102,8 +102,8 @@ func TestNodePolicyMountAdmission(t *testing.T) {
 				},
 			}, al)
 			p.SetReady()
-			p.cdsPins = pins
-			p.cdsAddress = address
+			p.taPins = pins
+			p.taAddress = address
 			p.inventory = newAdmissionInventory(t.TempDir())
 			pod := makePod("default", "pod")
 			pod.Uid = "pod-uid"

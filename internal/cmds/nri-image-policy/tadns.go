@@ -8,9 +8,9 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 )
 
-// A private CDS name is resolved by this cluster's DNS service alone, and the
+// A private Trust Authority name is resolved by this cluster's DNS service alone, and the
 // node's own resolver stands in until the cluster is up. Neither answer is
-// trusted: armTLS authenticates CDS.
+// trusted: armTLS authenticates Trust Authority.
 
 const clusterDNSPort = 53
 

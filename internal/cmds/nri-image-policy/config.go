@@ -29,8 +29,8 @@ import (
 // config represents the plugin configuration.
 type config struct {
 	// Platform types the armTLS identity the sandbox-digests endpoint serves
-	// to CDS, as an attestation-api platform string; empty means snp. It must
-	// name the node's actual CPU TEE — CDS fails closed when the certificate's
+	// to the Trust Authority, as an attestation-api platform string; empty means snp. It must
+	// name the node's actual CPU TEE — Trust Authority fails closed when the certificate's
 	// TEE type and the evidence envelope's platform disagree.
 	Platform       string               `yaml:"platform"`
 	Plugin         pluginConfig         `yaml:"plugin"`
@@ -47,9 +47,9 @@ type config struct {
 	// its TEE; only the worker image's measured config sets it.
 	Worker bool `yaml:"worker"`
 
-	// cdsAddress is the <host>:<port> this node's CDS serves on, read at load
+	// taAddress is the <host>:<port> this node's Trust Authority serves on, read at load
 	// from what names it (taaddress.go). "" when nothing does.
-	cdsAddress string
+	taAddress string
 }
 
 // podConfig is the signed identity the guest preparation stages. Runtime UID
@@ -122,7 +122,7 @@ type workloadClaimsConfig struct {
 	// ProcRoot is the /proc mount used to resolve a caller PID to its
 	// container cgroup. Defaults to "/proc".
 	ProcRoot string `yaml:"proc_root"`
-	// AdvertiseHost is the node address CDS dials to reach this inventory's
+	// AdvertiseHost is the node address Trust Authority dials to reach this inventory's
 	// digests endpoint. Empty reads it from NodeIPFile.
 	AdvertiseHost string `yaml:"advertise_host"`
 	// PublishNodeIP makes the plugin write NodeIPFile at startup from the
@@ -134,13 +134,13 @@ type workloadClaimsConfig struct {
 // allowlistConfig groups the digest-source mechanisms.
 //
 // Base is a static baseline in the allowlist document format, admitted ahead
-// of every pulled snapshot (CDS and operator digests). Installer and busybox
+// of every pulled snapshot (Trust Authority and operator digests). Installer and busybox
 // invocations are admitted by argv-pinned entries in the served document.
 // Base entries enforce env and mounts at final admission just like served
 // entries. The chart's component entries pin each container's argv and mount
 // table and leave env open; a worker image's floor pins every command and
 // leaves args open only where the pod chooses them.
-// Pull is the runtime-update source: every plugin polls CDS.
+// Pull is the runtime-update source: every plugin polls Trust Authority.
 type allowlistConfig struct {
 	Base *allowlist.Allowlist `yaml:"base"`
 	// NodeTCB marks the base allowlist as this node's trusted computing base:
@@ -148,20 +148,20 @@ type allowlistConfig struct {
 	// (policy.sandbox). Only a MEASURED boot config may set it — the chart
 	// leaves it unset, because a chart-rendered base is chosen by the same
 	// cluster admin the policy defends against. It is a boot-config key, not
-	// an allowlist field: a CDS-served document has no way to express it.
+	// an allowlist field: a Trust Authority-served document has no way to express it.
 	NodeTCB bool       `yaml:"node_tcb"`
 	Pull    pullConfig `yaml:"pull"`
 }
 
-// pullConfig configures the CDS polling source.
+// pullConfig configures the Trust Authority polling source.
 type pullConfig struct {
-	URL                   string        `yaml:"url"`                     // a measured config names the CDS here; excludes cds_address_file
-	CDSAddressFile        string        `yaml:"cds_address_file"`        // the CDS endpoint an install mounts, as host:port
-	Interval              time.Duration `yaml:"interval"`                // ticker cadence; > 0 required when a CDS is named
-	Timeout               time.Duration `yaml:"timeout"`                 // per-request timeout; > 0 required when a CDS is named
+	URL                   string        `yaml:"url"`                     // a measured config names the Trust Authority here; excludes cds_address_file
+	CDSAddressFile        string        `yaml:"cds_address_file"`        // the Trust Authority endpoint an install mounts, as host:port
+	Interval              time.Duration `yaml:"interval"`                // ticker cadence; > 0 required when a Trust Authority is named
+	Timeout               time.Duration `yaml:"timeout"`                 // per-request timeout; > 0 required when a Trust Authority is named
 	AttestationApiURL     string        `yaml:"attestation_api_url"`     // required for https pull
-	CDSMeasurementsConfig string        `yaml:"cds_measurements_config"` // the CDS pin document, every entry bound to the launch file CDS runs on
-	// CDSPinFloor is the lowest cluster version this node takes a CDS pin
+	CDSMeasurementsConfig string        `yaml:"cds_measurements_config"` // the Trust Authority pin document, every entry bound to the launch file Trust Authority runs on
+	// CDSPinFloor is the lowest cluster version this node takes a Trust Authority pin
 	// decree at, from the launch document it booted.
 	CDSPinFloor uint64 `yaml:"cds_pin_floor"`
 	// MeasurePolicies extends RTMR[3] (TDX) with each pulled policy before
@@ -171,41 +171,41 @@ type pullConfig struct {
 	MeasurePolicies bool `yaml:"measure_policies"`
 }
 
-// cdsSource is how a config names the CDS this node reaches: a measured boot
+// taSource is how a config names the Trust Authority this node reaches: a measured boot
 // config carries the URL, an install's carries the file it mounts. Each half
-// has one source, so a node reaches one CDS and holds it to one identity.
-type cdsSource struct {
-	// URL locates the CDS, or AddressFile holds its endpoint.
+// has one source, so a node reaches one Trust Authority and holds it to one identity.
+type taSource struct {
+	// URL locates the Trust Authority, or AddressFile holds its endpoint.
 	URL         string
 	AddressFile string
 	// PinFile is the document identifying it.
 	PinFile string
 }
 
-func (s cdsSource) located() bool {
+func (s taSource) located() bool {
 	return s.URL != "" || s.AddressFile != ""
 }
 
-// cdsSource refuses competing sources before any I/O: config validation runs
+// taSource refuses competing sources before any I/O: config validation runs
 // where the configured documents need not exist yet.
-func (c pullConfig) cdsSource() (cdsSource, error) {
-	source := cdsSource{
+func (c pullConfig) taSource() (taSource, error) {
+	source := taSource{
 		URL:         c.URL,
 		AddressFile: c.CDSAddressFile,
 		PinFile:     c.CDSMeasurementsConfig,
 	}
 	if source.URL != "" && source.AddressFile != "" {
-		return cdsSource{}, fmt.Errorf("allowlist.pull.url cannot be combined with cds_address_file: a node reaches one CDS")
+		return taSource{}, fmt.Errorf("allowlist.pull.url cannot be combined with cds_address_file: a node reaches one Trust Authority")
 	}
 	return source, nil
 }
 
-// policySet is the CDS identity set this node's own clients and its injected
-// credential clients are held to. The document declares the family of the CDS
+// policySet is the Trust Authority identity set this node's own clients and its injected
+// credential clients are held to. The document declares the family of the Trust Authority
 // VM, which an operator chooses independently of this node's, and binds every
-// entry to the launch file that CDS runs on.
+// entry to the launch file that Trust Authority runs on.
 func (c pullConfig) policySet() (refvalues.ReferenceValues, error) {
-	source, err := c.cdsSource()
+	source, err := c.taSource()
 	if err != nil {
 		return refvalues.ReferenceValues{}, err
 	}
@@ -322,13 +322,13 @@ func completeConfig(data []byte) (*config, error) {
 	if err != nil {
 		return nil, err
 	}
-	address, err := loadCDSAddress(cfg.Allowlist.Pull)
+	address, err := loadTAAddress(cfg.Allowlist.Pull)
 	if err != nil {
-		return nil, fmt.Errorf("the CDS this node reaches: %w", err)
+		return nil, fmt.Errorf("the Trust Authority this node reaches: %w", err)
 	}
-	cfg.cdsAddress = address
+	cfg.taAddress = address
 	if err := bindCredentialRole(cfg); err != nil {
-		return nil, fmt.Errorf("bind the %s role to the CDS this node reaches: %w", CredentialRole, err)
+		return nil, fmt.Errorf("bind the %s role to the Trust Authority this node reaches: %w", CredentialRole, err)
 	}
 	if err := cfg.validateMeshRoleBindings(); err != nil {
 		return nil, fmt.Errorf("validate mesh role bindings: %w", err)
@@ -413,7 +413,7 @@ func parseConfig(data []byte) (*config, error) {
 }
 
 // checkPullURL holds a configured pull URL to the https <host>:<port> this
-// cluster's CDS serves on: CDS serves armTLS only.
+// cluster's Trust Authority serves on: Trust Authority serves armTLS only.
 func checkPullURL(raw string) error {
 	if raw == "" {
 		return nil
@@ -453,20 +453,20 @@ func (c *config) injectsCredentialClients() bool {
 	return c.WorkloadClaims.SocketDir != "" && !c.podRole()
 }
 
-// PullEnabled: a config naming two CDS sources never loads (cdsSource), so
+// PullEnabled: a config naming two Trust Authority sources never loads (taSource), so
 // either half answers.
 func (c *config) PullEnabled() bool {
 	return c.Allowlist.Pull.URL != "" || c.Allowlist.Pull.CDSAddressFile != ""
 }
 
-// pullURL is the CDS this node pulls its allowlist from: the endpoint
+// pullURL is the Trust Authority this node pulls its allowlist from: the endpoint
 // whatever named it at load (taaddress.go), dialled over armTLS. Empty where
-// the config names no CDS.
+// the config names no Trust Authority.
 func (c *config) pullURL() string {
-	if c.cdsAddress == "" {
+	if c.taAddress == "" {
 		return ""
 	}
-	return cmdsutil.CDSURL(c.cdsAddress)
+	return cmdsutil.CDSURL(c.taAddress)
 }
 
 // baseEnabled reports whether the base allowlist carries any workload.
@@ -526,8 +526,8 @@ func (c *config) Validate() error {
 }
 
 func (c *config) validatePlatform() error {
-	// Reject at load rather than at the first CDS handshake: a wrong platform
-	// produces a peer-attestation failure on the CDS side that names the
+	// Reject at load rather than at the first Trust Authority handshake: a wrong platform
+	// produces a peer-attestation failure on the Trust Authority side that names the
 	// evidence platform, not this setting, so the cause is several hops from
 	// the symptom.
 	if _, err := teetypes.ParseFamily(c.NormalizedPlatform()); err != nil {
@@ -559,7 +559,7 @@ func (c *config) validatePull() error {
 	if c.PullEnabled() && !c.baseEnabled() {
 		return fmt.Errorf("allowlist.base must carry at least one workload when pull is configured (cold-boot baseline)")
 	}
-	source, err := c.Allowlist.Pull.cdsSource()
+	source, err := c.Allowlist.Pull.taSource()
 	if err != nil {
 		return err
 	}
@@ -567,10 +567,10 @@ func (c *config) validatePull() error {
 		return nil
 	}
 	if c.Allowlist.Pull.Timeout <= 0 {
-		return fmt.Errorf("allowlist.pull.timeout must be > 0 when allowlist.pull names a CDS")
+		return fmt.Errorf("allowlist.pull.timeout must be > 0 when allowlist.pull names a Trust Authority")
 	}
 	if c.Allowlist.Pull.Interval <= 0 {
-		return fmt.Errorf("allowlist.pull.interval must be > 0 when allowlist.pull names a CDS")
+		return fmt.Errorf("allowlist.pull.interval must be > 0 when allowlist.pull names a Trust Authority")
 	}
 	if err := checkPullURL(source.URL); err != nil {
 		return err
@@ -621,7 +621,7 @@ func (c *config) validateNodeTCB() error {
 
 func (c *config) validateWorkloadClaims() error {
 	if c.WorkloadClaims.SocketDir != "" && !c.AllowlistEnabled() {
-		return fmt.Errorf("workload_claims.socket_dir requires allowlist.base or allowlist.pull: the inventory reports digests for CDS to match against the allowlist")
+		return fmt.Errorf("workload_claims.socket_dir requires allowlist.base or allowlist.pull: the inventory reports digests for Trust Authority to match against the allowlist")
 	}
 	if c.WorkloadClaims.PublishNodeIP && c.WorkloadClaims.SocketDir == "" {
 		return fmt.Errorf("workload_claims.publish_node_ip requires workload_claims.socket_dir: the node-ip file lives there")
@@ -633,7 +633,7 @@ func (c *config) validateMeasuredJournal() error {
 	// Certificate producers read the journal only from the default runtime directory.
 	journalDir := filepath.Dir(armtls.NodeJournal)
 	if c.Allowlist.Pull.MeasurePolicies && !c.PullEnabled() {
-		return fmt.Errorf("allowlist.pull.measure_policies requires a CDS to pull from: only pulled policies are measured")
+		return fmt.Errorf("allowlist.pull.measure_policies requires a Trust Authority to pull from: only pulled policies are measured")
 	}
 	if c.Allowlist.Pull.MeasurePolicies && filepath.Clean(c.WorkloadClaims.SocketDir) != journalDir {
 		return fmt.Errorf("allowlist.pull.measure_policies requires workload_claims.socket_dir %s (got %q): certificate producers read the measured-policy journal there", journalDir, c.WorkloadClaims.SocketDir)
@@ -676,7 +676,7 @@ func (c *config) validatePod() error {
 		return fmt.Errorf("the Pod broker requires measure.rtmr3 and the signed pod uid, namespace and name")
 	}
 	if c.NormalizedPlatform() != "tdx" || !c.PullEnabled() || c.Allowlist.Pull.CDSMeasurementsConfig == "" || c.Allowlist.NodeTCB || c.Policy.Mode != ModeFailClosed || c.Policy.Sandbox != SandboxEnforce || !c.Policy.FatalExisting {
-		return fmt.Errorf("the Pod broker requires TDX, authenticated CDS pull and fail-closed sandbox enforcement without node TCB")
+		return fmt.Errorf("the Pod broker requires TDX, authenticated Trust Authority pull and fail-closed sandbox enforcement without node TCB")
 	}
 	if len(c.Policy.ExemptNamespaces) != 0 || len(c.Mesh.ExemptNamespaces) != 0 || c.Pod.Namespace == routerNamespace {
 		return fmt.Errorf("the Pod broker permits no namespace exemptions or router namespace")

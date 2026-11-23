@@ -10,7 +10,7 @@ import (
 const pullStallAfter = 5 * time.Minute
 
 type allowlistPull struct {
-	cds    string
+	ta     string
 	now    func() time.Time
 	logger *slog.Logger
 
@@ -20,20 +20,20 @@ type allowlistPull struct {
 	stallReported bool
 }
 
-func newAllowlistPull(cds string, now func() time.Time, logger *slog.Logger) *allowlistPull {
+func newAllowlistPull(ta string, now func() time.Time, logger *slog.Logger) *allowlistPull {
 	return &allowlistPull{
-		cds:          cds,
+		ta:           ta,
 		now:          now,
 		waitingSince: now(),
 		logger:       logger,
 	}
 }
 
-func stallMessage(cds string, waited time.Duration, failure error) string {
+func stallMessage(ta string, waited time.Duration, failure error) string {
 	if waited < pullStallAfter || failure == nil {
 		return ""
 	}
-	return fmt.Sprintf("no allowlist from %s for %s: %v", cds, waited.Round(time.Second), failure)
+	return fmt.Sprintf("no allowlist from %s for %s: %v", ta, waited.Round(time.Second), failure)
 }
 
 func (p *allowlistPull) reached() {
@@ -54,7 +54,7 @@ func (p *allowlistPull) recordFailure(err error) string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.failure = err
-	stall := stallMessage(p.cds, p.now().Sub(p.waitingSince), err)
+	stall := stallMessage(p.ta, p.now().Sub(p.waitingSince), err)
 	if stall == "" || p.stallReported {
 		return ""
 	}
@@ -65,5 +65,5 @@ func (p *allowlistPull) recordFailure(err error) string {
 func (p *allowlistPull) stall() string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return stallMessage(p.cds, p.now().Sub(p.waitingSince), p.failure)
+	return stallMessage(p.ta, p.now().Sub(p.waitingSince), p.failure)
 }

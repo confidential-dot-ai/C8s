@@ -54,7 +54,7 @@ func (p *plugin) Synchronize(ctx context.Context, pods []*api.PodSandbox, ctrs [
 	p.trackRunning(pods, ctrs)
 	p.cvm().noteRegistration(freshRegistration)
 
-	// If not ready yet, defer recovery and the startup check until CDS init
+	// If not ready yet, defer recovery and the startup check until the Trust Authority init
 	// completes: recovery needs the served allowlist to decide exits. Ready is
 	// read under deferredMu so RunDeferredCheck cannot run between it and the
 	// store and leave the batch unhandled.
@@ -349,7 +349,7 @@ func (c podCVM) stopAfterRestart(ctx context.Context, pods []*api.PodSandbox, ct
 
 // RunDeferredCheck recovers and checks the pods/containers that were seen
 // during Synchronize before the plugin was ready. Should be called after
-// SetReady and CDS init.
+// SetReady and Trust Authority init.
 func (p *plugin) RunDeferredCheck(ctx context.Context) {
 	defer p.cvm().lockAdmission()()
 	cfg := p.cfg

@@ -20,38 +20,38 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
-// nodeCDSPins is the pin source Run builds from the node's configuration.
-func nodeCDSPins(t *testing.T, p *plugin) armtls.PinSource {
+// nodeTAPins is the pin source Run builds from the node's configuration.
+func nodeTAPins(t *testing.T, p *plugin) armtls.PinSource {
 	t.Helper()
-	pins, _, err := p.cfg.Allowlist.Pull.cdsPinSource(discardLogger())
+	pins, _, err := p.cfg.Allowlist.Pull.taPinSource(discardLogger())
 	if err != nil {
-		t.Fatalf("the node's CDS pins: %v", err)
+		t.Fatalf("the node's Trust Authority pins: %v", err)
 	}
 	return pins
 }
 
-// A node hands its CDS pin on whole, so every injected client holds CDS to the
+// A node hands its Trust Authority pin on whole, so every injected client holds Trust Authority to the
 // same launch file the node does.
 func TestPrepareCDSPinsRendersTheConfiguredDocument(t *testing.T) {
 	renderInTempDir(t)
-	pin := testCDSPinFile(t)
+	pin := testTAPinFile(t)
 	p := testPlugin(t, &config{
 		Platform:       "tdx",
 		WorkloadClaims: workloadClaimsConfig{SocketDir: t.TempDir()},
 		Allowlist:      allowlistConfig{Pull: pullConfig{CDSMeasurementsConfig: pin}},
 	})
 
-	if err := p.prepareCDSPins(nodeCDSPins(t, p)); err != nil {
+	if err := p.prepareTAPins(nodeTAPins(t, p)); err != nil {
 		t.Fatalf("prepareCDSPins: %v", err)
 	}
-	if want := filepath.Join(enforcerRuntimeDir, renderedCDSPinsName); p.cdsPins != want {
-		t.Fatalf("pins path = %q, want %q", p.cdsPins, want)
+	if want := filepath.Join(enforcerRuntimeDir, renderedTAPinsName); p.taPins != want {
+		t.Fatalf("pins path = %q, want %q", p.taPins, want)
 	}
 	configured, err := refvalues.Load(pin)
 	if err != nil {
 		t.Fatal(err)
 	}
-	rendered, err := refvalues.Load(p.cdsPins)
+	rendered, err := refvalues.Load(p.taPins)
 	if err != nil {
 		t.Fatalf("rendered pins do not load: %v", err)
 	}
@@ -61,45 +61,45 @@ func TestPrepareCDSPinsRendersTheConfiguredDocument(t *testing.T) {
 }
 
 // The copy the enforcer mounts is readable by the identity that reads it and
-// writable by nobody else: a baked node stages its own CDS identities where
+// writable by nobody else: a baked node stages its own Trust Authority identities where
 // only root can read them, and the injected clients run as the credentials
 // UID.
 func TestPrepareCDSPinsStagesACopyEveryClientCanRead(t *testing.T) {
 	renderInTempDir(t)
-	rootOnly := testCDSPinFile(t)
+	rootOnly := testTAPinFile(t)
 	p := testPlugin(t, &config{
 		Platform:       "tdx",
 		WorkloadClaims: workloadClaimsConfig{SocketDir: t.TempDir()},
 		Allowlist:      allowlistConfig{Pull: pullConfig{CDSMeasurementsConfig: rootOnly}},
 	})
 
-	if err := p.prepareCDSPins(nodeCDSPins(t, p)); err != nil {
+	if err := p.prepareTAPins(nodeTAPins(t, p)); err != nil {
 		t.Fatalf("prepareCDSPins: %v", err)
 	}
-	staged, err := os.Stat(p.cdsPins)
+	staged, err := os.Stat(p.taPins)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if perm := staged.Mode().Perm(); perm&0o044 == 0 || perm&0o022 != 0 {
 		t.Fatalf("staged pins %s are mode %04o, which uid %d cannot read or a pod could write",
-			p.cdsPins, perm, workloadclaims.CredentialsUID)
+			p.taPins, perm, workloadclaims.CredentialsUID)
 	}
 }
 
-// A CDS runs on the TEE family its own document declares, which an operator
+// A Trust Authority runs on the TEE family its own document declares, which an operator
 // chooses independently of the nodes it serves.
 func TestPrepareCDSPinsAcceptsTheCDSVMsOwnFamily(t *testing.T) {
 	renderInTempDir(t)
 	p := testPlugin(t, &config{
 		Platform:       "tdx",
 		WorkloadClaims: workloadClaimsConfig{SocketDir: t.TempDir()},
-		Allowlist:      allowlistConfig{Pull: pullConfig{CDSMeasurementsConfig: testCDSPinFile(t)}},
+		Allowlist:      allowlistConfig{Pull: pullConfig{CDSMeasurementsConfig: testTAPinFile(t)}},
 	})
 
-	if err := p.prepareCDSPins(nodeCDSPins(t, p)); err != nil {
+	if err := p.prepareTAPins(nodeTAPins(t, p)); err != nil {
 		t.Fatalf("prepareCDSPins: %v", err)
 	}
-	rendered, err := refvalues.Load(p.cdsPins)
+	rendered, err := refvalues.Load(p.taPins)
 	if err != nil {
 		t.Fatalf("rendered pins do not load: %v", err)
 	}
@@ -111,28 +111,28 @@ func TestPrepareCDSPinsAcceptsTheCDSVMsOwnFamily(t *testing.T) {
 // Without an inventory directory no pod of this node is injected, so there is
 // nothing to render and nothing to mount.
 func TestPrepareCDSPinsEmptyWithoutInventory(t *testing.T) {
-	p := testPlugin(t, &config{Allowlist: allowlistConfig{Pull: pullConfig{CDSMeasurementsConfig: testCDSPinFile(t)}}})
-	if err := p.prepareCDSPins(nodeCDSPins(t, p)); err != nil {
+	p := testPlugin(t, &config{Allowlist: allowlistConfig{Pull: pullConfig{CDSMeasurementsConfig: testTAPinFile(t)}}})
+	if err := p.prepareTAPins(nodeTAPins(t, p)); err != nil {
 		t.Fatalf("prepareCDSPins: %v", err)
 	}
-	if p.cdsPins != "" {
-		t.Fatalf("pins path = %q, want none", p.cdsPins)
+	if p.taPins != "" {
+		t.Fatalf("pins path = %q, want none", p.taPins)
 	}
 }
 
-// A CDS is pinned to the configuration it runs on, so a document naming only
+// A Trust Authority is pinned to the configuration it runs on, so a document naming only
 // its image is refused before anything is written: every client this node
-// injects would otherwise admit any CDS VM.
+// injects would otherwise admit any Trust Authority VM.
 func TestPrepareCDSPinsRefusesAPinWithoutALaunchBinding(t *testing.T) {
 	renderInTempDir(t)
 	unbound := `{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"cds","measurement":"` + testutil.TestMeasurement + `"}]}`
 	p := testPlugin(t, &config{
 		Platform:       "sev-snp",
 		WorkloadClaims: workloadClaimsConfig{SocketDir: t.TempDir()},
-		Allowlist:      allowlistConfig{Pull: pullConfig{CDSMeasurementsConfig: cdsPinFile(t, unbound)}},
+		Allowlist:      allowlistConfig{Pull: pullConfig{CDSMeasurementsConfig: taPinFile(t, unbound)}},
 	})
 
-	if _, _, err := p.cfg.Allowlist.Pull.cdsPinSource(discardLogger()); err == nil || !strings.Contains(err.Error(), "launch file") {
+	if _, _, err := p.cfg.Allowlist.Pull.taPinSource(discardLogger()); err == nil || !strings.Contains(err.Error(), "launch file") {
 		t.Fatalf("prepareCDSPins = %v, want a launch-binding refusal", err)
 	}
 }
@@ -145,9 +145,9 @@ func TestSidecarAdjustmentMountsTheNodePolicy(t *testing.T) {
 	p := testPlugin(t, &config{
 		Platform:       "sev-snp",
 		WorkloadClaims: workloadClaimsConfig{SocketDir: dir},
-		Allowlist:      allowlistConfig{Pull: pullConfig{CDSMeasurementsConfig: testCDSPinFile(t)}},
+		Allowlist:      allowlistConfig{Pull: pullConfig{CDSMeasurementsConfig: testTAPinFile(t)}},
 	})
-	if err := p.prepareCDSPins(nodeCDSPins(t, p)); err != nil {
+	if err := p.prepareTAPins(nodeTAPins(t, p)); err != nil {
 		t.Fatalf("prepareCDSPins: %v", err)
 	}
 	pod := &api.PodSandbox{
@@ -163,9 +163,9 @@ func TestSidecarAdjustmentMountsTheNodePolicy(t *testing.T) {
 		})
 		mount := mountTo(adjust, workloadclaims.CDSPinsPath)
 		if mount == nil {
-			t.Fatalf("%s has no CDS policy mount: %+v", name, adjust.GetMounts())
+			t.Fatalf("%s has no Trust Authority policy mount: %+v", name, adjust.GetMounts())
 		}
-		if mount.GetSource() != filepath.Join(enforcerRuntimeDir, renderedCDSPinsName) {
+		if mount.GetSource() != filepath.Join(enforcerRuntimeDir, renderedTAPinsName) {
 			t.Errorf("%s policy source = %q, want the node's own file", name, mount.GetSource())
 		}
 		if !slices.Contains(mount.GetOptions(), "ro") {
@@ -194,7 +194,7 @@ func TestSidecarAdjustmentMountsTheNodePolicy(t *testing.T) {
 }
 
 // The router's pod is chart-rendered, so no annotation marks it; the measured
-// credentials role on its reserved identity is what the node addresses its CDS
+// credentials role on its reserved identity is what the node addresses its Trust Authority
 // to.
 func TestSidecarAdjustmentFollowsTheMeasuredCredentialsRole(t *testing.T) {
 	dir := t.TempDir()
@@ -225,10 +225,10 @@ func TestSidecarAdjustmentFollowsTheMeasuredCredentialsRole(t *testing.T) {
 	p := testPlugin(t, &config{
 		Platform:       "sev-snp",
 		WorkloadClaims: workloadClaimsConfig{SocketDir: dir},
-		Allowlist:      allowlistConfig{Base: base, Pull: pullConfig{CDSMeasurementsConfig: testCDSPinFile(t)}},
+		Allowlist:      allowlistConfig{Base: base, Pull: pullConfig{CDSMeasurementsConfig: testTAPinFile(t)}},
 	})
 	p.policy = newPolicyStore(base)
-	if err := p.prepareCDSPins(nodeCDSPins(t, p)); err != nil {
+	if err := p.prepareTAPins(nodeTAPins(t, p)); err != nil {
 		t.Fatalf("prepareCDSPins: %v", err)
 	}
 	pod := &api.PodSandbox{
@@ -251,7 +251,7 @@ func TestSidecarAdjustmentFollowsTheMeasuredCredentialsRole(t *testing.T) {
 		},
 	}
 	if mountTo(mustCredentialMounts(t, p, pod, proxy), workloadclaims.CDSPinsPath) == nil {
-		t.Error("a credentials-role container was handed no CDS policy, so it would dial an unpinned CDS")
+		t.Error("a credentials-role container was handed no Trust Authority policy, so it would dial an unpinned Trust Authority")
 	}
 
 	// An ordinary container of the same pod asks for nothing and gets
@@ -268,7 +268,7 @@ func TestSidecarAdjustmentFollowsTheMeasuredCredentialsRole(t *testing.T) {
 	app.User = &api.User{Uid: workloadclaims.CredentialsUID}
 	app.Args = []string{"/c8s", "operator"}
 	if _, err := p.cvm().containerMounts(context.Background(), pod, app); err == nil {
-		t.Error("a container took the credentials identity without the role, so it would reach CDS unpinned")
+		t.Error("a container took the credentials identity without the role, so it would reach Trust Authority unpinned")
 	}
 
 	// A nil User is uid 0, not the reserved identity.
@@ -278,13 +278,13 @@ func TestSidecarAdjustmentFollowsTheMeasuredCredentialsRole(t *testing.T) {
 	}
 }
 
-// A node that injects credential clients but pins no CDS refuses before any
+// A node that injects credential clients but pins no Trust Authority refuses before any
 // container is created, and renders nothing a client could mistake for a
 // policy.
 func TestSidecarAdjustmentRefusedWithoutPins(t *testing.T) {
 	p := testPlugin(t, &config{WorkloadClaims: workloadClaimsConfig{SocketDir: t.TempDir()}})
-	if _, _, err := p.cfg.Allowlist.Pull.cdsPinSource(discardLogger()); err == nil || !strings.Contains(err.Error(), "pins no image") {
-		t.Fatalf("the node's CDS pins = %v, want the unpinned-CDS refusal", err)
+	if _, _, err := p.cfg.Allowlist.Pull.taPinSource(discardLogger()); err == nil || !strings.Contains(err.Error(), "pins no image") {
+		t.Fatalf("the node's Trust Authority pins = %v, want the unpinned-Trust Authority refusal", err)
 	}
 	pod := &api.PodSandbox{
 		Id:          "sandbox",
@@ -320,7 +320,7 @@ func testPlugin(t *testing.T, cfg *config) *plugin {
 }
 
 // The certificate gate holds the credentials identity but is no socket
-// consumer: it takes the CDS policy and no socket directory, so the mounts the
+// consumer: it takes the Trust Authority policy and no socket directory, so the mounts the
 // node observes for it are the webhook's alone and its exact entry holds.
 func TestCertGateTakesNoSocketDirectory(t *testing.T) {
 	dir := t.TempDir()
@@ -341,12 +341,12 @@ func TestCertGateTakesNoSocketDirectory(t *testing.T) {
 	p := testPlugin(t, &config{
 		Platform:       "sev-snp",
 		WorkloadClaims: workloadClaimsConfig{SocketDir: dir},
-		Allowlist:      allowlistConfig{Base: base, Pull: pullConfig{CDSMeasurementsConfig: testCDSPinFile(t)}},
+		Allowlist:      allowlistConfig{Base: base, Pull: pullConfig{CDSMeasurementsConfig: testTAPinFile(t)}},
 	})
 	p.policy = newPolicyStore(base)
 	p.mountStorage = fixedStorage(allowlist.MountMemory)
 	p.inventory = newAdmissionInventory(t.TempDir())
-	if err := p.prepareCDSPins(nodeCDSPins(t, p)); err != nil {
+	if err := p.prepareTAPins(nodeTAPins(t, p)); err != nil {
 		t.Fatalf("prepareCDSPins: %v", err)
 	}
 	pod := &api.PodSandbox{
@@ -370,7 +370,7 @@ func TestCertGateTakesNoSocketDirectory(t *testing.T) {
 	}
 	adjust := mustCredentialMounts(t, p, pod, gate)
 	if mountTo(adjust, workloadclaims.CDSPinsPath) == nil {
-		t.Error("the certificate gate was handed no CDS policy")
+		t.Error("the certificate gate was handed no Trust Authority policy")
 	}
 	if m := mountTo(adjust, workloadclaims.SidecarSocketDir); m != nil {
 		t.Errorf("the certificate gate was handed the socket directory %s, which it observes as a host mount", m.GetSource())

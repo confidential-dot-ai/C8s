@@ -34,7 +34,7 @@ func TestPodCDSPullAuthenticatesServerIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	nodeKey, podKey := identities.Images[0].Anchor, identities.Images[1].Anchor
-	// The CDS VM binds its entire configuration, independently of either
+	// The Trust Authority VM binds its entire configuration, independently of either
 	// node launch key and of the Pod guest's TEE family.
 	identities.Images = identities.Images[:1]
 	identities.Images[0].Anchor = nil
@@ -94,8 +94,8 @@ func TestPodCDSPullAuthenticatesServerIdentity(t *testing.T) {
 		{name: "server", launch: server.LaunchFile},
 		{name: "Pod launch key", launch: podKey, wantErr: armtls.ErrPolicyViolation},
 		{name: "node launch key", launch: nodeKey, wantErr: armtls.ErrPolicyViolation},
-		{name: "another CDS configuration", launch: []byte("another configuration"), wantErr: armtls.ErrPolicyViolation},
-		{name: "extended CDS binding", launch: server.LaunchFile, extended: true, wantErr: armtls.ErrPolicyViolation},
+		{name: "another Trust Authority configuration", launch: []byte("another configuration"), wantErr: armtls.ErrPolicyViolation},
+		{name: "extended Trust Authority binding", launch: server.LaunchFile, extended: true, wantErr: armtls.ErrPolicyViolation},
 		{name: "wrong image", launch: server.LaunchFile, wrongImage: true, wantErr: armtls.ErrPolicyViolation},
 		{name: "wrong kernel", launch: server.LaunchFile, wrongRegister: 1, wantErr: armtls.ErrPolicyViolation},
 		{name: "wrong rootfs", launch: server.LaunchFile, wrongRegister: 2, wantErr: armtls.ErrPolicyViolation},
@@ -125,7 +125,7 @@ func TestPodCDSPullAuthenticatesServerIdentity(t *testing.T) {
 				verdict.ReportDataMatch = teetypes.Ptr(false)
 			}
 			verifier.SetVerdict(verdict)
-			source, _, err := pull.cdsPinSource(discardLogger())
+			source, _, err := pull.taPinSource(discardLogger())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -146,11 +146,11 @@ func TestPodCDSPullAuthenticatesServerIdentity(t *testing.T) {
 			}
 			request := verified[len(verified)-1]
 			if request.Platform != teetypes.PlatformTDX || request.Params == nil || !bytes.Equal(request.Params.ExpectedReportData, reportData[:sha512.Size384]) {
-				t.Fatalf("verification did not bind the CDS certificate key: %+v", request)
+				t.Fatalf("verification did not bind the Trust Authority certificate key: %+v", request)
 			}
 			if tc.wantErr != nil {
 				if requests.Load() != before {
-					t.Fatal("unauthenticated CDS reached the allowlist handler")
+					t.Fatal("unauthenticated Trust Authority reached the allowlist handler")
 				}
 				return
 			}
@@ -167,8 +167,8 @@ func TestPodCDSPullAuthenticatesServerIdentity(t *testing.T) {
 		if err := os.WriteFile(pinsPath, []byte(`{"schema_version":"1","tee":"tdx","measurements":[{"mrtd":"invalid"}]}`), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err := pull.cdsPinSource(discardLogger()); err == nil {
-			t.Fatal("invalid staged CDS pins produced a client")
+		if _, _, err := pull.taPinSource(discardLogger()); err == nil {
+			t.Fatal("invalid staged Trust Authority pins produced a client")
 		}
 	})
 }

@@ -14,23 +14,23 @@ var testClusterDNS = netip.MustParseAddr("10.53.0.10")
 var undialableDNS = netip.MustParseAddrPort("[fe80::1]:53")
 
 func TestClusterFirstDialerResolvesThroughTheClusterDNS(t *testing.T) {
-	cds := acceptOn(t, "127.0.0.1")
+	ta := acceptOn(t, "127.0.0.1")
 	service := startClusterDNS(t, map[string][]netip.Addr{
 		"cds.private.": {netip.MustParseAddr("127.0.0.1")},
 	})
 
-	conn, err := clusterFirstDialer(service).DialContext(t.Context(), "tcp", net.JoinHostPort("cds.private", cds.port))
+	conn, err := clusterFirstDialer(service).DialContext(t.Context(), "tcp", net.JoinHostPort("cds.private", ta.port))
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
 	conn.Close()
-	if reached := <-cds.reached; reached != "127.0.0.1:"+cds.port {
+	if reached := <-ta.reached; reached != "127.0.0.1:"+ta.port {
 		t.Fatalf("the connection reached %q, want the address the cluster DNS answered", reached)
 	}
 }
 
 func TestClusterFirstDialerTriesEveryAddressTheNameAnswers(t *testing.T) {
-	cds := acceptOn(t, "127.0.0.9")
+	ta := acceptOn(t, "127.0.0.9")
 	service := startClusterDNS(t, map[string][]netip.Addr{
 		"cds.replicas.": {
 			netip.MustParseAddr("127.0.0.2"), // no replica answers here
@@ -38,12 +38,12 @@ func TestClusterFirstDialerTriesEveryAddressTheNameAnswers(t *testing.T) {
 		},
 	})
 
-	conn, err := clusterFirstDialer(service).DialContext(t.Context(), "tcp", net.JoinHostPort("cds.replicas", cds.port))
+	conn, err := clusterFirstDialer(service).DialContext(t.Context(), "tcp", net.JoinHostPort("cds.replicas", ta.port))
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
 	conn.Close()
-	if reached := <-cds.reached; reached != "127.0.0.9:"+cds.port {
+	if reached := <-ta.reached; reached != "127.0.0.9:"+ta.port {
 		t.Fatalf("the connection reached %q, want the replica behind the second answer", reached)
 	}
 }
@@ -61,13 +61,13 @@ func TestClusterResolverFallsBackToTheNodeServer(t *testing.T) {
 	}
 }
 
-// cdsStandIn reports the address each connection reached it on.
-type cdsStandIn struct {
+// taStandIn reports the address each connection reached it on.
+type taStandIn struct {
 	port    string
 	reached chan string
 }
 
-func acceptOn(t *testing.T, host string) *cdsStandIn {
+func acceptOn(t *testing.T, host string) *taStandIn {
 	t.Helper()
 	listener, err := net.Listen("tcp", net.JoinHostPort(host, "0"))
 	if err != nil {
@@ -78,18 +78,18 @@ func acceptOn(t *testing.T, host string) *cdsStandIn {
 	if err != nil {
 		t.Fatalf("listen address: %v", err)
 	}
-	cds := &cdsStandIn{port: port, reached: make(chan string, 1)}
+	ta := &taStandIn{port: port, reached: make(chan string, 1)}
 	go func() {
 		for {
 			conn, err := listener.Accept()
 			if err != nil {
 				return
 			}
-			cds.reached <- conn.LocalAddr().String()
+			ta.reached <- conn.LocalAddr().String()
 			conn.Close()
 		}
 	}()
-	return cds
+	return ta
 }
 
 // startClusterDNS answers the A records it holds and NXDOMAINs every other name.

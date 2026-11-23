@@ -110,7 +110,7 @@ digest its applied policy lists; missing evidence fails closed. To start using
 1. Upgrade every allowlist consumer to one release, then publish the policies
    ([upgrade.md](upgrade.md)).
 2. Wait until every affected node logs `pull loop: allowlist refreshed` — or
-   `initial allowlist pulled from CDS`, if it started after you published — at a
+   `initial allowlist pulled from the Trust Authority`, if it started after you published — at a
    version at or above the one `c8s allowlist list` reports.
 3. Recreate the affected pods; a restarted container keeps the sandbox's earlier
    records, which the match must admit too.

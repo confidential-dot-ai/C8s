@@ -644,7 +644,7 @@ func TestMatchRolloutNamesEveryApplyLog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, message := range []string{"initial allowlist pulled from CDS", "pull loop: allowlist refreshed"} {
+	for _, message := range []string{"initial allowlist pulled from the Trust Authority", "pull loop: allowlist refreshed"} {
 		if !strings.Contains(string(source), `"`+message+`"`) {
 			t.Fatalf("refresh.go no longer logs %q", message)
 		}

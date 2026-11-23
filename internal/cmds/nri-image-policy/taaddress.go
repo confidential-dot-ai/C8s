@@ -11,32 +11,32 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
-// renderedCDSAddressName is the endpoint document in the plugin's runtime
+// renderedTAAddressName is the endpoint document in the plugin's runtime
 // directory (renderNodeDocument).
-const renderedCDSAddressName = "cds-address"
+const renderedTAAddressName = "cds-address"
 
-// prepareCDSAddress writes the CDS endpoint this node's injected credential
+// prepareCDSAddress writes the Trust Authority endpoint this node's injected credential
 // clients dial, before any container can be created.
 func (p *plugin) prepareCDSAddress() error {
 	if !p.cfg.injectsCredentialClients() {
 		return nil
 	}
-	if p.cfg.cdsAddress == "" {
-		return fmt.Errorf("nothing names the CDS this node reaches: a measured config names it in allowlist.pull.url, and an install in allowlist.pull.cds_address_file")
+	if p.cfg.taAddress == "" {
+		return fmt.Errorf("nothing names the Trust Authority this node reaches: a measured config names it in allowlist.pull.url, and an install in allowlist.pull.cds_address_file")
 	}
-	path, err := renderNodeDocument(renderedCDSAddressName, cmdsutil.FormatCDSAddress(p.cfg.cdsAddress))
+	path, err := renderNodeDocument(renderedTAAddressName, cmdsutil.FormatCDSAddress(p.cfg.taAddress))
 	if err != nil {
 		return err
 	}
-	p.cdsAddress = path
+	p.taAddress = path
 	return nil
 }
 
-// loadCDSAddress is the <host>:<port> this node's CDS serves on: the address
+// loadTAAddress is the <host>:<port> this node's Trust Authority serves on: the address
 // file an install mounts beside this config, else the URL a measured config
 // carries, which launch staging wrote from the signed document
-// (internal/cmds/nodeservices). "" names no CDS.
-func loadCDSAddress(c pullConfig) (string, error) {
+// (internal/cmds/nodeservices). "" names no Trust Authority.
+func loadTAAddress(c pullConfig) (string, error) {
 	if c.URL != "" {
 		address, err := cmdsutil.CDSURLAddress(c.URL)
 		if err != nil {
@@ -58,9 +58,9 @@ func loadCDSAddress(c pullConfig) (string, error) {
 }
 
 // bindCredentialRole completes an install's mesh policy with the port this
-// node's CDS serves on, so the pod ruleset admits that port outside the
+// node's Trust Authority serves on, so the pod ruleset admits that port outside the
 // cluster and nothing else, and validates the policy it completed. A measured
-// policy arrives bound, because a baked node's CDS is staged into it at launch
+// policy arrives bound, because a baked node's Trust Authority is staged into it at launch
 // (internal/cmds/nodeservices), and that binding stands.
 //
 // The mesh gate copies the policy, so this belongs to loading the config.
@@ -69,12 +69,12 @@ func bindCredentialRole(cfg *config) error {
 		return nil
 	}
 	if cfg.Allowlist.Pull.CDSAddressFile == "" {
-		// Nothing an install mounted names the CDS this node reaches. A node
+		// Nothing an install mounted names the Trust Authority this node reaches. A node
 		// that injects credential clients refuses to start without a bound
 		// role; one that injects none needs no binding (prepareCDSAddress).
 		return nil
 	}
-	_, port, err := cmdsutil.SplitCDSAddress(cfg.cdsAddress)
+	_, port, err := cmdsutil.SplitCDSAddress(cfg.taAddress)
 	if err != nil {
 		return err
 	}

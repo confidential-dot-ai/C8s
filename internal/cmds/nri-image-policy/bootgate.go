@@ -173,8 +173,8 @@ func containerAttrs(ctx context.Context, p *plugin, pods []*api.PodSandbox, ctrs
 //
 // Only with an authoritative allowlist. After a restart the plugin is Ready on
 // the boot floor alone while the first pull is outstanding, and every workload
-// admitted from a CDS allowlist is then unknown to it. Powering the node off
-// on that would turn a transient CDS outage into a dead node; stopping the
+// admitted from a Trust Authority allowlist is then unknown to it. Powering the node off
+// on that would turn a transient Trust Authority outage into a dead node; stopping the
 // container, which is what an ungated plugin does, stays the answer until the
 // allowlist is the real one. With no pull configured the floor is the real one.
 func (p *plugin) escalateOnRestart() bool {

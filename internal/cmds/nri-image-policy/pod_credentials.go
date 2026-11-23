@@ -41,7 +41,7 @@ type podCredentialBroker struct {
 	terminal error
 	wg       sync.WaitGroup
 
-	// secretsClient presents the pod's published leaf to CDS (pod_secrets.go).
+	// secretsClient presents the pod's published leaf to the Trust Authority (pod_secrets.go).
 	secretsClient *http.Client
 }
 
@@ -69,14 +69,14 @@ func (p *plugin) preparePodBroker(ctx context.Context, client, secretsClient *ht
 		return nil
 	}
 	if client == nil {
-		return errors.New("pod broker has no authenticated CDS client")
+		return errors.New("pod broker has no authenticated Trust Authority client")
 	}
 	pins, err := p.cfg.Allowlist.Pull.policySet()
 	if err != nil {
-		return fmt.Errorf("pod broker CDS pins: %w", err)
+		return fmt.Errorf("pod broker Trust Authority pins: %w", err)
 	}
 	if pins.Empty() {
-		return errors.New("pod broker requires pinned CDS server trust")
+		return errors.New("pod broker requires pinned Trust Authority server trust")
 	}
 	runtime, err := os.OpenRoot(p.cfg.WorkloadClaims.SocketDir)
 	if err != nil {
