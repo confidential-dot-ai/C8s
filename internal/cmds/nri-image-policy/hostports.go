@@ -9,8 +9,8 @@ import (
 	"github.com/containerd/errdefs"
 	"github.com/containerd/nri/pkg/api"
 
-	ctrdresolver "github.com/confidential-dot-ai/c8s/internal/containerd"
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	ctrdresolver "github.com/confidential-dot-ai/confidential-kubernetes/internal/containerd"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
 // Host ports are the one host privilege the measured base does not excuse, and
@@ -57,7 +57,7 @@ func (p *plugin) refuseSandbox(cfg *config, subject privilegeSubject, refusal er
 
 // hostPortRefusal is why a container of a pod that maps host ports may not run,
 // "" when it may; the caller downgrades a denial under audit mode.
-func (p *plugin) hostPortRefusal(ctx context.Context, cfg *config, observed observedContainer) string {
+func (p *plugin) hostPortRefusal(ctx context.Context, cfg *config, snap *policySnapshot, observed observedContainer) string {
 	subject := containerSubject(hostPortRule, observed.pod, observed.ctr, observed.imageRef)
 	mappings, err := p.sandboxHostPorts(ctx, observed.pod)
 	switch {
@@ -72,7 +72,7 @@ func (p *plugin) hostPortRefusal(ctx context.Context, cfg *config, observed obse
 		return ""
 	}
 	launch := p.observedLaunch(ctx, observed)
-	if platformClientRole(p.roleOf(launch)) || p.policy.grantsHostPorts(launch, mappings) {
+	if platformClientRole(p.roleOf(launch)) || p.policy.grantsHostPorts(snap, launch, mappings) {
 		return ""
 	}
 	refusal := fmt.Errorf("the pod maps host ports %s, which no allowlist entry declares for this launch", namedMappings(mappings))

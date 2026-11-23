@@ -50,14 +50,14 @@ image_config attestation-api attestationApi.image
 image_config c8s-operator image
 image_config volumed volumed.image
 
-# What the images job uploads: every release image, the CDS included.
+# What the images job uploads: every release image, the Trust Authority included.
 digests="$fixture/digests.tsv"
 {
   printf 'ghcr.io/confidential-dot-ai/c8s-operator\t%s\n' "$(digest 1)"
   printf 'ghcr.io/confidential-dot-ai/armtls-mesh\t%s\n' "$(digest 2)"
   printf 'ghcr.io/confidential-dot-ai/nri-image-policy\t%s\n' "$(digest 3)"
   printf 'ghcr.io/confidential-dot-ai/volumed\t%s\n' "$(digest 4)"
-  printf 'ghcr.io/confidential-dot-ai/cds\t%s\n' "$(digest 5)"
+  printf 'ghcr.io/confidential-dot-ai/ta\t%s\n' "$(digest 5)"
 } >"$digests"
 pinned=$(bash "$repo_dir/.github/scripts/chart-attestation-api-digest.sh" get)
 
@@ -101,14 +101,14 @@ tests=$((tests + 1))
 
 # The stamped package is c8s-cloud and renders every component by digest.
 helm package "$fixture/stamped" --version 0.0.0-test --destination "$fixture/dist" >/dev/null
-printf '{"schema_version":"2","tee":"sev-snp","measurements":[{"name":"cds","measurement":"%096d","launch_file":"clusterID: test\\n"}]}' 1 >"$fixture/pin.json"
+printf '{"schema_version":"2","tee":"sev-snp","measurements":[{"name":"ta","measurement":"%096d","launch_file":"clusterID: test\\n"}]}' 1 >"$fixture/pin.json"
 rendered=$(helm template c8s "$fixture/dist/c8s-cloud-0.0.0-test.tgz" \
   --kube-version v1.30.0 \
   --namespace c8s-system \
   -f "$fixture/stamped/values-aks-snp.yaml" \
   --set volumed.enabled=true \
-  --set-string cds.address=10.9.9.9:8443 \
-  --set-file cds.measurementsConfig="$fixture/pin.json" \
+  --set-string ta.address=10.9.9.9:8443 \
+  --set-file ta.measurementsConfig="$fixture/pin.json" \
   --set-string nriImagePolicy.mesh.resolver=10.96.0.10 \
   --set 'nriImagePolicy.mesh.clusterRanges={10.244.0.0/16}')
 for image in "c8s-operator@$(digest 1)" "armtls-mesh@$(digest 2)" "nri-image-policy@$(digest 3)" "volumed@$(digest 4)" "attestation-api@$pinned"; do

@@ -15,11 +15,11 @@ import (
 	"github.com/containerd/nri/pkg/api"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 
-	"github.com/confidential-dot-ai/c8s/internal/audit"
-	ctrdresolver "github.com/confidential-dot-ai/c8s/internal/containerd"
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/types"
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/audit"
+	ctrdresolver "github.com/confidential-dot-ai/confidential-kubernetes/internal/containerd"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 func newTestPlugin(cfg *config) *plugin {
@@ -71,7 +71,7 @@ func TestCredentialMountRefusalBlocksIdentityUntilSameNameAdmission(t *testing.T
 			ctr := makeCtrWithImage(pod.Id, "app", "registry/repo@"+pushDigestA)
 			ctr.User = &api.User{Uid: workloadclaims.CredentialsUID}
 			_, _, err := p.CreateContainer(t.Context(), pod, ctr)
-			if err == nil || !strings.Contains(err.Error(), "would reach CDS unpinned") {
+			if err == nil || !strings.Contains(err.Error(), "would reach Trust Authority unpinned") {
 				t.Fatalf("expected credential-mount refusal: %v", err)
 			}
 			if refusal := p.inventory.denial(pod.Id); refusal == nil {
@@ -850,6 +850,11 @@ func mustDigest(t *testing.T, s string) types.Digest {
 	return d
 }
 
+// checkImagePhase is checkImageAt against the current snapshot.
+func (p *plugin) checkImagePhase(ctx context.Context, cfg *config, check imageCheck, phase launchPhase) (imageVerdict, string) {
+	return p.checkImageAt(ctx, cfg, p.policy.current(), check, phase)
+}
+
 // newCachedPlugin builds a plugin whose policy store admits wl (applied as a
 // version-1 pull) plus the config's base allowlist.
 func newCachedPlugin(cfg *config, wl *allowlist.Allowlist) (*plugin, *policyStore) {
@@ -1313,7 +1318,7 @@ func TestSynchronize_EnforceExistingDisabled_BrokerRecordsWithoutKilling(t *test
 	}
 }
 
-// The restart sequence in full: NRI replays Synchronize before the initial CDS
+// The restart sequence in full: NRI replays Synchronize before the initial Trust Authority
 // pull completes, so recovery runs through the deferred path.
 func TestSynchronize_EnforceExistingDisabled_NotReady_DefersThenRecords(t *testing.T) {
 	p, _ := newCachedPlugin(&config{
@@ -1442,7 +1447,7 @@ func captureAudit(t *testing.T, fn func()) []map[string]any {
 }
 
 // basePlugin admits pushDigestA from its base allowlist, and carries an inventory.
-// No pull has been applied, the state a plugin is in before its first CDS
+// No pull has been applied, the state a plugin is in before its first Trust Authority
 // fetch.
 func basePlugin(t *testing.T) *plugin {
 	t.Helper()
@@ -1602,7 +1607,7 @@ func TestCheckContainer_NamespaceNeverRescues(t *testing.T) {
 // Pre-Ready the admission decision resolves a tag against the base allowlist,
 // and the inventory record carries that resolved digest. An unresolved record
 // closes the sandbox's answer for the sandbox's life, and the pods that start
-// in this window are the ones a fresh install brings up alongside CDS: they
+// in this window are the ones a fresh install brings up alongside Trust Authority: they
 // must still be able to prove what they run.
 func TestCreateContainer_NotReady_RecordsTheResolvedDigest(t *testing.T) {
 	p := basePlugin(t) // not ready

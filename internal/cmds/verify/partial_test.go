@@ -18,7 +18,7 @@ import (
 	"testing"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 )
 
 // discoveryDocWithPublicTLS is discoveryDocWith plus the public_tls block
@@ -108,7 +108,7 @@ func TestWebPKIFrontDoorIsPartialNotVerified(t *testing.T) {
 	ev := &evidence{
 		platform:            "snp",
 		source:              "discovery document https://lb.example.com/v1/discovery",
-		bindingNote:         "REPORTDATA binds the CDS cert key + issuance challenge",
+		bindingNote:         "REPORTDATA binds the Trust Authority cert key + issuance challenge",
 		certSHA256:          strings.Repeat("aa", 32),
 		frontDoor:           frontDoorOther,
 		frontDoorCertSHA256: strings.Repeat("bb", 32),
@@ -175,7 +175,7 @@ func TestFrontDoorVerdictJSONHonesty(t *testing.T) {
 		return &evidence{
 			platform:            "snp",
 			source:              "discovery document https://lb.example.com/v1/discovery",
-			bindingNote:         "REPORTDATA binds the CDS cert key + issuance challenge",
+			bindingNote:         "REPORTDATA binds the Trust Authority cert key + issuance challenge",
 			certSHA256:          strings.Repeat("aa", 32),
 			frontDoor:           frontDoor,
 			frontDoorCertSHA256: strings.Repeat("bb", 32),

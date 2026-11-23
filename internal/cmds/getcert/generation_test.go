@@ -20,16 +20,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/internal/fileutil"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
-	"github.com/confidential-dot-ai/c8s/pkg/certutil"
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/fileutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 const testInstanceID = "b7f1c9e4a2d84f0b9c3e5a7d1f6b8c2e"
 
-// testCA stands in for the CDS mesh CA: it issues leaves for a requester's key
-// and stamps the workload instance the way CDS does from a verified token.
+// testCA stands in for the Trust Authority mesh CA: it issues leaves for a requester's key
+// and stamps the workload instance the way Trust Authority does from a verified token.
 type testCA struct {
 	key  *ecdsa.PrivateKey
 	cert *x509.Certificate
@@ -73,7 +73,7 @@ func (ca *testCA) pem(t *testing.T) string {
 	return string(certutil.EncodeCertPEM(ca.cert.Raw))
 }
 
-// issue returns the chain CDS returns: the leaf first, its CA trailing. It
+// issue returns the chain Trust Authority returns: the leaf first, its CA trailing. It
 // takes no *testing.T because the renewal-loop stub calls it off the test
 // goroutine.
 func (ca *testCA) issue(pub *ecdsa.PublicKey, instanceID string, ttl time.Duration, extra ...pkix.Extension) (string, error) {
@@ -112,7 +112,7 @@ func (ca *testCA) mustIssue(t *testing.T, pub *ecdsa.PublicKey, instanceID strin
 	return chain
 }
 
-// issueFor mints the generation CDS would return for a request's own fresh key,
+// issueFor mints the generation Trust Authority would return for a request's own fresh key,
 // which is what every renewal asks on.
 func issueFor(ca *testCA, creds *credentials, ttl time.Duration) (*generation, error) {
 	key, keyPEM, err := generateKey()
@@ -126,7 +126,7 @@ func issueFor(ca *testCA, creds *credentials, ttl time.Duration) (*generation, e
 	return issuedGeneration(chain, key, keyPEM)
 }
 
-// issueNamedFor mints the generation CDS returns once the pod's workload is
+// issueNamedFor mints the generation Trust Authority returns once the pod's workload is
 // matched: the leaf carries the matched-workload stamp too.
 func issueNamedFor(ca *testCA, creds *credentials, ttl time.Duration) (*generation, error) {
 	stamp, err := armtls.MarshalMatchedWorkloadExtension(&armtls.MatchedWorkload{
@@ -216,7 +216,7 @@ func TestCredentialVolumeForRejects(t *testing.T) {
 }
 
 // get-cert does not get to trust its response. Each row is a generation a
-// hostile or broken CDS could return.
+// hostile or broken Trust Authority could return.
 func TestVerifyGenerationRejects(t *testing.T) {
 	ca := newTestCA(t)
 	key, keyPEM := testKey(t)
@@ -255,7 +255,7 @@ func TestVerifyGenerationRejects(t *testing.T) {
 	}
 }
 
-// CDS holds one mesh CA, so a response trailing more than one CA certificate
+// Trust Authority holds one mesh CA, so a response trailing more than one CA certificate
 // is refused instead of published.
 func TestIssuedGenerationRefusesTwoCAs(t *testing.T) {
 	ca := newTestCA(t)
@@ -702,7 +702,7 @@ func stageInventory(t *testing.T, instanceID string) {
 }
 
 // stagePodEnvironment gives cfg what an injected sidecar has: a private
-// credential volume, the node inventory, and the measured CDS policy.
+// credential volume, the node inventory, and the measured Trust Authority policy.
 func stagePodEnvironment(t *testing.T, cfg config) config {
 	t.Helper()
 	dir := ramBackedDir(t)
@@ -805,7 +805,7 @@ func TestInitialPublicationLeavesReadinessAbsentWhenLinkingFails(t *testing.T) {
 	}
 }
 
-// A recreated pod starts on a fresh volume, so it binds to whichever CA key CDS
+// A recreated pod starts on a fresh volume, so it binds to whichever CA key Trust Authority
 // holds now — including a replacement one — and publishes under it.
 func TestRecreatedPodBindsToTheReplacementCAKey(t *testing.T) {
 	retired := newTestCA(t)

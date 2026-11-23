@@ -18,9 +18,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/yaml"
 
-	allowlistcmd "github.com/confidential-dot-ai/c8s/internal/cmds/allowlist"
-	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/types"
+	allowlistcmd "github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/allowlist"
+	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
 )
 
 func TestAllowlistUploadRenderedCvmTopology(t *testing.T) {
@@ -66,7 +66,7 @@ func renderedTopologyAllowlist(t *testing.T, platform string) pkgallowlist.Allow
 		"-f", filepath.Join(chart, "values-"+platform+".yaml"),
 		"--set-string", "nriImagePolicy.mesh.clusterRanges[0]=10.42.0.0/16",
 		"--set-string", "nriImagePolicy.mesh.resolver=10.43.0.10"}
-	args = append(args, "-f", computedValuesFile(t, chartCDSValues()))
+	args = append(args, "-f", computedValuesFile(t, chartTAValues()))
 	for i, path := range []string{"image", "attestationApi.image", "armtlsMesh.image", "nriImagePolicy.image", "volumed.image"} {
 		args = append(args, "--set-string", fmt.Sprintf("%s.digest=sha256:%064x", path, i+1))
 	}
@@ -151,7 +151,7 @@ func dryRunTopologyUpload(t *testing.T, mode string, desired pkgallowlist.Allowl
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/allowlist" {
-			t.Errorf("unexpected CDS request: %s %s", r.Method, r.URL.Path)
+			t.Errorf("unexpected Trust Authority request: %s %s", r.Method, r.URL.Path)
 			http.Error(w, "unexpected request", http.StatusBadRequest)
 			return
 		}

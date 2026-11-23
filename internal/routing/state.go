@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/pkg/routes"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/routes"
 )
 
 var (
@@ -125,7 +125,7 @@ func (s *State) stale(snap *snapshot) bool {
 // one is held, else the applied one (A3). Refetching the applied revision
 // while a manifest is staged therefore fails W4 and keeps the staged one.
 //
-// env must come from a GET /routes response over CDS-verified TLS (A1):
+// env must come from a GET /routes response over Trust Authority-verified TLS (A1):
 // Accept is the only thing that renews freshness.
 //
 // On success Accept renews freshness (F1, F3), even when env is not yet due

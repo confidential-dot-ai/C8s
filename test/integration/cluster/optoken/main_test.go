@@ -12,10 +12,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
 )
 
-// The header optoken prints must satisfy CDS's server-side check: the
+// The header optoken prints must satisfy Trust Authority's server-side check: the
 // production Verifier over the pinned public key, bound to method, path, and
 // body.
 func TestRunProducesAuthorizingHeader(t *testing.T) {
@@ -63,7 +63,7 @@ func TestRunProducesAuthorizingHeader(t *testing.T) {
 }
 
 // A validity argument sets the token's lifetime; one the Verifier's bound
-// excludes yields a header the CDS refuses.
+// excludes yields a header the Trust Authority refuses.
 func TestRunValidity(t *testing.T) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {

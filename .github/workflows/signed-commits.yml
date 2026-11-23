@@ -2,6 +2,9 @@ name: signed-commits
 
 on:
   pull_request:
+  merge_group:
+    types: [checks_requested]
+    branches: [main]
 
 concurrency:
   group: ci-${{ github.ref }}-signed-commits
@@ -19,9 +22,15 @@ jobs:
       - name: Every commit must have a GitHub-verified signature
         env:
           GH_TOKEN: ${{ github.token }}
+          # A queue entry's range is the pull request's commits plus the merge
+          # commit GitHub signs.
+          COMMITS: >-
+            ${{ github.event_name == 'merge_group'
+              && format('repos/{0}/compare/{1}...{2}', github.repository, github.event.merge_group.base_sha, github.event.merge_group.head_sha)
+              || format('repos/{0}/pulls/{1}/commits', github.repository, github.event.pull_request.number) }}
         run: |
-          unverified=$(gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/commits" \
-            --paginate --jq '.[] | select(.commit.verification.verified | not) | .sha[0:7] + " " + (.commit.message | split("\n")[0])')
+          unverified=$(gh api "$COMMITS" --paginate \
+            --jq '(if type == "array" then . else .commits end)[] | select(.commit.verification.verified | not) | .sha[0:7] + " " + (.commit.message | split("\n")[0])')
           if [ -n "$unverified" ]; then
             echo "::error::Commits without a verified signature — see CONTRIBUTING.md, Signed commits:"
             echo "$unverified"

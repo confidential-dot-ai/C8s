@@ -36,7 +36,7 @@ func NewRequest(ctx context.Context, method, url string, body []byte, auth Autho
 	return req, nil
 }
 
-// StatusError is a CDS response whose status the call did not expect.
+// StatusError is a Trust Authority response whose status the call did not expect.
 type StatusError struct {
 	Status int    // HTTP status code
 	Body   string // first 4 KiB of the response body, trimmed

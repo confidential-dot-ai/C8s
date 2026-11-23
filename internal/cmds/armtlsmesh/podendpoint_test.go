@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 )
 
 // testPodAddress stands in for the pod's own address. A real endpoint never
@@ -160,7 +160,7 @@ func TestInboundDeliversAnAuthenticatedPeer(t *testing.T) {
 	}
 }
 
-// The chain is what authenticates a mesh peer, so a leaf CDS issued is
+// The chain is what authenticates a mesh peer, so a leaf Trust Authority issued is
 // delivered whatever its copied armTLS extension holds: absent (every other
 // case here) or malformed. Nothing on this path reads it.
 func TestInboundDeliversAPeerWhoseARMTLSExtensionIsMalformed(t *testing.T) {

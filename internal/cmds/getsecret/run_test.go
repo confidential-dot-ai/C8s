@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/internal/fileutil"
-	"github.com/confidential-dot-ai/c8s/internal/testutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/fileutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
 )
 
 func ramBacked(dir string) error {
@@ -80,9 +80,9 @@ func TestParseSecretSpec(t *testing.T) {
 func validConfig(t *testing.T) config {
 	t.Helper()
 	return config{
-		CDSURL:                 "https://cds.example",
+		TAURL:                  "https://cds.example",
 		AttestationApiURL:      "http://127.0.0.1:8080",
-		MeasurementsConfigJSON: testutil.CDSPinDocument(testutil.TestMeasurement, testutil.CDSLaunchFile),
+		MeasurementsConfigJSON: testutil.TAPinDocument(testutil.TestMeasurement, testutil.TALaunchFile),
 		Attempts:               3,
 		RetryInterval:          time.Second,
 		RequestTimeout:         time.Second,
@@ -102,8 +102,8 @@ func TestValidate(t *testing.T) {
 		mutate func(*config)
 		want   string
 	}{
-		{"no cds url", func(c *config) { c.CDSURL = "" }, "--cds-url"},
-		{"plaintext cds url", func(c *config) { c.CDSURL = "http://cds.example" }, "https"},
+		{"no Trust Authority URL", func(c *config) { c.TAURL = "" }, "--ta-url"},
+		{"plaintext cds url", func(c *config) { c.TAURL = "http://cds.example" }, "https"},
 		{"no attestation api", func(c *config) { c.AttestationApiURL = "" }, "--attestation-api-url"},
 		{"no secrets", func(c *config) { c.Secrets = nil }, "--secret"},
 		{"negative attempts", func(c *config) { c.Attempts = -1 }, "--attempts"},
@@ -136,12 +136,12 @@ func TestValidate(t *testing.T) {
 // path, which the server would reject as non-canonical.
 func TestValidateTrimsURL(t *testing.T) {
 	cfg := validConfig(t)
-	cfg.CDSURL = "https://cds.example/"
+	cfg.TAURL = "https://cds.example/"
 	if err := validate(&cfg); err != nil {
 		t.Fatal(err)
 	}
-	if cfg.CDSURL != "https://cds.example" {
-		t.Fatalf("CDSURL = %q, want the trailing slash trimmed", cfg.CDSURL)
+	if cfg.TAURL != "https://cds.example" {
+		t.Fatalf("CDSURL = %q, want the trailing slash trimmed", cfg.TAURL)
 	}
 }
 
@@ -335,7 +335,7 @@ func openOutRoot(t *testing.T, dir string) *os.Root {
 	return root
 }
 
-// A pin that is not one CDS VM's identity is a typo in rendered config;
+// A pin that is not one Trust Authority VM's identity is a typo in rendered config;
 // pinning nothing is not an acceptable fallback for it.
 func TestRunRejectsAPinWithoutALaunchBinding(t *testing.T) {
 	cfg := validConfig(t)

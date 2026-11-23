@@ -16,11 +16,11 @@ import (
 	"github.com/containerd/nri/pkg/api"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/getcert"
-	"github.com/confidential-dot-ai/c8s/internal/fileutil"
-	"github.com/confidential-dot-ai/c8s/internal/podmesh"
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/getcert"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/fileutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/podmesh"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 const podBrokerMarker = "pod-credential-instance"
@@ -41,7 +41,7 @@ type podCredentialBroker struct {
 	terminal error
 	wg       sync.WaitGroup
 
-	// secretsClient presents the pod's published leaf to CDS (pod_secrets.go).
+	// secretsClient presents the pod's published leaf to the Trust Authority (pod_secrets.go).
 	secretsClient *http.Client
 }
 
@@ -69,14 +69,14 @@ func (p *plugin) preparePodBroker(ctx context.Context, client, secretsClient *ht
 		return nil
 	}
 	if client == nil {
-		return errors.New("pod broker has no authenticated CDS client")
+		return errors.New("pod broker has no authenticated Trust Authority client")
 	}
 	pins, err := p.cfg.Allowlist.Pull.policySet()
 	if err != nil {
-		return fmt.Errorf("pod broker CDS pins: %w", err)
+		return fmt.Errorf("pod broker Trust Authority pins: %w", err)
 	}
 	if pins.Empty() {
-		return errors.New("pod broker requires pinned CDS server trust")
+		return errors.New("pod broker requires pinned Trust Authority server trust")
 	}
 	runtime, err := os.OpenRoot(p.cfg.WorkloadClaims.SocketDir)
 	if err != nil {
@@ -215,7 +215,7 @@ func (p *plugin) runPodCredentialWorker() {
 	go func() {
 		defer b.wg.Done()
 		err := runGuestCredentials(b.ctx, getcert.GuestConfig{
-			CDSURL: p.cfg.pullURL(), AttestationAPIURL: p.cfg.Allowlist.Pull.AttestationApiURL,
+			TAURL: p.cfg.pullURL(), AttestationAPIURL: p.cfg.Allowlist.Pull.AttestationApiURL,
 			HTTPClient: b.client, VolumeRoot: b.root, InstanceID: identity,
 			Snapshot: p.podSnapshot, Commit: p.commitPodCredentials, Changes: b.changes,
 		})

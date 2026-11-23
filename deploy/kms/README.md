@@ -2,13 +2,13 @@
 
 A reference implementation of the KMS side of C8s pod secret release
 ([docs/pod-secrets.md](../../docs/pod-secrets.md)). It shows how a KMS checks
-a CDS broker statement and decides. It is an example, not a production
+a Trust Authority (TA) broker statement and decides. It is an example, not a production
 service: one process, settings from a file, secrets from Azure Key Vault.
 
 For each release request it:
 
 1. verifies the statement with `secretbroker.Verifier`: the broker chain
-   ends in the pinned mesh CA key, the broker certificate carries the CDS
+   ends in the pinned mesh CA key, the broker certificate carries the TA
    broker key usage, the signature verifies, the client document hashes to
    the stated digest, and the statement is current;
 2. refuses a nonce it saw within the statement window;
@@ -59,8 +59,8 @@ Key Vault secret names allow letters, digits and `-`, so use those in names
 this KMS serves. The Azure credential is the default chain: `az login` on an
 operator machine, a managed identity on a VM.
 
-Give CDS this KMS's URL and the SHA-256 of its TLS certificate's
-SubjectPublicKeyInfo (`c8s cds config new --kms-url --kms-tls-key-sha256`):
+Give the TA this KMS's URL and the SHA-256 of its TLS certificate's
+SubjectPublicKeyInfo (`c8s ta config new --kms-url --kms-tls-key-sha256`):
 
 ```sh
 openssl x509 -in tls.crt -pubkey -noout | openssl pkey -pubin -outform der | sha256sum

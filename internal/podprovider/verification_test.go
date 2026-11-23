@@ -3,6 +3,7 @@ package podprovider
 import (
 	"context"
 	"errors"
+	"net/http"
 	"testing"
 	"time"
 
@@ -11,7 +12,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/podstatus"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/podstatus"
 )
 
 func refusingGuest(context.Context, *record, string) (podstatus.PodProjection, error) {
@@ -79,9 +80,11 @@ func TestLateOrCancelledVerifiedReplyCannotPublishReady(t *testing.T) {
 	for _, cancelled := range []bool{false, true} {
 		t.Run(map[bool]string{false: "deadline", true: "leader-cancelled"}[cancelled], func(t *testing.T) {
 			pod := fixturePod()
-			r, cloud := fixtureReconciler(t, pod)
+			r, cloud, guest := fixture(t, pod)
 			now := time.Now()
 			r.now = func() time.Time { return now }
+			// Status is read only once an assignment saved the serving key.
+			runToAssignmentAttempt(t, r, pod, guest)
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			r.guest = func(_ context.Context, rec *record, _ string) (podstatus.PodProjection, error) {
@@ -210,7 +213,7 @@ func TestVerificationStateWriteFailureCannotGrantReadinessOrDelete(t *testing.T)
 // A Cloud or node outage on a verified pod keeps its last status with
 // readiness unknown and starts no deadline; only the guest's own failures do.
 func TestDependencyOutageOnAVerifiedPodStartsNoDeadline(t *testing.T) {
-	for _, outage := range []string{"cloud", "node"} {
+	for _, outage := range []string{"cloud", "cloud-bare-404", "cloud-bare-403", "node"} {
 		t.Run(outage, func(t *testing.T) {
 			pod := fixturePod()
 			r, cloud := fixtureReconciler(t, pod)
@@ -220,6 +223,10 @@ func TestDependencyOutageOnAVerifiedPodStartsNoDeadline(t *testing.T) {
 			switch outage {
 			case "cloud":
 				cloud.get = func(string) (*instance, error) { return nil, errors.New("cloud unavailable") }
+			case "cloud-bare-404":
+				cloud.get = func(string) (*instance, error) { return nil, &cloudProblem{status: http.StatusNotFound} }
+			case "cloud-bare-403":
+				cloud.get = func(string) (*instance, error) { return nil, &cloudProblem{status: http.StatusForbidden} }
 			case "node":
 				r.ownsNode = func(context.Context) error { return errors.New("node unavailable") }
 			}

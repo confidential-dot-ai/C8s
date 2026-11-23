@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/confidential-dot-ai/c8s/pkg/certutil"
-	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
 )
 
 func TestNewKeyRoundTrip(t *testing.T) {
@@ -42,7 +42,7 @@ func TestNewKeyRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read public: %v", err)
 	}
-	// The public half must parse the way CDS pins it (cds.operatorKeys).
+	// The public half must parse the way Trust Authority pins it (cds.operatorKeys).
 	parsed, err := operatorauth.ParsePublicKeysPEM(pubPEM)
 	if err != nil {
 		t.Fatalf("public key does not parse as an operator key set: %v", err)

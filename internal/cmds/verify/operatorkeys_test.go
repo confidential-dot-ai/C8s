@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
 )
 
 // startKeysTLSServer serves /operator-keys over TLS and returns the base URL
@@ -140,13 +140,13 @@ func TestGatherOperatorKeys(t *testing.T) {
 		if !strings.Contains(got.note, "skipped") || got.fingerprints != nil || got.fetchErr != nil {
 			t.Errorf("non-cds kind must skip the cross-check without fetching, got %+v", got)
 		}
-		if got := gatherOperatorKeys(ctx, config{kind: "cds"}, &evidence{}, fetchAttested); got.note != "" {
+		if got := gatherOperatorKeys(ctx, config{kind: "ta"}, &evidence{}, fetchAttested); got.note != "" {
 			t.Errorf("no url should be a no-op, got %+v", got)
 		}
 	})
 
 	t.Run("silent in the attested modes", func(t *testing.T) {
-		// --operator-keys there checks the route manifest; a "use --kind cds"
+		// --operator-keys there checks the route manifest; a "use --kind ta"
 		// note would point at a combination parseRouteCheck refuses.
 		for _, mode := range []string{"attest-pq", "attest-lb"} {
 			got := gatherOperatorKeys(ctx, config{mode: mode, url: "x", operatorKeys: "operator.pub"}, &evidence{}, fetchAttested)
@@ -157,14 +157,14 @@ func TestGatherOperatorKeys(t *testing.T) {
 	})
 
 	t.Run("no serving cert to bind to", func(t *testing.T) {
-		got := gatherOperatorKeys(ctx, config{kind: "cds", url: "cds.example.com"}, &evidence{}, fetchAttested)
+		got := gatherOperatorKeys(ctx, config{kind: "ta", url: "cds.example.com"}, &evidence{}, fetchAttested)
 		if got.note == "" || got.fingerprints != nil {
 			t.Errorf("no attested cert must skip the fetch with a note, got %+v", got)
 		}
 	})
 
 	t.Run("bad target", func(t *testing.T) {
-		got := gatherOperatorKeys(ctx, config{kind: "cds", url: "https://\x7f"}, &evidence{certSHA256: "aa"}, fetchAttested)
+		got := gatherOperatorKeys(ctx, config{kind: "ta", url: "https://\x7f"}, &evidence{certSHA256: "aa"}, fetchAttested)
 		if !strings.HasPrefix(got.note, "not fetched:") || got.fetchErr != nil {
 			t.Errorf("unparseable target should degrade to a note, got %+v", got)
 		}
@@ -179,7 +179,7 @@ func TestGatherOperatorKeys(t *testing.T) {
 			}
 			w.Write(pubPEM)
 		})
-		got := gatherOperatorKeys(ctx, config{kind: "cds", url: base, timeout: 5 * time.Second}, &evidence{certSHA256: certSHA}, fetchAttested)
+		got := gatherOperatorKeys(ctx, config{kind: "ta", url: base, timeout: 5 * time.Second}, &evidence{certSHA256: certSHA}, fetchAttested)
 		if got.fetchErr != nil || got.note != "" {
 			t.Fatalf("fetch failed: %+v", got)
 		}
@@ -192,7 +192,7 @@ func TestGatherOperatorKeys(t *testing.T) {
 		base, _ := startKeysTLSServer(t, func(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "boom", http.StatusInternalServerError)
 		})
-		got := gatherOperatorKeys(ctx, config{kind: "cds", url: base, timeout: 5 * time.Second}, &evidence{certSHA256: strings.Repeat("ab", 32)}, fetchAttested)
+		got := gatherOperatorKeys(ctx, config{kind: "ta", url: base, timeout: 5 * time.Second}, &evidence{certSHA256: strings.Repeat("ab", 32)}, fetchAttested)
 		if got.fetchErr == nil || !strings.HasPrefix(got.note, "not fetched:") {
 			t.Errorf("expected a recorded fetch error, got %+v", got)
 		}

@@ -19,7 +19,7 @@
 // so the evidence covers the new connection exactly as it covered the first.
 // A redial that presents another leaf is refused, and the client attests a new
 // connection the same way, sending the request there only if its leaf is
-// issued by the same CDS (mesh CA key) as the first one attested.
+// issued by the same Trust Authority (mesh CA key) as the first one attested.
 //
 // Evidence verification runs in-process (internal/localverify).
 package routerdiscovery
@@ -42,12 +42,12 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-	"github.com/confidential-dot-ai/c8s/internal/localverify"
-	"github.com/confidential-dot-ai/c8s/internal/pendingattestation"
-	"github.com/confidential-dot-ai/c8s/internal/readutil"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
-	"github.com/confidential-dot-ai/c8s/pkg/certutil"
-	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/localverify"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/pendingattestation"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/readutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
 )
 
 // DefaultPath is the path the router serves its discovery document on.
@@ -216,16 +216,16 @@ func verifyDocument(ctx context.Context, data []byte, verify localverify.VerifyF
 		return nil, fmt.Errorf("parse discovery document: %w", err)
 	}
 
-	// Only a cds-mode front door serves the CDS-issued leaf the evidence
+	// Only a cds-mode front door serves the Trust Authority-issued leaf the evidence
 	// binds; empty means a pre-mode-field document (cds in practice). Anything
 	// else fails closed here rather than returning a client whose handshakes
 	// can never match the attested cert.
 	switch d.PublicTLS.Mode {
 	case "", types.FrontDoorModeCDS:
 	case types.FrontDoorModeWebPKI:
-		return nil, fmt.Errorf("front door public_tls.mode=webpki is not supported: it serves an operator WebPKI certificate this client cannot yet bind to the attestation evidence; use a cds-mode front door or port-forward CDS directly")
+		return nil, fmt.Errorf("front door public_tls.mode=webpki is not supported: it serves an operator WebPKI certificate this client cannot yet bind to the attestation evidence; use a cds-mode front door or port-forward Trust Authority directly")
 	case types.FrontDoorModeACME:
-		return nil, fmt.Errorf("front door public_tls.mode=acme is not supported: it serves an in-guest ACME certificate the issuance evidence does not bind; use a cds-mode front door or port-forward CDS directly")
+		return nil, fmt.Errorf("front door public_tls.mode=acme is not supported: it serves an in-guest ACME certificate the issuance evidence does not bind; use a cds-mode front door or port-forward Trust Authority directly")
 	default:
 		return nil, fmt.Errorf("unknown public_tls.mode %q in discovery document", d.PublicTLS.Mode)
 	}
@@ -239,7 +239,7 @@ func verifyDocument(ctx context.Context, data []byte, verify localverify.VerifyF
 	//
 	// The classification is deliberately not asserted here, and the window is
 	// ADVISORY on this path: cds_tls.certificate_pem is the router's
-	// CDS-issued leaf, so RawIssuer != RawSubject and the result is
+	// Trust Authority-issued leaf, so RawIssuer != RawSubject and the result is
 	// BodyCAVouched — nothing checked that issuer's signature. This package
 	// cannot fix that: it is bootstrapping trust, the only CA it could reach
 	// is one this same unauthenticated document advertises, and the challenge
@@ -408,7 +408,7 @@ func (t *reattestingTransport) replaceSession(ctx context.Context) (*http.Transp
 	if !t.namesFirstIssuerKey(leaf) {
 		session.CloseIdleConnections()
 		sum := sha256.Sum256(leaf.Raw)
-		return nil, fmt.Errorf("routerdiscovery: serving cert sha256 %s names another mesh CA key than the first one this command attested — another c8s deployment answered, or its CDS changed CA key; re-run the command",
+		return nil, fmt.Errorf("routerdiscovery: serving cert sha256 %s names another mesh CA key than the first one this command attested — another c8s deployment answered, or its Trust Authority changed CA key; re-run the command",
 			hex.EncodeToString(sum[:]))
 	}
 	t.mu.Lock()
@@ -419,8 +419,8 @@ func (t *reattestingTransport) replaceSession(ctx context.Context) (*http.Transp
 
 // namesFirstIssuerKey reports whether leaf names the same issuer key as the
 // first attested leaf. Pins name a build, not a deployment; an attested
-// router presents the leaf its own CDS issued, so this keeps one command on
-// one CDS. A first leaf naming no issuer key matches nothing.
+// router presents the leaf its own Trust Authority issued, so this keeps one command on
+// one Trust Authority. A first leaf naming no issuer key matches nothing.
 func (t *reattestingTransport) namesFirstIssuerKey(leaf *x509.Certificate) bool {
 	if len(t.firstIssuerKeyID) == 0 {
 		return false

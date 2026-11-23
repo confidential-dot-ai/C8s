@@ -125,15 +125,15 @@ nri_settings_outside_a_table() {
 
 # The paths the boot config names its inputs by, which the plugin opens at
 # start.
-boot_cds_address={{ include "nri-image-policy.hostCDSAddressPath" $root | squote }}
-boot_cds_pin={{ include "nri-image-policy.hostCDSPinPath" $root | squote }}
+boot_cds_address={{ include "nri-image-policy.hostTAAddressPath" $root | squote }}
+boot_cds_pin={{ include "nri-image-policy.hostTAPinPath" $root | squote }}
 boot_syslog={{ include "nri-image-policy.syslogSocket" $root | squote }}
 
 # Stages what the boot config names in this pod's root, at the paths it names
 # them: the CDS address and pin, and the host's syslog socket.
 stage_boot_config_inputs() {
-  install -D -m 0644 {{ include "nri-image-policy.cdsPolicyMount" $root }}/cds-address "$boot_cds_address"
-  install -D -m 0644 {{ include "nri-image-policy.cdsPolicyMount" $root }}/cds.json "$boot_cds_pin"
+  install -D -m 0644 {{ include "nri-image-policy.taPolicyMount" $root }}/cds-address "$boot_cds_address"
+  install -D -m 0644 {{ include "nri-image-policy.taPolicyMount" $root }}/cds.json "$boot_cds_pin"
   host_syslog=$(nsenter -t 1 -m -- readlink -e {{ include "nri-image-policy.syslogSocket" $root | squote }}) ||
     refuse "the host has no syslog socket at {{ include "nri-image-policy.syslogSocket" $root }}, which the plugin logs to"
   ln -sfn "/proc/1/root$host_syslog" "$boot_syslog"
@@ -197,15 +197,15 @@ chmod 0711 "/host{{ include "nri-image-policy.runtimeDir" $root }}"
 # this script writes hold from the moment it has run on this boot.
 cds_changed=0
 if install_file \
-  {{ include "nri-image-policy.cdsPolicyMount" $root }}/cds-address \
-  "/host{{ include "nri-image-policy.hostCDSAddressPath" $root }}" \
+  {{ include "nri-image-policy.taPolicyMount" $root }}/cds-address \
+  "/host{{ include "nri-image-policy.hostTAAddressPath" $root }}" \
   0644; then
   cds_changed=1
   echo "CDS address updated"
 fi
 if install_file \
-  {{ include "nri-image-policy.cdsPolicyMount" $root }}/cds.json \
-  "/host{{ include "nri-image-policy.hostCDSPinPath" $root }}" \
+  {{ include "nri-image-policy.taPolicyMount" $root }}/cds.json \
+  "/host{{ include "nri-image-policy.hostTAPinPath" $root }}" \
   0644; then
   cds_changed=1
   echo "CDS pin updated"
@@ -320,12 +320,12 @@ echo "==> nri-image-policy installer finished; plugin healthy: $health"
 
 {{/*
 Boot config (image-policy.yaml). Caller passes a dict with .root. Every plugin
-runs pull mode (polls CDS); allowlist.base is the boot base for CDS and
+runs pull mode (polls Trust Authority); allowlist.base is the boot base for Trust Authority and
 any-argv bootstrap digests. Argv-pinned images are admitted by the served seed.
 */}}
 {{- define "nri-image-policy.bootConfig" -}}
 {{- $root := .root -}}
-{{/* Must stay the value CDS runs with: the two ends of one mutually-attested connection. */}}
+{{/* Must stay the value Trust Authority runs with: the two ends of one mutually-attested connection. */}}
 platform: {{ $root.Values.nriImagePolicy.platform | quote }}
 plugin:
   health_addr: {{ printf "unix://%s" (include "nri-image-policy.hostHealthSocket" $root) | quote }}
@@ -348,8 +348,8 @@ allowlist:
     # ConfigMap the installer mounts: the endpoint the plugin pulls from and
     # hands its injected credential clients, and the pin they hold it to.
     # Paths, so no argument of a component names the CDS it is served by.
-    cds_address_file: {{ include "nri-image-policy.hostCDSAddressPath" $root | quote }}
-    cds_measurements_config: {{ include "nri-image-policy.hostCDSPinPath" $root | quote }}
+    cds_address_file: {{ include "nri-image-policy.hostTAAddressPath" $root | quote }}
+    cds_measurements_config: {{ include "nri-image-policy.hostTAPinPath" $root | quote }}
   base:
     {{- /* Also the installer's argv pin: JSON key order is defined, toYaml's is not. */ -}}
     {{- $base := include "c8s.baseWorkloads" (dict "root" $root "templates" (include "c8s.componentPodTemplates" $root)) | fromJson -}}
@@ -417,5 +417,5 @@ mesh:
     - name: mesh
       uid: {{ include "c8s.meshUID" $root }}
 {{/* The credential role is bound by the plugin, to this node's own address and
-     the CDS node port above: only the node knows its address. */}}
+     the Trust Authority node port above: only the node knows its address. */}}
 {{- end }}

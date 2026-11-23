@@ -2,24 +2,24 @@
 
 Move a chart-installed C8s cluster to a new release.
 
-Every node admits C8s's own components by image digest, and a cluster's CDS —
+Every node admits C8s's own components by image digest, and a cluster's Trust Authority (TA) —
 the VM outside the cluster that serves the allowlist — reads the workload
 entries its measured configuration carries only at start. So the new release's
-entries reach the nodes only if you publish them through the running CDS first,
+entries reach the nodes only if you publish them through the running TA first,
 which is why the steps are ordered this way
 ([allowlist-and-capabilities.md](allowlist-and-capabilities.md#bootstrap)).
 
 ## Prerequisites
 
-- The operator private key matching the public keys in the CDS's measured
-  configuration (`c8s cds config new --operator-keys`): CDS takes no write
+- The operator private key matching the public keys in the TA's measured
+  configuration (`c8s ta config new --operator-keys`): the TA takes no write
   signed under any other key.
 - The new release's `c8s` CLI, plus `helm`, `kubectl`, `crane`, `yq`, and
   `curl` on each node.
 - The `-f` values file and flags you installed with: step 1 renders from them,
   and `nriImagePolicy.mesh.resolver` and `.clusterRanges` are in that file.
 - Outbound HTTPS to AMD's key service on SEV-SNP: `c8s allowlist` verifies
-  CDS's evidence itself, inside its 15s `--timeout`.
+  the TA's evidence itself, inside its 15s `--timeout`.
 - A root shell on each node for steps 2 and 4. A measured node image has none.
 
 ## Flags that changed
@@ -36,6 +36,12 @@ Steps 1 and 5 take their replacements:
 | `--cvm-mode bare-metal` | nothing |
 | nothing | `--pod-cidr <cidr>`, step 5 |
 
+The chart reads the Trust Authority address, measurements and optional operator
+keys together from `ta`. A release with `cds` values can keep using that
+block. If both blocks supply settings, their values must match. To change
+the trust root with Helm, run `helm upgrade --reset-values` with the complete
+release configuration and the new trust settings under `ta`.
+
 An AKS cluster on Azure CNI Overlay, the AKS default, publishes no
 `spec.podCIDR` on its nodes; install refuses such a cluster unless step 5's
 command names each of its pod ranges with `--pod-cidr`
@@ -49,18 +55,28 @@ itself, so `c8s install` installs on AKS and GKE confidential VMs alone: a
 cluster of workers carries those services in its measured image
 ([overview.md](overview.md#cvm-modes-and-hardware-platforms)).
 
-## 1. Render the new release's CDS seed
+## Entries with exits need a pinned env
+
+From this release, an entry that declares `egress` must pin every container's
+`env` ([allowlist-entries.md](allowlist-entries.md)). The TA refuses any write
+that keeps an older entry with exits and an unpinned env, and a node grants
+that entry no exits. To find such entries, run `c8s allowlist export` and look
+for `egress` beside an absent `env`, `any`, or a `present` matcher. Repair each
+with `c8s allowlist edit <NAME>`, or remove it with `c8s allowlist delete
+<NAME>`, before any other write.
+
+## 1. Render the new release's TA seed
 
 Render from the values the upgrade will apply, or the entries you publish are
 not the ones its pods need — the same flags and `-f` file:
 
 ```sh
-CDS=https://<CDS_ADDRESS>       # the CDS this cluster trusts
+TA=https://<TA_ADDRESS>       # the TA this cluster trusts
 helm pull oci://ghcr.io/confidential-dot-ai/charts/c8s-cloud --version <X.Y.Z> --untar
 helm template c8s ./c8s-cloud --namespace c8s-system --kube-version 1.31.0 \
   -f ./c8s-cloud/values-<PLATFORM>.yaml -f values.yaml \
-  --set-string cds.address=<CDS_ADDRESS> --set-file cds.measurementsConfig=cds-pin.json \
-  --set-file cds.operatorKeys=c8s-operator-pub.pem \
+  --set-string ta.address=<TA_ADDRESS> --set-file ta.measurementsConfig=cds-pin.json \
+  --set-file ta.operatorKeys=c8s-operator-pub.pem \
   --show-only templates/allowlist-seed.yaml |
   yq '.data["allowlist-seed.json"]' > seed.json
 c8s allowlist lint seed.json
@@ -82,16 +98,16 @@ curl --unix-socket /run/nri-image-policy/health.sock http://localhost/healthz
 ```
 
 Run it on every node and keep the highest number; `not ready` and `0` both mean
-no CDS document has been applied there yet, so count that node as 0. Without a
+no TA document has been applied there yet, so count that node as 0. Without a
 node shell, `kubectl -n c8s-system logs -l app=c8s-nri-image-policy -c install
 --tail=2` prints that body and the `[http 200]` line after it, from the
 installer's last run on each node; the plugin keeps pulling, so that number
 can be below the version the node enforces now.
 
-## 3. Publish the CDS seed
+## 3. Publish the TA seed
 
 ```sh
-c8s allowlist apply seed.json --url "$CDS" --image-policy-file cds-pin.json \
+c8s allowlist apply seed.json --url "$TA" --image-policy-file cds-pin.json \
   --operator-key c8s-operator.key
 ```
 
@@ -100,10 +116,10 @@ Every entry gets a diff line — `+ <name> (new)`, `~ <name>`, or
 the whole live entry of every name. A lint error prints on stderr and nothing is
 written.
 
-## 4. Check CDS's version, and raise it if a node is ahead
+## 4. Check the TA's version, and raise it if a node is ahead
 
 ```sh
-c8s allowlist list --url "$CDS" --image-policy-file cds-pin.json
+c8s allowlist list --url "$TA" --image-policy-file cds-pin.json
 ```
 
 ```text
@@ -116,7 +132,7 @@ number from step 2. The counter rises by one per write, whatever the number of
 entries, so the `apply` in step 3 raises it by one; an `apply` that changes
 nothing raises it too.
 
-A version at or below a node's means CDS restarted since that node last pulled,
+A version at or below a node's means the TA restarted since that node last pulled,
 so its counter started from the seed again. Repeat step 3 until `list` passes
 the highest number from step 2. A node that stays higher takes nothing until its
 plugin restarts: restart containerd there, one node at a time, having published
@@ -144,8 +160,8 @@ previous plugin and carry the packet rules that plugin installed; the new plugin
 refuses that pod and deletes it, and the router's Deployment starts another one.
 The front door serves again once that pod is ready.
 
-Install reads the allowlist CDS serves and refuses when an entry step 3
-publishes is not there; it warns and goes on where it cannot reach CDS. It also
+Install reads the allowlist the TA serves and refuses when an entry step 3
+publishes is not there; it warns and goes on where it cannot reach the TA. It also
 refuses when the resolved policy would deny a platform pod the cluster already
 runs, before touching anything; `--force` overrides that one. The previous
 release's entries stay in the allowlist, so a rollback still matches them.

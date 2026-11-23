@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/volume"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/volume"
 )
 
 // cleanupTimeout bounds an unwind that no longer has a caller waiting on it.
@@ -123,8 +123,11 @@ func (o *Opener) Open(ctx context.Context, req Request) error {
 	if err := req.Blob.Validate(); err != nil {
 		return err
 	}
-	if !volumeNameRE.MatchString(req.Name) {
-		return fmt.Errorf("volumed: volume name %q is not a dns-1123 label", req.Name)
+	if err := volume.ValidVolumeName(req.Name); err != nil {
+		return err
+	}
+	if req.Blob.Name != req.Name {
+		return ErrNotAuthorized
 	}
 
 	commitment := commitmentFor(key, req.Blob)

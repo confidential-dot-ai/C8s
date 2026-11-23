@@ -4,11 +4,11 @@ import (
 	"maps"
 	"sync/atomic"
 
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
 // policySnapshot is an immutable admission view: an Index built from the
-// last-applied CDS pull, tagged with that pull's version.
+// last-applied Trust Authority pull, tagged with that pull's version.
 // Swapped as a unit; policyStore checks the base allowlist ahead of it.
 type policySnapshot struct {
 	index *allowlist.Index
@@ -87,16 +87,15 @@ func (s *policyStore) baseAdmitsPinned(r allowlist.RunningContainer) bool {
 	return s.base.AdmitsContainerWhere(r, allowlist.Container.LaunchPinned)
 }
 
-// grantsHostBind reports whether the base, less its static-pod entries, or the
-// applied allowlist hands r the host bind m (allowlist.Index.GrantsHostBind).
-func (s *policyStore) grantsHostBind(r allowlist.RunningContainer, m allowlist.ObservedMount) bool {
+// grantsHostBind reports whether the base, less its static-pod entries, or
+// snap's allowlist hands r the host bind m (allowlist.Index.GrantsHostBind).
+func (s *policyStore) grantsHostBind(snap *policySnapshot, r allowlist.RunningContainer, m allowlist.ObservedMount) bool {
 	if s == nil {
 		return false
 	}
 	if s.grants.GrantsHostBind(r, m) {
 		return true
 	}
-	snap := s.current()
 	return snap != nil && snap.index.GrantsHostBind(r, m)
 }
 
@@ -114,58 +113,65 @@ func (s *policyStore) declaresHostPorts(mappings []allowlist.HostPort) bool {
 	return snap != nil && snap.index.DeclaresHostPorts(mappings)
 }
 
-// grantsHostPorts reports whether the base, less its static-pod entries, or the
-// applied allowlist hands r every mapping (allowlist.Index.GrantsHostPorts).
-func (s *policyStore) grantsHostPorts(r allowlist.RunningContainer, mappings []allowlist.HostPort) bool {
+// grantsHostPorts reports whether the base, less its static-pod entries, or
+// snap's allowlist hands r every mapping (allowlist.Index.GrantsHostPorts).
+func (s *policyStore) grantsHostPorts(snap *policySnapshot, r allowlist.RunningContainer, mappings []allowlist.HostPort) bool {
 	if s == nil {
 		return false
 	}
 	if s.grants.GrantsHostPorts(r, mappings) {
 		return true
 	}
-	snap := s.current()
 	return snap != nil && snap.index.GrantsHostPorts(r, mappings)
 }
 
 // grantsCapabilities reports whether the base, less its static-pod entries, or
-// the applied allowlist hands r every capability in caps
+// snap's allowlist hands r every capability in caps
 // (allowlist.Index.GrantsCapabilities).
-func (s *policyStore) grantsCapabilities(r allowlist.RunningContainer, caps []string) bool {
+func (s *policyStore) grantsCapabilities(snap *policySnapshot, r allowlist.RunningContainer, caps []string) bool {
 	if s == nil {
 		return false
 	}
 	if s.grants.GrantsCapabilities(r, caps) {
 		return true
 	}
-	snap := s.current()
 	return snap != nil && snap.index.GrantsCapabilities(r, caps)
 }
 
 // declaredCapabilities is every capability the base, less its static-pod
-// entries, or the applied allowlist declares for this launch
+// entries, or snap's allowlist declares for this launch
 // (allowlist.Index.DeclaredCapabilities).
-func (s *policyStore) declaredCapabilities(r allowlist.RunningContainer) [][]string {
+func (s *policyStore) declaredCapabilities(snap *policySnapshot, r allowlist.RunningContainer) [][]string {
 	if s == nil {
 		return nil
 	}
 	declared := s.grants.DeclaredCapabilities(r)
-	if snap := s.current(); snap != nil {
+	if snap != nil {
 		declared = append(declared, snap.index.DeclaredCapabilities(r)...)
 	}
 	return declared
 }
 
-// declaresMountKind reports whether the base or applied allowlist has a mount
-// rule of kind for digest.
-func (s *policyStore) declaresMountKind(digest string, kind allowlist.MountClass) bool {
+// nodeRootBinds returns the mounts a nodeRootFile rule of the base or snap's
+// allowlist names for digest (allowlist.Index.NodeRootBinds).
+func (s *policyStore) nodeRootBinds(snap *policySnapshot, digest string, mounts []allowlist.ObservedMount) []allowlist.ObservedMount {
+	if s == nil {
+		return nil
+	}
+	binds := s.base.NodeRootBinds(digest, mounts)
+	if snap != nil {
+		binds = append(binds, snap.index.NodeRootBinds(digest, mounts)...)
+	}
+	return binds
+}
+
+// declaresFSVerity reports whether the base or snap's allowlist has an
+// fsVerityFile mount rule for digest.
+func (s *policyStore) declaresFSVerity(snap *policySnapshot, digest string) bool {
 	if s == nil {
 		return false
 	}
-	if s.base.DeclaresMountKind(digest, kind) {
-		return true
-	}
-	snap := s.current()
-	return snap != nil && snap.index.DeclaresMountKind(digest, kind)
+	return len(s.base.FSVerityMountRules(digest)) > 0 || snap != nil && len(snap.index.FSVerityMountRules(digest)) > 0
 }
 
 // needsVariableEvidence reports whether the base or applied allowlist has a
@@ -182,14 +188,14 @@ func (s *policyStore) needsVariableEvidence(digest string) bool {
 }
 
 // apply installs the pulled document at version, unless version is below the
-// applied one — an epoch rollback a withheld/rolled-back CDS must not use to
+// applied one — an epoch rollback a withheld/rolled-back Trust Authority must not use to
 // loosen a tightened policy. Reports whether it applied. Single-writer: only the
 // pull loop calls it, so the read-compare-store needs no lock against other
 // writers.
 //
 // The applied version is process-local (newPolicyStore starts at 0), so
 // rollback is only rejected within a process lifetime: after a restart the first
-// pull is trusted, whatever its version, and state re-syncs from CDS. Surviving a
+// pull is trusted, whatever its version, and state re-syncs from the Trust Authority. Surviving a
 // restart would need a monotonic counter the host cannot reset — out of scope; on
 // the untrusted host a persisted file is itself host-controlled. See
 // docs/allowlist-and-capabilities.md.
@@ -201,7 +207,7 @@ func (s *policyStore) apply(pulled *allowlist.Allowlist, version uint64) bool {
 	return true
 }
 
-// raiseAppliedVersion raises the applied version to version, at which CDS
+// raiseAppliedVersion raises the applied version to version, at which Trust Authority
 // still serves the document the last pull named: a write that moved the
 // version and kept the bytes raises the version later pulls are judged
 // against. It never lowers it.

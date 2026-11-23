@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlistclient"
 )
 
 type pullArgs struct {
@@ -76,7 +76,7 @@ func pullInitialOnce(
 	args pullArgs,
 	attempt int,
 ) (string, error) {
-	args.logger.Info("fetching initial allowlist from CDS", "attempt", attempt)
+	args.logger.Info("fetching initial allowlist from the Trust Authority", "attempt", attempt)
 	served, notModified, err := fetchServed(ctx, args.client, args.timeout, "")
 	switch {
 	case err != nil:
@@ -94,7 +94,7 @@ func pullInitialOnce(
 		return "", err
 	}
 	args.pull.reached()
-	args.logger.Info("initial allowlist pulled from CDS",
+	args.logger.Info("initial allowlist pulled from the Trust Authority",
 		"workloads", len(served.Allowlist.Workloads),
 		"version", version,
 		"etag", served.ETag,
@@ -114,11 +114,11 @@ type pullLoopArgs struct {
 	logger   *slog.Logger
 }
 
-// runPullLoop polls CDS with If-None-Match. 200 rebuilds the index from the
+// runPullLoop polls Trust Authority with If-None-Match. 200 rebuilds the index from the
 // pulled document, advances the ETag and kills the running containers it no
 // longer admits — unless the pulled version is below the applied
 // one (epoch rollback), which is ignored so the ETag keeps re-fetching until a
-// forward version arrives. 304 raises the applied version to the one CDS
+// forward version arrives. 304 raises the applied version to the one Trust Authority
 // serves the document at; it and errors leave the index untouched. A
 // version the measurer refuses for good also advances the ETag and is logged
 // once per digest.
@@ -153,7 +153,7 @@ type pullLoop struct {
 	timeout time.Duration
 	logger  *slog.Logger
 
-	// etag names the document CDS answers 304 for.
+	// etag names the document Trust Authority answers 304 for.
 	etag string
 	// refusedDigest and unmeasuredDigest are the documents last logged at
 	// Error as refused for good and as not yet measured.
@@ -263,7 +263,7 @@ func (l *pullLoop) retryUnmeasured(
 		"digest", served.Digest, "error", err)
 }
 
-// fetchServed asks CDS for its allowlist under a timeout of its own.
+// fetchServed asks Trust Authority for its allowlist under a timeout of its own.
 func fetchServed(
 	ctx context.Context,
 	client allowlistclient.Client,
@@ -275,7 +275,7 @@ func fetchServed(
 	return client.FetchServed(ctx, etag)
 }
 
-// parseVersion reads the CDS mutation counter a pull was served at, used for
+// parseVersion reads the Trust Authority mutation counter a pull was served at, used for
 // epoch anti-rollback. An unparseable version yields 0, which can only be
 // rejected as a rollback once a real version has been applied.
 func parseVersion(version string) uint64 {

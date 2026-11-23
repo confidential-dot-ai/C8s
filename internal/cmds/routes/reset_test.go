@@ -6,22 +6,22 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/internal/routing"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/routing"
 )
 
-// After a CDS reset, a router keeps a revision that may be above the
+// After a Trust Authority reset, a router keeps a revision that may be above the
 // writer's clock. --revision outranks it; the default does not.
-func TestRevisionOutranksARouterAfterACDSReset(t *testing.T) {
+func TestRevisionOutranksARouterAfterATAReset(t *testing.T) {
 	h := newHarness(t)
 	router := routing.NewState(routing.StateConfig{MeshCAs: func() ([]*x509.Certificate, error) { return nil, nil }})
 	add := func(extra ...string) {
 		h.mustRun(t, append([]string{"add", "--new", "--host", "app.example", "--path", "/", "--address", "a:1", "--workload", "a"}, extra...)...)
 	}
 	accept := func() error {
-		_, err := router.Accept(*h.cds.env, h.cds.keys)
+		_, err := router.Accept(*h.ta.env, h.ta.keys)
 		return err
 	}
-	reset := func() { h.cds.env, h.cds.rev = nil, 0 }
+	reset := func() { h.ta.env, h.ta.rev = nil, 0 }
 
 	held := uint64(time.Now().Unix()) + 3600
 	add("--revision", strconv.FormatUint(held, 10))
@@ -31,7 +31,7 @@ func TestRevisionOutranksARouterAfterACDSReset(t *testing.T) {
 	reset()
 	add()
 	if err := accept(); err == nil {
-		t.Fatalf("router accepted default revision %d below its %d", h.cds.rev, held)
+		t.Fatalf("router accepted default revision %d below its %d", h.ta.rev, held)
 	}
 	reset()
 	add("--revision", strconv.FormatUint(held+1, 10))

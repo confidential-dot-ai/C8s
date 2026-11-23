@@ -8,7 +8,7 @@ import (
 	"math/rand/v2"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
 )
 
 // firstApplyBackoff is the first retry delay before any manifest is applied.
@@ -28,7 +28,7 @@ type PollerConfig struct {
 	Logger     *slog.Logger
 }
 
-// Poller fetches the signed manifest from the CDS on an interval and offers
+// Poller fetches the signed manifest from the Trust Authority on an interval and offers
 // it to the State.
 type Poller struct {
 	cfg     PollerConfig

@@ -22,8 +22,8 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/Azure/azure-sdk-for-go/sdk/security/keyvault/azsecrets"
 
-	"github.com/confidential-dot-ai/c8s/internal/issuer"
-	"github.com/confidential-dot-ai/c8s/pkg/secretbroker"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/issuer"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/secretbroker"
 )
 
 type mapSource map[string]string
@@ -36,14 +36,14 @@ func (m mapSource) Get(_ context.Context, name string) ([]byte, error) {
 	return []byte(v), nil
 }
 
-// cds stands in for one CDS replica: its mesh CA and a broker certificate.
-type cds struct {
+// cds stands in for one Trust Authority replica: its mesh CA and a broker certificate.
+type ta struct {
 	mesh  *issuer.MeshCA
 	key   *ecdsa.PrivateKey
 	chain [][]byte
 }
 
-func newCDS(t *testing.T) cds {
+func newTA(t *testing.T) ta {
 	t.Helper()
 	mesh, err := issuer.NewMeshCA("c8s Mesh CA", time.Hour)
 	if err != nil {
@@ -55,15 +55,15 @@ func newCDS(t *testing.T) cds {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return cds{mesh: mesh, key: key, chain: [][]byte{broker, ca.Cert.Raw}}
+	return ta{mesh: mesh, key: key, chain: [][]byte{broker, ca.Cert.Raw}}
 }
 
-func (c cds) pin() string {
+func (c ta) pin() string {
 	h := sha256.Sum256(c.mesh.Current().CA.Cert.RawSubjectPublicKeyInfo)
 	return hex.EncodeToString(h[:])
 }
 
-func (c cds) request(t *testing.T, doc []byte, secret string) secretbroker.ReleaseRequest {
+func (c ta) request(t *testing.T, doc []byte, secret string) secretbroker.ReleaseRequest {
 	t.Helper()
 	digest := sha256.Sum256(doc)
 	statement, err := secretbroker.NewStatement("pcvm-0123", nil, digest[:], secret, time.Now())
@@ -114,7 +114,7 @@ func post(t *testing.T, h http.Handler, req secretbroker.ReleaseRequest) (int, s
 }
 
 func TestReleasePolicy(t *testing.T) {
-	c := newCDS(t)
+	c := newTA(t)
 	_, clientKey, doc := newClient(t)
 	verifier, err := newVerifier(c.pin())
 	if err != nil {
@@ -126,7 +126,7 @@ func TestReleasePolicy(t *testing.T) {
 		t.Fatalf("good path: %d %q", status, value)
 	}
 
-	other := newCDS(t)
+	other := newTA(t)
 	_, _, strangerDoc := newClient(t)
 	priv, _, _ := newClient(t)
 	var forged clientDoc
@@ -141,7 +141,7 @@ func TestReleasePolicy(t *testing.T) {
 		status int
 		want   string
 	}{
-		{"another CDS", other.request(t, doc, "agent-token"), http.StatusForbidden, "pinned"},
+		{"another Trust Authority", other.request(t, doc, "agent-token"), http.StatusForbidden, "pinned"},
 		{"document unlike the statement", func() secretbroker.ReleaseRequest {
 			r := c.request(t, doc, "agent-token")
 			r.ClientDocument = strangerDoc
@@ -166,7 +166,7 @@ func TestReleasePolicy(t *testing.T) {
 // The release request is one document: a request with another after it, or one
 // padded past maxRequest, is refused rather than read as a prefix.
 func TestReleaseRequestMustBeOneDocument(t *testing.T) {
-	c := newCDS(t)
+	c := newTA(t)
 	_, clientKey, doc := newClient(t)
 	verifier, err := newVerifier(c.pin())
 	if err != nil {
@@ -210,7 +210,7 @@ func TestLiveKeyVault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := newCDS(t)
+	c := newTA(t)
 	_, clientKey, doc := newClient(t)
 	verifier, _ := newVerifier(c.pin())
 	h := &handler{verifier: verifier, policy: testPolicy(clientKey, "agent-token"), secrets: keyVault{vault}, nonces: newNonceCache()}

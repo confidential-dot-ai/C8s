@@ -11,7 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/confidential-dot-ai/c8s/pkg/certutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
 )
 
 // newKeygenCmd returns the `c8s keys new` subcommand.
@@ -21,8 +21,8 @@ func newKeygenCmd() *cobra.Command {
 		Use:   "new",
 		Short: "Generate an operator EC keypair (P-256)",
 		Long: `Generate an operator keypair: the private key that signs allowlist,
-secret, and volume writes, and the public key CDS pins in its configuration
-(c8s cds config new --operator-keys).
+secret, and volume writes, and the public key Trust Authority pins in its configuration
+(c8s ta config new --operator-keys).
 
 Both files are created new — an existing file is never overwritten. The
 private key is written 0600.`,

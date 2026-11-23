@@ -7,7 +7,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
 )
 
 func mustDigest(t *testing.T, s string) types.Digest {
@@ -308,7 +308,7 @@ func TestServedParseIgnoresUnknownFields(t *testing.T) {
 
 // The volume name behind an emptyDir or data rule is a property of the
 // measured boot config the node reads as YAML. Nothing on the wire names a pod
-// volume, so a document that arrives as JSON — served by CDS or authored by an
+// volume, so a document that arrives as JSON — served by the Trust Authority or authored by an
 // operator — is refused when it carries one, and served allowlists keep the
 // shape every consumer of this format agrees on.
 func TestJSONRefusesAVolumeBinding(t *testing.T) {

@@ -10,8 +10,8 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
-	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
-	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	nriimagepolicy "github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/nri-image-policy"
+	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
 func TestImagePreflightUsesRequestedRepositories(t *testing.T) {
@@ -142,10 +142,10 @@ func TestImagePreflightUsesServedWorkloadAndInitDigests(t *testing.T) {
 	}
 	out.Reset()
 	if _, err := preflightImagePolicy(&out, values, nil, nil, "c8s-system", pods, false); err == nil || !strings.Contains(err.Error(), "cannot confirm coverage") {
-		t.Fatalf("unavailable CDS must preserve the platform guard: %v", err)
+		t.Fatalf("unavailable Trust Authority must preserve the platform guard: %v", err)
 	}
 	if !strings.Contains(out.String(), "served-workload") || !strings.Contains(out.String(), "served-router") {
-		t.Errorf("unavailable CDS must report uncertain coverage:\n%s", out.String())
+		t.Errorf("unavailable Trust Authority must report uncertain coverage:\n%s", out.String())
 	}
 }
 

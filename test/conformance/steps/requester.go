@@ -20,26 +20,27 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cucumber/godog"
+
 	"github.com/confidential-dot-ai/attestation-go/armtls"
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-	"github.com/cucumber/godog"
 )
 
 // Sentences about a requester the scenario drives through the issuance
 // exchange itself. The requester is a pod on the node that relays HTTP for
-// the steps: to the CDS, to the node's sandbox inventory over its socket,
+// the steps: to the Trust Authority, to the node's sandbox inventory over its socket,
 // and (on a TEE) to the node's local attestation service. The key, the CSR,
 // the attest body and any forged token are built here, so the requester can
 // present what a well-behaved one never would. Outside the mesh its own pod
-// address is the source address the CDS sees; as a mesh member
+// address is the source address the Trust Authority sees; as a mesh member
 // (requester.member), which the node's inventory signs a sandbox token for,
-// its CDS requests leave from the backend instead.
+// its Trust Authority requests leave from the backend instead.
 func registerRequester(sc *godog.ScenarioContext) {
 	sc.Step(`^a requester "([^"]*)" on node "([^"]*)"$`, requesterOnNode)
 	sc.Step(`^"([^"]*)" holds a key$`, requesterHoldsAKey)
-	sc.Step(`^(?:the CDS has issued "([^"]*)" a challenge|"([^"]*)" requests a challenge)$`, requestsChallenge)
+	sc.Step(`^(?:the (?:Trust Authority|CDS) has issued "([^"]*)" a challenge|"([^"]*)" requests a challenge)$`, requestsChallenge)
 	sc.Step(`^the two challenges "([^"]*)" received differ$`, challengesDiffer)
-	sc.Step(`^"([^"]*)" presents a challenge the CDS did not issue$`, presentsUnissuedChallenge)
+	sc.Step(`^"([^"]*)" presents a challenge the (?:Trust Authority|CDS) did not issue$`, presentsUnissuedChallenge)
 	sc.Step(`^that challenge was issued challenge-ttl or more ago$`, challengeExpired)
 	sc.Step(`^the evidence "([^"]*)" presents commits to (a different key|an earlier challenge|the key it holds)$`, evidenceCommitsTo)
 	sc.Step(`^the signature of the evidence "([^"]*)" presents does not verify$`, evidenceUnsigned)
@@ -48,7 +49,7 @@ func registerRequester(sc *godog.ScenarioContext) {
 	sc.Step(`^the CSR of "([^"]*)" carries (a DNS SAN no configured pattern matches|an IP SAN that is the address of another pod|its own address as an IP SAN)$`, csrCarries)
 	sc.Step(`^"([^"]*)" requests a leaf with that challenge( and that sandbox token)?$`, requestsLeaf)
 	sc.Step(`^"([^"]*)" repeats the same attest request$`, repeatsAttest)
-	sc.Step(`^the CDS refuses the attest request with "([^"]*)"$`, cdsRefusesAttest)
+	sc.Step(`^the (?:Trust Authority|CDS) refuses the attest request with "([^"]*)"$`, taRefusesAttest)
 	sc.Step(`^"([^"]*)" holds a sandbox token from the sandbox inventory on node "([^"]*)"( for a key other than its own| for that release challenge)?$`, holdsToken)
 	sc.Step(`^"([^"]*)" has signed a sandbox token for its key with a signing key of its own$`, signsOwnToken)
 	sc.Step(`^the inventory host of that sandbox token is (.+)$`, forgedTokenHost)
@@ -88,9 +89,9 @@ type requester struct {
 	// member: the pod is a mesh member in the scenario's namespace, because
 	// the backend has no namespace the mesh exempts or because the scenario
 	// asked the node's inventory for a token, which it signs for a member
-	// alone; its CDS requests the backend sends from outside the pod.
+	// alone; its Trust Authority requests the backend sends from outside the pod.
 	// Otherwise it is outside the mesh and sends them itself, so its own
-	// address is the source the CDS sees.
+	// address is the source the Trust Authority sees.
 	member bool
 	key    *ecdsa.PrivateKey
 	// The current challenge and the one before it, raw bytes.
@@ -100,14 +101,14 @@ type requester struct {
 	forged   *forgedToken
 	evidence evidenceMode
 	csr      csrMode
-	// The last attest request and what the CDS answered: a leaf on the pod,
+	// The last attest request and what the Trust Authority answered: a leaf on the pod,
 	// or a refusal.
 	lastBody   []byte
 	lastStatus int
 	refusal    *refusal
 }
 
-// answer describes what the CDS answered the last attest request.
+// answer describes what the Trust Authority answered the last attest request.
 func (r *requester) answer() string {
 	if r.refusal != nil {
 		return fmt.Sprintf("%d %s", r.lastStatus, r.refusal)
@@ -123,7 +124,7 @@ type forgedToken struct {
 }
 
 // sandboxTokenDER is the inventory's token structure: version 2 names the
-// inventory host the CDS fetches the signing key from.
+// inventory host the Trust Authority fetches the signing key from.
 type sandboxTokenDER struct {
 	Version       int
 	SandboxID     string `asn1:"ia5"`
@@ -144,10 +145,10 @@ func (w *world) requester(name string) (*requester, error) {
 }
 
 // requesterOnNode admits the requester's image, deploys the pod and checks
-// that it can reach the CDS, so a scenario fails here, with the pod's view,
+// that it can reach the Trust Authority, so a scenario fails here, with the pod's view,
 // rather than at its first request. The requester runs in a namespace the
 // mesh exempts where the backend has one, so that its own address is the
-// source the CDS sees, and as a mesh member where it has none
+// source the Trust Authority sees, and as a mesh member where it has none
 // (requester.member).
 func requesterOnNode(ctx context.Context, name, node string) error {
 	w := getWorld(ctx)
@@ -180,7 +181,7 @@ func requesterOnNode(ctx context.Context, name, node string) error {
 }
 
 // deployRequester applies the requester's pod where it is placed, waits for
-// it to run and checks that it reaches the CDS and holds the node's sockets.
+// it to run and checks that it reaches the Trust Authority and holds the node's sockets.
 func (w *world) deployRequester(r *requester) error {
 	p := r.pod
 	k8sNode, err := w.node(r.node)
@@ -201,7 +202,7 @@ func (w *world) deployRequester(r *requester) error {
 	}
 	if len(st) == 0 || !st[0].running {
 		// A member's container waits on the injected credential client's
-		// first leaf, so what the CDS told that client is the likely cause.
+		// first leaf, so what the Trust Authority told that client is the likely cause.
 		msg := fmt.Sprintf("the requester %q is not running after %s; denials: %s; its containers: %+v", p.name, observe, denials(st), st)
 		if r.member {
 			msg += "; its credential client logged: " + tail(w.certLog(p), 5)
@@ -218,7 +219,7 @@ func (w *world) deployRequester(r *requester) error {
 		return err
 	}
 	if status != 200 {
-		return fmt.Errorf("harness: the requester %q got %d from the CDS's /healthz", p.name, status)
+		return fmt.Errorf("harness: the requester %q got %d from the Trust Authority's /healthz", p.name, status)
 	}
 	// The pod's own view, which a member's healthz, sent from the backend,
 	// does not give: the node's sockets are bound into it. The admission
@@ -233,7 +234,7 @@ func (w *world) deployRequester(r *requester) error {
 
 // joinMesh redeploys a requester that stands outside the mesh as a member,
 // in the scenario's namespace, where the node's inventory asserts for it.
-// Its key and challenge stay: the challenge is the CDS's, bound to no pod.
+// Its key and challenge stay: the challenge is the Trust Authority's, bound to no pod.
 func (w *world) joinMesh(r *requester) error {
 	p := r.pod
 	if _, err := kubectl(nil, "-n", p.namespace, "delete", "pod", p.name, "--ignore-not-found", "--wait=false"); err != nil {
@@ -245,9 +246,9 @@ func (w *world) joinMesh(r *requester) error {
 }
 
 // relay sends a request as the requester: to a node socket, from inside its
-// pod; to a CDS route, from inside its pod at the address a requester dials
-// or, for a member, whose own TCP to the CDS the node drops, from where the
-// backend reaches the CDS (cds_pod_request).
+// pod; to a Trust Authority route, from inside its pod at the address a requester dials
+// or, for a member, whose own TCP to the Trust Authority the node drops, from where the
+// backend reaches the Trust Authority (ta_pod_request).
 func (w *world) relay(r *requester, method, route string, body []byte, socket string) (int, []byte, error) {
 	var out string
 	send := func(bodyFile string) (err error) {
@@ -256,12 +257,12 @@ func (w *world) relay(r *requester, method, route string, body []byte, socket st
 			if bodyFile != "" {
 				args = append(args, bodyFile)
 			}
-			out, err = w.be.call("cds_pod_request", args...)
+			out, err = w.be.call("ta_pod_request", args...)
 			return err
 		}
 		url := "http://localhost"
 		if socket == "" {
-			if url, err = w.be.call("cds_pod_url"); err != nil {
+			if url, err = w.be.call("ta_pod_url"); err != nil {
 				return err
 			}
 		}
@@ -317,7 +318,7 @@ func requestsChallenge(ctx context.Context, issued, requested string) error {
 		return err
 	}
 	if status != 200 {
-		return fmt.Errorf("the CDS answered %d to a challenge request: %s", status, body)
+		return fmt.Errorf("the Trust Authority answered %d to a challenge request: %s", status, body)
 	}
 	challenge, err := parseChallenge(body)
 	if err != nil {
@@ -327,7 +328,7 @@ func requestsChallenge(ctx context.Context, issued, requested string) error {
 	return nil
 }
 
-// parseChallenge is the challenge bytes of a CDS challenge response.
+// parseChallenge is the challenge bytes of a Trust Authority challenge response.
 func parseChallenge(body []byte) ([]byte, error) {
 	var doc struct {
 		Challenge string `json:"challenge"`
@@ -373,7 +374,7 @@ func presentsUnissuedChallenge(ctx context.Context, name string) error {
 }
 
 func challengeExpired(ctx context.Context) error {
-	out, err := getWorld(ctx).cdsArg("challenge-ttl")
+	out, err := getWorld(ctx).taArg("challenge-ttl")
 	if err != nil {
 		return err
 	}
@@ -438,8 +439,8 @@ func csrBadSignature(ctx context.Context, name string) error {
 }
 
 // evidenceOver asks the node's local attestation service for evidence over
-// report data, as the envelope the CDS takes. The other two modes edit its
-// launch measurement: where the CDS checks the evidence's signature, so that
+// report data, as the envelope the Trust Authority takes. The other two modes edit its
+// launch measurement: where the Trust Authority checks the evidence's signature, so that
 // it no longer verifies; where it does not (a mock), to another digest.
 func (w *world) evidenceOver(r *requester, reportData []byte, mode evidenceMode) (json.RawMessage, error) {
 	var edit func([]byte)
@@ -456,7 +457,7 @@ func (w *world) evidenceOver(r *requester, reportData []byte, mode evidenceMode)
 		}
 		switch {
 		case mode == evidenceNoSignature && signed != "yes":
-			return nil, skipf("the CDS checks no signature on this backend's evidence")
+			return nil, skipf("the Trust Authority checks no signature on this backend's evidence")
 		case mode == evidenceForeignDigest && signed == "yes":
 			return nil, skipf("signed evidence for another launch digest needs a second TEE")
 		}
@@ -599,8 +600,8 @@ func requestsLeaf(ctx context.Context, name, withToken string) error {
 		return fmt.Errorf("%q holds no challenge", name)
 	}
 	// A CSR carrying the requester's own address, with IP SAN binding on,
-	// is signed only when the CDS observes that address as the request
-	// source. A backend where it does not (the CDS sits outside the cluster
+	// is signed only when the Trust Authority observes that address as the request
+	// source. A backend where it does not (the Trust Authority sits outside the cluster
 	// behind pod-egress masquerade, or the requester is forced to be a mesh
 	// member whose requests leave from the backend) cannot run this.
 	if r.csr == csrOwnIP && w.issuance.sanBinding {
@@ -653,7 +654,7 @@ func requestsLeaf(ctx context.Context, name, withToken string) error {
 	return w.attest(r, body)
 }
 
-// attest sends an attest body and records what the CDS answered.
+// attest sends an attest body and records what the Trust Authority answered.
 func (w *world) attest(r *requester, body []byte) error {
 	status, resp, err := w.relay(r, "POST", "/attest", body, "")
 	if err != nil {
@@ -664,17 +665,17 @@ func (w *world) attest(r *requester, body []byte) error {
 	if status == 200 {
 		l, err := parseLeaf(resp)
 		if err != nil {
-			return fmt.Errorf("the chain the CDS issued: %w", err)
+			return fmt.Errorf("the chain the Trust Authority issued: %w", err)
 		}
 		if l == nil {
-			return errors.New("the CDS answered 200 with no certificate")
+			return errors.New("the Trust Authority answered 200 with no certificate")
 		}
 		r.pod.leaf = l
 		return nil
 	}
 	var doc refusal
 	if err := json.Unmarshal(resp, &doc); err != nil || doc.Code == "" {
-		return fmt.Errorf("the CDS answered %d with a body that is not an error document: %s", status, resp)
+		return fmt.Errorf("the Trust Authority answered %d with a body that is not an error document: %s", status, resp)
 	}
 	r.refusal = &doc
 	return nil
@@ -692,17 +693,17 @@ func repeatsAttest(ctx context.Context, name string) error {
 	return w.attest(r, r.lastBody)
 }
 
-func cdsRefusesAttest(ctx context.Context, code string) error {
+func taRefusesAttest(ctx context.Context, code string) error {
 	w := getWorld(ctx)
 	last := w.issuance.lastAttest
 	if last == nil {
 		return errors.New("no requester has sent an attest request")
 	}
 	if last.refusal == nil {
-		return fmt.Errorf("the CDS answered %q %s instead of refusing with %s", last.pod.name, last.answer(), code)
+		return fmt.Errorf("the Trust Authority answered %q %s instead of refusing with %s", last.pod.name, last.answer(), code)
 	}
 	if last.refusal.Code != code {
-		return fmt.Errorf("the CDS refused with %s, not %s", last.answer(), code)
+		return fmt.Errorf("the Trust Authority refused with %s, not %s", last.answer(), code)
 	}
 	return nil
 }

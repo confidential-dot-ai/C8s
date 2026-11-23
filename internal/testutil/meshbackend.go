@@ -14,7 +14,7 @@ import (
 	"net/http/httptest"
 	"sync"
 
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 )
 
 // ServeMeshBackend turns an unstarted test server into a member backend: it

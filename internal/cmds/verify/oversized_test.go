@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/internal/readutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/readutil"
 )
 
 // A gather reads one document per target. A peer that answers past the cap is

@@ -7,7 +7,9 @@ on:
   schedule:
     - cron: "17 6 * * 1"
   # No push trigger: a fresh advisory against an unchanged pin would paint
-  # main red without any commit to blame; PRs and the weekly run cover it.
+  # main red without any commit to blame; the merge queue and the weekly run
+  # cover it. A High or Critical finding fails the scan. Pull requests into
+  # main skip it: main's merge queue runs it instead.
   pull_request:
     branches: [main, beta]
   merge_group:
@@ -52,7 +54,7 @@ jobs:
   linux:
     runs-on: ubuntu-latest
     needs: changes
-    if: needs.changes.outputs.relevant == 'true'
+    if: needs.changes.outputs.relevant == 'true' && (github.event_name != 'pull_request' || github.base_ref != 'main')
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -66,18 +68,18 @@ jobs:
       uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
       with:
         path: "."
-        fail-build: false
+        fail-build: true
         output-format: table
-        severity-cutoff: critical
+        severity-cutoff: high
 
     - name: Generate job summary
-      id: job-summary
+      if: always()
       run: |
         {
           IFS=$'\n'
           echo "## Grype Report Summary"
           echo '```'
-          cat ${{ steps.scan.outputs.table }}
+          cat "${{ steps.scan.outputs.table }}" 2>/dev/null || echo "(no report)"
           echo '```'
         } >> $GITHUB_STEP_SUMMARY
 
@@ -86,7 +88,7 @@ jobs:
   router-image:
     runs-on: ubuntu-latest
     needs: changes
-    if: needs.changes.outputs.relevant == 'true'
+    if: needs.changes.outputs.relevant == 'true' && (github.event_name != 'pull_request' || github.base_ref != 'main')
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 

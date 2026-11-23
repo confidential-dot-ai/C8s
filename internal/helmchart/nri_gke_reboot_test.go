@@ -50,7 +50,7 @@ func TestChartGKEInstallerRestoresTheGateABootRemoved(t *testing.T) {
 		t.Fatalf("the installer left no plugin binary at %s", plugin)
 	}
 	cfg := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker")
-	staged := []string{nodeBootConfigPath, cfg.Allowlist.Pull.CDSAddressFile, cfg.Allowlist.Pull.CDSMeasurementsConfig}
+	staged := []string{nodeBootConfigPath, cfg.Allowlist.Pull.TAAddressFile, cfg.Allowlist.Pull.TAMeasurementsConfig}
 	for _, path := range staged {
 		if !n.exists(path) {
 			t.Fatalf("the installer did not stage %s", path)

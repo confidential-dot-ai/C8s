@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
 )
 
 const t0 = int64(1_800_000_000)
@@ -198,7 +198,7 @@ func TestSpentTokensSurviveASnapshot(t *testing.T) {
 	}
 }
 
-// A store whose spent tokens have no window is refused at open: CDS must not
+// A store whose spent tokens have no window is refused at open: Trust Authority must not
 // serve reads while every operator write fails.
 func TestStoreWithoutTheTokenWindowIsRefused(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "allowlist.db")

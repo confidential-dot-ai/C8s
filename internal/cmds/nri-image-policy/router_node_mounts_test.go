@@ -11,9 +11,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	sigsyaml "sigs.k8s.io/yaml"
 
-	"github.com/confidential-dot-ai/c8s/internal/testutil"
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 func TestChartRouterNodeMountAdmission(t *testing.T) {
@@ -156,7 +156,7 @@ func TestRouterNodeMountEligibilityDoesNotAuthorizeLaunch(t *testing.T) {
 					t.Fatalf("matching node client did not retain platform address classification: %+v", address)
 				}
 				observed := observedContainerOf(pod, ctr, ctr.Annotations[annotationImageName], mounts)
-				verdict, reason := p.checkContainerObserved(t.Context(), p.cfg, observed, launchFinal)
+				verdict, reason := p.checkContainerObserved(t.Context(), p.cfg, p.policy.current(), observed, launchFinal)
 				if verdict != verdictDeny {
 					t.Fatalf("unapproved final launch admission = %v: %s", verdict, reason)
 				}
@@ -187,8 +187,8 @@ func routerNodeMountPlugin(t *testing.T) *plugin {
 	}
 	cfg.WorkloadClaims.AdvertiseHost = "10.0.0.1"
 	// Launch staging writes both halves into the measured config: where this
-	// cluster's CDS serves, and the role its clients hold (nodeservices).
-	cfg.cdsAddress = "cds.example.org:8443"
+	// cluster's Trust Authority serves, and the role its clients hold (nodeservices).
+	cfg.taAddress = "cds.example.org:8443"
 	cfg.Mesh.Roles = append(cfg.Mesh.Roles, roleBinding{
 		Name: CredentialRole,
 		UID:  workloadclaims.CredentialsUID,
@@ -203,8 +203,8 @@ func routerNodeMountPlugin(t *testing.T) *plugin {
 	}
 	p := newTestPlugin(cfg)
 	p.SetReady()
-	p.cdsPins = "/run/node-cds-policy.json"
-	p.cdsAddress = "/run/node-cds-address"
+	p.taPins = "/run/node-cds-policy.json"
+	p.taAddress = "/run/node-cds-address"
 	p.inventory = newAdmissionInventory(t.TempDir())
 	return p
 }
@@ -236,9 +236,9 @@ func routerNodeMountContainer(pod *api.PodSandbox, name string, uid uint32, decl
 
 func routerNodeMountObserver(p *plugin) mountObserver {
 	return newMountObserver(fixedStorage(allowlist.MountMemory), enforcerMounts{
-		socketDir:  p.cfg.WorkloadClaims.SocketDir,
-		cdsPins:    p.cdsPins,
-		cdsAddress: p.cdsAddress,
+		socketDir: p.cfg.WorkloadClaims.SocketDir,
+		taPins:    p.taPins,
+		taAddress: p.taAddress,
 	})
 }
 

@@ -10,7 +10,7 @@ import (
 
 	"github.com/cucumber/godog"
 
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 // Sentences of the container-admission vocabulary
@@ -48,7 +48,7 @@ func registerAdmission(sc *godog.ScenarioContext) {
 const observe = 150 * time.Second
 
 // pluginApplied: the plugin on node is registered and ready, and holds what
-// CDS serves now, including whatever the scenario has described so far.
+// Trust Authority serves now, including whatever the scenario has described so far.
 func pluginApplied(ctx context.Context, node string) error {
 	w := getWorld(ctx)
 	k8sNode, err := w.be.call("node_name", node)

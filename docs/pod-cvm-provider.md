@@ -5,7 +5,14 @@ Pod on a virtual node. The operator then launches one Cloud CVM for that Pod
 UID from a generic launch document that names no pod, verifies that the guest
 has run no containers, delivers the pod through one authenticated assignment,
 and projects verified guest status back to Kubernetes. Deleting the Pod
-terminates its CVM before releasing the provider finalizer.
+terminates its CVM before releasing the provider finalizer. A running Pod's CVM
+is terminated once the deletion's grace period has passed, or after
+`maxDeletionGraceSeconds` if that is shorter, so a delete with the default
+grace period keeps the CVM for 30 seconds; `--grace-period=0 --force`
+terminates it at once, and so does deleting a Pod its CVM has not received
+yet. The guest is not told to stop its containers earlier. A verification
+deadline that passes during the grace period ends it: the Pod reports
+`GuestVerificationTimedOut` and its CVM is terminated then.
 
 Every pod CVM boots generic and receives exactly one pod. An assigned, rebooted
 or terminal VM is never reused for another Pod. Kubernetes workload controllers
@@ -16,8 +23,8 @@ can create replacement Pods in their normal way.
 Use a validated TDX Pod image, its exact published `manifest.json`, and a Cloud
 API/catalog launch contract that accept `c8s-launch/v2`. Historical v1 images and
 catalog entries do not satisfy this requirement. The Pod measurement contract
-does not support SNP; the separate measured CDS image may use another TEE.
-CDS must authorize the Pod image and provider's Pod launch public key in its
+does not support SNP; the separate measured Trust Authority (TA) image may use another TEE.
+The TA must authorize the Pod image and provider's Pod launch public key in its
 measured Pod image policy; see [the Pod launch contract](operator.md#pod-cvm).
 Use a Pod signing key that signs nothing else.
 
@@ -44,8 +51,8 @@ and size placeholders with compatible Cloud values:
   "image": "c8s-pod@V2_COMPATIBLE_CATALOG_VERSION",
   "imageManifestFile": "manifest.json",
   "launchKeyFile": "pod.key",
-  "cdsAddress": "cds.example.com:8443",
-  "cdsImagePolicyFile": "cds.json",
+  "cdsAddress": "ta.example.com:8443",
+  "cdsImagePolicyFile": "ta.json",
   "workloadsFile": "workloads.json",
   "clusterID": "demo",
   "size": "CLOUD_SIZE",
@@ -55,6 +62,7 @@ and size placeholders with compatible Cloud values:
   "reservedMemoryMiB": 1024,
   "maxPods": 10,
   "verificationTimeoutSeconds": 600,
+  "maxDeletionGraceSeconds": 300,
   "publicIP": "shared",
   "meshPeers": []
 }
@@ -65,14 +73,14 @@ characters, letters, digits, `-`, `_` and `.`, starting and ending with a letter
 or digit. It names this provider's records, its Node and its Cloud instances,
 and the provider refuses to start without a valid one.
 
-`cdsAddress` names the external CDS host and port; `cdsImagePolicyFile` contains
-the generated policy binding every admitted CDS image to the same exact measured
-CDS configuration. Both are required. A DNS host and a different CDS image or
+`cdsAddress` names the external TA host and port; `cdsImagePolicyFile` contains
+the generated policy binding every admitted TA image to the same exact measured
+TA configuration. Both are required. A DNS host and a different TA image or
 TEE are supported. Every generic launch
-document carries this explicit CDS trust. Changing it affects new records only;
+document carries this explicit TA trust. Changing it affects new records only;
 existing Pod records retain their signed bytes.
 
-The provider takes no CDS pin decree: after a CDS image roll, deploy an updated
+The provider takes no TA pin decree: after a TA image roll, deploy an updated
 `cdsImagePolicyFile`. Existing frozen Pod and assignment records keep their
 original trust.
 
@@ -92,7 +100,7 @@ kubectl -n c8s-system create secret generic pod-cvm-provider \
   --from-file=cloud-token=provider/cloud-token \
   --from-file=manifest.json=provider/manifest.json \
   --from-file=pod.key=provider/pod.key \
-  --from-file=cds.json=provider/cds.json \
+  --from-file=ta.json=provider/ta.json \
   --from-file=workloads.json=provider/workloads.json
 ```
 
@@ -130,7 +138,7 @@ c8s operator --pod-cvm-provider-config /etc/c8s/pod-cvm/config.json ...
 
 `--pod-cvm-provider` binds the provider's cluster grants and its Secret grant
 in `c8s-system` to the user `c8s-operator`. The provider is untrusted for
-confidentiality, like the control plane: a pod's attestation and the CDS
+confidentiality, like the control plane: a pod's attestation and the TA
 replay of its measured journal protect it, and the signed document and
 assignment protect integrity and availability.
 
@@ -192,10 +200,14 @@ Pod the status reason is `AssignmentPending`.
 A lost assignment reply keeps the same VM and record. The provider replays the
 saved bytes to the same serving key and recovers through matching attested
 status. It never signs a second assignment for the record, and refuses a guest
-that presents another serving key, holds another Pod, or reports the Pod
-without a saved assignment (`UnexpectedAssignedGuest`). If recovery cannot
-establish valid Pod status within the frozen verification window, the Pod fails
-and the VM is terminated. Refusal to issue an assignment nonce, or refusal of an
+that presents another serving key or holds another Pod. Before it signs an
+assignment, and before every send or replay, it reads the Pod again and sends
+nothing for a Pod that is being deleted, was replaced or whose specification
+changed since launch. Status is read only from the serving key saved with the assignment, so
+a record without a saved assignment reads none: a guest that already runs the
+Pod is not adopted on its status. If recovery cannot establish valid Pod
+status within the frozen verification window, the Pod fails and the VM is
+terminated. Refusal to issue an assignment nonce, or refusal of an
 assignment whose nonce the guest has since discarded, uses the same bounded
 failure path; it does not reset the deadline.
 
@@ -253,8 +265,8 @@ after creation, and refuses a FieldRef to it.
    `/run/c8s/client-document`.
 3. The guest puts `H = SHA-256(document)` into its Pod claims as
    `client_document_digest`. The quote that authorizes each certificate
-   binds the claims, so CDS issues nothing for claims with another digest.
-4. CDS stamps H on the Pod's leaf as the client document digest extension
+   binds the claims, so the TA issues nothing for claims with another digest.
+4. The TA stamps H on the Pod's leaf as the client document digest extension
    ([certificate-extensions.md](certificate-extensions.md)).
 
 A Pod without the annotation has an empty document: no file, no claim and no
@@ -273,9 +285,9 @@ c8s verify --kind workload --mesh-ca mesh-ca.pem \
 The verdict prints the digest and the agent label, and fails unless the leaf
 chains to the mesh CA and names the SHA-256 of `document.bin`.
 
-A Pod CVM leaf carries no hardware evidence: CDS issued it after verifying
+A Pod CVM leaf carries no hardware evidence: the TA issued it after verifying
 the Pod's attestation. So the verdict rests on the chain to the mesh CA, which
-you pinned after verifying CDS, and on the stamps (`--workload`,
+you pinned after verifying the TA, and on the stamps (`--workload`,
 `--client-document`, `--sandbox-id`). Pins on hardware evidence, such as
 `--measurements` or `--image-manifest`, fail against it.
 
@@ -287,6 +299,12 @@ container states back to the original Pod. It preserves the scheduler's
 `PodScheduled` condition and hides the guest-injected mesh endpoint. Failed
 verification withdraws readiness and advertised endpoints.
 
+`maxDeletionGraceSeconds` defaults to 300 (5 minutes), with a permitted range of
+1 to 3600 seconds. A Pod's author sets its `terminationGracePeriodSeconds`, and
+the CVM keeps running and holds its place in `maxPods` throughout the grace
+period of a delete; this maximum bounds that time whatever grace period the
+Pod or the delete carries.
+
 `verificationTimeoutSeconds` defaults to 600 (10 minutes), with a permitted range
 of 30 to 86400 seconds. The initial window begins when the provider persists the
 Pod's launch intent, including Cloud provisioning and boot. While Cloud has no
@@ -296,12 +314,13 @@ status projection matching the assigned Pod clears the window. A later failure
 of the guest itself (refused attestation, a status naming another Pod, a reboot,
 an ended or replaced instance) begins another window of the same frozen
 duration. A Cloud API or node outage does not: the Pod keeps its last status
-with readiness unknown until the outage ends. While Cloud throttles the
+with readiness unknown until the outage ends. An answer without a Cloud
+problem code did not come from Cloud and counts as an outage. While Cloud throttles the
 provider (HTTP 429), the Pod reports `RateLimited` and the provider waits as
 Cloud's `Retry-After` asks (at most five minutes, or the 10-second poll when it
 names none) plus a few seconds of jitter, never past this window. A request
-Cloud refuses as such (another 4xx, such as `invalid_request`) reports
-`CloudRejectedRequest`, and the provider log names Cloud's problem code; a
+Cloud refuses as such (another 4xx carrying a Cloud problem code, such as
+`invalid_request`) reports `CloudRejectedRequest`, and the provider log names Cloud's problem code; a
 create refusal that proves no VM exists ends the Pod `Failed` at once, any
 other refusal runs this window. A valid attested `Pending` Pod or
 a running Pod whose application is unready does not time out on this basis.
@@ -345,8 +364,11 @@ Before each Cloud creation, the operator saves the exact signed request in a
 provider-owned Secret and holds the Pod with a finalizer. Retries use the same
 request and idempotency key, including after restart or an ambiguous create
 response. The record is retained until deletion is confirmed. An orphan sweep also handles
-force-deleted Pods and same-name Pods with a new UID. Do not manually remove
-provider records or finalizers to bypass cleanup.
+force-deleted Pods and same-name Pods with a new UID. A Pod or record counts
+as gone only on the API server's own not-found answer; a 404 from something in
+front of it is a failed request and is retried. Likewise a Cloud 404 means the
+instance is gone only when it carries Cloud's `not_found` code. Do not manually remove provider
+records or finalizers to bypass cleanup.
 
 A create whose response was lost is resolved, however old, by replaying the
 exact saved request under its idempotency key: Cloud returns the instance it

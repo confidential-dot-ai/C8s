@@ -10,15 +10,15 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/cdsconn"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
-	intsecrets "github.com/confidential-dot-ai/c8s/internal/secrets"
-	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/taconn"
+	intsecrets "github.com/confidential-dot-ai/confidential-kubernetes/internal/secrets"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
 )
 
 // options holds the flags every subcommand shares.
 type options struct {
-	cdsconn.Options
+	taconn.Options
 }
 
 // NewCmd returns the `c8s volume` command tree.
@@ -26,15 +26,15 @@ func NewCmd() *cobra.Command {
 	return newCmd(nil)
 }
 
-func newCmd(verifier cdsconn.PinVerifier) *cobra.Command {
-	o := &options{Options: cdsconn.Options{Verifier: verifier, DirectCDS: true}}
+func newCmd(verifier taconn.PinVerifier) *cobra.Command {
+	o := &options{Options: taconn.Options{Verifier: verifier, DirectTA: true}}
 	cmd := &cobra.Command{
 		Use:   "volume",
-		Short: "Build encrypted volumes and store their keys in CDS",
+		Short: "Build encrypted volumes and store their keys in Trust Authority",
 		Long: `Build a volume that only an attested workload can open.
 
 'create' packages a directory into an encrypted, integrity-protected image and
-puts its key into the CDS secret store — or, with --mutable, builds a writable
+puts its key into the Trust Authority secret store — or, with --mutable, builds a writable
 volume the workload can both read and write, without integrity protection. The
 image is ciphertext either way: copy it to the node by any means, including
 through the untrusted host.
@@ -49,15 +49,15 @@ an allowlist entry whose 'secrets' grant covers the key's path. 'create' prints
 the grant and the pod annotations to apply; it does not modify any workload.
 
 Writes are signed with an operator EC private key you supply via --operator-key
-(or C8S_OPERATOR_KEY), whose public half CDS pins from its configuration
-('c8s cds config new --operator-keys').
+(or C8S_OPERATOR_KEY), whose public half Trust Authority pins from its configuration
+('c8s ta config new --operator-keys').
 
-Keys live in the CDS process and nowhere else, so a CDS restart makes every
+Keys live in the Trust Authority process and nowhere else, so a Trust Authority restart makes every
 volume in the cluster unopenable until its key is written again. Keep the escrow
 file 'create' writes.`,
 		SilenceUsage: true,
 	}
-	cdsconn.BindFlags(cmd.PersistentFlags(), &o.Options)
+	taconn.BindFlags(cmd.PersistentFlags(), &o.Options)
 	cmd.AddCommand(newCreateCmd(o))
 	attach, detach := newAttachCmd(Attacher{}), newDetachCmd(Attacher{})
 	cmdsutil.HideUnreadFlags(attach, cmd.PersistentFlags())

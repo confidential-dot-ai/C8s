@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	repoPathPrefix = "github.com/confidential-dot-ai/c8s/"
+	repoPathPrefix = "github.com/confidential-dot-ai/confidential-kubernetes/"
 	cobraPath      = "github.com/spf13/cobra"
 	rulesFile      = "test/workflows/command_imports_test.go"
 
@@ -38,20 +38,20 @@ type importRules struct {
 
 var commandImportRules = importRules{
 	librariesUnderCmds: []string{
-		"internal/cmds/cdsconn",
+		"internal/cmds/taconn",
 		"internal/cmds/cmdsutil",
 		"internal/cmds/nodeservices",
 		"internal/cmds/sidecar",
 	},
 	subcommandMounts: []string{
-		"internal/cmds/cds imports internal/cmds/cdsca",
-		"internal/cmds/cds imports internal/cmds/cdslaunch",
-		"internal/cmds/cds imports internal/cmds/verify",
+		"internal/cmds/ta imports internal/cmds/taca",
+		"internal/cmds/ta imports internal/cmds/talaunch",
+		"internal/cmds/ta imports internal/cmds/verify",
 	},
 	knownDebt: []string{
-		"internal/cdsconfig imports internal/cmds/cmdsutil",
-		"internal/cdsdecree imports internal/cmds/cmdsutil",
-		"internal/cdspins imports internal/cmds/cmdsutil",
+		"internal/taconfig imports internal/cmds/cmdsutil",
+		"internal/tadecree imports internal/cmds/cmdsutil",
+		"internal/tapins imports internal/cmds/cmdsutil",
 		"internal/controller imports internal/cmds/cmdsutil",
 		"internal/podlaunch imports github.com/spf13/cobra",
 		"internal/podlaunch imports internal/cmds/cmdsutil",
@@ -59,7 +59,7 @@ var commandImportRules = importRules{
 		"internal/podprovider imports internal/cmds/podstatus",
 		"internal/webhook imports internal/cmds/volume",
 		"internal/cmds/c8srunc imports internal/cmds/nri-image-policy",
-		"internal/cmds/cds imports internal/cmds/worker",
+		"internal/cmds/ta imports internal/cmds/worker",
 		"internal/cmds/getvolume imports internal/cmds/volume",
 		"internal/cmds/getvolume imports internal/cmds/volumed",
 		"internal/cmds/nodeservices imports internal/cmds/nri-image-policy",

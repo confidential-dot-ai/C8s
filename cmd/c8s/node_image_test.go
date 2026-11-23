@@ -27,12 +27,12 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
-	"github.com/confidential-dot-ai/c8s/charts"
-	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/nodeservices"
-	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
+	"github.com/confidential-dot-ai/confidential-kubernetes/charts"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/nodeservices"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/taconfig"
+	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
 )
 
 var nodeImageTestMeshDigest = "sha256:" + strings.Repeat("d", 64)
@@ -268,10 +268,10 @@ func TestNodeImageRenderRejectsBadInputsBeforeHelm(t *testing.T) {
 	}
 }
 
-// bootstrapCDSPin is the pin `c8s cds config new` writes, built the way that
-// command builds it: this cluster's CDS configuration, bound to the launch
+// bootstrapTAPin is the pin `c8s ta config new` writes, built the way that
+// command builds it: this cluster's Trust Authority configuration, bound to the launch
 // digests of the image its VM boots.
-func bootstrapCDSPin(t *testing.T) string {
+func bootstrapTAPin(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	manifest := filepath.Join(dir, "cds-manifest.json")
@@ -284,7 +284,7 @@ func bootstrapCDSPin(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, pin, err := cdsconfig.Build(cdsconfig.Inputs{
+	_, pin, err := taconfig.Build(taconfig.Inputs{
 		ClusterID:     "bootstrap",
 		OperatorKeys:  operatorKeys,
 		ComponentSeed: []byte(`{"schema":"c8s.allowlist/v1","workloads":{}}`),
@@ -318,7 +318,7 @@ func testNodeImageBootstrap(t *testing.T, seed []byte, platform string) {
 		"@MESH_DIGEST@":     "sha256:" + strings.Repeat("1b", 32),
 		"@OPERATOR_REPO@":   "ghcr.io/confidential-dot-ai/c8s-operator",
 		"@OPERATOR_DIGEST@": "sha256:" + strings.Repeat("2c", 32),
-		"@ROUTER_REPO@":     "docker.io/nginxinc/nginx-unprivileged",
+		"@ROUTER_REPO@":     "docker.io/nginx/nginx-unprivileged",
 		"@ROUTER_DIGEST@":   "sha256:" + strings.Repeat("3d", 32),
 	} {
 		floor = bytes.ReplaceAll(floor, []byte(placeholder), []byte(value))
@@ -340,8 +340,8 @@ func testNodeImageBootstrap(t *testing.T, seed []byte, platform string) {
 			t.Fatal(err)
 		}
 	}
-	cds := cmdsutil.CDS{Address: "192.0.2.50:8443", Measurements: bootstrapCDSPin(t)}
-	if err := nodeservices.Prepare(root, nodeservices.FloorInputs{CDS: cds}); err != nil {
+	ta := cmdsutil.TA{Address: "192.0.2.50:8443", Measurements: bootstrapTAPin(t)}
+	if err := nodeservices.Prepare(root, nodeservices.FloorInputs{TA: ta}); err != nil {
 		t.Fatalf("actual chart seed and measured NRI floor cannot boot: %v", err)
 	}
 	prepared, err := os.ReadFile(filepath.Join(root, "etc/nri/conf.d/image-policy.yaml"))

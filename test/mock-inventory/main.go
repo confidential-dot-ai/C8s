@@ -1,7 +1,7 @@
 // mock-inventory is a fake admission inventory for integration testing: it
 // serves the production token route (workloadclaims.ServeTokens) on the baked
 // Unix socket, and its sandbox-token signing key over plain HTTP in place of
-// the armTLS digests endpoint CDS resolves that key from. Use only in test
+// the armTLS digests endpoint Trust Authority resolves that key from. Use only in test
 // environments.
 //
 // It asserts one sandbox for every caller. The real inventory binds the caller
@@ -23,14 +23,14 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 // sandboxID is shaped like a containerd sandbox ID (64 hex characters), so the
-// leaf extension CDS stamps it into carries a production-shaped value.
+// leaf extension Trust Authority stamps it into carries a production-shaped value.
 const sandboxID = "3c8f1d0b7a46e95281cf0a3d6b7e5419f2a8c04d1e6b93758af2c05d9e314b67"
 
-// identityPort is where the signing key is served; mock-cds dials this port on
+// identityPort is where the signing key is served; mock-ta dials this port on
 // the host a token names.
 const identityPort = "8500"
 
@@ -90,7 +90,7 @@ func main() {
 
 // serveIdentity serves the signing key the way the inventory's IdentityPath
 // does, minus the armTLS listener: the mock has no evidence to attest it with,
-// and mock-cds resolves the key from here before verifying a token.
+// and mock-ta resolves the key from here before verifying a token.
 func serveIdentity(port string, pubDER []byte) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET "+workloadclaims.IdentityPath, func(w http.ResponseWriter, r *http.Request) {
@@ -109,7 +109,7 @@ func serveIdentity(port string, pubDER []byte) error {
 
 // containerIP is the address a token names as its inventory host: the
 // container's first global-unicast IPv4, which on a compose network is the
-// address the CDS container reaches it on.
+// address the Trust Authority container reaches it on.
 func containerIP() (string, error) {
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {

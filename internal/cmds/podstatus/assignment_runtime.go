@@ -13,10 +13,10 @@ import (
 	"os/exec"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/nodeservices"
-	"github.com/confidential-dot-ai/c8s/internal/fileutil"
-	"github.com/confidential-dot-ai/c8s/internal/readutil"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/nodeservices"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/fileutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/readutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 )
 
 // The pod-role units the assignment path starts, in this order: containerd
@@ -233,7 +233,7 @@ func assignmentHealthAt(ctx context.Context, uid, socket string) error {
 	if health.PodEnded {
 		return errPodIdentityEnded
 	}
-	// Registration installs the floor before CDS's first pull (503). Waiting
+	// Registration installs the floor before Trust Authority's first pull (503). Waiting
 	// for the pull would make the assignment depend on it.
 	if (code != http.StatusOK && code != http.StatusServiceUnavailable) || !health.PodRegistered || health.PodUID != uid {
 		return errors.New("pod admission has not installed the expected assignment")

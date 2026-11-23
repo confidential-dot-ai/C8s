@@ -8,8 +8,8 @@ import (
 
 	"github.com/spf13/pflag"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
-	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
 )
 
 // Router selects the router's public hostnames and front-door limits. All

@@ -37,7 +37,7 @@ func TestSANFileFailsBeforeNetworkOrOutputs(t *testing.T) {
 			}
 			err := run(t.Context(), config{
 				SANFile:  path,
-				CDSURL:   "invalid",
+				TAURL:    "invalid",
 				CertPath: filepath.Join(root, "out", "cert.pem"),
 			})
 			if err == nil || strings.Contains(err.Error(), "cds-url") {

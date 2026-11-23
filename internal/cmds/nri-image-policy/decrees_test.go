@@ -22,10 +22,10 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
-	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
-	"github.com/confidential-dot-ai/c8s/internal/cdspins"
-	"github.com/confidential-dot-ai/c8s/internal/testutil"
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tadecree"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tapins"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 const decreeClusterID = "lane"
@@ -58,7 +58,7 @@ func decreeOperatorKey(t *testing.T) *ecdsa.PrivateKey {
 }
 
 // clusterPinDecree signs the decree moving the cluster to measurement.
-func clusterPinDecree(t *testing.T, key *ecdsa.PrivateKey, launchFile, measurement string) *cdsdecree.Signed {
+func clusterPinDecree(t *testing.T, key *ecdsa.PrivateKey, launchFile, measurement string) *tadecree.Signed {
 	t.Helper()
 	digest, err := hex.DecodeString(measurement)
 	if err != nil {
@@ -75,17 +75,17 @@ func clusterPinDecree(t *testing.T, key *ecdsa.PrivateKey, launchFile, measureme
 	if err != nil {
 		t.Fatal(err)
 	}
-	pins, err := cdsdecree.NewPinDocument(document)
+	pins, err := tadecree.NewPinDocument(document)
 	if err != nil {
 		t.Fatal(err)
 	}
-	signed, err := cdsdecree.Sign(cdsdecree.Decree{
+	signed, err := tadecree.Sign(tadecree.Decree{
 		ClusterID:   decreeClusterID,
-		IntentID:    cdsdecree.NewIntentID(),
-		Kind:        cdsdecree.UpdateMeasurements,
+		IntentID:    tadecree.NewIntentID(),
+		Kind:        tadecree.UpdateMeasurements,
 		ExpiresAt:   time.Now().Add(time.Hour),
 		BaseVersion: decreeVersion,
-		CDSPins:     pins,
+		TAPins:      pins,
 	}, key)
 	if err != nil {
 		t.Fatal(err)
@@ -94,18 +94,18 @@ func clusterPinDecree(t *testing.T, key *ecdsa.PrivateKey, launchFile, measureme
 }
 
 // followingNode is a node whose enforcer follows one decree the cluster serves.
-func followingNode(t *testing.T, launchFile string, served *cdsdecree.Signed) (*plugin, *followedPins) {
+func followingNode(t *testing.T, launchFile string, served *tadecree.Signed) (*plugin, *followedPins) {
 	t.Helper()
 	renderInTempDir(t)
-	pin := cdsPinFile(t, testutil.CDSPinDocument(testutil.TestMeasurement, launchFile))
+	pin := taPinFile(t, testutil.TAPinDocument(testutil.TestMeasurement, launchFile))
 	bootstrap, err := refvalues.Load(pin)
 	if err != nil {
 		t.Fatal(err)
 	}
-	source, err := cdspins.New(cdspins.Config{
+	source, err := tapins.New(tapins.Config{
 		Bootstrap:   bootstrap,
-		Attested:    func(context.Context, refvalues.ReferenceValues) (*cdsdecree.Signed, error) { return served, nil },
-		Fetch:       func(context.Context) (*cdsdecree.Signed, error) { return nil, nil },
+		Attested:    func(context.Context, refvalues.ReferenceValues) (*tadecree.Signed, error) { return served, nil },
+		Fetch:       func(context.Context) (*tadecree.Signed, error) { return nil, nil },
 		StateFile:   filepath.Join(t.TempDir(), decreeStateName),
 		MinInterval: time.Nanosecond,
 	})
@@ -119,9 +119,9 @@ func followingNode(t *testing.T, launchFile string, served *cdsdecree.Signed) (*
 	p := testPlugin(t, &config{
 		Platform:       "tdx",
 		WorkloadClaims: workloadClaimsConfig{SocketDir: t.TempDir()},
-		Allowlist:      allowlistConfig{Pull: pullConfig{CDSMeasurementsConfig: pin}},
+		Allowlist:      allowlistConfig{Pull: pullConfig{TAMeasurementsConfig: pin}},
 	})
-	if err := p.prepareCDSPins(decrees); err != nil {
+	if err := p.prepareTAPins(decrees); err != nil {
 		t.Fatalf("prepareCDSPins: %v", err)
 	}
 	holdContainersForFirstDecree(p, decrees)
@@ -131,19 +131,19 @@ func followingNode(t *testing.T, launchFile string, served *cdsdecree.Signed) (*
 // mountedPins is the policy the plugin hands its credential clients.
 func mountedPins(t *testing.T, p *plugin) refvalues.ReferenceValues {
 	t.Helper()
-	set, err := refvalues.Load(p.cdsPins)
+	set, err := refvalues.Load(p.taPins)
 	if err != nil {
 		t.Fatalf("the mounted policy does not load: %v", err)
 	}
 	return set
 }
 
-// Every CDS client of a node moves together: the enforcer writes the decree it
+// Every Trust Authority client of a node moves together: the enforcer writes the decree it
 // followed into the policy it mounts, so a pod reads the new set.
 func TestTheEnforcerHandsTheFollowedPinsToItsCredentialClients(t *testing.T) {
 	key := decreeOperatorKey(t)
 	launchFile := clusterLaunchFile(t, key)
-	p, decrees := followingNode(t, launchFile, clusterPinDecree(t, key, launchFile, testutil.NextCDSImage))
+	p, decrees := followingNode(t, launchFile, clusterPinDecree(t, key, launchFile, testutil.NextTAImage))
 
 	if got := hex.EncodeToString(mountedPins(t, p).Images[0].Digest); got != testutil.TestMeasurement {
 		t.Fatalf("the mounted policy names %s, want the launch document's image", got)
@@ -151,7 +151,7 @@ func TestTheEnforcerHandsTheFollowedPinsToItsCredentialClients(t *testing.T) {
 	if err := decrees.Refresh(); err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}
-	if got := hex.EncodeToString(mountedPins(t, p).Images[0].Digest); got != testutil.NextCDSImage {
+	if got := hex.EncodeToString(mountedPins(t, p).Images[0].Digest); got != testutil.NextTAImage {
 		t.Fatalf("the mounted policy names %s, want the decreed image", got)
 	}
 }
@@ -161,8 +161,8 @@ func TestTheEnforcerHandsTheFollowedPinsToItsCredentialClients(t *testing.T) {
 func TestTheFollowedPinsAreWrittenToTheSameInode(t *testing.T) {
 	key := decreeOperatorKey(t)
 	launchFile := clusterLaunchFile(t, key)
-	p, decrees := followingNode(t, launchFile, clusterPinDecree(t, key, launchFile, testutil.NextCDSImage))
-	before, err := os.Stat(p.cdsPins)
+	p, decrees := followingNode(t, launchFile, clusterPinDecree(t, key, launchFile, testutil.NextTAImage))
+	before, err := os.Stat(p.taPins)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +170,7 @@ func TestTheFollowedPinsAreWrittenToTheSameInode(t *testing.T) {
 	if err := decrees.Refresh(); err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}
-	after, err := os.Stat(p.cdsPins)
+	after, err := os.Stat(p.taPins)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,12 +179,12 @@ func TestTheFollowedPinsAreWrittenToTheSameInode(t *testing.T) {
 	}
 }
 
-// A rebooted node holds no decree, so a container handed its CDS pins before
+// A rebooted node holds no decree, so a container handed its Trust Authority pins before
 // the first look settles is refused and the kubelet retries it.
 func TestContainersWaitForTheFirstDecree(t *testing.T) {
 	key := decreeOperatorKey(t)
 	launchFile := clusterLaunchFile(t, key)
-	p, decrees := followingNode(t, launchFile, clusterPinDecree(t, key, launchFile, testutil.NextCDSImage))
+	p, decrees := followingNode(t, launchFile, clusterPinDecree(t, key, launchFile, testutil.NextTAImage))
 	pod := routerNodeMountPod()
 	ctr := makeCtr(pod.Id, workloadclaims.AttestContainerName)
 	ctr.User = &api.User{Uid: workloadclaims.UpstreamUID}
@@ -214,7 +214,7 @@ func TestTheRouterTakesTheFollowedPinsAtItsOwnPath(t *testing.T) {
 
 	adjustment := mustCredentialMounts(t, p, pod, ctr)
 	mount := mountTo(adjustment, workloadclaims.RouterCDSPinsPath)
-	if mount == nil || mount.GetSource() != p.cdsPins {
+	if mount == nil || mount.GetSource() != p.taPins {
 		t.Fatalf("the router's pin mount = %v, want the node's own policy", mount)
 	}
 	if mountTo(adjustment, workloadclaims.CDSPinsPath) != nil {
@@ -222,20 +222,20 @@ func TestTheRouterTakesTheFollowedPinsAtItsOwnPath(t *testing.T) {
 	}
 }
 
-// A node whose CDS runs alone follows nothing: that CDS answers for its own
+// A node whose Trust Authority runs alone follows nothing: that Trust Authority answers for its own
 // image, and no decree ever moves it.
-func TestANodePinningASingleCDSFollowsNoDecree(t *testing.T) {
+func TestANodePinningASingleTAFollowsNoDecree(t *testing.T) {
 	renderInTempDir(t)
-	pin := cdsPinFile(t, testutil.CDSPinDocument(testutil.TestMeasurement, testutil.CDSLaunchFile))
+	pin := taPinFile(t, testutil.TAPinDocument(testutil.TestMeasurement, testutil.TALaunchFile))
 	pins, decrees, err := pullConfig{
-		CDSMeasurementsConfig: pin,
-		URL:                   "https://cds.example",
-	}.cdsPinSource(discardLogger())
+		TAMeasurementsConfig: pin,
+		URL:                  "https://cds.example",
+	}.taPinSource(discardLogger())
 	if err != nil {
-		t.Fatalf("the node's CDS pins: %v", err)
+		t.Fatalf("the node's Trust Authority pins: %v", err)
 	}
 	if decrees != nil {
-		t.Fatal("a node pinning a single CDS followed its decrees")
+		t.Fatal("a node pinning a single Trust Authority followed its decrees")
 	}
 	if got := hex.EncodeToString(pins.Current().Images[0].Digest); got != testutil.TestMeasurement {
 		t.Fatalf("pins name %s, want the launch document's image", got)
@@ -247,24 +247,24 @@ func TestANodePinningASingleCDSFollowsNoDecree(t *testing.T) {
 func TestADecreeBelowTheNodesFloorIsRefused(t *testing.T) {
 	key := decreeOperatorKey(t)
 	launchFile := clusterLaunchFile(t, key)
-	cds := servingDecree(t, clusterPinDecree(t, key, launchFile, testutil.NextCDSImage))
+	ta := servingDecree(t, clusterPinDecree(t, key, launchFile, testutil.NextTAImage))
 	for name, floor := range map[string]uint64{
 		"above the decree": decreeVersion + 1,
 		"at the decree":    decreeVersion,
 	} {
 		t.Run(name, func(t *testing.T) {
 			renderInTempDir(t)
-			pin := cdsPinFile(t, testutil.CDSPinDocument(testutil.TestMeasurement, launchFile))
+			pin := taPinFile(t, testutil.TAPinDocument(testutil.TestMeasurement, launchFile))
 			bootstrap, err := refvalues.Load(pin)
 			if err != nil {
 				t.Fatal(err)
 			}
 			decrees, err := pullConfig{
-				CDSMeasurementsConfig: pin,
-				URL:                   cds,
-				AttestationApiURL:     "http://127.0.0.1:1",
-				CDSPinFloor:           floor,
-			}.cdsDecrees(bootstrap, discardLogger())
+				TAMeasurementsConfig: pin,
+				URL:                  ta,
+				AttestationApiURL:    "http://127.0.0.1:1",
+				TAPinFloor:           floor,
+			}.taDecrees(bootstrap, discardLogger())
 			if err != nil {
 				t.Fatalf("cdsDecrees: %v", err)
 			}
@@ -277,15 +277,15 @@ func TestADecreeBelowTheNodesFloorIsRefused(t *testing.T) {
 				}
 				return
 			}
-			if err != nil || held != testutil.NextCDSImage {
+			if err != nil || held != testutil.NextTAImage {
 				t.Fatalf("refresh = %v leaving %s, want the decree at the floor followed", err, held)
 			}
 		})
 	}
 }
 
-// servingDecree is a CDS no client can attest, serving one pin decree.
-func servingDecree(t *testing.T, decree *cdsdecree.Signed) string {
+// servingDecree is a Trust Authority no client can attest, serving one pin decree.
+func servingDecree(t *testing.T, decree *tadecree.Signed) string {
 	t.Helper()
 	body, err := json.Marshal(decree)
 	if err != nil {

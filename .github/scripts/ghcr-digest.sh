@@ -5,7 +5,7 @@
 #
 # Prints "sha256:<64 hex>". Anonymous pull token, four attempts on transient
 # answers, a 404 is an error naming the tag. The same request the metal lanes
-# make inline for the node and CDS images.
+# make inline for the node and Trust Authority images.
 
 set -euo pipefail
 

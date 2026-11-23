@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlistclient"
 )
 
 // testPull is a tracker whose clock the caller moves.
@@ -26,7 +26,7 @@ func quietPull() *allowlistPull {
 	return newAllowlistPull("cds.test:8443", time.Now, discardLogger())
 }
 
-func TestAllowlistPullStallNamesTheUnreachedCDS(t *testing.T) {
+func TestAllowlistPullStallNamesTheUnreachedTA(t *testing.T) {
 	pull, advance := testPull(discardLogger())
 
 	pull.failed(errors.New("lookup cds.private: no such host"))
@@ -38,12 +38,12 @@ func TestAllowlistPullStallNamesTheUnreachedCDS(t *testing.T) {
 	pull.failed(errors.New("lookup cds.private: no such host"))
 	stall := pull.stall()
 	if !strings.Contains(stall, "cds.private:8443") || !strings.Contains(stall, "no such host") {
-		t.Fatalf("stall = %q, want the CDS endpoint and the resolution failure", stall)
+		t.Fatalf("stall = %q, want the Trust Authority endpoint and the resolution failure", stall)
 	}
 
 	pull.reached()
 	if stall := pull.stall(); stall != "" {
-		t.Fatalf("stall = %q after a pull reached CDS, want none", stall)
+		t.Fatalf("stall = %q after a pull reached Trust Authority, want none", stall)
 	}
 }
 
@@ -75,7 +75,7 @@ func TestAllowlistPullReportsEachStallOnce(t *testing.T) {
 	}
 }
 
-func TestPullLoopStallsOnACDSItCannotReach(t *testing.T) {
+func TestPullLoopStallsOnATAItCannotReach(t *testing.T) {
 	pull, advance := testPull(discardLogger())
 	advance(pullStallAfter)
 
@@ -100,12 +100,12 @@ func TestPullLoopStallsOnACDSItCannotReach(t *testing.T) {
 	deadline := time.Now().Add(5 * time.Second)
 	for pull.stall() == "" {
 		if time.Now().After(deadline) {
-			t.Fatal("the loop reported no stall for a CDS it never reached")
+			t.Fatal("the loop reported no stall for a Trust Authority it never reached")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	if stall := pull.stall(); !strings.Contains(stall, "cds.private:8443") {
-		t.Fatalf("stall = %q, want the CDS this node reached none from", stall)
+		t.Fatalf("stall = %q, want the Trust Authority this node reached none from", stall)
 	}
 	cancel()
 	<-done
@@ -136,7 +136,7 @@ func TestStartHealthServer_HealthzShowsTheAllowlistStall(t *testing.T) {
 	pull.failed(errors.New("lookup cds.private: no such host"))
 	_, body := healthz(t, httpClient)
 	if !strings.Contains(body.AllowlistStall, "cds.private:8443") {
-		t.Fatalf("allowlist_stall = %q, want the CDS this node reached none from", body.AllowlistStall)
+		t.Fatalf("allowlist_stall = %q, want the Trust Authority this node reached none from", body.AllowlistStall)
 	}
 }
 

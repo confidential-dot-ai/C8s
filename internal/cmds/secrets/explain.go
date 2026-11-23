@@ -8,10 +8,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
-	intsecrets "github.com/confidential-dot-ai/c8s/internal/secrets"
-	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
+	intsecrets "github.com/confidential-dot-ai/confidential-kubernetes/internal/secrets"
+	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 )
 
 // envEvidenceReason explains an allowlist.EnvEvidence diagnosis and how to
@@ -45,7 +45,7 @@ match, how each workload entry measures against that, and the grant that
 resolves.
 
 A refused release tells the pod only that it was refused, and the input that
-decides it — the container set — is visible only to CDS, so this is where a
+decides it — the container set — is visible only to the Trust Authority, so this is where a
 wedged pod is diagnosed.
 
 The sandbox ID is on the pod's certificate; 'c8s verify' prints it.`,
@@ -84,7 +84,7 @@ The sandbox ID is on the pod's certificate; 'c8s verify' prints it.`,
 	return cmd
 }
 
-// printExplain lays the report out in the order CDS decides, so the first thing
+// printExplain lays the report out in the order Trust Authority decides, so the first thing
 // that goes wrong is the first thing read.
 func printExplain(w io.Writer, r intsecrets.ExplainResponse) {
 	fmt.Fprintf(w, "sandbox    %s\n", r.SandboxID)

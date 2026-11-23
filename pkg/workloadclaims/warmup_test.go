@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/attestclient"
 )
 
 // fakeWarmer fails the first failures calls, then succeeds, counting every call.
@@ -27,7 +27,7 @@ func (f *fakeWarmer) WarmUp(context.Context) error {
 
 func TestWarmUpCertRetriesPastATransientFailure(t *testing.T) {
 	// The real trigger: the attestation-api socket does not exist yet, which
-	// fails instantly, so the old single attempt aborted CDS startup.
+	// fails instantly, so the old single attempt aborted Trust Authority startup.
 	w := &fakeWarmer{failures: 3, err: fs.ErrNotExist}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*warmUpInterval)
 	defer cancel()

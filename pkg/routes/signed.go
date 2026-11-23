@@ -11,8 +11,8 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/confidential-dot-ai/c8s/internal/strictjson"
-	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/strictjson"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
 )
 
 // Envelope is the wire form of a signed manifest that GET /routes and

@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
-	"github.com/confidential-dot-ai/c8s/pkg/certutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
 )
 
 // attestedCert builds a self-signed cert carrying a (fake) SNP attestation
@@ -41,7 +41,7 @@ func attestedCert(t *testing.T, sandboxID string) *x509.Certificate {
 }
 
 // reissueWithSandboxID mints a self-signed leaf carrying both the attestation
-// and sandbox-ID extensions — the shape CDS produces, minus the CA signature.
+// and sandbox-ID extensions — the shape Trust Authority produces, minus the CA signature.
 func reissueWithSandboxID(t *testing.T, key *ecdsa.PrivateKey, sandboxID string) []byte {
 	t.Helper()
 	att := &armtls.Attestation{Family: armtls.TEETypeSEVSNP, Report: make([]byte, armtls.SNPReportSize)}
@@ -81,7 +81,7 @@ func TestEvidenceFromCertReadsSandboxID(t *testing.T) {
 		t.Fatalf("sandboxErr = %v", ev.sandboxErr)
 	}
 	if ev.leaf == nil {
-		t.Fatal("leaf not retained; --mesh-ca could not check what CDS signed")
+		t.Fatal("leaf not retained; --mesh-ca could not check what Trust Authority signed")
 	}
 
 	// A claims-free cert keeps the plain key anchor.
@@ -121,7 +121,7 @@ func TestApplySandboxPolicyReportsProvenance(t *testing.T) {
 }
 
 // A self-signed leaf cannot satisfy --sandbox-id: it does not chain to the mesh
-// CA, and CDS's signature is the only thing that vouches for the ID.
+// CA, and Trust Authority's signature is the only thing that vouches for the ID.
 func TestApplySandboxPolicySelfSignedFailsMeshCA(t *testing.T) {
 	const id = "8d9f6c2b1a0e"
 	cert := attestedCert(t, id)
@@ -179,7 +179,7 @@ type sandboxTestError struct{}
 
 func (*sandboxTestError) Error() string { return "bad sandbox extension" }
 
-// serverAuthOnly is the TLS purpose a CDS-issued serving leaf carries.
+// serverAuthOnly is the TLS purpose a Trust Authority-issued serving leaf carries.
 var serverAuthOnly = []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}
 
 // armtlsPurposes is what armtls.CreateAttestedCert stamps on an attested leaf.
@@ -187,7 +187,7 @@ var armtlsPurposes = []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyU
 
 // caSignedLeaf mints a leaf carrying sandboxID and the given TLS purpose,
 // signed by a fresh CA, returning the leaf and the CA bundle path — the shape
-// CDS produces.
+// Trust Authority produces.
 func caSignedLeaf(t *testing.T, sandboxID string, usages []x509.ExtKeyUsage) (*x509.Certificate, string) {
 	t.Helper()
 	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -297,6 +297,31 @@ func TestApplySandboxPolicyMeshCARequiresServerAuth(t *testing.T) {
 	}
 	if !strings.Contains(oc.Error, "mesh-ca") {
 		t.Fatalf("error = %q, want it to name the CA check", oc.Error)
+	}
+}
+
+// A leaf can chain to the mesh CA and name no sandbox at all. The chain alone
+// accepts it; an expected sandbox ID does not, and the refusal says the ID is
+// missing rather than blaming the chain.
+func TestApplySandboxPolicyPinFailsChainedLeafWithNoSandboxID(t *testing.T) {
+	leaf, caPath := caSignedWorkloadLeaf(t, nil)
+	ev := &evidence{leaf: leaf}
+
+	chainOnly := config{meshCA: caPath}
+	accepted := Outcome{Verified: true}
+	applySandboxPolicy(&accepted, chainOnly, ev, operatorKeysReport{}, mustPlan(t, chainOnly), measurementsReport{})
+	if !accepted.Verified {
+		t.Fatalf("a leaf the mesh CA signed failed the chain check: %s", accepted.Error)
+	}
+
+	pinned := config{meshCA: caPath, sandboxID: "8d9f6c2b1a0e"}
+	refused := Outcome{Verified: true}
+	applySandboxPolicy(&refused, pinned, ev, operatorKeysReport{}, mustPlan(t, pinned), measurementsReport{})
+	if refused.Verified {
+		t.Fatal("--sandbox-id passed on a leaf that carries no sandbox ID")
+	}
+	if !strings.Contains(refused.Error, "carries no sandbox-ID extension") {
+		t.Fatalf("Error = %q, want it to name the missing sandbox ID", refused.Error)
 	}
 }
 

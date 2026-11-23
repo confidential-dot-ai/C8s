@@ -12,7 +12,7 @@ import (
 
 	"github.com/spf13/pflag"
 
-	"github.com/confidential-dot-ai/c8s/internal/testutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
 )
 
 const identityPolicyFile = "../../../internal/testdata/node-identities.json"
@@ -187,8 +187,8 @@ func TestImagePolicyFlagsRejectRemovedAliases(t *testing.T) {
 	}
 }
 
-// writeCDSPins stages a CDS pin document where the enforcer mounts one.
-func writeCDSPins(t *testing.T, document string) string {
+// writeTAPins stages a Trust Authority pin document where the enforcer mounts one.
+func writeTAPins(t *testing.T, document string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "cds-pins.json")
 	if err := os.WriteFile(path, []byte(document), 0o644); err != nil {
@@ -197,13 +197,13 @@ func writeCDSPins(t *testing.T, document string) string {
 	return path
 }
 
-// An injected client holds its CDS to the node's policy, not to anything its
+// An injected client holds its Trust Authority to the node's policy, not to anything its
 // pod or the control plane passes: while the mount is there the arguments are
 // refused, so a weaker pin cannot replace a measured one silently.
-func TestResolveCDSPinsPrefersTheNodePolicy(t *testing.T) {
-	path := writeCDSPins(t, testutil.CDSPinDocument(testutil.TestMeasurement, testutil.CDSLaunchFile))
+func TestResolveTAPinsPrefersTheNodePolicy(t *testing.T) {
+	path := writeTAPins(t, testutil.TAPinDocument(testutil.TestMeasurement, testutil.TALaunchFile))
 
-	pins, fromNode, err := ResolveCDSPins(t.Context(), path, ImagePolicySource{})
+	pins, fromNode, err := ResolveTAPins(t.Context(), path, ImagePolicySource{})
 	if err != nil {
 		t.Fatalf("ResolveCDSPins: %v", err)
 	}
@@ -215,30 +215,30 @@ func TestResolveCDSPinsPrefersTheNodePolicy(t *testing.T) {
 	}
 
 	// One exact message, so the client is told which argument to drop.
-	_, _, err = ResolveCDSPins(t.Context(), path, ImagePolicySource{File: "/tmp/other.json"})
+	_, _, err = ResolveTAPins(t.Context(), path, ImagePolicySource{File: "/tmp/other.json"})
 	want := "this node provides " + path + "; remove --image-policy-file"
 	if err == nil || err.Error() != want {
 		t.Fatalf("error = %v, want %q", err, want)
 	}
 
-	_, _, err = ResolveCDSPins(t.Context(), path, ImagePolicySource{JSON: "{}"})
+	_, _, err = ResolveTAPins(t.Context(), path, ImagePolicySource{JSON: "{}"})
 	if err == nil || !strings.Contains(err.Error(), "--image-policy-json") {
 		t.Fatalf("error = %v, want it to name --image-policy-json", err)
 	}
 }
 
-// A CDS is pinned to the configuration it runs on, so a document naming only
-// its image admits any CDS VM, whichever cluster it was launched for.
-func TestResolveCDSPinsRequiresALaunchBinding(t *testing.T) {
+// A Trust Authority is pinned to the configuration it runs on, so a document naming only
+// its image admits any Trust Authority VM, whichever cluster it was launched for.
+func TestResolveTAPinsRequiresALaunchBinding(t *testing.T) {
 	unbound := `{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"cds","measurement":"` + testutil.TestMeasurement + `"}]}`
 	for name, path := range map[string]string{
-		"node policy":         writeCDSPins(t, unbound),
+		"node policy":         writeTAPins(t, unbound),
 		"no policy at all":    filepath.Join(t.TempDir(), "absent.json"),
-		"empty node document": writeCDSPins(t, `{"schema_version":"1","tee":"sev-snp","measurements":[]}`),
+		"empty node document": writeTAPins(t, `{"schema_version":"1","tee":"sev-snp","measurements":[]}`),
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, _, err := ResolveCDSPins(t.Context(), path, ImagePolicySource{}); err == nil {
-				t.Fatal("a pin that is not one CDS VM's identity was accepted")
+			if _, _, err := ResolveTAPins(t.Context(), path, ImagePolicySource{}); err == nil {
+				t.Fatal("a pin that is not one Trust Authority VM's identity was accepted")
 			}
 		})
 	}
@@ -246,8 +246,8 @@ func TestResolveCDSPinsRequiresALaunchBinding(t *testing.T) {
 
 // Without the mount the caller's own document applies: the CLI and a
 // chart-rendered platform client have no enforcer to read.
-func TestResolveCDSPinsFallsBackToTheArgument(t *testing.T) {
-	pins, fromNode, err := ResolveCDSPins(t.Context(), filepath.Join(t.TempDir(), "absent.json"), ImagePolicySource{JSON: testutil.CDSPinDocument(testutil.TestMeasurement, testutil.CDSLaunchFile)})
+func TestResolveTAPinsFallsBackToTheArgument(t *testing.T) {
+	pins, fromNode, err := ResolveTAPins(t.Context(), filepath.Join(t.TempDir(), "absent.json"), ImagePolicySource{JSON: testutil.TAPinDocument(testutil.TestMeasurement, testutil.TALaunchFile)})
 	if err != nil {
 		t.Fatalf("ResolveCDSPins: %v", err)
 	}
@@ -260,9 +260,9 @@ func TestResolveCDSPinsFallsBackToTheArgument(t *testing.T) {
 }
 
 // A credential client says which set it resolved and who decided it, so a
-// pod's log names the CDS image it will accept.
-func TestClientCDSPinsLogsWhatItResolved(t *testing.T) {
-	document := testutil.CDSPinDocument(testutil.TestMeasurement, testutil.CDSLaunchFile)
+// pod's log names the Trust Authority image it will accept.
+func TestClientTAPinsLogsWhatItResolved(t *testing.T) {
+	document := testutil.TAPinDocument(testutil.TestMeasurement, testutil.TALaunchFile)
 	mounted := filepath.Join(t.TempDir(), "cds-pins.json")
 	if err := os.WriteFile(mounted, []byte(document), 0o600); err != nil {
 		t.Fatal(err)
@@ -290,7 +290,7 @@ func TestClientCDSPinsLogsWhatItResolved(t *testing.T) {
 			previous := slog.Default()
 			slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
 			t.Cleanup(func() { slog.SetDefault(previous) })
-			pins, err := ClientCDSPins(t.Context(), tc.nodePolicy, tc.source)
+			pins, err := ClientTAPins(t.Context(), tc.nodePolicy, tc.source)
 			if err != nil {
 				t.Fatalf("ClientCDSPins: %v", err)
 			}
@@ -298,16 +298,16 @@ func TestClientCDSPinsLogsWhatItResolved(t *testing.T) {
 				t.Fatalf("policy images = %+v, want the one pinned image", images)
 			}
 			line := logged.String()
-			if !strings.Contains(line, `msg="CDS pins resolved"`) || !strings.Contains(line, tc.want) {
+			if !strings.Contains(line, `msg="Trust Authority pins resolved"`) || !strings.Contains(line, tc.want) {
 				t.Fatalf("logged %q, want the resolved line with %s", line, tc.want)
 			}
 		})
 	}
 }
 
-// The verifier decides whether the CDS a client dials satisfies the node's
-// pins, so a pod that named its own verifier would hold CDS to nothing. While
-// the node pins CDS and serves its own attestation-api, that socket is the
+// The verifier decides whether the Trust Authority a client dials satisfies the node's
+// pins, so a pod that named its own verifier would hold Trust Authority to nothing. While
+// the node pins Trust Authority and serves its own attestation-api, that socket is the
 // only verifier.
 func TestRequireNodeVerifierRefusesANamedVerifier(t *testing.T) {
 	dir := t.TempDir()
@@ -331,7 +331,7 @@ func TestRequireNodeVerifierRefusesANamedVerifier(t *testing.T) {
 	} {
 		err := RequireNodeVerifier(policy, socket, verifier)
 		if err == nil {
-			t.Fatalf("verifier %q was accepted while the node pins CDS", verifier)
+			t.Fatalf("verifier %q was accepted while the node pins Trust Authority", verifier)
 		}
 		if !strings.Contains(err.Error(), "unix://"+socket) {
 			t.Fatalf("error %q should name the verifier to use", err)
@@ -354,13 +354,13 @@ func TestRequireNodeVerifierFallsBackToTheArgument(t *testing.T) {
 		t.Fatalf("a node serving no attestation-api must leave the argument: %v", err)
 	}
 	if err := RequireNodeVerifier(filepath.Join(dir, "absent.json"), socket, "http://$(HOST_IP):8400"); err != nil {
-		t.Fatalf("a node pinning no CDS must leave the argument: %v", err)
+		t.Fatalf("a node pinning no Trust Authority must leave the argument: %v", err)
 	}
 }
 
 // A path that exists but cannot be read is not an absent policy: falling back
 // to the arguments there would let a broken mount unpin a pod.
-func TestResolveCDSPinsFailsOnAnUnreadablePolicy(t *testing.T) {
+func TestResolveTAPinsFailsOnAnUnreadablePolicy(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "sealed")
 	if err := os.Mkdir(dir, 0o000); err != nil {
 		t.Fatal(err)
@@ -370,7 +370,7 @@ func TestResolveCDSPinsFailsOnAnUnreadablePolicy(t *testing.T) {
 		t.Skip("root reads through a 0000 directory")
 	}
 
-	_, _, err := ResolveCDSPins(t.Context(), filepath.Join(dir, "cds-pins.json"), ImagePolicySource{})
+	_, _, err := ResolveTAPins(t.Context(), filepath.Join(dir, "cds-pins.json"), ImagePolicySource{})
 	if err == nil {
 		t.Fatal("ResolveCDSPins accepted an unreadable policy path")
 	}

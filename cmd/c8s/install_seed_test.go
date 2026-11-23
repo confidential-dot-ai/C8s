@@ -18,13 +18,13 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/yaml"
 
-	"github.com/confidential-dot-ai/c8s/internal/helmchart"
-	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/helmchart"
+	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
-// chartCDSValues point a rendered release at a placeholder CDS outside the
+// chartTAValues point a rendered release at a placeholder Trust Authority outside the
 // cluster: the chart refuses a release that names none.
-func chartCDSValues() map[string]any {
+func chartTAValues() map[string]any {
 	pin := `{"schema_version":"2","tee":"sev-snp","measurements":[{"name":"cds","measurement":"` + strings.Repeat("ab", 48) + `","launch_file":"clusterID: test\n"}]}`
 	return map[string]any{
 		"cds": map[string]any{
@@ -88,7 +88,7 @@ func TestSeedWorkloadsMatchesTheChart(t *testing.T) {
 	for i, c := range components {
 		helmchart.MergeValues(computed, valuesAtPath(c.valuesPath+".digest", fmt.Sprintf("sha256:%064x", i+1)))
 	}
-	helmchart.MergeValues(computed, chartCDSValues())
+	helmchart.MergeValues(computed, chartTAValues())
 	helmchart.MergeValues(computed, adoptValues)
 	valuesFiles := append(orderedValuesFiles(chart, "aks-snp", nil), computedValuesFile(t, computed))
 	values, err := effectiveValues(ctx, chart, valuesFiles)
@@ -149,7 +149,7 @@ func renderedSeed(t *testing.T, chart string, set ...string) *pkgallowlist.Allow
 	return al
 }
 
-// normalized is w as CDS stores it.
+// normalized is w as Trust Authority stores it.
 func normalized(t *testing.T, w pkgallowlist.Workload) string {
 	t.Helper()
 	raw, err := json.Marshal(w)

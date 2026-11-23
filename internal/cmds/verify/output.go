@@ -31,6 +31,10 @@ type Outcome struct {
 	Pinned            bool   `json:"measurement_pinned"`
 	Error             string `json:"error,omitempty"`
 
+	TDXTCBStatus           string     `json:"tdx_tcb_status,omitempty"`
+	TDXAdvisoryIDs         []string   `json:"tdx_advisory_ids,omitempty"`
+	TDXCollateralExpiresAt *time.Time `json:"tdx_collateral_expires_at,omitempty"`
+
 	// InitData is the init-data digest the verified evidence commits, and
 	// InitDataNote says what stands behind it: compared against --init-data,
 	// enforced as a launch-file pin, or reported unpinned.
@@ -75,14 +79,14 @@ type Outcome struct {
 
 	// OperatorKeys are hex SHA-256 fingerprints (of the PKIX/SPKI DER) of the
 	// operator public keys the target pins for allowlist writes (served list,
-	// kind=cds only), fetched over the attested serving cert.
+	// kind=ta only), fetched over the attested serving cert.
 	// OperatorKeysNote says what stands behind them: matched against
 	// --operator-keys, reported unpinned, or why the set is absent.
 	OperatorKeys     []string `json:"operator_keys,omitempty"`
 	OperatorKeysNote string   `json:"operator_keys_note,omitempty"`
 
 	// SandboxID is the CRI pod sandbox the leaf names, and SandboxIDNote says
-	// what authenticates it. CDS stamps the ID into the leaf's signed area
+	// what authenticates it. Trust Authority stamps the ID into the leaf's signed area
 	// after verifying the inventory-signed sandbox token, so it is vouched by
 	// the mesh CA — not bound into REPORTDATA like the rest of this verdict.
 	// Without --mesh-ca it is reported unverified.
@@ -178,6 +182,12 @@ func renderText(cfg config, oc Outcome, out io.Writer) {
 	if hardware {
 		fmt.Fprintf(out, "  TCB:          %s   debug=%t smt=%t\n", oc.CurrentTCB, oc.Debug, oc.SMT)
 	}
+	if oc.TDXTCBStatus != "" {
+		fmt.Fprintf(out, "  Intel TCB:    %s (Intel PCS collateral, expires %s)\n", oc.TDXTCBStatus, oc.TDXCollateralExpiresAt.Format(time.RFC3339))
+		if len(oc.TDXAdvisoryIDs) > 0 {
+			fmt.Fprintf(out, "  advisories:   %s\n", strings.Join(oc.TDXAdvisoryIDs, ", "))
+		}
+	}
 	if oc.CertSHA256 != "" {
 		fmt.Fprintf(out, "  cert sha256:  %s\n", oc.CertSHA256)
 	}
@@ -217,7 +227,7 @@ func renderText(cfg config, oc Outcome, out io.Writer) {
 		fmt.Fprintf(out, "                %s\n", oc.ClientDocumentNote)
 	}
 	if len(oc.OperatorKeys) > 0 {
-		label := "operator keys (allowlist writes; CDS-reported config, NOT covered by the measurement):"
+		label := "operator keys (allowlist writes; Trust Authority-reported config, NOT covered by the measurement):"
 		fmt.Fprintf(out, "  %s\n", label)
 		for _, fp := range oc.OperatorKeys {
 			fmt.Fprintf(out, "    sha256(SPKI DER):%s\n", fp)

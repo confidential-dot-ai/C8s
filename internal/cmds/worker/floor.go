@@ -12,8 +12,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/nodeservices"
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/nodeservices"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
 const routerWorkloadPrefix = "c8s-router-"
@@ -94,7 +94,7 @@ func Floor(templateData, seed []byte, staticPods map[string][]byte) ([]byte, err
 		base.Workloads[pod] = entry
 	}
 	if allow.Pull == nil {
-		return nil, fmt.Errorf("floor template: no allowlist.pull: a worker pulls its served allowlist from its CDS")
+		return nil, fmt.Errorf("floor template: no allowlist.pull: a worker pulls its served allowlist from its Trust Authority")
 	}
 	// Each served allowlist extends RTMR[3] before the worker applies it.
 	allow.Pull["measure_policies"] = true

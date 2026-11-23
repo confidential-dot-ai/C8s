@@ -8,7 +8,7 @@
 //     signed sandbox token naming its own sandbox — nothing the caller sends
 //     names the pod. On node-CVM that is a Unix socket, whose kernel peer
 //     credentials bind the caller;
-//   - a network endpoint over mutually-attested armTLS, where CDS asks which
+//   - a network endpoint over mutually-attested armTLS, where the Trust Authority asks which
 //     image digests a named sandbox is currently running.
 //
 // Keeping them apart bounds each: the socket cannot enumerate other sandboxes,
@@ -36,13 +36,13 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
-	"github.com/confidential-dot-ai/c8s/internal/readutil"
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/readutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 )
 
 // SandboxPath is the token route on the local Unix socket; SandboxDigestsPrefix
-// is the digests route on the CDS-facing network endpoint. POST SandboxPath
+// is the digests route on the Trust Authority-facing network endpoint. POST SandboxPath
 // issues a signed sandbox token for the calling process (caller bound by kernel
 // peer credentials; see sandboxtoken.go). GET SandboxDigestsPrefix+<sandboxID>
 // lists the tracked container image digests of that sandbox.
@@ -90,8 +90,8 @@ const (
 	MemberCAPath  = MemberCertDir + "/ca.crt"
 )
 
-// CDSPinsPath is where an injected credential client reads the CDS attestation
-// policy it holds the CDS to. Compiled for the same reason as the socket path:
+// CDSPinsPath is where an injected credential client reads the Trust Authority attestation
+// policy it holds the Trust Authority to. Compiled for the same reason as the socket path:
 // the node bind-mounts its own policy there, so neither the pod nor the control
 // plane can name another source (see cmdsutil.ResolveCDSPins). The path is the
 // enforcer's alone — a chart-rendered client reads the node config it mounts
@@ -106,14 +106,14 @@ const RouterCDSPinsPath = "/run/c8s/router-cds-pins.json"
 // AttestationAPISocket is the node's own attestation-api as an injected
 // credential client sees it: the socket in the directory the NRI plugin
 // mounts. Compiled for the same reason as the paths above — the verifier
-// decides whether the CDS a client dials satisfies CDSPinsPath, so a client
+// decides whether the Trust Authority a client dials satisfies CDSPinsPath, so a client
 // the node pins reaches no other one (see cmdsutil.RequireNodeVerifier).
 const AttestationAPISocket = SidecarSocketDir + "/attestation-api.sock"
 
-// CDSAddressPath is where an injected credential client reads the CDS endpoint
+// CDSAddressPath is where an injected credential client reads the Trust Authority endpoint
 // it dials, as <addr>:<port>. Compiled for the same reason as the pins: the
 // node writes the address its pod ruleset admits for the credential role, so a
-// client reaches the one CDS it is permitted to reach and never an address the
+// client reaches the one Trust Authority it is permitted to reach and never an address the
 // control plane names (see cmdsutil.ResolveCDSEndpoint).
 const CDSAddressPath = "/run/c8s/cds-address"
 
@@ -275,13 +275,13 @@ const (
 	CredentialsRole = "credentials"
 )
 
-// RouterRole is the role of the router's front door. CDS gives a sandbox
+// RouterRole is the role of the router's front door. Trust Authority gives a sandbox
 // running one a short-lived leaf.
 const RouterRole = "router"
 
 // CredentialsUID is the reserved identity of the injected credential clients.
-// The node binds it to the CDS address, and the enforcer refuses it in any
-// other container, so a pod cannot reach the CDS with a socket of its own.
+// The node binds it to the Trust Authority address, and the enforcer refuses it in any
+// other container, so a pod cannot reach the Trust Authority with a socket of its own.
 const CredentialsUID uint32 = 1338
 
 // RouterNamespace is the fixed namespace whose pods answer the cluster's
@@ -409,11 +409,11 @@ const maxResponseBytes = 1 << 20
 
 // SandboxTokenRequest is the SandboxPath request body: the requester's PKIX
 // public-key DER, which the inventory binds into the signed token so only the
-// holder of that key can redeem it at CDS.
+// holder of that key can redeem it at Trust Authority.
 type SandboxTokenRequest struct {
 	PublicKey []byte `json:"public_key"`
-	// Nonce is the single-use CDS challenge get-cert obtained for this
-	// issuance. The inventory binds it into the signed token so CDS confirms
+	// Nonce is the single-use Trust Authority challenge get-cert obtained for this
+	// issuance. The inventory binds it into the signed token so the Trust Authority confirms
 	// freshness against the same challenge it consumes for the evidence — no
 	// clock (docs/armtls.md, "Sandbox identity").
 	Nonce []byte `json:"nonce"`
@@ -446,7 +446,7 @@ type SandboxContainer struct {
 	Digest string                    `json:"digest"`
 	// Role is the platform role the node's own measured base binds to this
 	// launch, and is empty for a container outside every role. It is the
-	// enforcer's reading of its boot config, so nothing a CDS serves and no
+	// enforcer's reading of its boot config, so nothing a Trust Authority serves and no
 	// pod spec can claim one (pkg/allowlist).
 	Role string `json:"role,omitempty"`
 	// Argv is the effective OCI process.args — the merged image-config and
@@ -514,7 +514,7 @@ const maxSandboxRequestBytes = 64 << 10
 func ServeTokens(ctx context.Context, l net.Listener, resolver SandboxResolver, signer *SandboxTokenSigner) error {
 	return serveTokenRoute(ctx, l, resolver, func() (*SandboxTokenSigner, int) {
 		if signer == nil {
-			// No CDS to attest the signing key against, and an unverifiable
+			// No Trust Authority to attest the signing key against, and an unverifiable
 			// token is worse than none. Terminal, so the caller is told to
 			// stop asking rather than to wait.
 			return nil, http.StatusNotFound
@@ -616,10 +616,10 @@ func signForLiveCaller(signer *SandboxTokenSigner, peer Peer, sandboxID string, 
 	return token, nil
 }
 
-// ServeDigests runs the CDS-facing digests endpoint on l until ctx is done. It
+// ServeDigests runs the Trust Authority-facing digests endpoint on l until ctx is done. It
 // serves GET SandboxDigestsPrefix+<sandboxID> only, and answers for ANY
 // sandbox — so l MUST be a mutually-attested armTLS listener that admits only
-// CDS (BuildDigestsTLSConfig). Over a plain listener this would disclose the
+// Trust Authority (BuildDigestsTLSConfig). Over a plain listener this would disclose the
 // node's running images to anyone who can reach the port.
 func ServeDigests(ctx context.Context, l net.Listener, resolver SandboxResolver, identity []byte) error {
 	mux := http.NewServeMux()
@@ -714,7 +714,7 @@ func inventoryDo(ctx context.Context, endpoint, method, route string, body io.Re
 }
 
 // ErrSandboxUnsupported reports that the inventory serves no SandboxPath route —
-// an inventory without sandbox state or without a CDS-attested signing key.
+// an inventory without sandbox state or without a Trust Authority-attested signing key.
 // Callers proceed without a sandbox ID.
 var ErrSandboxUnsupported = errors.New("workloadclaims: inventory does not serve the sandbox route")
 
@@ -723,8 +723,8 @@ var ErrSandboxUnsupported = errors.New("workloadclaims: inventory does not serve
 var ErrSandboxRefused = errors.New("workloadclaims: inventory refused the caller")
 
 // FetchSandboxToken asks the inventory at endpoint for a signed sandbox token
-// bound to requesterPub (the caller's CSR key) and nonce (the CDS challenge for
-// this issuance, which CDS re-checks for freshness). A 404 maps to
+// bound to requesterPub (the caller's CSR key) and nonce (the Trust Authority challenge for
+// this issuance, which Trust Authority re-checks for freshness). A 404 maps to
 // ErrSandboxUnsupported so callers can distinguish an inventory without the route
 // from a resolution failure, which stays fail-closed.
 func FetchSandboxToken(ctx context.Context, endpoint string, timeout time.Duration, requesterPub crypto.PublicKey, nonce []byte) (*SignedSandboxToken, error) {

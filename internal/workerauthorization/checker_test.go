@@ -14,9 +14,9 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
-	"github.com/confidential-dot-ai/c8s/internal/testutil"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
-	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/attestclient"
 )
 
 func TestCheckWorkerAuthorization(t *testing.T) {
@@ -26,8 +26,8 @@ func TestCheckWorkerAuthorization(t *testing.T) {
 		launch      string
 		eligible    bool
 	}{
-		{"matches", testutil.TestMeasurement, testutil.CDSLaunchFile, true},
-		{"image changed", testutil.NextCDSImage, testutil.CDSLaunchFile, false},
+		{"matches", testutil.TestMeasurement, testutil.TALaunchFile, true},
+		{"image changed", testutil.NextTAImage, testutil.TALaunchFile, false},
 		{"launch changed", testutil.TestMeasurement, "another launch file", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -36,8 +36,8 @@ func TestCheckWorkerAuthorization(t *testing.T) {
 			binding := runtimemeasure.HostData([]byte(tc.launch))
 			verdict.Claims.InitData = binding[:]
 			api.SetVerdict(verdict)
-			cds := servePolicy(t, testutil.CDSPinDocument(testutil.TestMeasurement, testutil.CDSLaunchFile))
-			checker := newTestChecker(cds, api)
+			ta := servePolicy(t, testutil.TAPinDocument(testutil.TestMeasurement, testutil.TALaunchFile))
+			checker := newTestChecker(ta, api)
 			eligible, err := checker.Check(t.Context())
 			if err != nil || eligible != tc.eligible {
 				t.Fatalf("eligible=%v, err=%v; want %v", eligible, err, tc.eligible)
@@ -83,10 +83,10 @@ func TestCheckDistinguishesEmptyPolicyFromInvalidPolicy(t *testing.T) {
 func TestCheckAcquiresFreshEvidenceForUnchangedPolicy(t *testing.T) {
 	api := mockapi.New(t)
 	verdict := mockapi.PassingVerdict(testutil.TestMeasurement)
-	binding := runtimemeasure.HostData([]byte(testutil.CDSLaunchFile))
+	binding := runtimemeasure.HostData([]byte(testutil.TALaunchFile))
 	verdict.Claims.InitData = binding[:]
 	api.SetVerdict(verdict)
-	checker := newTestChecker(servePolicy(t, testutil.CDSPinDocument(testutil.TestMeasurement, testutil.CDSLaunchFile)), api)
+	checker := newTestChecker(servePolicy(t, testutil.TAPinDocument(testutil.TestMeasurement, testutil.TALaunchFile)), api)
 	if eligible, err := checker.Check(t.Context()); err != nil || !eligible {
 		t.Fatalf("first check: %v, %v", eligible, err)
 	}
@@ -105,15 +105,15 @@ func TestCheckFailuresRemainUnknown(t *testing.T) {
 		name string
 		fail func(*httptest.Server, *mockapi.Stub)
 	}{
-		{"CDS unavailable", stopCDS},
+		{"Trust Authority unavailable", stopTA},
 		{"invalid evidence", refuseEvidence},
 		{"verifier unavailable", stopVerification},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			api := mockapi.New(t)
-			cds := servePolicy(t, testutil.CDSPinDocument(testutil.TestMeasurement, testutil.CDSLaunchFile))
-			checker := newTestChecker(cds, api)
-			tc.fail(cds, api)
+			ta := servePolicy(t, testutil.TAPinDocument(testutil.TestMeasurement, testutil.TALaunchFile))
+			checker := newTestChecker(ta, api)
+			tc.fail(ta, api)
 			requireUnknown(t, checker, t.Context())
 		})
 	}
@@ -123,14 +123,14 @@ func TestCheckFailuresRemainUnknown(t *testing.T) {
 		requireUnknown(t, newTestChecker(denied, mockapi.New(t)), t.Context())
 	})
 	t.Run("canceled", func(t *testing.T) {
-		checker := newTestChecker(servePolicy(t, testutil.CDSPinDocument(testutil.TestMeasurement, testutil.CDSLaunchFile)), mockapi.New(t))
+		checker := newTestChecker(servePolicy(t, testutil.TAPinDocument(testutil.TestMeasurement, testutil.TALaunchFile)), mockapi.New(t))
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
 		requireUnknown(t, checker, ctx)
 	})
 }
 
-func stopCDS(cds *httptest.Server, _ *mockapi.Stub) { cds.Close() }
+func stopTA(ta *httptest.Server, _ *mockapi.Stub) { ta.Close() }
 func refuseEvidence(_ *httptest.Server, api *mockapi.Stub) {
 	api.SetVerifyError(mockapi.VerificationFailed("bad signature"))
 }
@@ -151,7 +151,7 @@ func TestCheckRejectsChangedRuntimeUnderUnchangedPolicy(t *testing.T) {
 	verdict.Claims.PlatformData = map[string]any{"rtmr_1": testutil.TestMeasurement}
 	api.SetVerdict(verdict)
 	policy := `{"schema_version":"1","tee":"tdx","measurements":[{"name":"worker","mrtd":"` + testutil.TestMeasurement + `","rtmr":[null,"` + testutil.TestMeasurement + `"]}]}`
-	cds := servePolicy(t, policy)
+	ta := servePolicy(t, policy)
 	provider := &armtls.SelfSignedProvider{
 		Platform: "tdx",
 		Opts:     &armtls.CertOptions{},
@@ -159,7 +159,7 @@ func TestCheckRejectsChangedRuntimeUnderUnchangedPolicy(t *testing.T) {
 			return `{"platform":"tdx","evidence":{"quote":"fake"}}`, nil
 		},
 	}
-	checker := New(cds.Client(), cds.URL, provider, api.URL())
+	checker := New(ta.Client(), ta.URL, provider, api.URL())
 	if eligible, err := checker.Check(t.Context()); !eligible || err != nil {
 		t.Fatalf("matching runtime: %v, %v", eligible, err)
 	}
@@ -181,14 +181,14 @@ func TestCheckReplaysFreshWorkerJournal(t *testing.T) {
 	if err := os.WriteFile(journal, []byte(extension+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	seed := runtimemeasure.Seed([]byte(testutil.CDSLaunchFile))
+	seed := runtimemeasure.Seed([]byte(testutil.TALaunchFile))
 	register := runtimemeasure.FromDigestsSeeded(seed, []string{extension})
 	verdict := mockapi.PassingVerdict(testutil.TestMeasurement)
 	verdict.Claims.PlatformData = map[string]any{"rtmr_3": hex.EncodeToString(register[:])}
 	api.SetVerdict(verdict)
-	launchDigest := sha512.Sum384([]byte(testutil.CDSLaunchFile))
+	launchDigest := sha512.Sum384([]byte(testutil.TALaunchFile))
 	policy := `{"schema_version":"2","tee":"tdx","measurements":[{"name":"worker","mrtd":"` + testutil.TestMeasurement + `","launch_file_digest":"` + hex.EncodeToString(launchDigest[:]) + `"}]}`
-	cds := servePolicy(t, policy)
+	ta := servePolicy(t, policy)
 	provider := &armtls.SelfSignedProvider{
 		Platform:         "tdx",
 		Opts:             &armtls.CertOptions{},
@@ -197,7 +197,7 @@ func TestCheckReplaysFreshWorkerJournal(t *testing.T) {
 			return `{"platform":"tdx","evidence":{"quote":"fake"}}`, nil
 		},
 	}
-	checker := New(cds.Client(), cds.URL, provider, api.URL())
+	checker := New(ta.Client(), ta.URL, provider, api.URL())
 	if eligible, err := checker.Check(t.Context()); !eligible || err != nil {
 		t.Fatalf("replaying journal: %v, %v", eligible, err)
 	}
@@ -227,11 +227,11 @@ func servePolicy(t *testing.T, body string) *httptest.Server {
 	return server
 }
 
-func newTestChecker(cds *httptest.Server, api *mockapi.Stub) *Checker {
+func newTestChecker(ta *httptest.Server, api *mockapi.Stub) *Checker {
 	provider := &armtls.SelfSignedProvider{
 		Platform:   "sev-snp",
 		Opts:       &armtls.CertOptions{},
 		AttestFunc: attestclient.MakeSNPARMTLSAttestFunc(attestclient.NewClient(""), api.URL()),
 	}
-	return New(cds.Client(), cds.URL, provider, api.URL())
+	return New(ta.Client(), ta.URL, provider, api.URL())
 }

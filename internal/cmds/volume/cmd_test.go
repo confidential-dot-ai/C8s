@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	intsecrets "github.com/confidential-dot-ai/c8s/internal/secrets"
+	intsecrets "github.com/confidential-dot-ai/confidential-kubernetes/internal/secrets"
 )
 
 type fakeSigner struct {
@@ -45,7 +45,7 @@ func (p *putServer) start(t *testing.T) *httptest.Server {
 
 func testBlob(t *testing.T) Blob {
 	t.Helper()
-	b, err := NewBlob(testKey(), validVerity())
+	b, err := NewBlob("weights", testKey(), validVerity())
 	if err != nil {
 		t.Fatalf("blob: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestPutBlobNeverAsksToOverwrite(t *testing.T) {
 		t.Fatalf("put: %v", err)
 	}
 	if p.gotReq.Overwrite {
-		t.Fatal("create asked CDS to overwrite")
+		t.Fatal("create asked Trust Authority to overwrite")
 	}
 }
 

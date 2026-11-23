@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
 )
 
 const (
@@ -109,7 +109,7 @@ func TestFetchServedDigestsExactBytes(t *testing.T) {
 	}
 }
 
-// A 304 still names the version CDS serves the held document at.
+// A 304 still names the version Trust Authority serves the held document at.
 func TestFetchNotModified(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("If-None-Match") == testTag {
@@ -210,7 +210,7 @@ func TestObjectChecksTheDigest(t *testing.T) {
 	}
 }
 
-// A CDS names the version in its version header; one released before the
+// A Trust Authority names the version in its version header; one released before the
 // header names it only in its ETag W/"N".
 func TestServedVersion(t *testing.T) {
 	tests := []struct {

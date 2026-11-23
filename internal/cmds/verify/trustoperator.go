@@ -14,17 +14,18 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/confidential-dot-ai/attestation-go/remote"
-	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
+	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
+	"github.com/confidential-dot-ai/attestation-go/refvalues"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
 )
 
 // policyDigestRE is the form of an allowlist policy digest.
 var policyDigestRE = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
 // checkHistoryFlags validates --pin-policy, --trust-operator and
-// --fetch-allowlists against images, the parsed --image-policy-file pins, and
+// --fetch-allowlists against refValues, the parsed --image-policy-file, and
 // returns the parsed --trust-operator-keys.
-func checkHistoryFlags(cfg config, images []remote.ImagePin) ([]*ecdsa.PublicKey, error) {
+func checkHistoryFlags(cfg config, refValues refvalues.ReferenceValues) ([]*ecdsa.PublicKey, error) {
 	for _, d := range cfg.pinPolicies {
 		if !policyDigestRE.MatchString(d) {
 			return nil, fmt.Errorf("--pin-policy %q is not sha256:<64 lowercase hex>", d)
@@ -35,6 +36,9 @@ func checkHistoryFlags(cfg config, images []remote.ImagePin) ([]*ecdsa.PublicKey
 	}
 	if cfg.trustOperatorKeys != "" && !cfg.trustOperator {
 		return nil, fmt.Errorf("--trust-operator-keys requires --trust-operator")
+	}
+	if cfg.timeout <= 0 && (cfg.trustOperator || cfg.fetchAllowlists != "") {
+		return nil, fmt.Errorf("--trust-operator and --fetch-allowlists need a positive --timeout: it bounds each policy fetch, and %d times it the whole history check", historyTimeouts)
 	}
 	var flag string
 	switch {
@@ -47,8 +51,10 @@ func checkHistoryFlags(cfg config, images []remote.ImagePin) ([]*ecdsa.PublicKey
 	default:
 		return nil, nil
 	}
-	if cfg.operatorPubkey == "" && !slices.ContainsFunc(images, anchored) {
-		return nil, fmt.Errorf("%s requires --operator-pkey or an --image-policy-file image pinning an approver_key: the node's policy history counts only as far as it replays against RTMR[3] after the operator-key seed", flag)
+	// Only TDX has the RTMR[3] an approver_key seeds.
+	replays := refValues.Family == teetypes.FamilyTDX && slices.ContainsFunc(refValues.Images, anchored)
+	if cfg.operatorPubkey == "" && !replays {
+		return nil, fmt.Errorf("%s requires --operator-pkey or a TDX --image-policy-file image pinning an approver_key: the node's policy history counts only as far as it replays against RTMR[3] after the operator-key seed", flag)
 	}
 	if !cfg.trustOperator {
 		return nil, nil
@@ -124,7 +130,7 @@ func applyUncheckedHistoryPolicy(oc *Outcome, cfg config) {
 	demoteToPartial(oc, fmt.Sprintf("the node's policy history: RTMR[3] replayed %d measured policies, but no policy over them was checked (pass --pin-policy or --trust-operator)", len(oc.MeasuredPolicies)))
 }
 
-// errLeafUnstamped reports a leaf without a matched-workload stamp: CDS
+// errLeafUnstamped reports a leaf without a matched-workload stamp: Trust Authority
 // issues one whenever the pod matches no single allowlist entry.
 var errLeafUnstamped = errors.New("the leaf carries no matched-workload stamp")
 
@@ -153,7 +159,7 @@ func demoteUnstamped(oc *Outcome, judged string) {
 }
 
 // demoteUnvouchedStamp leaves a verdict partial at best when the leaf's stamp
-// was judged without --mesh-ca: the stamp says CDS issued the leaf under that
+// was judged without --mesh-ca: the stamp says Trust Authority issued the leaf under that
 // policy, which only a chain to the pinned CA proves (applySandboxPolicy has
 // already failed the verdict when that chain does not verify).
 func demoteUnvouchedStamp(oc *Outcome, cfg config, judged string) {
@@ -287,11 +293,10 @@ func checkHistoryPolicies(
 	if err != nil {
 		return fmt.Errorf("%s: %v", check.failureCode, err)
 	}
-	if cfg.timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, historyTimeouts*cfg.timeout)
-		defer cancel()
-	}
+	ctx, cancel := context.WithTimeout(ctx, historyTimeouts*cfg.timeout)
+	defer cancel()
+	client := policyClient(cfg.server, cfg.timeout)
+	defer client.CloseIdleConnections()
 	if cfg.fetchAllowlists != "" {
 		if err := os.MkdirAll(cfg.fetchAllowlists, 0o755); err != nil {
 			return fmt.Errorf("allowlist_fetch_failed: %v", err)
@@ -303,7 +308,7 @@ func checkHistoryPolicies(
 			return fmt.Errorf("%s: malformed digest %q in the node's policy history", check.failureCode, digest)
 		}
 		object := baseURL + "/allowlist/objects/sha256/" + hexDigest
-		body, err := fetchPolicy(ctx, object, cfg.server, cfg.timeout)
+		body, err := fetchPolicy(ctx, client, object)
 		if err != nil {
 			return fmt.Errorf("%s: fetch %s: %w", check.failureCode, digest, err)
 		}
@@ -316,7 +321,7 @@ func checkHistoryPolicies(
 			}
 		}
 		if check.requireSignatures {
-			if err := verifyOperatorSignature(ctx, cfg, check.signedBy, digest, object, body); err != nil {
+			if err := verifyOperatorSignature(ctx, client, check.signedBy, digest, object, body); err != nil {
 				return err
 			}
 		}
@@ -326,13 +331,13 @@ func checkHistoryPolicies(
 
 func verifyOperatorSignature(
 	ctx context.Context,
-	cfg config,
+	client *http.Client,
 	keys []*ecdsa.PublicKey,
 	digest string,
 	object string,
 	body []byte,
 ) error {
-	token, err := fetchPolicy(ctx, object+"/signature", cfg.server, cfg.timeout)
+	token, err := fetchPolicy(ctx, client, object+"/signature")
 	if errors.Is(err, errNotFound) {
 		return fmt.Errorf("policy_history_unsigned: policy %s carries no operator signature; upload the whole document to sign it (c8s allowlist upload)", digest)
 	}

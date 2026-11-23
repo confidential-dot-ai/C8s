@@ -13,10 +13,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/internal/attestation"
-	"github.com/confidential-dot-ai/c8s/pkg/certutil"
-	"github.com/confidential-dot-ai/c8s/pkg/types"
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/attestation"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 func TestGuestRunRecoversRenewsAndWithdrawsOnShutdown(t *testing.T) {
@@ -41,9 +41,9 @@ func TestGuestRunRecoversRenewsAndWithdrawsOnShutdown(t *testing.T) {
 	var outage atomic.Bool
 	outage.Store(true)
 	failed := make(chan struct{}, 1)
-	cds := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	ta := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if outage.Load() {
-			http.Error(w, "CDS unavailable", http.StatusServiceUnavailable)
+			http.Error(w, "Trust Authority unavailable", http.StatusServiceUnavailable)
 			select {
 			case failed <- struct{}{}:
 			default:
@@ -76,11 +76,11 @@ func TestGuestRunRecoversRenewsAndWithdrawsOnShutdown(t *testing.T) {
 		}
 		_, _ = io.WriteString(w, chain)
 	}))
-	defer cds.Close()
+	defer ta.Close()
 	changes := make(chan struct{}, 1)
 	published := make(chan struct{}, 1)
 	guest := GuestConfig{
-		CDSURL: cds.URL, HTTPClient: cds.Client(), AttestationAPIURL: attester.URL,
+		TAURL: ta.URL, HTTPClient: ta.Client(), AttestationAPIURL: attester.URL,
 		VolumeRoot: root, InstanceID: claims.InstanceID(), Changes: changes,
 		Snapshot: func(context.Context) (workloadclaims.PodClaims, error) { return claims, nil },
 		Commit: func(got workloadclaims.PodClaims, publish func() error) error {
@@ -208,15 +208,15 @@ func TestGuestRunRejectsLostVolumeCustodyAndIssuerBinding(t *testing.T) {
 				t.Fatal(err)
 			}
 			var requests atomic.Int64
-			cds := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			ta := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				requests.Add(1)
 				http.Error(w, "must refuse locally", http.StatusServiceUnavailable)
 			}))
-			defer cds.Close()
+			defer ta.Close()
 			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 			defer cancel()
 			err = RunGuest(ctx, GuestConfig{
-				CDSURL: cds.URL, HTTPClient: cds.Client(), VolumeRoot: root, InstanceID: claims.InstanceID(),
+				TAURL: ta.URL, HTTPClient: ta.Client(), VolumeRoot: root, InstanceID: claims.InstanceID(),
 				Snapshot: func(context.Context) (workloadclaims.PodClaims, error) { return claims, nil },
 				Commit:   func(_ workloadclaims.PodClaims, publish func() error) error { return publish() },
 			})

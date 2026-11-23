@@ -11,8 +11,8 @@ import (
 	"gopkg.in/yaml.v3"
 	corev1 "k8s.io/api/core/v1"
 
-	"github.com/confidential-dot-ai/c8s/internal/podassign"
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/podassign"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 const emptyPodEntries = `{"schema":"c8s.allowlist/v1","workloads":{}}`
@@ -34,7 +34,7 @@ func TestAssignValidatesPayloadAndPreservesGenericTrust(t *testing.T) {
 	if !unchanged() || assigned.Pod.UID != testPodUID || assigned.Pod.Namespace != "tenant" || assigned.Pod.Name != "app" || assigned.Entries != testPodWorkloads || len(assigned.Pod.MeshPeers) != 1 {
 		t.Fatal("assignment mutated generic authority or lost Pod identity")
 	}
-	if assigned.CDS != doc.CDS || assigned.PodOperatorPublicKey != doc.PodOperatorPublicKey || assigned.Node != doc.Node || assigned.Image.Measurement != doc.Image.Measurement {
+	if assigned.TA != doc.TA || assigned.PodOperatorPublicKey != doc.PodOperatorPublicKey || assigned.Node != doc.Node || assigned.Image.Measurement != doc.Image.Measurement {
 		t.Fatal("assignment changed launch trust")
 	}
 	app := `"name":"app","image"`
@@ -91,7 +91,7 @@ func TestAssignValidatesPayloadAndPreservesGenericTrust(t *testing.T) {
 // peers.
 func TestPodBundleIsGeneric(t *testing.T) {
 	manifest := writeManifest(t, "tdx")
-	cdsPolicy := writePodCDSPin(t)
+	taPolicy := writePodTAPin(t)
 	for _, tc := range []struct {
 		name  string
 		args  []string
@@ -105,7 +105,7 @@ func TestPodBundleIsGeneric(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := filepath.Join(t.TempDir(), "bundle")
-			args := append([]string{"new-pod", "--out", dir, "--cluster-id", "cluster-one", "--image-manifest", manifest, "--cds-address", "cds.example.org:8443", "--cds-image-policy-file", cdsPolicy}, tc.args...)
+			args := append([]string{"new-pod", "--out", dir, "--cluster-id", "cluster-one", "--image-manifest", manifest, "--cds-address", "cds.example.org:8443", "--cds-image-policy-file", taPolicy}, tc.args...)
 			err := runBundleCmd(t, args...)
 			if (err == nil) != tc.valid {
 				t.Fatalf("bundle validity: %v", err)
@@ -117,7 +117,7 @@ func TestPodBundleIsGeneric(t *testing.T) {
 				return
 			}
 			doc, _ := readBundleDocument(t, dir, podDir)
-			if doc.Node.Name != "p-1" || doc.CDS.Address != "cds.example.org:8443" || doc.CDS.Measurements == "" {
+			if doc.Node.Name != "p-1" || doc.TA.Address != "cds.example.org:8443" || doc.TA.Measurements == "" {
 				t.Fatal("generic bundle lost its identity or trust")
 			}
 			stageBundleNode(t, dir, podDir)

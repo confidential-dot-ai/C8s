@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/internal/routerdiscovery"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/routerdiscovery"
 )
 
 func TestEvidenceFromDiscovery_Malformed(t *testing.T) {
@@ -467,7 +467,7 @@ func TestSingleConnClientNeverRedials(t *testing.T) {
 }
 
 // A discovery document's CA-vouched serving cert (the chart's shape: issued
-// by the CDS mesh CA) is authenticated by a --mesh-ca chain check alone. A
+// by the Trust Authority mesh CA) is authenticated by a --mesh-ca chain check alone. A
 // live door presenting byte-identically that cert proves possession of the
 // attested key, which signs for none of the body fields, so without the
 // pinned CA the document fails closed either way.
@@ -475,7 +475,7 @@ func TestDiscoveryCAVouchedBodyNeedsMeshCA(t *testing.T) {
 	challenge := []byte("issuance-challenge")
 	stubEvidence := `{"attestation_report":"AAAA","cert_chain":{"vcek":"BBBB"}}`
 
-	id := mintEndpointIdentity(t) // CA-signed leaf, the CDS-issued serving cert's shape
+	id := mintEndpointIdentity(t) // CA-signed leaf, the Trust Authority-issued serving cert's shape
 	leafPEM := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: id.leaf.Raw}))
 	leafTLSCert := tls.Certificate{Certificate: [][]byte{id.leaf.Raw}, PrivateKey: id.key}
 	doc := discoveryDocWithPublicTLS(t, "cds", leafPEM, challenge, stubEvidence)

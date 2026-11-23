@@ -4,7 +4,7 @@
 # grant, and a busybox consumer per volume mode serving its plaintext over HTTP.
 #
 # Sequence:
-#   1. PUT both pre-built volume key blobs into the CDS secret store
+#   1. PUT both pre-built volume key blobs into the TA secret store
 #      (two-phase flow: the lane built the images with `c8s volume create
 #      --dry-run` before boot, because volume devices must be attached at VM
 #      creation — there is no disk hotplug on the metal node kernels).
@@ -20,9 +20,9 @@
 # Needs kubectl pointed at a cluster with C8s installed with --volumes, `c8s`
 # and `crane` on PATH, the volume devices already attached to E2E_VOL_NODE
 # (serials c8s-vol-<name>), and:
-#   C8S_CDS_URL         the cluster's CDS, as its launch names it
-#   C8S_CDS_PIN         the pin document binding that CDS to its configuration
-#   C8S_OPERATOR_KEY    path to the operator EC key PEM pinned on CDS
+#   C8S_TA_URL         the cluster's TA, as its launch names it
+#   C8S_TA_PIN         the pin document binding that TA to its configuration
+#   C8S_OPERATOR_KEY    path to the operator EC key PEM pinned on TA
 #   E2E_VOL_NODE        node name the volume devices are attached to
 #   E2E_VOL_IMM_ESCROW  escrow (key blob) file of the pre-built immutable volume
 #   E2E_VOL_MUT_ESCROW  escrow file of the pre-built mutable volume
@@ -44,8 +44,10 @@
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 
-: "${C8S_CDS_URL:?the CDS the launch of this cluster names}"
-: "${C8S_CDS_PIN:?the pin document binding that CDS to its configuration}"
+C8S_TA_URL=${C8S_TA_URL:-${C8S_CDS_URL:-}}
+C8S_TA_PIN=${C8S_TA_PIN:-${C8S_CDS_PIN:-}}
+: "${C8S_TA_URL:?the TA the launch of this cluster names}"
+: "${C8S_TA_PIN:?the pin document binding that TA to its configuration}"
 : "${C8S_OPERATOR_KEY:?path to the operator EC key PEM}"
 : "${E2E_VOL_NODE:?node the c8s-vol-* devices are attached to}"
 : "${E2E_VOL_IMM_ESCROW:?escrow blob of the pre-built immutable volume}"
@@ -95,12 +97,12 @@ cleanup() {
 trap cleanup EXIT
 cw_namespace "$ns"
 
-# Every CDS call goes straight to the CDS the cluster trusts: the router fronts
+# Every TA call goes straight to the TA the cluster trusts: the router fronts
 # /allowlist but not /secrets, and the armTLS client verifies attestation
 # rather than PKI hostnames, so one channel serves both APIs (README.md
 # "Operator access").
-c8s_conn() { c8s "$@" --url "$C8S_CDS_URL" --image-policy-file "$C8S_CDS_PIN"; }
-al() { c8s_conn allowlist "$@"; }
+ta_conn() { c8s "$@" --ta-url "$C8S_TA_URL" --ta-image-policy-file "$C8S_TA_PIN"; }
+al() { c8s allowlist "$@" --url "$C8S_TA_URL" --image-policy-file "$C8S_TA_PIN"; }
 
 # serve <pod> <local-port> — wait Ready, port-forward, and answer curl_poll.
 serve() {
@@ -126,17 +128,17 @@ curl_poll() {
 MESH_CA=${E2E_MESH_CA:-}
 if [ -z "$MESH_CA" ]; then
   MESH_CA=$(mktemp)
-  # Read it from CDS over the attested connection: the router's pod is a mesh
+  # Read it from TA over the attested connection: the router's pod is a mesh
   # member, and a member admits no exec.
-  c8s_conn cds ca --out "$MESH_CA" >/dev/null \
-    || fail "could not read the mesh CA from CDS over armTLS"
+  ta_conn ta ca --out "$MESH_CA" >/dev/null \
+    || fail "could not read the mesh CA from TA over armTLS"
 fi
 
-c8s_conn secrets put "$IMM_PATH" --from-file "$E2E_VOL_IMM_ESCROW" \
+ta_conn secrets put "$IMM_PATH" --from-file "$E2E_VOL_IMM_ESCROW" \
   --operator-key "$C8S_OPERATOR_KEY" --mesh-ca "$MESH_CA" >/dev/null \
   || fail "secrets put $IMM_PATH rejected"
 echo "ok: immutable volume key blob stored at $IMM_PATH"
-c8s_conn secrets put "$MUT_PATH" --from-file "$E2E_VOL_MUT_ESCROW" \
+ta_conn secrets put "$MUT_PATH" --from-file "$E2E_VOL_MUT_ESCROW" \
   --operator-key "$C8S_OPERATOR_KEY" --mesh-ca "$MESH_CA" >/dev/null \
   || fail "secrets put $MUT_PATH rejected"
 echo "ok: mutable volume key blob stored at $MUT_PATH"
@@ -217,7 +219,7 @@ reader_pod() { consumer_pod "$1" "$READER" "$IMM" "$IMM_PATH" "$2"; }
 entry "$READER" "$reader_script" "$IMM_PATH" "$IMM" | al apply - >/dev/null \
   || fail "reader workload entry rejected"
 echo "ok: reader workload entry applied (grant $IMM_PATH)"
-# The plugin polls CDS for allowlist changes on a 5s interval.
+# The plugin polls TA for allowlist changes on a 5s interval.
 sleep 8
 
 reader_pod "$READER" "$reader_script" | kubectl apply -f - >/dev/null

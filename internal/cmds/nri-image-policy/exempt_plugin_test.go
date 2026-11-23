@@ -9,7 +9,7 @@ import (
 
 	"github.com/containerd/nri/pkg/api"
 
-	"github.com/confidential-dot-ai/c8s/internal/audit"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/audit"
 )
 
 // exemptPlugin builds a fail-closed plugin (base allowlist admits pushDigestA)

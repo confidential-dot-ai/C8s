@@ -1,7 +1,7 @@
 # Workload entries
 
 A workload entry names the containers a pod may run, in the format
-`c8s allowlist` writes, CDS serves, and every node enforces.
+`c8s allowlist` writes, the Trust Authority (TA) serves, and every node enforces.
 
 One invariant runs through it: policy is looked up by container digest, and an
 absent `command`, `args`, or `mounts` policy denies. For why, see
@@ -24,7 +24,7 @@ absent `command`, `args`, or `mounts` policy denies. For why, see
           {"destination": "/mnt/c8s-data/config", "kind": "data"}
         ]},
         "env": {"policy": "match", "variables": {
-          "HOSTNAME": {"present": true},
+          "HOSTNAME": {"exact": "vllm-llama"},
           "MODEL_DIR": {"exact": "/mnt/c8s-data/config"}}},
         "capabilities": ["SYS_PTRACE"]
       }],
@@ -150,6 +150,15 @@ where a `data` or `host` rule is an error. An enforcer that predates a kind
 refuses the served document that carries it, so upgrade every node enforcer
 before publishing `nodeRootFile` or `fsVerityFile` rules.
 
+Mixed versions: a rule's `verityDigest` field is reserved for fs-verity and
+refused today. An enforcer predating node-root provenance decodes a served
+document leniently and ignores the field, so on such a node an fs-verity rollout
+keyed on `verityDigest` degrades to a plain `host` rule. The same enforcer
+refuses a served document that carries a `nodeRootFile` rule, so roll out such
+a rule only once every node enforces it. An upgraded node keeps working with an
+older TA: the TA decodes the node's inventory leniently and drops the provenance,
+which none of its rules asks for.
+
 ## `capabilities`
 
 The capabilities a container may hold beyond the node's default set, named as a
@@ -182,8 +191,20 @@ reaches directly, outside the mesh. An entry has exactly the members `cidr` and
 is IPv4, and is no broader than `/16` (IPv4) or `/48` (IPv6). Ranges that are
 not unicast hosts are refused: `/0`, loopback, link-local, multicast, reserved
 and broadcast, and the IPv6 forms that embed IPv4 addresses. An entry with
-egress pins its launch as a grant does, and a node refuses one that overlaps a
-cluster range, its own address, the resolver, or CDS.
+egress pins its launch as a grant does and pins every container's `env`:
+`deny`, `exact`, or `match` with only `exact` matchers and no `serviceLinks`,
+since a variable such
+as `HTTPS_PROXY` or `SSL_CERT_FILE` can redirect or disable the application TLS
+that protects an exit. A pod's `HOSTNAME` is its name unless the pod sets
+`hostname`, so set it to pin `HOSTNAME`. A node refuses an exit that overlaps a
+cluster range, its own address, the resolver, or the TA. The node drops a
+connection from the pod to one of its egress entries that netfilter on the
+node translates to another destination, such as a Service published with an
+`externalIPs` or load-balancer address inside the range: egress reaches the
+range as dialed or not at all. The drop covers translations netfilter
+connection tracking records, such as kube-proxy in iptables or nftables mode.
+It does not cover a translation made in eBPF, such as Cilium's own Service load
+balancing, which never passes the node's netfilter hooks.
 
 ## `hostPorts`
 

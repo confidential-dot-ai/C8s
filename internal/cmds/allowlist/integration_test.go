@@ -18,12 +18,12 @@ import (
 	"testing"
 	"time"
 
-	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
+	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
 )
 
 // newOperatorKeypair writes an operator EC private key to dir and returns its
-// path plus the matching public key (what CDS would pin).
+// path plus the matching public key (what Trust Authority would pin).
 func newOperatorKeypair(t *testing.T, dir, name string) (keyPath string, pub *ecdsa.PublicKey) {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -38,11 +38,11 @@ func newOperatorKeypair(t *testing.T, dir, name string) (keyPath string, pub *ec
 	return keyPath, &key.PublicKey
 }
 
-// fakeCDS serves the allowlist HTTP contract over an in-memory allowlist, gated
+// fakeTA serves the allowlist HTTP contract over an in-memory allowlist, gated
 // by the real operatorauth.Verifier (so the body-bound token path is exercised
-// end to end). It stands in for CDS's handler, which lives in a package being
+// end to end). It stands in for Trust Authority's handler, which lives in a package being
 // rewritten concurrently on this branch.
-type fakeCDS struct {
+type fakeTA struct {
 	mu       sync.Mutex
 	al       pkgallowlist.Allowlist
 	version  int
@@ -53,7 +53,7 @@ type fakeCDS struct {
 	// afterReplace, when set, runs on every write once it is applied and
 	// before it is answered: a write landing on top of it.
 	afterReplace func()
-	// lost503 answers this many applied writes 503, as a CDS behind a front
+	// lost503 answers this many applied writes 503, as a Trust Authority behind a front
 	// door that lost the reply does.
 	lost503 int
 	// lost500 answers this many applied writes 500, which the client does not
@@ -63,8 +63,8 @@ type fakeCDS struct {
 	fail500 int
 }
 
-func newFakeCDS(pinned []*ecdsa.PublicKey) *fakeCDS {
-	return &fakeCDS{
+func newFakeTA(pinned []*ecdsa.PublicKey) *fakeTA {
+	return &fakeTA{
 		al: pkgallowlist.Allowlist{
 			Schema:    pkgallowlist.Schema,
 			Workloads: map[string]pkgallowlist.Workload{},
@@ -74,14 +74,14 @@ func newFakeCDS(pinned []*ecdsa.PublicKey) *fakeCDS {
 	}
 }
 
-func (f *fakeCDS) mux() *http.ServeMux {
+func (f *fakeTA) mux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /allowlist", f.handleList)
 	mux.HandleFunc("PUT /allowlist", f.handleReplace)
 	return mux
 }
 
-func (f *fakeCDS) handleList(w http.ResponseWriter, _ *http.Request) {
+func (f *fakeTA) handleList(w http.ResponseWriter, _ *http.Request) {
 	f.mu.Lock()
 	body, err := f.al.Canonical()
 	version := f.version
@@ -95,7 +95,7 @@ func (f *fakeCDS) handleList(w http.ResponseWriter, _ *http.Request) {
 	w.Write(body)
 }
 
-func (f *fakeCDS) authorize(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
+func (f *fakeTA) authorize(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
 	body, _ := io.ReadAll(r.Body)
 	if err := f.verifier.Authorize(r, body); err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
@@ -104,7 +104,7 @@ func (f *fakeCDS) authorize(w http.ResponseWriter, r *http.Request) ([]byte, boo
 	return body, true
 }
 
-func (f *fakeCDS) handleReplace(w http.ResponseWriter, r *http.Request) {
+func (f *fakeTA) handleReplace(w http.ResponseWriter, r *http.Request) {
 	body, ok := f.authorize(w, r)
 	if !ok {
 		return
@@ -158,13 +158,13 @@ func (f *fakeCDS) handleReplace(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (f *fakeCDS) count() int {
+func (f *fakeTA) count() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.al.Workloads)
 }
 
-func (f *fakeCDS) workload(name string) (pkgallowlist.Workload, bool) {
+func (f *fakeTA) workload(name string) (pkgallowlist.Workload, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	wl, ok := f.al.Workloads[name]
@@ -172,41 +172,41 @@ func (f *fakeCDS) workload(name string) (pkgallowlist.Workload, bool) {
 }
 
 // put writes an entry as another operator's write would: a new version.
-func (f *fakeCDS) put(name string, w pkgallowlist.Workload) {
+func (f *fakeTA) put(name string, w pkgallowlist.Workload) {
 	f.mu.Lock()
 	f.al.Workloads[name] = w
 	f.version++
 	f.mu.Unlock()
 }
 
-func (f *fakeCDS) currentVersion() int {
+func (f *fakeTA) currentVersion() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.version
 }
 
-func (f *fakeCDS) seedWorkload(name string, w pkgallowlist.Workload) {
+func (f *fakeTA) seedWorkload(name string, w pkgallowlist.Workload) {
 	f.mu.Lock()
 	f.al.Workloads[name] = w
 	f.mu.Unlock()
 }
 
-// cdsTestServer wires the fake CDS behind an httptest server.
-func cdsTestServer(t *testing.T, pinned []*ecdsa.PublicKey) (*httptest.Server, *fakeCDS) {
+// taTestServer wires the fake Trust Authority behind an httptest server.
+func taTestServer(t *testing.T, pinned []*ecdsa.PublicKey) (*httptest.Server, *fakeTA) {
 	t.Helper()
-	f := newFakeCDS(pinned)
+	f := newFakeTA(pinned)
 	srv := httptest.NewServer(f.mux())
 	t.Cleanup(srv.Close)
 	return srv, f
 }
 
-// TestUploadEndToEndWithPinnedKey drives the real CLI against the fake CDS +
+// TestUploadEndToEndWithPinnedKey drives the real CLI against the fake Trust Authority +
 // real verifier. It proves the operator token the client mints is accepted
 // (signature under the pinned key + body binding) and the replace lands.
 func TestUploadEndToEndWithPinnedKey(t *testing.T) {
 	dir := t.TempDir()
 	keyPath, pub := newOperatorKeypair(t, dir, "op.key")
-	srv, cds := cdsTestServer(t, []*ecdsa.PublicKey{pub})
+	srv, ta := taTestServer(t, []*ecdsa.PublicKey{pub})
 
 	images := coreImages()
 	file := writeAllowlistFile(t, dir, images)
@@ -214,35 +214,35 @@ func TestUploadEndToEndWithPinnedKey(t *testing.T) {
 	if _, _, err := runCmd("upload", file, "--url", srv.URL, "--insecure", "--operator-key", keyPath); err != nil {
 		t.Fatalf("upload failed: %v", err)
 	}
-	if got := cds.count(); got != len(images) {
+	if got := ta.count(); got != len(images) {
 		t.Fatalf("store has %d entries after upload, want %d", got, len(images))
 	}
 }
 
 // TestUploadRejectedWhenKeyNotPinned proves the auth boundary: an operator key
-// whose public half CDS has not pinned is rejected, and the store is untouched.
+// whose public half Trust Authority has not pinned is rejected, and the store is untouched.
 func TestUploadRejectedWhenKeyNotPinned(t *testing.T) {
 	dir := t.TempDir()
-	_, pinnedPub := newOperatorKeypair(t, dir, "pinned.key") // pinned on CDS
+	_, pinnedPub := newOperatorKeypair(t, dir, "pinned.key") // pinned on the Trust Authority
 	unpinnedKeyPath, _ := newOperatorKeypair(t, dir, "unpinned.key")
-	srv, cds := cdsTestServer(t, []*ecdsa.PublicKey{pinnedPub})
+	srv, ta := taTestServer(t, []*ecdsa.PublicKey{pinnedPub})
 
 	file := writeAllowlistFile(t, dir, coreImages())
 	if _, _, err := runCmd("upload", file, "--url", srv.URL, "--insecure", "--operator-key", unpinnedKeyPath); err == nil {
 		t.Fatal("expected upload with an unpinned operator key to be rejected")
 	}
-	if got := cds.count(); got != 0 {
+	if got := ta.count(); got != 0 {
 		t.Fatalf("store mutated despite rejected auth: %d entries", got)
 	}
 }
 
-// TestWorkloadApplyGetRoundTrip drives the real CLI through the fake CDS +
+// TestWorkloadApplyGetRoundTrip drives the real CLI through the fake Trust Authority +
 // verifier: apply a workload entry, then read it back via 'workload get'
 // and from the store. The write's body binding is the fragile path.
 func TestWorkloadApplyGetRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	keyPath, pub := newOperatorKeypair(t, dir, "op.key")
-	srv, cds := cdsTestServer(t, []*ecdsa.PublicKey{pub})
+	srv, ta := taTestServer(t, []*ecdsa.PublicKey{pub})
 
 	entry := map[string]any{
 		"api": map[string]any{
@@ -264,7 +264,7 @@ func TestWorkloadApplyGetRoundTrip(t *testing.T) {
 		t.Fatalf("workload apply failed: %v", err)
 	}
 
-	wl, ok := cds.workload("api")
+	wl, ok := ta.workload("api")
 	if !ok {
 		t.Fatal("workload 'api' not stored")
 	}
@@ -290,7 +290,7 @@ func TestVerifiedExecutableWritesRemainAuthorized(t *testing.T) {
 			t.Run(command+"/"+mode, func(t *testing.T) {
 				dir := t.TempDir()
 				key, pub := newOperatorKeypair(t, dir, "operator.key")
-				srv, cds := cdsTestServer(t, []*ecdsa.PublicKey{pub})
+				srv, ta := taTestServer(t, []*ecdsa.PublicKey{pub})
 				if mode == "unpinned operator key" {
 					key, _ = newOperatorKeypair(t, dir, "untrusted.key")
 				}
@@ -316,7 +316,7 @@ func TestVerifiedExecutableWritesRemainAuthorized(t *testing.T) {
 				}
 				_, _, err := runCmd(args...)
 				if mode != "node-root" && mode != "fs-verity" {
-					if err == nil || cds.count() != 0 {
+					if err == nil || ta.count() != 0 {
 						t.Fatalf("unsafe or unauthorized policy written: %v", err)
 					}
 					return
@@ -324,7 +324,7 @@ func TestVerifiedExecutableWritesRemainAuthorized(t *testing.T) {
 				if err != nil {
 					t.Fatalf("%s %s: %v", mode, command, err)
 				}
-				worker, ok := cds.workload("worker")
+				worker, ok := ta.workload("worker")
 				if !ok {
 					t.Fatal("worker not written")
 				}

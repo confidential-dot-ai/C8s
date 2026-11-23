@@ -14,9 +14,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/c8srunc"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
-	"github.com/confidential-dot-ai/c8s/internal/version"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/c8srunc"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/version"
 )
 
 var rootCmd = &cobra.Command{
@@ -29,9 +29,9 @@ attestation, and day-2 operations.
 Typical bootstrap flow on a fresh cluster:
 
     c8s install <install flags> --allowlist-seed-out seed.json
-    c8s cds config new --allowlist-seed seed.json --out cds ...
-    # launch the CDS VM on cds/cds-config.yaml, then:
-    c8s install <install flags> --cds-address <host:port> --cds-pin cds/cds-pin.json
+    c8s ta config new --allowlist-seed seed.json --out ta ...
+    # launch the Trust Authority VM on ta/cds-config.yaml, then:
+    c8s install <install flags> --ta-address <host:port> --ta-pin ta/cds-pin.json
 
 Both installs take the same flags, such as --platform, -f values.yaml and
 --workload-ref, which adopts a workload. Any other workload opts in with the

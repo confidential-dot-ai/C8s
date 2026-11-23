@@ -1,7 +1,9 @@
 package nriimagepolicy
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"slices"
 	"strings"
 	"testing"
@@ -9,7 +11,7 @@ import (
 	"github.com/containerd/nri/pkg/api"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
 // workerDocument is a worker's measured config.
@@ -39,7 +41,7 @@ mesh:
 worker: true
 `
 
-// stagedWorker is workerDocument as stage completes it: pulling from its CDS
+// stagedWorker is workerDocument as stage completes it: pulling from its Trust Authority
 // and measuring each served allowlist.
 var stagedWorker = strings.Replace(workerDocument, "\npolicy:\n", `
   pull:
@@ -236,7 +238,7 @@ func TestWorkerExcusesNoAPIPod(t *testing.T) {
 				ctr.Env = []string{tt.env}
 			}
 			mounts := newMountObserver(nil, enforcerMounts{}).Observe(pod, ctr)
-			verdict, reason := p.checkSandbox(context.Background(), cfg, observedContainerOf(pod, ctr, testFloorImage, mounts))
+			verdict, reason := p.checkSandbox(context.Background(), cfg, p.policy.current(), observedContainerOf(pod, ctr, testFloorImage, mounts))
 			if verdict != tt.want {
 				t.Fatalf("checkSandbox = %d %q, want %d", verdict, reason, tt.want)
 			}
@@ -352,10 +354,10 @@ func TestStaticPodEntriesGrantNothing(t *testing.T) {
 		store := newPolicyStore(base)
 		launch := allowlist.RunningContainer{Digest: pushDigestA, Argv: []string{"/agent"}, Env: env, Mounts: []allowlist.ObservedMount{bind}}
 		granted := map[string]bool{
-			"bind":       store.grantsHostBind(launch, bind),
+			"bind":       store.grantsHostBind(store.current(), launch, bind),
 			"declared":   store.declaresHostPorts(ports),
-			"ports":      store.grantsHostPorts(launch, ports),
-			"capability": store.grantsCapabilities(launch, caps),
+			"ports":      store.grantsHostPorts(store.current(), launch, ports),
+			"capability": store.grantsCapabilities(store.current(), launch, caps),
 		}
 		for what, got := range granted {
 			if got == static {
@@ -457,5 +459,40 @@ func TestValidationHoldsTheStaticPodMark(t *testing.T) {
 				t.Fatalf("ValidateContainerAdjustment = %v, want a refusal naming %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// ValidateContainerAdjustment resolves a tag once: the static-pod check and
+// admission judge the same digest even when the tag moves between lookups.
+func TestValidationResolvesTheTagOnce(t *testing.T) {
+	p := capabilityPlugin(t, SandboxEnforce)
+	p.cfg.Worker = true
+	var logs bytes.Buffer
+	p.logger = slog.New(slog.NewTextHandler(&logs, nil))
+	digests := []string{pushDigestB, pushDigestA}
+	resolves := 0
+	p.containerd = &fakeContainerd{resolve: func(context.Context, string) (string, error) {
+		digest := digests[min(resolves, len(digests)-1)]
+		resolves++
+		return digest, nil
+	}}
+	pod := sandboxedPod()
+	pod.Annotations = map[string]string{configSourceAnnotation: staticPodSource}
+	imageRef := "registry/repo:tag"
+	ctr := sandboxedContainer()
+	ctr.Mounts = mountsADenyPolicyAdmits(ctr)
+	ctr.Annotations = map[string]string{annotationImageName: imageRef}
+	ctr.Args = []string{"/app"}
+	err := p.ValidateContainerAdjustment(t.Context(), &api.ValidateContainerAdjustmentRequest{Pod: pod, Container: ctr})
+	// The static-pod check passes on the pinned launch of the first digest;
+	// admission then refuses the tag, as a worker does, judging that digest.
+	if err == nil || !strings.Contains(err.Error(), "must be referenced by digest") {
+		t.Fatalf("ValidateContainerAdjustment = %v, want the tag refused by admission", err)
+	}
+	if resolves != 1 {
+		t.Fatalf("ValidateContainerAdjustment resolved the tag %d times, want 1", resolves)
+	}
+	if !strings.Contains(logs.String(), "digest="+pushDigestB) || strings.Contains(logs.String(), pushDigestA) {
+		t.Fatalf("admission did not judge the first digest %s:\n%s", pushDigestB, logs.String())
 	}
 }

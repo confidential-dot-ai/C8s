@@ -19,10 +19,10 @@
 #   image_ref <logical>              a pullable reference for a scenario's image
 #   image_digest <ref>               the digest the plugin compares for ref
 #   image_alias <ref> <name>         make the node resolve name to ref's bytes
-#   served_allowlist                 the allowlist document CDS serves, as JSON
+#   served_allowlist                 the allowlist document TA serves, as JSON
 #   allowlist_request                a write request through the path this
-#                                    backend writes over, taking cds_request's
-#                                    arguments (default: cds_request). The
+#                                    backend writes over, taking ta_request's
+#                                    arguments (default: ta_request). The
 #                                    signed writes allowlist_put and
 #                                    allowlist_delete go through it.
 #   base_declares <node> <digest>    yes/no: the node's base allowlist names digest
@@ -33,19 +33,19 @@
 #   plugin_stop <node>               stop the plugin; the runtime creates no workload container
 #                                    until plugin_start
 #   plugin_start <node>              start the plugin again and wait until it is ready
-#   cds_block / cds_unblock          make the CDS unreachable for every node's pull, leaving
-#                                    the pods' issuance alone, and undo it; cds_block returns
+#   ta_block / ta_unblock          make the TA unreachable for every node's pull, leaving
+#                                    the pods' issuance alone, and undo it; ta_block returns
 #                                    once node_refuses says a pull is refused
-#   node_refuses                     yes/no: a connect from the node to the CDS
+#   node_refuses                     yes/no: a connect from the node to the TA
 #                                    fails or hangs now; a backend without a node shell answers yes
-#   cds_restart                      restart the CDS and wait until it serves again
-#   cds_volatile                     yes/no: a CDS restart loses the allowlist and its version
+#   ta_restart                      restart the TA and wait until it serves again
+#   ta_volatile                     yes/no: a TA restart loses the allowlist and its version
 #   api_service_name                 the fully qualified DNS name of the cluster's
 #                                    API Service
 #   mesh_restart                     recreate every controller-owned mesh member and wait
 #                                    until all are ready, so each holds a leaf under the
-#                                    CDS's mesh CA
-#   served_version                   the version of the allowlist CDS serves now
+#                                    TA's mesh CA
+#   served_version                   the version of the allowlist TA serves now
 #   applied_version                  the allowlist version the admission plugin
 #                                    on the node decides with, from its health
 #                                    endpoint, or unsupported where the node cannot be
@@ -68,8 +68,8 @@
 #                                    spec overrides nothing, one word per line
 #   image_env <ref>                  the NAME=VALUE entries the image's
 #                                    configuration sets, one per line
-#   operator_keys                    yes/no: the CDS holds an operator key
-#   seed_declares <digest>           yes/no: the seed of the CDS names digest
+#   operator_keys                    yes/no: the TA holds an operator key
+#   seed_declares <digest>           yes/no: the seed of the TA names digest
 #   write_token <operator|foreign> <method> <path> <body-file> [validity]
 #                                    the Authorization header of a write token,
 #                                    signed with the operator's key or with one
@@ -79,20 +79,20 @@
 #                                    naming tag in If-None-Match unless it is
 #                                    "-"; prints "<status> <version> <tag>",
 #                                    then the body
-#   cds_read <document> [plain]      read a document of the CDS with no client
+#   ta_read <document> [plain]      read a document of the TA with no client
 #                                    certificate (mesh-ca, reference-values,
 #                                    operator-key-set, allowlist, readiness),
 #                                    over plain HTTP when asked; prints the
 #                                    status (000 when nothing answered), then
 #                                    the body
-#   cds_serving_cert                 the certificate the CDS presents in the
+#   ta_serving_cert                 the certificate the TA presents in the
 #                                    TLS handshake, PEM
-#   cds_pins                         the launch digests the CDS was started
+#   ta_pins                         the launch digests the TA was started
 #                                    with, one per line
-#   operator_key_set                 the operator public keys the CDS loaded at
+#   operator_key_set                 the operator public keys the TA loaded at
 #                                    startup, PEM
-#   cds_restart_with <parameter> <value>
-#                                    restart the CDS with one parameter
+#   ta_restart_with <parameter> <value>
+#                                    restart the TA with one parameter
 #                                    changed: pins <digest>|none,
 #                                    operator-keys none,
 #                                    san-validation true|false, inventory-cidr
@@ -100,11 +100,11 @@
 #                                    configuration
 #   attestation_service_stop / attestation_service_start
 #                                    the local attestation service of the
-#                                    CDS's node
-#   private_keys <node>              every PEM private key held outside CDS
+#                                    TA's node
+#   private_keys <node>              every PEM private key held outside TA
 #                                    process memory: in Kubernetes objects and
 #                                    in the files of the node
-#   attest_direct                    one issuance against the CDS process from
+#   attest_direct                    one issuance against the TA process from
 #                                    an admitted TEE; prints the chain, PEM
 #   requester_manifest <name> <ns> <node>
 #                                    a pod on node that relays HTTP for the
@@ -114,20 +114,20 @@
 #                                    send the request from inside the
 #                                    requester's pod; prints the status (000
 #                                    when nothing answered), then the body
-#   cds_pod_request <method> <route> [body-file] [authorization] [client-cert] [client-key] [header...]
-#                                    send the request to the CDS from here on
+#   ta_pod_request <method> <route> [body-file] [authorization] [client-cert] [client-key] [header...]
+#                                    send the request to the TA from here on
 #                                    a member requester's behalf, whose own
-#                                    TCP to the CDS the node drops; as
-#                                    cds_request prints
-#   cds_pod_url                      the CDS address a pod's requester dials
-#   cds_arg <flag>                   the value of --<flag>= the CDS runs with,
+#                                    TCP to the TA the node drops; as
+#                                    ta_request prints
+#   ta_pod_url                      the TA address a pod's requester dials
+#   ta_arg <flag>                   the value of --<flag>= the TA runs with,
 #                                    empty when it is not set
 #   evidence <ns> <pod> <report-data-base64>
 #                                    evidence from the local attestation
 #                                    service of the pod's node over the report
 #                                    data, as the {platform, evidence} envelope
-#                                    the CDS takes
-#   evidence_signed                  yes/no: the CDS checks the evidence's
+#                                    the TA takes
+#   evidence_signed                  yes/no: the TA checks the evidence's
 #                                    signature, so editing it breaks the
 #                                    evidence (yes) or makes evidence for
 #                                    another launch digest (no)
@@ -150,7 +150,7 @@
 #                                    the filesystem type of the directory, as
 #                                    stat -f names it; fails while it is absent
 #   pod_sandbox_id <ns> <pod>        the runtime's sandbox ID of the pod
-#   secrets_explain <ns> <pod>       the CDS's account of a release decision for
+#   secrets_explain <ns> <pod>       the TA's account of a release decision for
 #                                    the pod's sandbox, as served; empty where
 #                                    the sandbox cannot be named
 #   relying_party <leaf-file> <ca-file> [verify flags...]
@@ -161,8 +161,8 @@
 #                                    the harness may deploy into, or unsupported
 #   cert_paths                       the certificate and key paths of a pod
 #                                    carrying a workload ID, one per line
-#   cds_request <method> <route> [body-file] [authorization] [client-cert] [client-key] [header...]
-#                                    send the request to the CDS from here, as
+#   ta_request <method> <route> [body-file] [authorization] [client-cert] [client-key] [header...]
+#                                    send the request to the TA from here, as
 #                                    given (empty arguments are omitted; each
 #                                    header is "Name: value"); prints the
 #                                    status, then the body (000 and curl's
@@ -177,14 +177,20 @@
 #                                    unsupported where the node image holds it
 #   router_tls_mode                  cds, webpki or acme: the public TLS
 #                                    credential the router selects
-#   cds_relay_block / cds_relay_unblock
-#                                    make the CDS unreachable for the router's
+#   ta_relay_block / ta_relay_unblock
+#                                    make the TA unreachable for the router's
 #                                    allowlist relay, leaving every other
 #                                    client's reach alone, and undo it
 #   pod_cvm_node                     the node the Pod CVM provider registered, or
 #                                    unsupported where the cluster runs no provider
 #   pod_cvm_max_pods                 the provider's pod budget
 #   pod_cvm_deadline                 the provider's verification deadline, in seconds
+#   pod_cvm_guest                    yes where the cloud API starts a guest the provider
+#                                    can verify and send a pod to, or unsupported where
+#                                    it starts none
+#   pod_cvm_no_guest                 yes where the cloud API starts no guest, so
+#                                    that no pod is ever sent to one, or
+#                                    unsupported where it starts one
 #   pod_cvm_oversize_memory          a memory quantity one pod CVM cannot hold
 #                                    and the provider's node can
 #   pod_cvm_allocation <uid>         the allocation identity the provider derives
@@ -199,18 +205,18 @@
 #   cloud_calls                      every call that cloud API received, as JSON
 #   cloud_instances                  every instance it holds, as JSON
 # node_name, image_ref, image_digest, pull_interval, allowlist_node_delay,
-# cds_pod_url, cert_paths, pod_exec, exempt_namespace, api_service_name,
-# pod_cvm_node, pod_cvm_max_pods and pod_cvm_deadline answer the same for a
-# whole run; callers may cache them. The
-# allowlist is state: served_allowlist answers for the moment of the call.
+# ta_pod_url, cert_paths, pod_exec, exempt_namespace, api_service_name,
+# pod_cvm_node, pod_cvm_max_pods, pod_cvm_deadline, pod_cvm_guest and
+# pod_cvm_no_guest answer the same for a whole run; callers may cache them.
+# The allowlist is state: served_allowlist answers for the moment of the call.
 #
 # The implementations below that are the same everywhere need these from the
 # backend, which the steps never call:
-#   cds_url                          the base URL of the CDS the cluster trusts,
+#   ta_url                          the base URL of the TA the cluster trusts,
 #                                    reachable from here
 #   router_url                       the base URL of the router's public HTTPS
 #                                    address, reachable from here
-#   cds_plain_url                    the same listener over http://, or unsupported
+#   ta_plain_url                    the same listener over http://, or unsupported
 #   operator_key                     the operator's private key, PEM
 #   optoken_bin                      the token minter built from
 #                                    test/integration/cluster/optoken
@@ -335,7 +341,7 @@ pod_file() { local out; out="$(kubectl -n "$1" exec "$2" -c "$3" -- cat "$4" | b
 pod_fstype() { kubectl -n "$1" exec "$2" -c "$3" -- stat -f -c %T "$4"; }
 pod_cert_file_in() { kubectl -n "$1" exec "$2" -c "$3" -- cat "$CERT_VOLUME_PATH/$4" 2>/dev/null || true; }
 
-# Sent by curl inside the requester, so the source address the CDS sees is
+# Sent by curl inside the requester, so the source address the TA sees is
 # the pod's. Status 000 when nothing answered; empty when the pod cannot run
 # curl at all.
 requester_request() {
@@ -369,23 +375,23 @@ operator_arg() {
 # The image the webhook injects get-cert and its siblings from.
 injected_image() { operator_arg get-cert-image; }
 
-# --- The CDS API as a caller sees it ---
+# --- The TA API as a caller sees it ---
 # The signed path (allowlist_put, allowlist_delete) is the harness's way of
 # writing; these send what a scenario says, authorization included or not,
-# with curl against the CDS. A backend provides what differs:
+# with curl against the TA. A backend provides what differs:
 #   allowlist_request              the request function a signed write goes
-#                                  through, taking cds_request's arguments
-#   cds_url        the base URL of the CDS, reachable from here
+#                                  through, taking ta_request's arguments
+#   ta_url        the base URL of the TA, reachable from here
 #   operator_key   the operator's private key, PEM
 #   optoken_bin    the token minter built from test/integration/cluster/optoken
 #   scratch        a directory kept for the run
 
 # The status is the first line of the read. Taking it with head would close
-# the pipe before cds_read has written the body, and that SIGPIPE is the
+# the pipe before ta_read has written the body, and that SIGPIPE is the
 # function's status under pipefail.
 operator_keys() {
     local answer code
-    answer="$(cds_read operator-key-set)" || return
+    answer="$(ta_read operator-key-set)" || return
     code="${answer%%$'\n'*}"
     case "$code" in
         200) echo yes ;;
@@ -426,7 +432,7 @@ write_token() {
     "$bin" "$key" "$@"
 }
 
-# The CDS's own account of a release decision for the pod's sandbox
+# The TA's own account of a release decision for the pod's sandbox
 # (GET /secrets-explain/<id>, answered to the operator key), as the JSON it
 # serves. Empty where the backend cannot name the sandbox, so a step adds it
 # to a failure it did not expect without failing on its absence.
@@ -435,20 +441,20 @@ secrets_explain() {
     id="$(pod_sandbox_id "$1" "$2" 2>/dev/null)" || return 0
     [ -n "$id" ] || return 0
     token="$(write_token operator GET "/secrets-explain/$id" /dev/null)" || return 0
-    answer="$(cds_request GET "/secrets-explain/$id" "" "$token" 2>/dev/null)" || return 0
+    answer="$(ta_request GET "/secrets-explain/$id" "" "$token" 2>/dev/null)" || return 0
     [ "${answer%%$'\n'*}" = 200 ] || return 0
     printf '%s' "${answer#*$'\n'}"
 }
 
-# Raw reads, so the steps see the document the CDS serves, as served.
-served_allowlist() { curl -sSfk "$(cds_url)/allowlist"; }
+# Raw reads, so the steps see the document the TA serves, as served.
+served_allowlist() { curl -sSfk "$(ta_url)/allowlist"; }
 served_version() { allowlist_get - operator | awk 'NR == 1 {print $2}'; }
 
 # --- The harness's signed writes ---
 # A write replaces the whole document, so a write of one entry reads the
 # document, changes that entry, and writes it back conditional on the version
 # it read (If-Match).
-allowlist_request() { cds_request "$@"; }
+allowlist_request() { ta_request "$@"; }
 
 allowlist_put() { allowlist_replace "$1" "$2"; }
 allowlist_delete() { allowlist_replace "$1" ""; }
@@ -457,12 +463,12 @@ allowlist_delete() { allowlist_replace "$1" ""; }
 # entry in the file put under name, or with name removed when no file is given.
 # The harness is the only writer, so a 412 is a harness fault, not a race.
 #
-# A CDS without persistence refuses operator tokens minted before it started
-# for jwtClockSkew after each start (internal/cmds/cds/backend.go TokenFloor,
-# #1206), so a write right after a CDS restart gets a 401. Retry that one case,
+# A TA without persistence refuses operator tokens minted before it started
+# for jwtClockSkew after each start (internal/cmds/ta/backend.go TokenFloor,
+# #1206), so a write right after a TA restart gets a 401. Retry that one case,
 # re-reading the served version each time since the restart drops it; the
 # integration harness retries it the same way (test/integration/cluster/lib.sh
-# cds_write). Any other non-204, and a 401 that is not the floor, fail at once.
+# ta_write). Any other non-204, and a 401 that is not the floor, fail at once.
 allowlist_replace() {
     local name="$1" entry="${2:-}" served version body token answer code reply
     body="$(scratch)/allowlist-write.json" || return
@@ -494,7 +500,7 @@ response_header() {
 
 allowlist_get() {
     local url headers body status route
-    url="$(cds_url)" || return
+    url="$(ta_url)" || return
     case "${2:-}" in
         operator) route=/allowlist ;;
         node) route="/allowlist?requester=node" ;;
@@ -510,30 +516,30 @@ allowlist_get() {
     rm -f "$headers" "$body"
 }
 
-# --- The CDS's own documents and state ---
-# A backend provides cds_plain_url, the same listener over http://, or unsupported.
+# --- The TA's own documents and state ---
+# A backend provides ta_plain_url, the same listener over http://, or unsupported.
 
-cds_document_path() {
+ta_document_path() {
     case "$1" in
         mesh-ca) echo /ca ;;
         reference-values) echo /measurements ;;
         operator-key-set) echo /operator-keys ;;
         allowlist) echo /allowlist ;;
         readiness) echo /readyz ;;
-        *) echo "backend: no CDS document '$1'" >&2; return 2 ;;
+        *) echo "backend: no TA document '$1'" >&2; return 2 ;;
     esac
 }
 
 # The request as the scenario shaped it: a body, an Authorization and a
 # client certificate only when given. curl appends the status to the body; it
-# moves to the first line here, as in cds_read.
-cds_request() {
+# moves to the first line here, as in ta_read.
+ta_request() {
     local url
-    url="$(cds_url)" || return
+    url="$(ta_url)" || return
     http_request "$url" "$@"
 }
 # The same address serves a member requester's requests from here.
-cds_pod_request() { cds_request "$@"; }
+ta_pod_request() { ta_request "$@"; }
 
 router_request() {
     local url
@@ -569,20 +575,20 @@ curl_paced() {
     printf '%s' "$answer"
 }
 
-cds_read() {
+ta_read() {
     local url path answer
-    path="$(cds_document_path "$1")" || return
+    path="$(ta_document_path "$1")" || return
     if [ "${2:-}" = plain ]; then
-        url="$(cds_plain_url)" || return
+        url="$(ta_plain_url)" || return
     else
-        url="$(cds_url)" || return
+        url="$(ta_url)" || return
     fi
     answer="$(curl -sk -w $'\n%{http_code}' --max-time 20 "$url$path" 2>/dev/null)" || answer=$'\n000'
     echo "${answer##*$'\n'}"
     printf '%s' "${answer%$'\n'*}"
 }
 
-cds_serving_cert() { local url; url="$(cds_url)" || return; serving_cert "$url"; }
+ta_serving_cert() { local url; url="$(ta_url)" || return; serving_cert "$url"; }
 
 serving_cert() {
     local host="${1#https://}"
@@ -670,7 +676,7 @@ router_tls_mode() {
 # The requester the webhook injects into every per-pod mesh member.
 MESH_CERT_CONTAINER=c8s-cert
 
-# A restarted CDS mints a new mesh CA, and a per-pod mesh member is bound to
+# A restarted TA mints a new mesh CA, and a per-pod mesh member is bound to
 # the CA key of its first leaf for the pod's life (get-cert R3), so only a pod
 # created after the restart holds a leaf under the new CA. Every member a
 # controller owns, the router among them, outlives the scenario and must be
@@ -736,6 +742,8 @@ cert_paths() { printf '%s/tls.crt\n%s/tls.key\n' "$CERT_VOLUME_PATH" "$CERT_VOLU
 pod_cvm_node() { return "$UNSUPPORTED"; }
 pod_cvm_max_pods() { return "$UNSUPPORTED"; }
 pod_cvm_deadline() { return "$UNSUPPORTED"; }
+pod_cvm_guest() { return "$UNSUPPORTED"; }
+pod_cvm_no_guest() { return "$UNSUPPORTED"; }
 pod_cvm_oversize_memory() { return "$UNSUPPORTED"; }
 pod_cvm_allocation() { return "$UNSUPPORTED"; }
 pod_cvm_labels() { return "$UNSUPPORTED"; }

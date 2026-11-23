@@ -12,7 +12,7 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 )
 
 // applyVerdictPolicies runs every post-verification policy in verdict order:
@@ -32,11 +32,11 @@ func applyVerdictPolicies(oc *Outcome, cfg config, ev *evidence, held *heldAllow
 }
 
 // applyServedSetNote says so when the /measurements cross-check did not run:
-// a kind=cds verdict without --served-policy-file proves the target's own
+// a kind=ta verdict without --served-policy-file proves the target's own
 // identity and nothing about the node identities it admits.
 func applyServedSetNote(oc *Outcome, cfg config, plan *verifyPlan) {
-	if cfg.kind == "cds" && plan.served == nil {
-		oc.Warnings = append(oc.Warnings, "no --served-policy-file: the set this CDS reports enforcing at /measurements was not checked")
+	if cfg.kind == "ta" && plan.served == nil {
+		oc.Warnings = append(oc.Warnings, "no --served-policy-file: the set this Trust Authority reports enforcing at /measurements was not checked")
 	}
 }
 
@@ -197,8 +197,8 @@ func launchBindingPinned(platform string, images []remote.ImagePin) bool {
 // The notes applyFinalNotes recognises: the unverified ones survive a failed
 // verdict, the matched one does not.
 const (
-	sandboxIDUnverifiedNote = "not verified: CDS's signature on the leaf vouches for this ID; pass --mesh-ca to check it"
-	workloadUnverifiedNote  = "not verified: CDS's signature on the leaf vouches for this name; pass --mesh-ca to check it"
+	sandboxIDUnverifiedNote = "not verified: Trust Authority's signature on the leaf vouches for this ID; pass --mesh-ca to check it"
+	workloadUnverifiedNote  = "not verified: Trust Authority's signature on the leaf vouches for this name; pass --mesh-ca to check it"
 	operatorKeysMatchedNote = "matched: the set served over the attested cert equals --operator-keys"
 )
 
@@ -263,7 +263,7 @@ func applySandboxPolicy(oc *Outcome, cfg config, ev *evidence, opKeys operatorKe
 	checkServedOperatorKeys(oc, plan.operatorKeysDigest, opKeys, fail)
 }
 
-// checkServedOperatorKeys compares the key set a kind=cds target serves at
+// checkServedOperatorKeys compares the key set a kind=ta target serves at
 // /operator-keys with the --operator-keys digest the plan resolved.
 func checkServedOperatorKeys(oc *Outcome, expected []byte, opKeys operatorKeysReport, fail func(string, ...any)) {
 	if len(expected) == 0 {
@@ -325,7 +325,7 @@ func applyClientDocumentPolicy(oc *Outcome, cfg config, ev *evidence) {
 		oc.ClientDocumentDigest = hex.EncodeToString(digest)
 		oc.AgentLabel = armtls.AgentLabel(digest)
 		if cfg.meshCA == "" {
-			oc.ClientDocumentNote = "not verified: CDS's signature on the leaf vouches for this digest; pass --mesh-ca to check it"
+			oc.ClientDocumentNote = "not verified: Trust Authority's signature on the leaf vouches for this digest; pass --mesh-ca to check it"
 		} else {
 			oc.ClientDocumentNote = "ca-vouched: the leaf chains to the supplied mesh CA"
 		}

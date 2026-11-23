@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 
-	"github.com/confidential-dot-ai/c8s/internal/podmesh"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/podmesh"
 )
 
 const (

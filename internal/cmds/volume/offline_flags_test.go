@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/confidential-dot-ai/c8s/internal/testutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
 )
 
 // ignoredFlagArgs sets every volume flag to a value attach and detach could
@@ -49,7 +49,7 @@ func TestNodeSubcommandsAcceptTheVolumeFlags(t *testing.T) {
 // The subcommands share one tree, so a help that changes what a later help
 // shows fails here.
 func TestHelpListsOnlyTheVolumeFlagsASubcommandReads(t *testing.T) {
-	flags := []string{"--url", "--image-policy-file", "--timeout", "--operator-key", "--insecure"}
+	flags := []string{"--ta-url", "--ta-image-policy-file", "--timeout", "--operator-key", "--insecure"}
 	tree := newCmd(nil)
 	for _, tc := range []struct {
 		subcommand      string

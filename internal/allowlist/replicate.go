@@ -8,20 +8,20 @@ import (
 	"modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
 
-	"github.com/confidential-dot-ai/c8s/internal/httputil"
-	"github.com/confidential-dot-ai/c8s/internal/replicate"
-	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
-	"github.com/confidential-dot-ai/c8s/pkg/routes"
-	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/httputil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/replicate"
+	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/routes"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
 )
 
-// Committer takes one allowlist mutation: a single CDS applies it, a CDS HA
+// Committer takes one allowlist mutation: a single Trust Authority applies it, a Trust Authority HA
 // replica commits it to the cluster's log first.
 type Committer = replicate.Committer[Command, Result]
 
 // Handle is the allowlist as its writers hold it. It is the only way to
-// write, so no write path asks which kind of CDS it serves.
+// write, so no write path asks which kind of Trust Authority it serves.
 type Handle struct {
 	store  *Store
 	commit Committer
@@ -35,7 +35,7 @@ func (s *Store) Local() *Handle {
 	}
 }
 
-// CommittedBy is a handle whose mutations c commits to a CDS HA cluster
+// CommittedBy is a handle whose mutations c commits to a Trust Authority HA cluster
 // before any replica applies them.
 func (s *Store) CommittedBy(c Committer) *Handle {
 	return &Handle{
@@ -84,7 +84,7 @@ func (h *Handle) Generation() uint64 {
 	return h.store.Generation()
 }
 
-// ErrUnavailable wraps a store that may take the next write: a CDS HA replica
+// ErrUnavailable wraps a store that may take the next write: a Trust Authority HA replica
 // with no leader or no quorum, or a failing local disk.
 var ErrUnavailable = errors.New("allowlist: store unavailable; retry")
 
@@ -136,7 +136,7 @@ type Result struct {
 }
 
 // sentinels carries a refusal across the cluster's log, so a caller matches
-// the same error at every replica as in a single CDS.
+// the same error at every replica as in a single Trust Authority.
 var sentinels = map[string]error{
 	"token_reused":         operatorauth.ErrTokenReused,
 	"revision_not_greater": ErrRevisionNotGreater,

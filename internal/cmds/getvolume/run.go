@@ -1,9 +1,9 @@
 // Package getvolume implements the get-volume subcommand: the sidecar that
-// fetches a volume's key blob from CDS and hands it to the node's volumed,
+// fetches a volume's key blob from the Trust Authority and hands it to the node's volumed,
 // which opens the device and mounts it into this pod.
 //
 // It runs as a native sidecar rather than an init container for the same reason
-// get-secret does: CDS only releases once every main container is running, so an
+// get-secret does: Trust Authority only releases once every main container is running, so an
 // init container would be asking before its siblings exist (docs/secrets.md).
 // The volume therefore appears shortly after the workload starts, and a
 // consumer must wait for it.
@@ -23,11 +23,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/sidecar"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/volume"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/volumed"
-	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/sidecar"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/volume"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/volumed"
+	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 )
 
 // config is everything the sidecar needs. The webhook renders all of it.
@@ -58,7 +58,7 @@ func parseVolumeSpec(spec string) (volumeRequest, error) {
 	if err := volumed.ValidVolumeName(name); err != nil {
 		return volumeRequest{}, err
 	}
-	// Canonicalised with the same code CDS matches grants against, so a path
+	// Canonicalised with the same code Trust Authority matches grants against, so a path
 	// this sidecar accepts is one the server can answer for.
 	canonical, err := pkgallowlist.CanonicalSecretPath(strings.TrimSpace(path))
 	if err != nil {
@@ -150,9 +150,9 @@ func openAll(ctx context.Context, cfg config, pins armtls.PinSource) error {
 }
 
 // openAllWith is openAll once the clients exist.
-func openAllWith(ctx context.Context, cfg config, cds *http.Client, pub crypto.PublicKey, endpoint string, daemon *http.Client, daemonBase string) error {
+func openAllWith(ctx context.Context, cfg config, ta *http.Client, pub crypto.PublicKey, endpoint string, daemon *http.Client, daemonBase string) error {
 	for _, v := range cfg.Volumes {
-		blob, err := fetchBlob(ctx, cfg, cds, pub, endpoint, v.Path)
+		blob, err := fetchBlob(ctx, cfg, ta, pub, endpoint, v.Path)
 		if err != nil {
 			return fmt.Errorf("volume %s: %w", v.Name, err)
 		}
@@ -181,6 +181,9 @@ func fetchBlob(ctx context.Context, cfg config, client *http.Client, pub crypto.
 // openOne hands the blob to the node daemon, which resolves this pod from the
 // socket's peer credentials and mounts the volume into it.
 func openOne(ctx context.Context, cfg config, daemon *http.Client, daemonBase, name string, blob volume.Blob) error {
+	if blob.Name != name {
+		return fmt.Errorf("volume key blob name %q does not match requested name %q", blob.Name, name)
+	}
 	body, err := json.Marshal(volumed.OpenRequest{Name: name, Blob: blob})
 	if err != nil {
 		return err

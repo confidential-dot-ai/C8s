@@ -1,6 +1,6 @@
-// Package allowlistclient is the HTTP client for the CDS allowlist API.
+// Package allowlistclient is the HTTP client for the Trust Authority allowlist API.
 //
-// Reads (List, Fetch) are unauthenticated; the attested armTLS channel to CDS
+// Reads (List, Fetch) are unauthenticated; the attested armTLS channel to the Trust Authority
 // provides their integrity. Writes bind an operator credential to the exact
 // method, path, and body via Authorizer, so a captured token cannot be replayed
 // against a different payload.
@@ -19,12 +19,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/internal/readutil"
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/readutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
 )
 
-// Client is an HTTP client for the CDS allowlist API.
+// Client is an HTTP client for the Trust Authority allowlist API.
 type Client struct {
 	baseURL    string
 	httpClient *http.Client
@@ -70,27 +70,27 @@ func (c Client) Fetch(ctx context.Context, ifNoneMatch string) (*allowlist.Allow
 	return served.Allowlist, served.ETag, notModified, err
 }
 
-// Served is an allowlist as CDS served it.
+// Served is an allowlist as Trust Authority served it.
 type Served struct {
 	Allowlist *allowlist.Allowlist
 	ETag      string
-	// Version is the store version CDS served the document at, the one
+	// Version is the store version Trust Authority served the document at, the one
 	// nodes refuse to go below; "" when the response named none.
 	Version string
-	// Digest is "sha256:<hex>" of the exact bytes served. CDS serves
+	// Digest is "sha256:<hex>" of the exact bytes served. Trust Authority serves
 	// Allowlist.Canonical, so this is the policy digest it stamps into
 	// workload certificates and nodes measure into RTMR[3].
 	Digest string
 }
 
 // FetchServed is Fetch that also returns the digest of the served bytes and
-// the version. On a 304 only the version is set: the one CDS now serves the
+// the version. On a 304 only the version is set: the one Trust Authority now serves the
 // document the request named at.
 func (c Client) FetchServed(ctx context.Context, ifNoneMatch string) (Served, bool, error) {
 	return c.fetch(ctx, ifNoneMatch, nil)
 }
 
-// CanonicalBytes returns the validated bytes served by CDS without rewriting
+// CanonicalBytes returns the validated bytes served by the Trust Authority without rewriting
 // them. Workload certificates stamp their hash, so exports must preserve them.
 func (c Client) CanonicalBytes(ctx context.Context) ([]byte, string, error) {
 	var body []byte
@@ -150,7 +150,7 @@ func (c Client) fetch(ctx context.Context, ifNoneMatch string, raw *[]byte) (Ser
 	}, false, nil
 }
 
-// Object returns the allowlist document of the CDS's history whose digest is
+// Object returns the allowlist document of the Trust Authority's history whose digest is
 // digest (GET /allowlist/objects/sha256/<hex>). It refuses bytes that hash to
 // anything else, so the caller needs no trust in the store for them.
 func (c Client) Object(ctx context.Context, digest [sha256.Size]byte) (*allowlist.Allowlist, error) {
@@ -177,8 +177,8 @@ func (c Client) Object(ctx context.Context, digest [sha256.Size]byte) (*allowlis
 	return allowlist.ParseServedJSON(body)
 }
 
-// ReplaceAll atomically replaces the entire allowlist. CDS assigns the new
-// version. A non-empty version makes the write conditional: CDS refuses it
+// ReplaceAll atomically replaces the entire allowlist. Trust Authority assigns the new
+// version. A non-empty version makes the write conditional: Trust Authority refuses it
 // with a 412 *operatorauth.StatusError unless the allowlist is still at that
 // version (the Version of the read it was built from), so the write never
 // overwrites a write made since.
@@ -207,7 +207,7 @@ const (
 )
 
 // mutate sends a body-bound, authorized write, sending it again while the
-// refusal only says "not now". Each attempt carries a token of its own: CDS
+// refusal only says "not now". Each attempt carries a token of its own: Trust Authority
 // spends a token once. Any other refusal is final.
 func (c Client) mutate(ctx context.Context, method, path string, body []byte, ifMatch string, auth Authorizer) error {
 	if auth == nil {
@@ -243,7 +243,7 @@ func saysNotNow(err error) bool {
 }
 
 // send makes one attempt of a write. auth is called with the exact method,
-// path, and bytes sent, so the token's bindings match what CDS receives. A
+// path, and bytes sent, so the token's bindings match what Trust Authority receives. A
 // refusal comes back as a *operatorauth.StatusError with the answer's
 // Retry-After.
 func (c Client) send(ctx context.Context, method, path string, body []byte, ifMatch string, auth Authorizer) (string, error) {
@@ -281,17 +281,17 @@ func retryWait(retryAfter string, attempt int) time.Duration {
 }
 
 // servedVersion is the version a GET /allowlist response names in its
-// VersionHeader, or in the ETag of a CDS released before that header.
+// VersionHeader, or in the ETag of a Trust Authority released before that header.
 func servedVersion(h http.Header) string {
 	if version := h.Get(allowlist.VersionHeader); version != "" {
 		return version
 	}
-	return versionOfEarlierCDS(h.Get("ETag"))
+	return versionOfEarlierTA(h.Get("ETag"))
 }
 
-// versionOfEarlierCDS is the version a CDS released before VersionHeader
+// versionOfEarlierTA is the version a Trust Authority released before VersionHeader
 // names as the N of its ETag W/"N", or "" for any other ETag.
-func versionOfEarlierCDS(etag string) string {
+func versionOfEarlierTA(etag string) string {
 	v, ok := strings.CutPrefix(etag, `W/"`)
 	if !ok {
 		return ""
@@ -303,8 +303,8 @@ func versionOfEarlierCDS(etag string) string {
 	return v
 }
 
-// maxAllowlistResponseBytes caps CDS response bodies. Generous for a realistic
-// fleet but bounded so a compromised or buggy CDS can't OOM the plugin process.
+// maxAllowlistResponseBytes caps Trust Authority response bodies. Generous for a realistic
+// fleet but bounded so a compromised or buggy Trust Authority can't OOM the plugin process.
 const maxAllowlistResponseBytes = 4 * 1024 * 1024
 
 var errAllowlistResponseTooLarge = fmt.Errorf("allowlist response exceeds %d bytes", maxAllowlistResponseBytes)

@@ -14,10 +14,12 @@ import (
 	"testing"
 
 	"github.com/containerd/nri/pkg/api"
+	"github.com/vishvananda/netlink"
+	"github.com/vishvananda/netns"
 	"golang.org/x/sys/unix"
 
-	"github.com/confidential-dot-ai/c8s/internal/podmesh/ruleset"
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/podmesh/ruleset"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 // requireNetNS fails rather than skips when C8S_REQUIRE_NFT is set, which is
@@ -205,7 +207,7 @@ func TestProtectAndGateAPodInTheNamespace(t *testing.T) {
 }
 
 // verifierGate protects pods on a node whose ruleset admits the attestation-api
-// its credential clients verify their CDS's evidence through: the one part of a
+// its credential clients verify their Trust Authority's evidence through: the one part of a
 // pod's ruleset that comes from the node, not the measured document.
 func verifierGate() *meshGate {
 	policy := meshRoles()
@@ -285,6 +287,9 @@ func TestRecoverAPodHoldingExitsInTheNamespace(t *testing.T) {
 	meshLaunch := gatedContainer{role: meshRole, digest: digestOther, argv: []string{"/app/c8s", "armtls-mesh"}}
 
 	p := sandboxPod(t, "default", "pod")
+	addressSandbox(t, p.GetPid(), "10.0.3.7/24")
+	node := sandboxProcess(t)
+	defer setNodeNetworkNamespace(sandboxNetNSPath(node))()
 	before := newMeshGate(*meshRoles(), discardLogger())
 	if err := before.protect(p); err != nil {
 		t.Fatalf("protect: %v", err)
@@ -305,9 +310,17 @@ func TestRecoverAPodHoldingExitsInTheNamespace(t *testing.T) {
 		t.Fatalf("recovered exits = %v, want %v", held, exits)
 	}
 
+	// Once forget released the exit guard, the pod holding its exits is refused.
+	granted.forget(p.GetId())
+	unguarded := newMeshGate(*meshRoles(), discardLogger())
+	err := unguarded.recoverPod(p, ran, recoveredExits{entry: "collector", exits: exits})
+	if !errors.Is(err, ruleset.ErrMismatch) || !strings.Contains(err.Error(), "exit guard") {
+		t.Fatalf("recover a pod whose exit guard is gone = %v, want an exit guard mismatch", err)
+	}
+
 	// No grant: the exit still live in the namespace is refused, naming the cause.
 	ungranted := newMeshGate(*meshRoles(), discardLogger())
-	err := ungranted.recoverPod(p, ran, recoveredExits{cause: errors.New("no served allowlist on this node yet")})
+	err = ungranted.recoverPod(p, ran, recoveredExits{cause: errors.New("no served allowlist on this node yet")})
 	if err == nil || !strings.Contains(err.Error(), "granted no exits") {
 		t.Fatalf("error = %v, want a refusal naming the undecided cause", err)
 	}
@@ -406,4 +419,42 @@ func waitForNamespaceGone(path string) error {
 		unix.Nanosleep(&unix.Timespec{Nsec: 10_000_000}, nil)
 	}
 	return fmt.Errorf("%s is still a network namespace", path)
+}
+
+// addressSandbox gives a sandbox the address a pod's CNI would: exits are
+// guarded by the addresses the pod sends from.
+func addressSandbox(t *testing.T, pid uint32, address string) {
+	t.Helper()
+	target, err := netns.GetFromPath(sandboxNetNSPath(pid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer target.Close()
+	handle, err := netlink.NewHandleAt(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer handle.Close()
+	if err := handle.LinkAdd(&netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: "eth0"}}); err != nil {
+		t.Fatalf("add the sandbox's interface: %v", err)
+	}
+	link, err := handle.LinkByName("eth0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := netlink.ParseAddr(address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := handle.AddrAdd(link, parsed); err != nil {
+		t.Fatalf("address the sandbox: %v", err)
+	}
+}
+
+// setNodeNetworkNamespace points the exit guards at path and returns the
+// restore.
+func setNodeNetworkNamespace(path string) func() {
+	previous := nodeNetworkNamespace
+	nodeNetworkNamespace = path
+	return func() { nodeNetworkNamespace = previous }
 }

@@ -14,9 +14,9 @@ import (
 	"github.com/distribution/reference"
 	"github.com/spf13/cobra"
 
-	cdsallowlist "github.com/confidential-dot-ai/c8s/internal/allowlist"
-	"github.com/confidential-dot-ai/c8s/internal/crane"
-	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	taallowlist "github.com/confidential-dot-ai/confidential-kubernetes/internal/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/crane"
+	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
 func newLintCmd(o *options) *cobra.Command {
@@ -41,7 +41,7 @@ error: release requires exactly one entry to match, so both are refused
 forever. Errors exit non-zero on their own; --strict makes warnings do the
 same.
 
---seed names the release's allowlist seed (allowlist-seed.json in the CDS seed
+--seed names the release's allowlist seed (allowlist-seed.json in the Trust Authority seed
 ConfigMap). Lint then names each chart-generated entry, "<image>-<digest>-<policy>",
 whose image the seed generates under another name: the stale shape of an
 earlier configuration, safe to delete once no pod runs it.`,
@@ -103,7 +103,7 @@ func newInspectImageCmd(o *options) *cobra.Command {
 		Short: "Show an image's resolved digest and baked Entrypoint/Cmd (viewer only)",
 		Long: `Resolve an image reference via crane and print its digest plus the image's
 default Entrypoint and Cmd, so you can see the baked argv before writing an exact
-policy. This reads the registry only; it never contacts CDS.`,
+policy. This reads the registry only; it never contacts Trust Authority.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := crane.Require(); err != nil {
@@ -172,7 +172,7 @@ func countErrors(findings []finding) int {
 }
 
 // lintOffline reports semantic findings for an allowlist without any registry or
-// CDS access. Its entries are assumed already parsed and validated.
+// Trust Authority access. Its entries are assumed already parsed and validated.
 func lintOffline(al *pkgallowlist.Allowlist) []finding {
 	var warnings []finding
 	for _, name := range slices.Sorted(maps.Keys(al.Workloads)) {
@@ -250,17 +250,17 @@ func unconstrainedDigestFindings(al *pkgallowlist.Allowlist) []finding {
 
 // staleShapes names each generated entry of al that seed lacks while seed
 // generates another entry for the same image: a shape an earlier
-// configuration seeded, which CDS keeps until an operator deletes it.
+// configuration seeded, which Trust Authority keeps until an operator deletes it.
 func staleShapes(al, seed *pkgallowlist.Allowlist) []finding {
 	current := map[string]string{}
 	for name := range seed.Workloads {
-		if key := cdsallowlist.GeneratedKey(name); key != "" {
+		if key := taallowlist.GeneratedKey(name); key != "" {
 			current[key] = name
 		}
 	}
 	var out []finding
 	for _, name := range slices.Sorted(maps.Keys(al.Workloads)) {
-		key := cdsallowlist.GeneratedKey(name)
+		key := taallowlist.GeneratedKey(name)
 		if key == "" {
 			continue
 		}
@@ -275,9 +275,9 @@ func staleShapes(al, seed *pkgallowlist.Allowlist) []finding {
 }
 
 // componentFindings reports a container pinned to a component executable that
-// leaves its args, mounts or env to the pod (cdsallowlist.OpenComponent).
+// leaves its args, mounts or env to the pod (taallowlist.OpenComponent).
 func componentFindings(name string, c pkgallowlist.Container) []finding {
-	openArgs, openMounts, openEnv := cdsallowlist.OpenComponent(c)
+	openArgs, openMounts, openEnv := taallowlist.OpenComponent(c)
 	argv := c.Command.Argv
 	var out []finding
 	if openArgs {

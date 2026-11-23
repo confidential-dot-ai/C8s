@@ -20,7 +20,7 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
 )
 
 // RenewingRouter stands in for a one-replica router front door whose get-cert
@@ -79,7 +79,7 @@ func (r *RenewingRouter) RenewLeaf() {
 }
 
 // RenewUnderNewCA renews under a new mesh CA key: what another deployment's
-// router presents, or one whose CDS changed its CA key.
+// router presents, or one whose Trust Authority changed its CA key.
 func (r *RenewingRouter) RenewUnderNewCA() {
 	r.mu.Lock()
 	r.ca = newMeshCA(r.t)
@@ -141,7 +141,7 @@ func routerDocument(t testing.TB, leaf *x509.Certificate) []byte {
 	return doc
 }
 
-// meshCA issues router serving certs, as one CDS's mesh CA does.
+// meshCA issues router serving certs, as one Trust Authority's mesh CA does.
 type meshCA struct {
 	cert *x509.Certificate
 	key  *ecdsa.PrivateKey

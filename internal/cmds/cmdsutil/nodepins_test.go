@@ -8,20 +8,20 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/internal/testutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
 )
 
 // mountPins writes the policy an enforcer mounts for its credential clients.
 func mountPins(t *testing.T, path, measurement string) {
 	t.Helper()
-	document := testutil.CDSPinDocument(measurement, testutil.CDSLaunchFile)
+	document := testutil.TAPinDocument(measurement, testutil.TALaunchFile)
 	if err := os.WriteFile(path, []byte(document), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
 
 // A client re-reads the mounted policy on a pin miss, so its next request is
-// made against the image CDS now runs.
+// made against the image Trust Authority now runs.
 func TestNodePinsFollowARewrittenPolicy(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "cds-pins.json")
 	mountPins(t, path, testutil.TestMeasurement)
@@ -31,14 +31,14 @@ func TestNodePinsFollowARewrittenPolicy(t *testing.T) {
 	}
 	first := pins.Generation()
 
-	mountPins(t, path, testutil.NextCDSImage)
+	mountPins(t, path, testutil.NextTAImage)
 	if err := pins.Refresh(); err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}
 	if pins.Generation() == first {
 		t.Fatal("the client held its set after the enforcer rewrote the policy")
 	}
-	if got := hex.EncodeToString(pins.Current().Images[0].Digest); got != testutil.NextCDSImage {
+	if got := hex.EncodeToString(pins.Current().Images[0].Digest); got != testutil.NextTAImage {
 		t.Fatalf("pins name %s, want the image the enforcer wrote", got)
 	}
 	if err := pins.Refresh(); err != nil || pins.Generation() == first {
@@ -56,7 +56,7 @@ func TestNodePinsKeepTheirSetOnAHalfWrittenPolicy(t *testing.T) {
 		t.Fatalf("FollowNodePins: %v", err)
 	}
 
-	half := testutil.CDSPinDocument(testutil.NextCDSImage, testutil.CDSLaunchFile)
+	half := testutil.TAPinDocument(testutil.NextTAImage, testutil.TALaunchFile)
 	if err := os.WriteFile(path, []byte(half[:len(half)/2]), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func TestNodePinsRereadWithoutAPinMiss(t *testing.T) {
 	ctx, stop := context.WithCancel(t.Context())
 	defer stop()
 	go pins.reread(ctx, time.Millisecond)
-	mountPins(t, path, testutil.NextCDSImage)
+	mountPins(t, path, testutil.NextTAImage)
 	deadline := time.Now().Add(5 * time.Second)
 	for pins.Generation() == first && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
@@ -105,6 +105,6 @@ func TestFollowNodePinsReportsNoPolicyWhereTheNodeMountsNone(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := FollowNodePins(t.Context(), unbound); err == nil {
-		t.Fatal("a policy that is not one CDS VM's identity was accepted")
+		t.Fatal("a policy that is not one Trust Authority VM's identity was accepted")
 	}
 }

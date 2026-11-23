@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
 )
 
 // pluginRunningVerb selects the removers' question in place of the plugin

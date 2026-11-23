@@ -18,8 +18,8 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
-	"github.com/confidential-dot-ai/c8s/pkg/certutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
 )
 
 // mintAttestedLeaf builds a self-issued cert with a genuine (fake-SNP)
@@ -233,7 +233,7 @@ func TestEvidenceFromCertRequiresServerAuthAndSupportedCurve(t *testing.T) {
 
 // mintCAIssuedLeaf mints an attested leaf issued by a fresh CA with the given
 // TLS purpose, and returns it with its key and a pool holding that CA — the
-// shape CDS produces.
+// shape Trust Authority produces.
 func mintCAIssuedLeaf(t *testing.T, usages []x509.ExtKeyUsage) (*x509.Certificate, *ecdsa.PrivateKey, *x509.CertPool) {
 	t.Helper()
 	caKey := testKey(t)

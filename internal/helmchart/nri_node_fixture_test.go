@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
+	nriimagepolicy "github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/nri-image-policy"
 )
 
 // nodeFixture is a node the NRI installer and its removers run against: /host
@@ -19,7 +19,7 @@ type nodeFixture struct {
 	root              string
 	bin               string
 	log               string
-	cdsDir            string
+	taDir             string
 	podRoot           string
 	pluginRunning     string
 	clock             string
@@ -77,7 +77,7 @@ func newNodeFixture(t *testing.T, containerdConfig string) *nodeFixture {
 		root:              filepath.Join(dir, "host"),
 		bin:               filepath.Join(dir, "bin"),
 		log:               filepath.Join(dir, "calls.log"),
-		cdsDir:            filepath.Join(dir, "cds"),
+		taDir:             filepath.Join(dir, "cds"),
 		podRoot:           filepath.Join(dir, "pod"),
 		pluginRunning:     filepath.Join(dir, "plugin-running"),
 		clock:             filepath.Join(dir, "clock"),
@@ -87,7 +87,7 @@ func newNodeFixture(t *testing.T, containerdConfig string) *nodeFixture {
 		filepath.Dir(n.hostPath(nodeContainerdTOML)),
 		filepath.Join(n.podRoot, "dev"),
 		n.bin,
-		n.cdsDir,
+		n.taDir,
 	} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
@@ -95,8 +95,8 @@ func newNodeFixture(t *testing.T, containerdConfig string) *nodeFixture {
 	}
 	writeTestFile(t, n.hostPath(nodeContainerdTOML), containerdConfig)
 	writeTestFile(t, n.clock, "1000\n")
-	writeTestFile(t, filepath.Join(n.cdsDir, "cds-address"), baseCDSAddress)
-	writeTestFile(t, filepath.Join(n.cdsDir, "cds.json"), "{}\n")
+	writeTestFile(t, filepath.Join(n.taDir, "cds-address"), baseCDSAddress)
+	writeTestFile(t, filepath.Join(n.taDir, "cds.json"), "{}\n")
 	for name, body := range nodeStubs {
 		stub := "#!/bin/sh\nprintf '%s\\n' \"" + name + " $*\" >> \"$CALLS\"\n" + body + "\n"
 		if err := os.WriteFile(filepath.Join(n.bin, name), []byte(stub), 0o755); err != nil {
@@ -144,7 +144,7 @@ func (n *nodeFixture) localize(script string) string {
 		{"/host${", n.root + "${"},
 		{"/usr/local/bin/c8s", filepath.Join(n.bin, "c8s")},
 		{"/usr/local/bin/nri-image-policy", filepath.Join(n.bin, "nri-image-policy")},
-		{"/mnt/c8s-data/measurements", n.cdsDir},
+		{"/mnt/c8s-data/measurements", n.taDir},
 		{"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "PATH=" + n.bin + ":/usr/bin:/bin"},
 	} {
 		script = strings.ReplaceAll(script, r[0], r[1])

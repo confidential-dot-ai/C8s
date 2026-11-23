@@ -19,7 +19,7 @@ import (
 
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 
-	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
+	nriimagepolicy "github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/nri-image-policy"
 )
 
 // execRequest is a `runc exec` in the one form containerd's shim sends:

@@ -13,10 +13,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
-	"github.com/confidential-dot-ai/c8s/internal/podlaunch"
-	"github.com/confidential-dot-ai/c8s/internal/podmesh"
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/podlaunch"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/podmesh"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 const podWorkloads = `{"schema":"c8s.allowlist/v1","workloads":{"app":{"containers":[{"digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","command":{"policy":"any"},"args":{"policy":"any"}}]}}}`
@@ -82,7 +82,7 @@ func podDocument(t *testing.T) *podlaunch.Document {
 	image := pins.Images[0]
 	return &podlaunch.Document{
 		SchemaVersion: podlaunch.SchemaVersion, ClusterID: "demo", Role: podlaunch.Pod,
-		CDS: testCDS(t),
+		TA: testTA(t),
 		Image: podlaunch.Image{
 			Platform:    "tdx",
 			Measurement: hex.EncodeToString(image.Digest),
@@ -125,7 +125,7 @@ func TestRenderPodRuntimeRefusesAPlatformWithoutARuntimeRegister(t *testing.T) {
 
 // The assigned pod is rendered under the measured mesh policy and the floor
 // applies with no exempt namespace.
-func TestRenderPodRuntimeBindsCDSPullAndKeepsOnlyMeasuredMeshAndSignedBase(t *testing.T) {
+func TestRenderPodRuntimeBindsTAPullAndKeepsOnlyMeasuredMeshAndSignedBase(t *testing.T) {
 	root := preparePodRoot(t)
 	withExemption := strings.Replace(podFloor, "  enforce_existing: true\n",
 		"  enforce_existing: true\n  exempt_repositories:\n    kube-system: [mcr.microsoft.com/oss/kubernetes/]\n", 1)
@@ -150,15 +150,15 @@ func TestRenderPodRuntimeBindsCDSPullAndKeepsOnlyMeasuredMeshAndSignedBase(t *te
 	}
 	a := got["allowlist"].(map[string]any)
 	pull, ok := a["pull"].(map[string]any)
-	if !ok || pull["url"] != cmdsutil.CDSURL(assigned.CDS.Address) || pull["cds_measurements_config"] != PublicDir+"/cds.json" || pull["timeout"] != "30s" || pull["interval"] != "7s" || pull["measure_policies"] != false {
-		t.Fatalf("pod CDS pull = %v", pull)
+	if !ok || pull["url"] != cmdsutil.TAURL(assigned.TA.Address) || pull["cds_measurements_config"] != PublicDir+"/cds.json" || pull["timeout"] != "30s" || pull["interval"] != "7s" || pull["measure_policies"] != false {
+		t.Fatalf("pod Trust Authority pull = %v", pull)
 	}
-	if floor := publishedPinFloor(t, pull); floor != assigned.CDS.PinFloor {
-		t.Fatalf("pod CDS pin floor = %d, want signed floor %d", floor, assigned.CDS.PinFloor)
+	if floor := publishedPinFloor(t, pull); floor != assigned.TA.PinFloor {
+		t.Fatalf("pod Trust Authority pin floor = %d, want signed floor %d", floor, assigned.TA.PinFloor)
 	}
 	for _, legacy := range []string{"cds_measurements", "cds_rtmrs"} {
 		if _, exists := pull[legacy]; exists {
-			t.Fatalf("pod CDS pull kept competing %s", legacy)
+			t.Fatalf("pod Trust Authority pull kept competing %s", legacy)
 		}
 	}
 	writeInput(t, root, floorConfigPath, runtime.Policy)
@@ -232,7 +232,7 @@ func TestPreparePodStagesNoWorkload(t *testing.T) {
 			t.Fatalf("generic boot staged %s: %v", path, err)
 		}
 	}
-	if _, err := os.Stat(filepath.Join(root, PublicDir, CDSOutput)); err != nil {
+	if _, err := os.Stat(filepath.Join(root, PublicDir, TAOutput)); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -343,7 +343,7 @@ func TestRenderPodRuntimeFailsClosed(t *testing.T) {
 		change func(*podlaunch.AssignedPod)
 		want   string
 	}{
-		{"no CDS address", podFloor, func(a *podlaunch.AssignedPod) { a.CDS.Address = "" }, "cds.address"},
+		{"no Trust Authority address", podFloor, func(a *podlaunch.AssignedPod) { a.TA.Address = "" }, "cds.address"},
 		{"bad entries", podFloor, func(a *podlaunch.AssignedPod) { a.Entries = "{" }, "assignment entries"},
 		{"bad manifest", podFloor, func(a *podlaunch.AssignedPod) { a.Pod.Manifest = "kind: Deployment" }, "pod.manifest"},
 		{"no endpoint", meshFloor, func(*podlaunch.AssignedPod) {}, "no mesh endpoint"},

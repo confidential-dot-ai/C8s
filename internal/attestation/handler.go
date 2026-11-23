@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/confidential-dot-ai/c8s/internal/httputil"
-	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/httputil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
 )
 
 // HandleAuthenticate returns a handler that issues a single-use base64

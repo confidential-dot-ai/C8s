@@ -11,8 +11,8 @@ import (
 
 	"github.com/containerd/nri/pkg/api"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/getcert"
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/getcert"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 func podBrokerPlugin(t *testing.T) *plugin {
@@ -48,14 +48,14 @@ func TestPreparePodBrokerRefusals(t *testing.T) {
 		state  string
 		want   string
 	}{
-		{name: "no client", want: "no authenticated CDS client"},
-		{name: "conflicting CDS source", client: http.DefaultClient,
-			pull: pullConfig{URL: "https://cds.example", CDSAddressFile: "/run/cds-address"}, want: "pod broker CDS pins"},
+		{name: "no client", want: "no authenticated Trust Authority client"},
+		{name: "conflicting Trust Authority source", client: http.DefaultClient,
+			pull: pullConfig{URL: "https://cds.example", TAAddressFile: "/run/cds-address"}, want: "pod broker Trust Authority pins"},
 		{name: "missing state", client: http.DefaultClient, state: "missing", want: "open Pod broker state"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.pull == (pullConfig{}) {
-				tc.pull.CDSMeasurementsConfig = testCDSPinFile(t)
+				tc.pull.TAMeasurementsConfig = testTAPinFile(t)
 			}
 			cfg := &config{Pod: &podConfig{}, Allowlist: allowlistConfig{Pull: tc.pull}}
 			cfg.WorkloadClaims.SocketDir = filepath.Join(t.TempDir(), tc.state)
@@ -73,7 +73,7 @@ func TestPreparePodBrokerRefusals(t *testing.T) {
 // The broker's state must live in memory; a disk-backed directory is refused
 // and a RAM-backed one yields a fresh boot identity.
 func TestPreparePodBrokerRequiresRAMBackedState(t *testing.T) {
-	cfg := &config{Pod: &podConfig{}, Allowlist: allowlistConfig{Pull: pullConfig{CDSMeasurementsConfig: testCDSPinFile(t)}}}
+	cfg := &config{Pod: &podConfig{}, Allowlist: allowlistConfig{Pull: pullConfig{TAMeasurementsConfig: testTAPinFile(t)}}}
 	cfg.WorkloadClaims.SocketDir = t.TempDir()
 	p := &plugin{cfg: cfg}
 	err := p.preparePodBroker(t.Context(), http.DefaultClient, nil)

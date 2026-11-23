@@ -20,11 +20,11 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/validation"
 
-	"github.com/confidential-dot-ai/c8s/internal/crane"
-	"github.com/confidential-dot-ai/c8s/internal/webhook"
-	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/types"
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/crane"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/webhook"
+	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 type workloadRef struct {
@@ -350,7 +350,7 @@ func injectedMountRules(template corev1.PodTemplateSpec, c corev1.Container) ([]
 }
 
 // adoptedEntry is the allowlist entry install writes for one adopted workload
-// and the pod CDS matches it against once the pod runs: its main containers
+// and the pod Trust Authority matches it against once the pod runs: its main containers
 // and native sidecars, with the mounts the node observes. A completed init
 // container is not in pod; the entry declares it, so it may be absent.
 type adoptedEntry struct {
@@ -382,7 +382,7 @@ func resolvedWorkloadImageValues(ctx context.Context, workloads []adoptedWorkloa
 // (injectedMountRules), so a host that adds a hostPath over the app's code or
 // config gets no admission and no name. Containers with the same image and
 // mounts are declared once; an init container also run as a main is admitted
-// by the main. One entry for the whole container set is what lets CDS match a
+// by the main. One entry for the whole container set is what lets Trust Authority match a
 // multi-container pod and stamp the cw id on its leaf, which a workload route
 // backend requires (route policy B1).
 //
@@ -535,7 +535,7 @@ func describers(workloads map[string]pkgallowlist.Workload, pod []pkgallowlist.R
 }
 
 // checkAdoptedEntries refuses an adopted workload whose pod another entry of
-// the seed this install renders also describes. CDS would then match neither,
+// the seed this install renders also describes. Trust Authority would then match neither,
 // the pod's leaf would carry no workload name, and the router would refuse it
 // as a workload backend. The seed is the chart's own (seedWorkloads).
 func checkAdoptedEntries(adopted map[string]adoptedEntry, values map[string]any) error {
@@ -552,7 +552,7 @@ func checkAdoptedEntries(adopted map[string]adoptedEntry, values map[string]any)
 			return fmt.Errorf("the allowlist entry %s does not describe the pod of adopted workload %s; drop the -f entry of that name", name, name)
 		}
 		if others := slices.DeleteFunc(names, func(n string) bool { return n == name }); len(others) > 0 {
-			return fmt.Errorf("adopted workload %s runs only images and mounts that allowlist entries %s also admit, so CDS cannot tell which entry names its pod and stamps none; give it an image of its own", name, strings.Join(others, ", "))
+			return fmt.Errorf("adopted workload %s runs only images and mounts that allowlist entries %s also admit, so the Trust Authority cannot tell which entry names its pod and stamps none; give it an image of its own", name, strings.Join(others, ", "))
 		}
 	}
 	return nil

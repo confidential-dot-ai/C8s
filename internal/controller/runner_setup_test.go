@@ -26,9 +26,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
-	"github.com/confidential-dot-ai/c8s/api/v1alpha2"
-	"github.com/confidential-dot-ai/c8s/internal/issuer"
-	"github.com/confidential-dot-ai/c8s/internal/webhook"
+	"github.com/confidential-dot-ai/confidential-kubernetes/api/v1alpha2"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/issuer"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/webhook"
 )
 
 // testRESTMapper is a static mapper covering the kinds the package wires up,

@@ -18,8 +18,8 @@ import (
 	"testing"
 
 	"github.com/confidential-dot-ai/attestation-go/remote"
-	"github.com/confidential-dot-ai/c8s/pkg/certutil"
-	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
 )
 
 func TestNewClientTrimsTrailingSlash(t *testing.T) {
@@ -105,10 +105,10 @@ func TestObtainCertificateWithEvidenceReturnsAttestationMaterial(t *testing.T) {
 		}
 		_, _ = io.WriteString(w, certPEM)
 	})
-	cds := httptest.NewServer(mux)
-	defer cds.Close()
+	ta := httptest.NewServer(mux)
+	defer ta.Close()
 
-	client := NewClientWithHTTP(cds.URL, cds.Client())
+	client := NewClientWithHTTP(ta.URL, ta.Client())
 	challengeResp, err := client.AuthenticateContext(context.Background())
 	if err != nil {
 		t.Fatalf("AuthenticateContext: %v", err)
@@ -155,10 +155,10 @@ func TestObtainCertificateWithEvidenceContextCanceled(t *testing.T) {
 	mux.HandleFunc("/authenticate", func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("authenticate handler should not be called after context cancellation")
 	})
-	cds := httptest.NewServer(mux)
-	defer cds.Close()
+	ta := httptest.NewServer(mux)
+	defer ta.Close()
 
-	client := NewClientWithHTTP(cds.URL, cds.Client())
+	client := NewClientWithHTTP(ta.URL, ta.Client())
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 

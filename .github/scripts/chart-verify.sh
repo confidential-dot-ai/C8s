@@ -16,23 +16,23 @@ set -euo pipefail
 
 : "${CHART_DIR:?CHART_DIR must be set}"
 
-# The CDS this release names: a VM outside the cluster, pinned by a document
+# The TA this release names: a VM outside the cluster, pinned by a document
 # the operator passes as a file.
-cds_pin=$(mktemp)
-trap 'rm -f "$cds_pin"' EXIT
-cat > "$cds_pin" <<'CDS_PIN'
+ta_pin=$(mktemp)
+trap 'rm -f "$ta_pin"' EXIT
+cat > "$ta_pin" <<'TA_PIN'
 {
   "schema_version": "2",
   "tee": "sev-snp",
   "measurements": [
     {
-      "name": "cds",
+      "name": "ta",
       "measurement": "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001",
       "launch_file": "clusterID: ci\n"
     }
   ]
 }
-CDS_PIN
+TA_PIN
 
 # Shared --set flags for every check below. The digests are well-formed but
 # arbitrary sha256 placeholders (lint/template only need them to parse).
@@ -42,9 +42,9 @@ common_set=(
   --set armtlsMesh.image.tag=ci
   --set nriImagePolicy.image.tag=ci
   --set nriImagePolicy.image.digest=sha256:aaaa000000000000000000000000000000000000000000000000000000000000
-  # The chart refuses to render a release that names no CDS.
-  --set-string cds.address=10.9.9.9:8443
-  --set-file "cds.measurementsConfig=$cds_pin"
+  # The chart refuses to render a release that names no TA.
+  --set-string ta.address=10.9.9.9:8443
+  --set-file "ta.measurementsConfig=$ta_pin"
   # A mesh policy needs the resolver a member pod may reach, and the router's
   # egress exception needs this cluster's pod and Service ranges. kind's
   # cluster DNS and the kubeadm defaults are the representative values.

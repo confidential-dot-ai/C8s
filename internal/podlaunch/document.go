@@ -24,10 +24,10 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
-	"github.com/confidential-dot-ai/c8s/internal/readutil"
-	"github.com/confidential-dot-ai/c8s/internal/yamlutil"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/readutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/yamlutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 )
 
 const (
@@ -57,9 +57,9 @@ type Document struct {
 	// PodOperatorPublicKey is the pod launch key: the exact PEM bytes the
 	// launch bound and assignments are signed with.
 	PodOperatorPublicKey string `yaml:"podOperatorPublicKey" json:"pod_operator_public_key"`
-	// CDS is the confidential data service the guest's credential broker
+	// TA names the Trust Authority the guest's credential broker
 	// reaches, outside the pod network.
-	CDS cmdsutil.CDS `yaml:"cds" json:"cds"`
+	TA cmdsutil.TA `yaml:"cds" json:"cds"`
 }
 
 // Image pins this boot's complete software identity. Platform names which
@@ -147,7 +147,7 @@ func (d *Document) validate() error {
 	if d.SchemaVersion != SchemaVersion {
 		return fmt.Errorf("schemaVersion must be %s", SchemaVersion)
 	}
-	if _, err := d.CDS.Parse(); err != nil {
+	if _, err := d.TA.Parse(); err != nil {
 		return err
 	}
 	if !dnsLabel(d.ClusterID) {

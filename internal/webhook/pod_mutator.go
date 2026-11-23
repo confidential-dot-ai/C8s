@@ -29,9 +29,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/volume"
-	"github.com/confidential-dot-ai/c8s/internal/podmesh"
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/volume"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/podmesh"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 // Pod annotations that drive sidecar injection.
@@ -67,7 +67,7 @@ const (
 	AnnotationDiscoveryVolume        = "confidential.ai/c8s-discovery-volume"
 	AnnotationDiscoveryMountPath     = "confidential.ai/c8s-discovery-mount-path"
 	AnnotationDiscoveryOut           = "confidential.ai/c8s-discovery-out"
-	AnnotationDiscoveryCDSCertURL    = "confidential.ai/c8s-discovery-cds-cert-url"
+	AnnotationDiscoveryTACertURL     = "confidential.ai/c8s-discovery-cds-cert-url"
 	AnnotationDiscoveryMeshCAURL     = "confidential.ai/c8s-discovery-mesh-ca-url"
 	AnnotationDiscoveryPublicTLSMode = "confidential.ai/c8s-discovery-public-tls-mode"
 	AnnotationGetCertVerbose         = "confidential.ai/c8s-get-cert-verbose"
@@ -98,7 +98,7 @@ var errInvalidInjectionAnnotation = errors.New("invalid c8s injection annotation
 const defaultCertFSGroup int64 = 65532
 
 // defaultCertRenewInterval must stay strictly below issuer.MaxNamedLeafTTL, the
-// shortest TTL CDS issues: a leaf carrying a matched-workload stamp is capped
+// shortest TTL Trust Authority issues: a leaf carrying a matched-workload stamp is capped
 // there and its NotBefore is not backdated, so an equal interval would only
 // renew once the installed leaf had already expired.
 const defaultCertRenewInterval = 2 * time.Hour
@@ -347,7 +347,7 @@ func WorkloadServiceFQDN(cwID, namespace string) string {
 
 // workloadSAN is the DNS SAN get-cert requests for a workload. An id that
 // names a managed headless Service gets that Service's in-cluster DNS name,
-// which CDS's default --dns-san-pattern signs; any other id passes through
+// which Trust Authority's default --dns-san-pattern signs; any other id passes through
 // verbatim (e.g. the <name>.<ns>.svc ids the chart's own components use).
 func workloadSAN(cwID, namespace string) string {
 	if dns := workloadServiceDNS(cwID, namespace); dns != "" {

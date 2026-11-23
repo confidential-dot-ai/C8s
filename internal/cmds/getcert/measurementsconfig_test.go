@@ -3,14 +3,14 @@ package getcert
 import (
 	"testing"
 
-	"github.com/confidential-dot-ai/c8s/internal/testutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
 )
 
-// A client holds CDS to the configuration it runs on, so the pin must name one
-// CDS VM: a document pinning its image alone admits any of them.
-func TestCDSPinsRequireALaunchBinding(t *testing.T) {
-	bound := testutil.CDSPinDocument(testutil.TestMeasurement, testutil.CDSLaunchFile)
-	pins, err := cdsPins(t.Context(), config{MeasurementsConfigJSON: bound})
+// A client holds Trust Authority to the configuration it runs on, so the pin must name one
+// Trust Authority VM: a document pinning its image alone admits any of them.
+func TestTAPinsRequireALaunchBinding(t *testing.T) {
+	bound := testutil.TAPinDocument(testutil.TestMeasurement, testutil.TALaunchFile)
+	pins, err := taPins(t.Context(), config{MeasurementsConfigJSON: bound})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31,8 +31,8 @@ func TestCDSPinsRequireALaunchBinding(t *testing.T) {
 		"not a pin at all": {MeasurementsConfigJSON: `{}`},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := cdsPins(t.Context(), cfg); err == nil {
-				t.Fatal("a pin that is not one CDS VM's identity was accepted")
+			if _, err := taPins(t.Context(), cfg); err == nil {
+				t.Fatal("a pin that is not one Trust Authority VM's identity was accepted")
 			}
 		})
 	}

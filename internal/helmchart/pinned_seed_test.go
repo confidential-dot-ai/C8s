@@ -20,7 +20,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	sigsyaml "sigs.k8s.io/yaml"
 
-	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
 // componentsFile is c8s-lib's component table and image pins.
@@ -54,8 +54,8 @@ func chartImageDigest(t *testing.T, file string, path ...string) string {
 	return digest
 }
 
-// renderedSeed parses the allowlist document out of the rendered CDS seed
-// ConfigMap — the same JSON CDS feeds to pkg/allowlist.ParseJSON at startup.
+// renderedSeed parses the allowlist document out of the rendered Trust Authority seed
+// ConfigMap — the same JSON Trust Authority feeds to pkg/allowlist.ParseJSON at startup.
 func renderedSeed(t *testing.T, manifest string) *pkgallowlist.Allowlist {
 	t.Helper()
 	cm := renderedConfigMap(t, manifest, "c8s-allowlist-seed")

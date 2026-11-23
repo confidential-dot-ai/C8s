@@ -3,6 +3,7 @@ package volumed
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -10,7 +11,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/volume"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/volume"
 )
 
 // fakeOps records every privileged call and can be told to fail one step.
@@ -212,7 +213,7 @@ func testOpener(t *testing.T, ops DeviceOps) *Opener {
 
 func testRequest(t *testing.T) Request {
 	t.Helper()
-	blob, err := volume.NewBlob(volumeKey(), volume.Verity{
+	blob, err := volume.NewBlob("weights", volumeKey(), volume.Verity{
 		RootHash:   strings.Repeat("ab", 32),
 		Salt:       strings.Repeat("cd", 16),
 		DataBlocks: 4,
@@ -325,7 +326,7 @@ func TestOpenRefusesAWrongKeyForAnOpenVolume(t *testing.T) {
 
 	other := testRequest(t)
 	wrong := make([]byte, volume.KeyBytes)
-	blob, err := volume.NewBlob(wrong, *other.Blob.Verity)
+	blob, err := volume.NewBlob("weights", wrong, *other.Blob.Verity)
 	if err != nil {
 		t.Fatalf("blob: %v", err)
 	}
@@ -341,7 +342,7 @@ func TestOpenRefusesAWrongKeyForAnOpenVolume(t *testing.T) {
 
 func testMutableRequest(t *testing.T) Request {
 	t.Helper()
-	blob, err := volume.NewMutableBlob(volumeKey())
+	blob, err := volume.NewMutableBlob("weights", volumeKey())
 	if err != nil {
 		t.Fatalf("blob: %v", err)
 	}
@@ -444,6 +445,7 @@ func TestMutableOpenIsExclusivePerDevice(t *testing.T) {
 	// Same pod, different name, same device.
 	samePod := testMutableRequest(t)
 	samePod.Name = "datasets"
+	samePod.Blob.Name = "datasets"
 	if err := o.Open(t.Context(), samePod); !errors.Is(err, ErrVolumeInUse) {
 		t.Errorf("second mutable open, same pod: got %v, want ErrVolumeInUse", err)
 	}
@@ -514,6 +516,7 @@ func TestMutableOpensOnDistinctDevicesCoexist(t *testing.T) {
 	}
 	second := testMutableRequest(t)
 	second.Name = "datasets"
+	second.Blob.Name = "datasets"
 	second.Device = "/dev/disk/by-id/virtio-c8s-vol-datasets"
 	if err := o.Open(t.Context(), second); err != nil {
 		t.Fatalf("second open: %v", err)
@@ -536,7 +539,7 @@ func TestOpenRefusesADifferentRootHashForAnOpenVolume(t *testing.T) {
 	other := testRequest(t)
 	v := *other.Blob.Verity
 	v.RootHash = strings.Repeat("cd", 32)
-	blob, err := volume.NewBlob(volumeKey(), v)
+	blob, err := volume.NewBlob("weights", volumeKey(), v)
 	if err != nil {
 		t.Fatalf("blob: %v", err)
 	}
@@ -630,6 +633,7 @@ func TestClosePodTearsDownEveryVolumeItHolds(t *testing.T) {
 	for _, n := range []string{"weights", "datasets"} {
 		req := testRequest(t)
 		req.Name = n
+		req.Blob.Name = n
 		if err := o.Open(t.Context(), req); err != nil {
 			t.Fatalf("open %s: %v", n, err)
 		}
@@ -690,7 +694,7 @@ func TestMapperNamesAreScopedPerPod(t *testing.T) {
 func TestCommitmentCoversKeyModeAndRootHash(t *testing.T) {
 	key := volumeKey()
 	withHash := func(h string) volume.Blob {
-		b, err := volume.NewBlob(key, volume.Verity{
+		b, err := volume.NewBlob("weights", key, volume.Verity{
 			RootHash: h, Salt: "cd", DataBlocks: 4, HashOffset: 4 * volume.VerityBlockSize,
 		})
 		if err != nil {
@@ -706,7 +710,7 @@ func TestCommitmentCoversKeyModeAndRootHash(t *testing.T) {
 	if commitmentFor(other, withHash(strings.Repeat("aa", 32))) == base {
 		t.Error("commitment ignores the key")
 	}
-	mutable, err := volume.NewMutableBlob(key)
+	mutable, err := volume.NewMutableBlob("weights", key)
 	if err != nil {
 		t.Fatalf("mutable blob: %v", err)
 	}
@@ -866,5 +870,33 @@ func TestCloseKeepsTheRecordOfAStuckMapping(t *testing.T) {
 	}
 	if o.Len() != 0 {
 		t.Fatalf("opener holds %d mounts, want 0", o.Len())
+	}
+}
+
+func TestOpenRejectsAnotherVolumeBlob(t *testing.T) {
+	for _, mutable := range []bool{false, true} {
+		for _, alreadyOpen := range []bool{false, true} {
+			t.Run(fmt.Sprintf("mutable=%t/open=%t", mutable, alreadyOpen), func(t *testing.T) {
+				ops := newOps()
+				o := testOpener(t, ops)
+				req := testRequest(t)
+				if mutable {
+					req = testMutableRequest(t)
+				}
+				if alreadyOpen {
+					if err := o.Open(t.Context(), req); err != nil {
+						t.Fatal(err)
+					}
+				}
+				before := ops.sequence()
+				req.Blob.Name = "other"
+				if err := o.Open(t.Context(), req); !errors.Is(err, ErrNotAuthorized) {
+					t.Fatalf("got %v, want ErrNotAuthorized", err)
+				}
+				if got := ops.sequence(); got != before {
+					t.Fatalf("device operations changed from %q to %q", before, got)
+				}
+			})
+		}
 	}
 }

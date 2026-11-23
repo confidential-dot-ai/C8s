@@ -9,7 +9,7 @@ import (
 	"sort"
 	"strings"
 
-	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
 // changedEntry is a before/after pair for a single value.

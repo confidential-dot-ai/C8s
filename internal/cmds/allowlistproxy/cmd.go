@@ -1,6 +1,6 @@
 // Package allowlistproxy implements the loopback proxy used by router to
-// publish CDS's allowlist API. The public TLS connection terminates at nginx;
-// this process establishes the second trust hop by verifying CDS's armTLS
+// publish Trust Authority's allowlist API. The public TLS connection terminates at nginx;
+// this process establishes the second trust hop by verifying Trust Authority's armTLS
 // serving certificate before forwarding the original request.
 package allowlistproxy
 
@@ -18,9 +18,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 const (
@@ -32,7 +32,7 @@ type config struct {
 	measurementsConfig string
 	host               string
 	port               int
-	cdsURL             string
+	taURL              string
 	attestationAPIURL  string
 	requestTimeout     time.Duration
 	readHeaderTimeout  time.Duration
@@ -46,8 +46,8 @@ var (
 	nodeVerifier    = workloadclaims.AttestationAPISocket
 )
 
-// cds is the CDS this proxy dials and the pins it holds it to.
-type cds struct {
+// cds is the Trust Authority this proxy dials and the pins it holds it to.
+type ta struct {
 	url  string
 	pins armtls.PinSource
 }
@@ -58,7 +58,7 @@ func NewCmd() *cobra.Command {
 	var cfg config
 	cmd := &cobra.Command{
 		Use:          "allowlist-proxy",
-		Short:        "Proxy router allowlist requests to an armTLS-verified CDS",
+		Short:        "Proxy router allowlist requests to an armTLS-verified Trust Authority",
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -68,10 +68,11 @@ func NewCmd() *cobra.Command {
 	f := cmd.Flags()
 	f.StringVar(&cfg.host, "host", "127.0.0.1", "listen host (loopback; nginx is the public listener)")
 	f.IntVarP(&cfg.port, "port", "p", 8801, "listen port")
-	f.StringVar(&cfg.cdsURL, "cds-url", "", "CDS base URL (must use https/armTLS)")
-	cmdsutil.BindImagePolicyFlags(f, &cfg.measurementsConfig, nil, "pins the CDS endpoint, every entry bound to the launch file that CDS runs on; required unless the node pins CDS")
-	f.StringVar(&cfg.attestationAPIURL, "attestation-api-url", "", "attestation-api URL used to verify CDS evidence"+cmdsutil.NodeAddressHelp)
-	f.DurationVar(&cfg.requestTimeout, "request-timeout", defaultRequestTimeout, "timeout for one request to CDS")
+	f.StringVar(&cfg.taURL, "ta-url", "", "Trust Authority base URL (must use https/armTLS)")
+	cmdsutil.AliasFlag(f, "ta-url", "cds-url")
+	cmdsutil.BindTAImagePolicyFlags(f, &cfg.measurementsConfig, nil, "pins the Trust Authority endpoint, every entry bound to the launch file that Trust Authority runs on; required unless the node pins Trust Authority")
+	f.StringVar(&cfg.attestationAPIURL, "attestation-api-url", "", "attestation-api URL used to verify Trust Authority evidence"+cmdsutil.NodeAddressHelp)
+	f.DurationVar(&cfg.requestTimeout, "request-timeout", defaultRequestTimeout, "timeout for one request to the Trust Authority")
 	f.DurationVar(&cfg.readHeaderTimeout, "read-header-timeout", defaultReadHeaderTimeout, "HTTP request-header timeout")
 	return cmd
 }
@@ -113,7 +114,7 @@ func runContext(ctx context.Context, cfg config, listen listenFunc) error {
 	defer listener.Close()
 	go cmdsutil.ShutdownOnDone(ctx, srv, 5*time.Second)
 
-	slog.Info("router allowlist proxy listening", "addr", addr, "cds_url", cfg.cdsURL)
+	slog.Info("router allowlist proxy listening", "addr", addr, "cds_url", cfg.taURL)
 	if err := srv.Serve(listener); err != nil && err != http.ErrServerClosed {
 		return cmdsutil.NodeIPChanged(ctx, err)
 	}
@@ -138,37 +139,37 @@ func newHandler(ctx context.Context, cfg config, logger *slog.Logger) (http.Hand
 	if cfg.requestTimeout <= 0 {
 		return nil, fmt.Errorf("--request-timeout must be positive")
 	}
-	resolved, err := cfg.resolveCDS(ctx)
+	resolved, err := cfg.resolveTA(ctx)
 	if err != nil {
 		return nil, err
 	}
-	target, err := parseCDSURL(resolved.url)
+	target, err := parseTAURL(resolved.url)
 	if err != nil {
 		return nil, err
 	}
 	httpClient, err := armtls.NewRefreshingHTTPClient(resolved.pins, cfg.attestationAPIURL)
 	if err != nil {
-		return nil, fmt.Errorf("CDS armTLS client: %w", err)
+		return nil, fmt.Errorf("the Trust Authority armTLS client: %w", err)
 	}
-	logger.Info("router allowlist proxy verifying CDS", "cds_url", resolved.url)
+	logger.Info("router allowlist proxy verifying Trust Authority", "cds_url", resolved.url)
 	proxy := newReverseProxy(target, httpClient.Transport, cfg.requestTimeout, logger)
 	return newRouter(proxy), nil
 }
 
-// resolveCDS fixes the CDS this proxy dials, the pins it holds it to and the
+// resolveTA fixes the Trust Authority this proxy dials, the pins it holds it to and the
 // verifier that decides them. All three come from one source: while the
 // enforcer mounts the node's endpoint, policy and attestation-api for a
 // credentials-role container, they are the only source and a flag naming
-// another is refused (cmdsutil.ResolveCDSURL, cmdsutil.ResolveCDSPins,
+// another is refused (cmdsutil.ResolveCDSURL, cmdsutil.ResolveTAPins,
 // cmdsutil.RequireNodeVerifier).
-func (cfg config) resolveCDS(ctx context.Context) (cds, error) {
-	cdsURL, endpointFromNode, err := cmdsutil.ResolveCDSURL(nodeAddressPath, cfg.cdsURL)
+func (cfg config) resolveTA(ctx context.Context) (ta, error) {
+	taURL, endpointFromNode, err := cmdsutil.ResolveTAURL(nodeAddressPath, cfg.taURL)
 	if err != nil {
-		return cds{}, err
+		return ta{}, err
 	}
-	pinsFromNode, err := cmdsutil.NodeProvidesCDSPins(nodePinsPath)
+	pinsFromNode, err := cmdsutil.NodeProvidesTAPins(nodePinsPath)
 	if err != nil {
-		return cds{}, err
+		return ta{}, err
 	}
 	if endpointFromNode != pinsFromNode {
 		mounted := nodePinsPath
@@ -177,34 +178,34 @@ func (cfg config) resolveCDS(ctx context.Context) (cds, error) {
 			mounted = nodeAddressPath
 			missing = nodePinsPath
 		}
-		return cds{}, fmt.Errorf("this node provides %s but not %s: a CDS endpoint and the pins it is held to must come from one source", mounted, missing)
+		return ta{}, fmt.Errorf("this node provides %s but not %s: a Trust Authority endpoint and the pins it is held to must come from one source", mounted, missing)
 	}
 	if err := cmdsutil.RequireNodeVerifier(nodePinsPath, nodeVerifier, cfg.attestationAPIURL); err != nil {
-		return cds{}, err
+		return ta{}, err
 	}
-	pins, _, err := cmdsutil.ResolveCDSPins(ctx, nodePinsPath, cmdsutil.ImagePolicySource{File: cfg.measurementsConfig})
+	pins, _, err := cmdsutil.ResolveTAPins(ctx, nodePinsPath, cmdsutil.ImagePolicySource{File: cfg.measurementsConfig})
 	if err != nil {
-		return cds{}, err
+		return ta{}, err
 	}
-	if cdsURL == "" {
-		return cds{}, errors.New("--cds-url is required: no node hands this client a CDS endpoint")
+	if taURL == "" {
+		return ta{}, errors.New("--ta-url is required: no node hands this client a Trust Authority endpoint")
 	}
-	return cds{
-		url:  cdsURL,
+	return ta{
+		url:  taURL,
 		pins: pins,
 	}, nil
 }
 
-func parseCDSURL(raw string) (*url.URL, error) {
+func parseTAURL(raw string) (*url.URL, error) {
 	target, err := url.Parse(raw)
 	if err != nil || target.Host == "" {
-		return nil, fmt.Errorf("invalid --cds-url %q", raw)
+		return nil, fmt.Errorf("invalid --ta-url %q", raw)
 	}
 	if target.Scheme != "https" {
-		return nil, fmt.Errorf("--cds-url must use https (armTLS), got scheme %q", target.Scheme)
+		return nil, fmt.Errorf("--ta-url must use https (armTLS), got scheme %q", target.Scheme)
 	}
 	if target.User != nil || (target.Path != "" && target.Path != "/") || target.RawQuery != "" || target.Fragment != "" {
-		return nil, fmt.Errorf("--cds-url must be an origin without credentials, path, query, or fragment")
+		return nil, fmt.Errorf("--ta-url must be an origin without credentials, path, query, or fragment")
 	}
 	return target, nil
 }
@@ -235,7 +236,7 @@ func newReverseProxy(target *url.URL, transport http.RoundTripper, timeout time.
 
 			// ReverseProxy removes headers named by Connection before Rewrite.
 			// Restore Authorization from the trusted inbound request so a client
-			// cannot make nginx accept a write that CDS sees without its token.
+			// cannot make nginx accept a write that Trust Authority sees without its token.
 			if auth := pr.In.Header.Get("Authorization"); auth != "" {
 				pr.Out.Header.Set("Authorization", auth)
 			} else {
@@ -244,7 +245,7 @@ func newReverseProxy(target *url.URL, transport http.RoundTripper, timeout time.
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			logger.Error("allowlist proxy request failed", "method", r.Method, "path", r.URL.Path, "error", err)
-			http.Error(w, "CDS unavailable", http.StatusBadGateway)
+			http.Error(w, "Trust Authority unavailable", http.StatusBadGateway)
 		},
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

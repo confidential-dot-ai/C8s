@@ -11,8 +11,8 @@ import (
 	"github.com/containerd/nri/pkg/api"
 	"k8s.io/apimachinery/pkg/labels"
 
-	"github.com/confidential-dot-ai/c8s/internal/audit"
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/audit"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
 // imageVerdict is the result of checking an image against the allowlist.
@@ -72,6 +72,9 @@ type imageCheck struct {
 	// the cause. It names at most a variable, never a value.
 	EnvErr error
 	Mounts []allowlist.ObservedMount
+	// Lookup resolves ImageRef once for every check of one container
+	// (plugin.digestLookup); nil has checkImageAt ask containerd.
+	Lookup func() (string, error)
 }
 
 type launchPhase uint8
@@ -91,9 +94,9 @@ func (p *plugin) keepsTag(cfg *config, baseAdmitted bool, namespace string) bool
 	return baseAdmitted || p.mesh.policy.exempts(namespace)
 }
 
-// checkImagePhase checks the image and observed launch specification against
-// the base and served allowlists for the requested admission phase.
-func (p *plugin) checkImagePhase(ctx context.Context, cfg *config, check imageCheck, phase launchPhase) (imageVerdict, string) {
+// checkImageAt checks the image and observed launch specification against
+// the base allowlist and snap for the requested admission phase.
+func (p *plugin) checkImageAt(ctx context.Context, cfg *config, snap *policySnapshot, check imageCheck, phase launchPhase) (imageVerdict, string) {
 	log := p.logger.With(
 		"namespace", check.Namespace,
 		"pod", check.PodName,
@@ -115,7 +118,11 @@ func (p *plugin) checkImagePhase(ctx context.Context, cfg *config, check imageCh
 	digest := extractDigest(check.ImageRef)
 	pinned := digest != ""
 	if !pinned {
-		resolved, err := p.resolve(ctx, check.ImageRef)
+		lookup := check.Lookup
+		if lookup == nil {
+			lookup = func() (string, error) { return p.resolve(ctx, check.ImageRef) }
+		}
+		resolved, err := lookup()
 		if err != nil {
 			log.Warn("cannot resolve image digest via containerd", "error", err)
 			return decide.denyUnresolvedDigest(err)
@@ -124,7 +131,6 @@ func (p *plugin) checkImagePhase(ctx context.Context, cfg *config, check imageCh
 		log.Debug("resolved tag to digest via containerd", "digest", digest)
 	}
 
-	snap := p.policy.current()
 	if snap == nil || snap.index == nil {
 		log.Error("no allowlist loaded; denying")
 		unavailable := fmt.Sprintf("no allowlist available for %s", check.ImageRef)
@@ -148,7 +154,7 @@ func (p *plugin) checkImagePhase(ctx context.Context, cfg *config, check imageCh
 	servedAdmitted := snap.admits(rc, phase)
 	if !baseAdmitted && !servedAdmitted {
 		reason, denial := launchDenial(snap.index, check, rc, phase)
-		log.Warn("image not admitted by allowlist", p.denialAttrs(check, rc, reason)...)
+		log.Warn("image not admitted by allowlist", p.denialAttrs(snap, check, rc, reason)...)
 		return decide.deny(reason, denial)
 	}
 
@@ -223,12 +229,12 @@ func launchDenial(
 
 // A verified-file fault is added only for an entry that declares a mount of
 // that kind, where it explains the refusal.
-func (p *plugin) denialAttrs(check imageCheck, rc allowlist.RunningContainer, reason string) []any {
+func (p *plugin) denialAttrs(snap *policySnapshot, check imageCheck, rc allowlist.RunningContainer, reason string) []any {
 	attrs := []any{"digest", rc.Digest, "image", check.ImageRef, "argv_sha256", argvDigest(rc.Argv), "reason", reason}
-	if missing := nodeRootMissing(rc.Mounts); missing != "" && p.policy.declaresMountKind(rc.Digest, allowlist.MountNodeRootFile) {
+	if missing := nodeRootMissing(p.policy.nodeRootBinds(snap, rc.Digest, rc.Mounts)); missing != "" {
 		attrs = append(attrs, "node_root_unavailable", missing)
 	}
-	if slices.ContainsFunc(rc.Mounts, unprovenFileBind) && p.policy.declaresMountKind(rc.Digest, allowlist.MountFSVerityFile) {
+	if slices.ContainsFunc(rc.Mounts, unprovenFileBind) && p.policy.declaresFSVerity(snap, rc.Digest) {
 		attrs = append(attrs, "fs_verity_unavailable", fsVerityNotStaged)
 	}
 	return attrs
@@ -249,6 +255,9 @@ type observedContainer struct {
 	imageRef string
 	env      *allowlist.EnvObservation
 	mounts   []allowlist.ObservedMount
+	// lookup resolves imageRef once for every check of one admission
+	// (plugin.digestLookup); nil resolves it on each read.
+	lookup func() (string, error)
 }
 
 // observeContainer reads the launch evidence of a container from the spec the
@@ -295,21 +304,28 @@ func (p *plugin) checkContainer(ctx context.Context, cfg *config, pod *api.PodSa
 // excuses neither a host port nor a capability (hostports.go,
 // capabilities.go).
 func (p *plugin) checkContainerPhase(ctx context.Context, cfg *config, pod *api.PodSandbox, ctr *api.Container, imageRef string, phase launchPhase) (imageVerdict, string) {
-	observed := observedContainer{pod: pod, ctr: ctr, imageRef: imageRef, env: containerEnv(ctr)}
+	observed := observedContainer{
+		pod:      pod,
+		ctr:      ctr,
+		imageRef: imageRef,
+		env:      containerEnv(ctr),
+		lookup:   p.digestLookup(ctx, imageRef),
+	}
 	if phase == launchFinal {
 		observed.mounts = p.observedMounts(pod, ctr)
 	}
-	verdict, reason := p.checkContainerObserved(ctx, cfg, observed, phase)
+	snap := p.policy.current()
+	verdict, reason := p.checkContainerObserved(ctx, cfg, snap, observed, phase)
 	if verdict == verdictDeny || !sandboxPolicyApplies(cfg, phase) {
 		return verdict, reason
 	}
-	if v, r := p.checkSandbox(ctx, cfg, observed); v == verdictDeny {
+	if v, r := p.checkSandbox(ctx, cfg, snap, observed); v == verdictDeny {
 		return v, r
 	}
-	if refusal := p.hostPortRefusal(ctx, cfg, observed); refusal != "" {
+	if refusal := p.hostPortRefusal(ctx, cfg, snap, observed); refusal != "" {
 		return verdictDeny, refusal
 	}
-	if refusal := p.capabilityRefusal(ctx, cfg, observed); refusal != "" {
+	if refusal := p.capabilityRefusal(ctx, cfg, snap, observed); refusal != "" {
 		return verdictDeny, refusal
 	}
 	return verdict, reason
@@ -321,12 +337,14 @@ func sandboxPolicyApplies(cfg *config, phase launchPhase) bool {
 	return phase == launchFinal && cfg.sandboxObserved()
 }
 
-func (p *plugin) checkContainerObserved(ctx context.Context, cfg *config, observed observedContainer, phase launchPhase) (imageVerdict, string) {
+// checkContainerObserved judges the container against snap, resolving its
+// image through observed.lookup.
+func (p *plugin) checkContainerObserved(ctx context.Context, cfg *config, snap *policySnapshot, observed observedContainer, phase launchPhase) (imageVerdict, string) {
 	namespace, podName, ctrName := observed.pod.GetNamespace(), observed.pod.GetName(), observed.ctr.GetName()
 
 	verdict, reason := p.checkLabels(cfg, namespace, podName, ctrName, observed.pod.GetLabels())
 	if verdict != verdictDeny && cfg.AllowlistEnabled() {
-		verdict, reason = p.checkImagePhase(ctx, cfg, imageCheck{
+		verdict, reason = p.checkImageAt(ctx, cfg, snap, imageCheck{
 			Namespace: namespace,
 			PodName:   podName,
 			Container: ctrName,
@@ -335,6 +353,7 @@ func (p *plugin) checkContainerObserved(ctx context.Context, cfg *config, observ
 			Env:       observed.env,
 			EnvErr:    envError(observed.ctr, observed.env),
 			Mounts:    observed.mounts,
+			Lookup:    observed.lookup,
 		}, phase)
 	}
 	return p.exemptNamespace(cfg, observed, verdict, reason)
@@ -380,7 +399,7 @@ func (p *plugin) exemptNamespace(cfg *config, observed observedContainer, verdic
 //
 // Two exemptions apply. The first is the node TCB: only the MEASURED base
 // allowlist, and only when the node config claims it as the node TCB
-// (allowlist.node_tcb). A CDS-served entry never is, because the cluster admin
+// (allowlist.node_tcb). A Trust Authority-served entry never is, because the cluster admin
 // this policy defends against authors that document. The control plane picks
 // the image a pod runs, so a base digest alone proves nothing about the launch;
 // nodeTCBExempt says how much a base entry excuses. See
@@ -389,9 +408,10 @@ func (p *plugin) exemptNamespace(cfg *config, observed observedContainer, verdic
 // The second sets aside a single bind, not the container: one an entry of the
 // base or the served allowlist grants this launch (allowlist.Index.GrantsHostBind).
 //
-// The digest is resolved only when an exemption could apply, so an ordinary
-// container costs no containerd round-trip.
-func (p *plugin) checkSandbox(ctx context.Context, cfg *config, observed observedContainer) (imageVerdict, string) {
+// Both exemptions judge snap, the snapshot admission judged, and the digest of
+// observed.lookup, consulted only when an exemption could apply, so an
+// ordinary container costs no containerd round-trip.
+func (p *plugin) checkSandbox(ctx context.Context, cfg *config, snap *policySnapshot, observed observedContainer) (imageVerdict, string) {
 	pod, ctr := observed.pod, observed.ctr
 	cdi, err := expandCDI(ctr, p.cdiSpecDirs)
 	if err != nil {
@@ -406,8 +426,8 @@ func (p *plugin) checkSandbox(ctx context.Context, cfg *config, observed observe
 	}
 	digest := ""
 	if cfg.AllowlistEnabled() && len(obs.HostBinds) > 0 {
-		digest = p.resolveDigest(ctx, observed.imageRef)
-		grant := declaredBindGrant{policy: p.policy, launch: observed.launch(digest)}
+		digest = p.observedDigest(ctx, observed)
+		grant := declaredBindGrant{policy: p.policy, snap: snap, launch: observed.launch(digest)}
 		obs.HostBinds = hostBinds(pod, ctr, own, observed.mounts, grant, cdi)
 		if violations = obs.violations(cfg.podRole()); len(violations) == 0 {
 			return verdictAllow, ""
@@ -415,7 +435,7 @@ func (p *plugin) checkSandbox(ctx context.Context, cfg *config, observed observe
 	}
 	if cfg.Allowlist.NodeTCB {
 		if digest == "" {
-			digest = p.resolveDigest(ctx, observed.imageRef)
+			digest = p.observedDigest(ctx, observed)
 		}
 		if p.nodeTCBExempt(pod, observed.launch(digest)) {
 			return verdictAllow, ""

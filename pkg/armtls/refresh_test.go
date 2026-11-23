@@ -167,20 +167,20 @@ func TestFollowClientPinsChecksAgainstANewerSet(t *testing.T) {
 	}
 }
 
-// unreachableCDS counts the attempts made through a CDS that answers nothing.
-func unreachableCDS(attempts *atomic.Int64) func(Pins) (*http.Transport, error) {
+// unreachableTA counts the attempts made through a Trust Authority that answers nothing.
+func unreachableTA(attempts *atomic.Int64) func(Pins) (*http.Transport, error) {
 	return func(Pins) (*http.Transport, error) {
 		return &http.Transport{DialContext: func(context.Context, string, string) (net.Conn, error) {
 			attempts.Add(1)
-			return nil, errCDSUnreachable
+			return nil, errTAUnreachable
 		}}, nil
 	}
 }
 
-var errCDSUnreachable = errors.New("armtls_test: the CDS in the pins answered nothing")
+var errTAUnreachable = errors.New("armtls_test: the Trust Authority in the pins answered nothing")
 
 // A request that fails is made once more only where the set moved under it: a
-// CDS relaunched on a newly decreed image answers the second attempt, and a
+// Trust Authority relaunched on a newly decreed image answers the second attempt, and a
 // peer the set in force refuses stays refused.
 func TestARefreshingTransportRunsAgainOnlyWhereThePinsMoved(t *testing.T) {
 	for name, next := range map[string]string{"the pins moved": "new", "the pins did not move": ""} {
@@ -190,7 +190,7 @@ func TestARefreshingTransportRunsAgainOnlyWhereThePinsMoved(t *testing.T) {
 				current: "old",
 				next:    next,
 			}
-			transport, err := NewRefreshingTransport(pins, unreachableCDS(&attempts))
+			transport, err := NewRefreshingTransport(pins, unreachableTA(&attempts))
 			if err != nil {
 				t.Fatalf("NewRefreshingTransport: %v", err)
 			}
@@ -199,7 +199,7 @@ func TestARefreshingTransportRunsAgainOnlyWhereThePinsMoved(t *testing.T) {
 				t.Fatal(err)
 			}
 			if _, err := transport.RoundTrip(request); err == nil {
-				t.Fatal("a request no CDS answered was reported as answered")
+				t.Fatal("a request no Trust Authority answered was reported as answered")
 			}
 			want := int64(1)
 			if next != "" {
@@ -223,7 +223,7 @@ func TestARefreshingTransportDoesNotReplayAnUnrepeatableBody(t *testing.T) {
 		current: "old",
 		next:    "new",
 	}
-	transport, err := NewRefreshingTransport(pins, unreachableCDS(&attempts))
+	transport, err := NewRefreshingTransport(pins, unreachableTA(&attempts))
 	if err != nil {
 		t.Fatalf("NewRefreshingTransport: %v", err)
 	}
@@ -234,7 +234,7 @@ func TestARefreshingTransportDoesNotReplayAnUnrepeatableBody(t *testing.T) {
 	request.GetBody = nil
 
 	if _, err := transport.RoundTrip(request); err == nil {
-		t.Fatal("a request no CDS answered was reported as answered")
+		t.Fatal("a request no Trust Authority answered was reported as answered")
 	}
 	if attempts.Load() != 1 {
 		t.Fatalf("the client made %d attempts with a body it cannot send again, want one", attempts.Load())

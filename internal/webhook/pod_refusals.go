@@ -7,9 +7,9 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/volume"
-	"github.com/confidential-dot-ai/c8s/internal/podmesh"
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/volume"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/podmesh"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 // rejectUnservedRequests requires the inventory socket for injected credentials.
@@ -227,7 +227,7 @@ func rejectUnpinnableSidecarVolumes(pod *corev1.Pod, inj *injection) error {
 // injector owns as anything but the emptyDir the injector creates. ensureVolume
 // keeps an existing same-named volume rather than overwriting it, so without
 // this a pod spec could point the credential or secrets volume at a hostPath
-// and have a private key or a CDS-released secret written to persistent,
+// and have a private key or a Trust Authority-released secret written to persistent,
 // host-visible storage outside the TEE boundary. Omitting a reserved volume is
 // fine — the webhook injects it.
 //

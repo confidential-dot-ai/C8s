@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
-	"github.com/confidential-dot-ai/c8s/internal/testutil"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 )
 
 func TestParseVolumeSpec(t *testing.T) {
@@ -48,9 +48,9 @@ func TestParseVolumeSpecAcceptsTheLongestServableName(t *testing.T) {
 
 func validConfig() config {
 	return config{
-		CDSURL:                 "https://cds.example",
+		TAURL:                  "https://cds.example",
 		AttestationApiURL:      "http://127.0.0.1:8400",
-		MeasurementsConfigJSON: testutil.CDSPinDocument(testutil.TestMeasurement, testutil.CDSLaunchFile),
+		MeasurementsConfigJSON: testutil.TAPinDocument(testutil.TestMeasurement, testutil.TALaunchFile),
 		Attempts:               0,
 		RetryInterval:          5 * time.Second,
 		RequestTimeout:         10 * time.Second,
@@ -67,8 +67,8 @@ func TestValidate(t *testing.T) {
 	}
 
 	for name, mutate := range map[string]func(*config){
-		"cds url":           func(c *config) { c.CDSURL = "" },
-		"plaintext cds url": func(c *config) { c.CDSURL = "http://cds.example" },
+		"cds url":           func(c *config) { c.TAURL = "" },
+		"plaintext cds url": func(c *config) { c.TAURL = "http://cds.example" },
 		"attestation api":   func(c *config) { c.AttestationApiURL = "" },
 		"no volumes":        func(c *config) { c.Volumes = nil },
 		"socket dir":        func(c *config) { c.SocketDir = "" },
@@ -90,12 +90,12 @@ func TestValidate(t *testing.T) {
 
 func TestValidateTrimsURL(t *testing.T) {
 	cfg := validConfig()
-	cfg.CDSURL = "https://cds.example/"
+	cfg.TAURL = "https://cds.example/"
 	if err := validate(&cfg); err != nil {
 		t.Fatalf("validate: %v", err)
 	}
-	if cfg.CDSURL != "https://cds.example" {
-		t.Fatalf("CDSURL = %q, want the trailing slash gone", cfg.CDSURL)
+	if cfg.TAURL != "https://cds.example" {
+		t.Fatalf("CDSURL = %q, want the trailing slash gone", cfg.TAURL)
 	}
 }
 
@@ -131,7 +131,7 @@ func TestDaemonClientSelectsCompiledShape(t *testing.T) {
 	}
 }
 
-// A pin that is not one CDS VM's identity is a typo in rendered config;
+// A pin that is not one Trust Authority VM's identity is a typo in rendered config;
 // pinning nothing is not an acceptable fallback for it.
 func TestRunRejectsAPinWithoutALaunchBinding(t *testing.T) {
 	cfg := validConfig()

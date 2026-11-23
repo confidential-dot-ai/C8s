@@ -11,7 +11,7 @@ import (
 	"github.com/containerd/nri/pkg/api"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
 // A container holds the node's default capability set
@@ -27,7 +27,7 @@ const capabilityRule = "capability"
 // exempts keeps what the runtime gave it, and so does a worker's static pod
 // whose launch a base entry pins, as nodeTCBExempt excuses it; the caller
 // downgrades a denial under audit mode.
-func (p *plugin) capabilityRefusal(ctx context.Context, cfg *config, observed observedContainer) string {
+func (p *plugin) capabilityRefusal(ctx context.Context, cfg *config, snap *policySnapshot, observed observedContainer) string {
 	pod, ctr := observed.pod, observed.ctr
 	if p.mesh.policy.exempts(pod.GetNamespace()) {
 		return ""
@@ -45,7 +45,7 @@ func (p *plugin) capabilityRefusal(ctx context.Context, cfg *config, observed ob
 		p.denyPrivilege(subject, err)
 		return err.Error()
 	}
-	refusal := p.ungrantedCapabilities(ctx, observed, process)
+	refusal := p.ungrantedCapabilities(ctx, snap, observed, process)
 	if refusal == nil {
 		return ""
 	}
@@ -76,7 +76,7 @@ func (p *plugin) storedProcess(ctx context.Context, ctr *api.Container) (*specs.
 
 // ungrantedCapabilities is why this process may not hold what it holds, nil when
 // the default set covers it or an entry declares every capability beyond it.
-func (p *plugin) ungrantedCapabilities(ctx context.Context, observed observedContainer, process *specs.Process) error {
+func (p *plugin) ungrantedCapabilities(ctx context.Context, snap *policySnapshot, observed observedContainer, process *specs.Process) error {
 	held := HeldCapabilities(process.Capabilities)
 	if role, reserved := p.mesh.policy.roleIdentity(process.User); reserved {
 		return roleRefusal(role, held)
@@ -85,7 +85,7 @@ func (p *plugin) ungrantedCapabilities(ctx context.Context, observed observedCon
 	if len(undeclared) == 0 {
 		return nil
 	}
-	return p.undeclaredRefusal(p.observedLaunch(ctx, observed), undeclared)
+	return p.undeclaredRefusal(snap, p.observedLaunch(ctx, observed), undeclared)
 }
 
 // roleRefusal: a container on a platform role holds no capability, whatever an entry declares.
@@ -97,8 +97,8 @@ func roleRefusal(role string, held []string) error {
 }
 
 // undeclaredRefusal is why no entry hands this launch the capabilities it holds.
-func (p *plugin) undeclaredRefusal(launch allowlist.RunningContainer, undeclared []string) error {
-	if p.policy.grantsCapabilities(launch, undeclared) {
+func (p *plugin) undeclaredRefusal(snap *policySnapshot, launch allowlist.RunningContainer, undeclared []string) error {
+	if p.policy.grantsCapabilities(snap, launch, undeclared) {
 		return nil
 	}
 	return fmt.Errorf("the container holds capabilities %s, which no allowlist entry declares for this launch", strings.Join(undeclared, ", "))

@@ -13,7 +13,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 const (
@@ -49,16 +49,16 @@ func TestStagePodRole(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if staged.Role != Pod || staged.PodOperatorPublicKey != pub || staged.CDS != doc.CDS {
+	if staged.Role != Pod || staged.PodOperatorPublicKey != pub || staged.TA != doc.TA {
 		t.Fatalf("staged %+v", staged)
 	}
-	cds := stagedCDSPolicy(t, staged)
-	if cds.Family != teetypes.FamilySNP || len(cds.Images) != 2 {
-		t.Fatalf("pod CDS pins = %+v", cds)
+	ta := stagedTAPolicy(t, staged)
+	if ta.Family != teetypes.FamilySNP || len(ta.Images) != 2 {
+		t.Fatalf("pod Trust Authority pins = %+v", ta)
 	}
-	for _, pin := range cds.Images {
-		if string(pin.LaunchFile) != cdsLaunchFile || pin.Anchor != nil {
-			t.Fatalf("Pod CDS pin is not independently launch-file-bound: %+v", pin)
+	for _, pin := range ta.Images {
+		if string(pin.LaunchFile) != taLaunchFile || pin.Anchor != nil {
+			t.Fatalf("Pod Trust Authority pin is not independently launch-file-bound: %+v", pin)
 		}
 	}
 
@@ -109,7 +109,7 @@ func TestValidatePodRole(t *testing.T) {
 		append string
 		want   string
 	}{
-		{"no CDS policy", func(d *Document) { d.CDS.Measurements = "" }, "", "cds.measurements"},
+		{"no Trust Authority policy", func(d *Document) { d.TA.Measurements = "" }, "", "cds.measurements"},
 		{"no pod key", func(d *Document) { d.PodOperatorPublicKey = "" }, "", "podOperatorPublicKey"},
 		{"no runtime register", func(d *Document) { d.Image.Platform = "snp"; d.Image.RTMRs = nil }, "", "runtime register"},
 		{"server block", func(*Document) {}, "server:\n  address: 10.0.0.1\n", "server"},
@@ -140,15 +140,15 @@ func TestNewPodBundleStages(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "bundle")
 	if err := runBundleCmd(t, "new-pod", "--out", dir, "--cluster-id", "cluster-one",
 		"--image-manifest", writeManifest(t, "tdx"), "--name", "p-1",
-		"--cds-address", "cds.example.org:8443", "--cds-image-policy-file", writePodCDSPin(t)); err != nil {
+		"--cds-address", "cds.example.org:8443", "--cds-image-policy-file", writePodTAPin(t)); err != nil {
 		t.Fatal(err)
 	}
 	doc, _ := readBundleDocument(t, dir, podDir)
 	if doc.Role != Pod || doc.Node.Name != "p-1" {
 		t.Fatalf("pod document %+v", doc)
 	}
-	if doc.CDS.Address != "cds.example.org:8443" || stagedCDSPolicy(t, doc).Family != teetypes.FamilySNP {
-		t.Fatal("Pod bundle lost independent DNS-addressed SNP CDS trust")
+	if doc.TA.Address != "cds.example.org:8443" || stagedTAPolicy(t, doc).Family != teetypes.FamilySNP {
+		t.Fatal("Pod bundle lost independent DNS-addressed SNP Trust Authority trust")
 	}
 	requirePresent(t, filepath.Join(dir, podKeyFile))
 	stageBundleNode(t, dir, podDir)
@@ -160,7 +160,7 @@ func TestNewPodBundleRefusesSNPManifest(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "bundle")
 	err := runBundleCmd(t, "new-pod", "--out", dir, "--cluster-id", "cluster-one",
 		"--image-manifest", writeManifest(t, "snp"), "--name", "p-1",
-		"--cds-address", "cds.example.org:8443", "--cds-image-policy-file", writePodCDSPin(t))
+		"--cds-address", "cds.example.org:8443", "--cds-image-policy-file", writePodTAPin(t))
 	if err == nil || !strings.Contains(err.Error(), "TDX-only") {
 		t.Fatalf("got %v, want a TDX-only refusal", err)
 	}
@@ -169,9 +169,9 @@ func TestNewPodBundleRefusesSNPManifest(t *testing.T) {
 	}
 }
 
-func writePodCDSPin(t *testing.T) string {
+func writePodTAPin(t *testing.T) string {
 	t.Helper()
-	return writeFile(t, "cds.json", testCDSPin(t, teetypes.FamilySNP, 2))
+	return writeFile(t, "cds.json", testTAPin(t, teetypes.FamilySNP, 2))
 }
 
 func testProviderPod(t *testing.T, spec string) *corev1.Pod {

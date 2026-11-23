@@ -15,7 +15,7 @@ import (
 	"github.com/containerd/nri/pkg/api"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
 const maxVerifiedMounts = 1024

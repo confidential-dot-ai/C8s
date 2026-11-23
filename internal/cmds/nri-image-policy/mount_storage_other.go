@@ -2,7 +2,7 @@
 
 package nriimagepolicy
 
-import "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+import "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 
 type platformStorageInspector struct{}
 

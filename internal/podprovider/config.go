@@ -19,10 +19,10 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
-	"github.com/confidential-dot-ai/c8s/internal/podlaunch"
-	"github.com/confidential-dot-ai/c8s/pkg/certutil"
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/podlaunch"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 const (
@@ -44,8 +44,8 @@ type Config struct {
 	Image                      string   `json:"image"`
 	ImageManifestFile          string   `json:"imageManifestFile"`
 	LaunchKeyFile              string   `json:"launchKeyFile"`
-	CDSAddress                 string   `json:"cdsAddress"`
-	CDSImagePolicyFile         string   `json:"cdsImagePolicyFile"`
+	TAAddress                  string   `json:"cdsAddress"`
+	TAImagePolicyFile          string   `json:"cdsImagePolicyFile"`
 	WorkloadsFile              string   `json:"workloadsFile"`
 	ClusterID                  string   `json:"clusterID"`
 	Size                       string   `json:"size"`
@@ -57,6 +57,7 @@ type Config struct {
 	MeshPeers                  []string `json:"meshPeers,omitempty"`
 	PublicIP                   string   `json:"publicIP,omitempty"`
 	VerificationTimeoutSeconds int64    `json:"verificationTimeoutSeconds,omitempty"`
+	MaxDeletionGraceSeconds    int64    `json:"maxDeletionGraceSeconds,omitempty"`
 
 	token     string
 	key       *ecdsa.PrivateKey
@@ -64,7 +65,7 @@ type Config struct {
 	manifest  []byte
 	workloads string
 	image     podlaunch.Image
-	cds       cmdsutil.CDS
+	ta        cmdsutil.TA
 }
 
 // LoadConfig loads the trusted configuration and the launch inputs it names.
@@ -80,9 +81,9 @@ func LoadConfig(path string) (*Config, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
-	for _, p := range []*string{&cfg.CloudTokenFile, &cfg.ImageManifestFile, &cfg.LaunchKeyFile, &cfg.CDSImagePolicyFile, &cfg.WorkloadsFile} {
+	for _, p := range []*string{&cfg.CloudTokenFile, &cfg.ImageManifestFile, &cfg.LaunchKeyFile, &cfg.TAImagePolicyFile, &cfg.WorkloadsFile} {
 		if *p == "" {
-			return nil, errors.New("pod CVM provider requires token, image manifest, launch key, CDS image policy and workloads files")
+			return nil, errors.New("pod CVM provider requires token, image manifest, launch key, Trust Authority image policy and workloads files")
 		}
 		if !filepath.IsAbs(*p) {
 			*p = filepath.Join(filepath.Dir(path), *p)
@@ -95,13 +96,19 @@ func LoadConfig(path string) (*Config, error) {
 }
 
 // validate applies the documented defaults and the operator-settable bounds of
-// the verification deadline.
+// the verification deadline and the deletion grace.
 func (c *Config) validate() error {
 	if c.VerificationTimeoutSeconds == 0 {
 		c.VerificationTimeoutSeconds = defaultVerificationTimeoutSeconds
 	}
 	if !validVerificationTimeout(c.VerificationTimeoutSeconds) {
 		return errors.New("verificationTimeoutSeconds must be between 30 and 86400")
+	}
+	if c.MaxDeletionGraceSeconds == 0 {
+		c.MaxDeletionGraceSeconds = defaultMaxDeletionGraceSeconds
+	}
+	if c.MaxDeletionGraceSeconds < 1 || c.MaxDeletionGraceSeconds > 3600 {
+		return errors.New("maxDeletionGraceSeconds must be between 1 and 3600")
 	}
 	c.CloudURL = strings.TrimRight(c.CloudURL, "/")
 	// The ID names this provider's records, Node and Cloud instances; an empty
@@ -124,7 +131,7 @@ func (c *Config) validate() error {
 	if c.ReservedMemoryMiB == 0 {
 		c.ReservedMemoryMiB = 1024
 	}
-	if _, _, err := cmdsutil.SplitCDSAddress(c.CDSAddress); err != nil {
+	if _, _, err := cmdsutil.SplitTAAddress(c.TAAddress); err != nil {
 		return fmt.Errorf("cdsAddress %w", err)
 	}
 	return nil
@@ -152,20 +159,20 @@ func (c *Config) loadTrust() error {
 		return err
 	}
 	c.pub = string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pub}))
-	cdsPolicy, err := readFile(c.CDSImagePolicyFile)
+	taPolicy, err := readFile(c.TAImagePolicyFile)
 	if err != nil {
 		return err
 	}
-	// The policy must bind the CDS image to its exact launch file, or the
-	// guest could not authenticate the CDS it polls.
-	pins, err := refvalues.Parse(cdsPolicy)
+	// The policy must bind the Trust Authority image to its exact launch file, or the
+	// guest could not authenticate the Trust Authority it polls.
+	pins, err := refvalues.Parse(taPolicy)
 	if err != nil {
-		return fmt.Errorf("CDS image policy: %w", err)
+		return fmt.Errorf("the Trust Authority image policy: %w", err)
 	}
-	if _, err := cmdsutil.CDSLaunchFile(pins); err != nil {
-		return fmt.Errorf("CDS image policy: %w", err)
+	if _, err := cmdsutil.TALaunchFile(pins); err != nil {
+		return fmt.Errorf("the Trust Authority image policy: %w", err)
 	}
-	c.cds = cmdsutil.CDS{Address: c.CDSAddress, Measurements: string(cdsPolicy)}
+	c.ta = cmdsutil.TA{Address: c.TAAddress, Measurements: string(taPolicy)}
 	workloads, err := readFile(c.WorkloadsFile)
 	if err != nil {
 		return err

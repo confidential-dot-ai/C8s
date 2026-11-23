@@ -12,6 +12,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: pin-hygiene-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   changes:
     name: Relevant changes
@@ -62,7 +66,7 @@ jobs:
             --manifest .github/build-pins.json
           # attestation-go is consumed at a release, never at a pseudo-version:
           # its /verify request must match the attestation-rs release the
-          # node and CDS images stage, and only a release names that pairing.
+          # node and Trust Authority images stage, and only a release names that pairing.
           pseudo=$(grep -rnE 'confidential-dot-ai/attestation-go v[0-9.]+-(0\.|[0-9]+\.)?[0-9]{14}-[0-9a-f]{12}' \
                      --include=go.mod . || true)
           if [ -n "$pseudo" ]; then
@@ -99,7 +103,7 @@ jobs:
           else
             echo "::error file=.github/build-pins.json::could not read the mkosi pin from confos $CONFOS_REF base.yml"; fail=1
           fi
-          # attestation_api_digest is the attestation-api the CDS image stages
+          # attestation_api_digest is the attestation-api the Trust Authority image stages
           # and the host DaemonSet runs (the chart's pinnedDigest, a checked
           # copy). attestation-rs names that manifest both sha-<ref7> (the
           # commit CI built) and the release tag; every name must end at it.

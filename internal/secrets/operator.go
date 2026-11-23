@@ -8,8 +8,8 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/confidential-dot-ai/c8s/internal/httputil"
-	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/httputil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
 )
 
 // DefaultMaxOperatorBodyBytes caps a PUT body when OperatorHandler.MaxBodyBytes
@@ -36,7 +36,7 @@ type PutResponse struct {
 	Existing Origin `json:"existing,omitempty"`
 }
 
-// OperatorHandler serves PUT on Route: an operator supplying a value CDS cannot
+// OperatorHandler serves PUT on Route: an operator supplying a value Trust Authority cannot
 // generate — an API token, a database password, a wrapped key.
 //
 // Authorization is the operator key that already roots the secrets grants, via

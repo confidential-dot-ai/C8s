@@ -19,7 +19,7 @@ import (
 	k8syaml "k8s.io/apimachinery/pkg/util/yaml"
 	"sigs.k8s.io/yaml"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/worker"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/worker"
 )
 
 // webhookPort is the port the operator's webhook serves on (controller-runtime's).

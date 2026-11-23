@@ -11,7 +11,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/confidential-dot-ai/c8s/internal/strictjson"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/strictjson"
 )
 
 // EnvObservation commits to the complete OCI launch environment. Nil means
@@ -28,7 +28,7 @@ type EnvObservation struct {
 
 const EnvFormat = "c8s.env/v1"
 
-// Per-variable evidence rides in every inventory record, whose response CDS
+// Per-variable evidence rides in every inventory record, whose response Trust Authority
 // caps at 1 MiB. Above these bounds VariableDigests is nil, and a match
 // policy, which lists every variable, is rejected when authored.
 const (
@@ -37,7 +37,7 @@ const (
 )
 
 // MaxSandboxVariableEvidenceBytes bounds the serialized VariableDigests a node
-// keeps per sandbox, half of CDS's 1 MiB inventory response limit. A workload
+// keeps per sandbox, half of Trust Authority's 1 MiB inventory response limit. A workload
 // whose match policies could need more is rejected when authored.
 const MaxSandboxVariableEvidenceBytes = 512 << 10
 

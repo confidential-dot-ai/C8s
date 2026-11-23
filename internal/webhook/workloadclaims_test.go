@@ -6,7 +6,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 func newInjectablePod() *corev1.Pod {
@@ -51,7 +51,7 @@ func TestWorkloadClaims_NodeCVMLeavesMountToNRI(t *testing.T) {
 }
 
 // The webhook passes the pod's own init-container names so get-cert can split
-// / get-cert no longer classifies containers by role — CDS resolves a sandbox's
+// / get-cert no longer classifies containers by role — Trust Authority resolves a sandbox's
 // images from the inventory — so the webhook must not pass per-init-container
 // names it would reject as an unknown flag.
 func TestWorkloadClaims_PassesNoInitContainerNames(t *testing.T) {

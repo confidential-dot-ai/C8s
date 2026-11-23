@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
 )
 
 // hangingServer accepts the connection and never answers.
@@ -102,7 +102,7 @@ func TestListRejectsNonJSONContentType(t *testing.T) {
 	}
 }
 
-// TestListEnforcesTheResponseCap: a compromised or buggy CDS must not be able
+// TestListEnforcesTheResponseCap: a compromised or buggy Trust Authority must not be able
 // to OOM the enforcer process by answering with an unbounded body.
 func TestListEnforcesTheResponseCap(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

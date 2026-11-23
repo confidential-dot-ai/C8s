@@ -25,12 +25,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/internal/issuer"
-	"github.com/confidential-dot-ai/c8s/internal/testutil"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
-	"github.com/confidential-dot-ai/c8s/pkg/certutil"
-	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
-	"github.com/confidential-dot-ai/c8s/pkg/routes"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/issuer"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/routes"
 )
 
 const testHost = "app.example"
@@ -108,7 +108,7 @@ var testDigest = digestOf(0x42)
 // digestOf returns an allowlist digest of b repeated 32 times.
 func digestOf(b byte) []byte { return bytes.Repeat([]byte{b}, 32) }
 
-// issueLeaf mints a leaf the way CDS does, carrying the matched workload
+// issueLeaf mints a leaf the way Trust Authority does, carrying the matched workload
 // extension when workload is non-empty.
 func issueLeaf(t testing.TB, ca *issuer.CA, workload string, dnsNames ...string) tls.Certificate {
 	t.Helper()
@@ -122,7 +122,7 @@ func issueStampedLeaf(t testing.TB, ca *issuer.CA, workload string, digest []byt
 }
 
 // issueAgentLeaf is issueStampedLeaf carrying clientDocumentDigest when it is
-// not nil, as CDS stamps a pod CVM's leaf.
+// not nil, as Trust Authority stamps a pod CVM's leaf.
 func issueAgentLeaf(t testing.TB, ca *issuer.CA, workload string, digest, clientDocumentDigest []byte, dnsNames ...string) tls.Certificate {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)

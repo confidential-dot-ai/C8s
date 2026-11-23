@@ -13,8 +13,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	"github.com/confidential-dot-ai/c8s/api/v1alpha2"
-	"github.com/confidential-dot-ai/c8s/internal/webhook"
+	"github.com/confidential-dot-ai/confidential-kubernetes/api/v1alpha2"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/webhook"
 )
 
 // resolveWorkloadCWID maps the CW's spec.workloadRef to the cw id stamped on
@@ -125,7 +125,7 @@ func summarizeWorkloadAttestation(pods []corev1.Pod, matchID string) v1alpha2.At
 
 // isPodReady is the heuristic for "this pod has attested": the kubelet has
 // reported PodReady, which means the c8s-cert-wait gate init container exited
-// — and that only happens after a successful attestation round-trip with CDS
+// — and that only happens after a successful attestation round-trip with the Trust Authority
 // wrote the issued cert to disk (the gate blocks on the cert file).
 func isPodReady(pod *corev1.Pod) bool {
 	for _, c := range pod.Status.Conditions {

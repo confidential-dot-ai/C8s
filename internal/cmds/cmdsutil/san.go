@@ -7,7 +7,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/confidential-dot-ai/c8s/internal/readutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/readutil"
 )
 
 // ReadSANFile reads one fixed identity name from a regular, bounded file.
@@ -38,7 +38,7 @@ func ReadSANFile(flag, path string) (string, error) {
 }
 
 // ServiceDNSSANPattern matches an in-cluster Service DNS name,
-// <service>.<namespace>.svc. Every generator writes it into the CDS
+// <service>.<namespace>.svc. Every generator writes it into the Trust Authority
 // configuration's leaf DNS rules.
 const ServiceDNSSANPattern = `^[a-z0-9-]+[.][a-z0-9-]+[.]svc$`
 

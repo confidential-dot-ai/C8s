@@ -1,5 +1,5 @@
 // Package volume implements the `c8s volume` operator CLI: building an
-// encrypted block image and putting its key into the CDS secret store.
+// encrypted block image and putting its key into the Trust Authority secret store.
 //
 // The image is plain dm-crypt — erofs with a dm-verity tree inside it for an
 // immutable volume, writable ext4 for a mutable one. There is deliberately no
@@ -40,9 +40,10 @@ const verityHashBytes = 32
 // allowlist entry because it is the integrity anchor, and an anchor the host
 // can edit anchors nothing. A mutable volume (ext4 over writable dm-crypt) has
 // no integrity anchor to carry — by design, the host can flip bits — so it
-// carries only the key, and Mutable says the opener must not expect a tree.
+// carries the name and key, and Mutable says the opener must not expect a tree.
 type Blob struct {
 	Type    string  `json:"type"`
+	Name    string  `json:"name"`
 	Key     string  `json:"key"`
 	Mutable bool    `json:"mutable,omitempty"`
 	Verity  *Verity `json:"verity,omitempty"`
@@ -64,12 +65,13 @@ type Verity struct {
 
 // NewBlob builds an immutable blob from a freshly generated key and the verity
 // output.
-func NewBlob(key []byte, v Verity) (Blob, error) {
+func NewBlob(name string, key []byte, v Verity) (Blob, error) {
 	if len(key) != KeyBytes {
 		return Blob{}, fmt.Errorf("volume: key is %d bytes, want %d", len(key), KeyBytes)
 	}
 	b := Blob{
 		Type:   BlobType,
+		Name:   name,
 		Key:    base64.StdEncoding.EncodeToString(key),
 		Verity: &v,
 	}
@@ -79,13 +81,14 @@ func NewBlob(key []byte, v Verity) (Blob, error) {
 	return b, nil
 }
 
-// NewMutableBlob builds a blob for a writable volume: key only, no tree.
-func NewMutableBlob(key []byte) (Blob, error) {
+// NewMutableBlob builds a named blob for a writable volume.
+func NewMutableBlob(name string, key []byte) (Blob, error) {
 	if len(key) != KeyBytes {
 		return Blob{}, fmt.Errorf("volume: key is %d bytes, want %d", len(key), KeyBytes)
 	}
 	b := Blob{
 		Type:    BlobType,
+		Name:    name,
 		Key:     base64.StdEncoding.EncodeToString(key),
 		Mutable: true,
 	}
@@ -117,6 +120,9 @@ func DecodeBlob(raw []byte) (Blob, error) {
 func (b Blob) Validate() error {
 	if b.Type != BlobType {
 		return fmt.Errorf("volume: key blob type is %q, want %q", b.Type, BlobType)
+	}
+	if err := ValidVolumeName(b.Name); err != nil {
+		return fmt.Errorf("volume: key blob name: %w", err)
 	}
 	key, err := base64.StdEncoding.DecodeString(b.Key)
 	if err != nil {

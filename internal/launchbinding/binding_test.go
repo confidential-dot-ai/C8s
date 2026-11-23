@@ -20,13 +20,13 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 )
 
 var operatorPub = []byte("operator public key bytes")
 
 // launchFile stands in for a whole configuration document a VM is launched
-// with, the anchor shape a CDS VM binds.
+// with, the anchor shape a Trust Authority VM binds.
 var launchFile = []byte("schemaVersion: c8s-cds/v1\n")
 
 // TestMain shortens the attestation-api readiness wait so the unreachable-URL

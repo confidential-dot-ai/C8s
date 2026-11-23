@@ -11,7 +11,7 @@ import (
 	agarmtls "github.com/confidential-dot-ai/attestation-go/armtls"
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 )
 
 // MakeSNPARMTLSAttestFunc returns an armTLS AttestFunc (matching
@@ -41,7 +41,7 @@ func MakeSNPARMTLSAttestFunc(client Client, attestationApiURL string) func(conte
 
 // AttestationExtension builds a nonce-free armTLS attestation extension
 // binding pub via the local attestation-api, for embedding in a CSR
-// (docs/armtls.md). CDS copies the extension onto the issued leaf, which is how
+// (docs/armtls.md). Trust Authority copies the extension onto the issued leaf, which is how
 // a workload leaf carries hardware evidence a verifier can re-check. It is
 // nonce-free by design: the serving cert carries no per-request nonce, so
 // [armtls.VerifyCert] recomputes the anchor with nonce=nil.

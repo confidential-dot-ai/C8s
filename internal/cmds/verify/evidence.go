@@ -23,14 +23,14 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-	"github.com/confidential-dot-ai/c8s/internal/localverify"
-	"github.com/confidential-dot-ai/c8s/internal/pendingattestation"
-	"github.com/confidential-dot-ai/c8s/internal/readutil"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
-	"github.com/confidential-dot-ai/c8s/pkg/certutil"
-	"github.com/confidential-dot-ai/c8s/pkg/overenc"
-	"github.com/confidential-dot-ai/c8s/pkg/types"
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/localverify"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/pendingattestation"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/readutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/overenc"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 // attestationPath is the LB's explicit attest-pq endpoint for nonce-bound
@@ -72,9 +72,9 @@ type evidence struct {
 	certSHA256 string
 	// bindingNote explains what the REPORTDATA is bound to.
 	bindingNote string
-	// leaf is the CDS-issued leaf the evidence speaks for: the serving cert in
+	// leaf is the Trust Authority-issued leaf the evidence speaks for: the serving cert in
 	// cert and discovery modes, the transcript-committed mesh leaf in
-	// attest-pq mode, nil otherwise. Kept so --mesh-ca can check what CDS
+	// attest-pq mode, nil otherwise. Kept so --mesh-ca can check what Trust Authority
 	// actually signed. Every leaf set here has passed body authentication
 	// (authenticateLeafBody, or verifyCommittedChain on attest-pq) AND one of
 	// the body-authentication backstops below.
@@ -105,7 +105,7 @@ type evidence struct {
 	// serving_leaf_sha256 carries ("" for other gathers).
 	servingLeafSHA256 string
 	// sandboxID is the CRI pod sandbox the leaf names (cert modes only; ""
-	// when the cert carries no sandbox-ID extension). CDS stamps it into the
+	// when the cert carries no sandbox-ID extension). Trust Authority stamps it into the
 	// signed area, so unlike the rest of this struct it is vouched by the mesh
 	// CA rather than by the hardware evidence — see applySandboxPolicy.
 	sandboxID string
@@ -119,7 +119,7 @@ type evidence struct {
 	// workloadErr records a carried matched-workload extension this build
 	// cannot interpret (or a duplicate). The verdict fails closed on it.
 	workloadErr error
-	// podLeaf marks a Pod CVM leaf: CDS issued it after verifying the pod's
+	// podLeaf marks a Pod CVM leaf: Trust Authority issued it after verifying the pod's
 	// attestation, so it carries no hardware evidence of its own, and the
 	// chain to --mesh-ca is all that stands behind it (verifyPodLeaf).
 	podLeaf bool
@@ -147,7 +147,7 @@ type attestationResponse struct {
 	Platform      string                   `json:"platform"`
 	Nonce         string                   `json:"nonce"`
 	Evidence      json.RawMessage          `json:"evidence"`
-	CDSCertPEM    string                   `json:"cds_cert_pem"`
+	TACertPEM     string                   `json:"cds_cert_pem"`
 	FrontDoorMode types.FrontDoorMode      `json:"front_door_mode"`
 	XWingEK       string                   `json:"xwing_ek"`
 	XWingCT       string                   `json:"xwing_ct"`
@@ -305,9 +305,9 @@ func evidenceFromCert(cert *x509.Certificate, source string, trust leafTrust) (*
 }
 
 // podLeafEvidence accepts a leaf without the attestation extension only when
-// it names a Pod CVM instance and chains to --mesh-ca. CDS stamps such a leaf
+// it names a Pod CVM instance and chains to --mesh-ca. Trust Authority stamps such a leaf
 // after verifying the pod's attestation (docs/armtls.md), so the client that
-// verified CDS once and pinned its mesh CA trusts the leaf, and its stamps, by
+// verified Trust Authority once and pinned its mesh CA trusts the leaf, and its stamps, by
 // that chain alone.
 func podLeafEvidence(cert *x509.Certificate, source string, trust leafTrust) (*evidence, error) {
 	sandboxID, sandboxErr := armtls.SandboxIDFromCert(cert)
@@ -315,7 +315,7 @@ func podLeafEvidence(cert *x509.Certificate, source string, trust leafTrust) (*e
 		return nil, armtls.ErrNoAttestation
 	}
 	if trust.meshCA == nil {
-		return nil, fmt.Errorf("%w: the leaf names Pod CVM %s, whose leaf CDS issued after attesting it; pass --mesh-ca to verify it by its chain", armtls.ErrNoAttestation, sandboxID)
+		return nil, fmt.Errorf("%w: the leaf names Pod CVM %s, whose leaf Trust Authority issued after attesting it; pass --mesh-ca to verify it by its chain", armtls.ErrNoAttestation, sandboxID)
 	}
 	if _, err := authorizeLeafBody(cert, certutil.BodyCAVouched, trust); err != nil {
 		return nil, err
@@ -328,7 +328,7 @@ func podLeafEvidence(cert *x509.Certificate, source string, trust leafTrust) (*e
 	return &evidence{
 		source:            source,
 		certSHA256:        hex.EncodeToString(sum[:]),
-		bindingNote:       "no hardware evidence on the leaf: CDS issued it to a Pod CVM it attested, and the leaf chains to the pinned --mesh-ca bundle",
+		bindingNote:       "no hardware evidence on the leaf: Trust Authority issued it to a Pod CVM it attested, and the leaf chains to the pinned --mesh-ca bundle",
 		leaf:              cert,
 		leafBody:          certutil.BodyCAVouched,
 		leafChainVerified: true,
@@ -453,7 +453,7 @@ func evidenceFromEndpointJSON(data, expectNonce, expectEK []byte, route *boundRo
 	if err != nil {
 		return nil, err
 	}
-	leaf, ca, err := committedMeshChain(r.CDSCertPEM, r.IdentityProof)
+	leaf, ca, err := committedMeshChain(r.TACertPEM, r.IdentityProof)
 	if err != nil {
 		return nil, err
 	}

@@ -11,7 +11,7 @@ import (
 
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 
-	"github.com/confidential-dot-ai/c8s/internal/podstart"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/podstart"
 )
 
 func createdPodState() specs.State {

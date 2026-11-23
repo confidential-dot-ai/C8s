@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
-	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlistclient"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/attestclient"
 )
 
 func TestRenewalRecoversPromptlyAfterExpiryDuringIssuance(t *testing.T) {
@@ -18,9 +18,9 @@ func TestRenewalRecoversPromptlyAfterExpiryDuringIssuance(t *testing.T) {
 	previousKey, issuer := creds.current.Key, creds.issuer
 	expiry := generationExpiry(creds.current)
 	stageInventory(t, testInstanceID)
-	cdsURL, attURL := startFakeServers(t, ca)
+	taURL, attURL := startFakeServers(t, ca)
 	cfg := config{
-		CDSURL:                cdsURL,
+		TAURL:                 taURL,
 		AttestationApiURL:     attURL,
 		SAN:                   "host.example.com",
 		WorkloadClaimsTimeout: time.Second,
@@ -61,7 +61,7 @@ func TestRenewalRecoversPromptlyAfterExpiryDuringIssuance(t *testing.T) {
 		cancel()
 		return nil
 	}
-	r := newRenewer(cfg, plaintextCDSClient(cdsURL), allowlistclient.Client{}, creds)
+	r := newRenewer(cfg, plaintextTAClient(taURL), allowlistclient.Client{}, creds)
 	defer r.stop()
 	r.scheduleRenewal(0)
 	if err := r.run(ctx); err != nil {

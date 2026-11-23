@@ -8,8 +8,8 @@ import (
 
 	"github.com/containerd/nri/pkg/api"
 
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 // testCertRole is a platform role the enforcer itself does not act on; the
@@ -382,7 +382,7 @@ func TestRoleOfBindsOnlyTheMeasuredIdentity(t *testing.T) {
 
 }
 
-// The role field never travels on the wire, so nothing a CDS serves can claim
+// The role field never travels on the wire, so nothing a Trust Authority serves can claim
 // one.
 func TestRoleIsNotServed(t *testing.T) {
 	base := roleBase(t, pushDigestB, testCertRole, []string{"/usr/local/bin/c8s"})

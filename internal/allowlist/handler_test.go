@@ -19,12 +19,12 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/confidential-dot-ai/attestation-go/remote"
-	"github.com/confidential-dot-ai/c8s/internal/allowlist"
-	"github.com/confidential-dot-ai/c8s/internal/attestation"
-	"github.com/confidential-dot-ai/c8s/internal/readiness"
-	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
-	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/attestation"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/readiness"
+	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
 )
 
 const (
@@ -33,7 +33,7 @@ const (
 )
 
 // openInMemory opens an empty allowlist whose writes apply to its own store,
-// its history started as CDS starts it before serving.
+// its history started as Trust Authority starts it before serving.
 func openInMemory(t *testing.T) *allowlist.Handle {
 	t.Helper()
 	store, err := allowlist.OpenInMemory()
@@ -49,7 +49,7 @@ func openInMemory(t *testing.T) *allowlist.Handle {
 }
 
 // testOperatorCredential generates an operator key pair: a Signer for minting
-// write tokens and the public key CDS would pin.
+// write tokens and the public key Trust Authority would pin.
 func testOperatorCredential(t *testing.T) (*operatorauth.Signer, *ecdsa.PublicKey) {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -145,7 +145,7 @@ func servedVersion(t *testing.T, srvURL string) string {
 }
 
 // wantUnchanged asserts the served document is still at version. Every write
-// CDS stores bumps the version, so an equal version means the refusal changed
+// Trust Authority stores bumps the version, so an equal version means the refusal changed
 // nothing.
 func wantUnchanged(t *testing.T, srvURL, version string) {
 	t.Helper()
@@ -261,7 +261,7 @@ func putAllowlistIfMatch(t *testing.T, h allowlist.Handler, body, ifMatch string
 	return rec.Code
 }
 
-// A write conditional on the version it was built from lands only while CDS
+// A write conditional on the version it was built from lands only while the Trust Authority
 // still serves that version, so it never overwrites a write made since.
 func TestAllowlistReplaceIfMatch(t *testing.T) {
 	h, store := guardTestHandler(t)
@@ -435,7 +435,7 @@ func writeEntry(t *testing.T, srvURL string, signer *operatorauth.Signer, name, 
 }
 
 // TestReplaceRejectsUnpinnedOperatorKey proves a well-formed token signed by a
-// key CDS does not pin is rejected at the handler level.
+// key Trust Authority does not pin is rejected at the handler level.
 func TestReplaceRejectsUnpinnedOperatorKey(t *testing.T) {
 	app, _, _ := testAllowlistApp(t)
 	srv := httptest.NewServer(app)
@@ -523,7 +523,7 @@ func TestAllowlistDefaultWriteBodyCap(t *testing.T) {
 }
 
 // A document whose entry is not valid is refused whole: the write is signed
-// over bytes CDS will not serve.
+// over bytes Trust Authority will not serve.
 func TestReplaceRejectsInvalidEntry(t *testing.T) {
 	app, _, signer := testAllowlistApp(t)
 	srv := httptest.NewServer(app)

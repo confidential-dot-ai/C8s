@@ -17,7 +17,7 @@
 #
 # Inputs (env), each "true"/"false" from the dorny/paths-filter step:
 #   SHARED             shared-core || shared-cmdsutil || shared-root
-#   C8S, CDS, GET_CERT, ARMTLS_MESH, NRI_IMAGE_POLICY, VOLUMED
+#   C8S, TA, GET_CERT, ARMTLS_MESH, NRI_IMAGE_POLICY, VOLUMED
 #   GITHUB_EVENT_NAME  the triggering event; "workflow_dispatch" fans out to all
 #                      (paths-filter is skipped on dispatch, so the flags above
 #                      are empty and this is the only signal to build them)
@@ -44,7 +44,7 @@ maybe_add() {
 }
 
 maybe_add "$C8S" c8s ghcr.io/confidential-dot-ai/c8s-operator cmd/c8s/Dockerfile
-maybe_add "$CDS" cds ghcr.io/confidential-dot-ai/cds cmd/cds/Dockerfile
+maybe_add "$TA" ta ghcr.io/confidential-dot-ai/ta cmd/ta/Dockerfile
 maybe_add "$GET_CERT" get-cert ghcr.io/confidential-dot-ai/get-cert cmd/get-cert/Dockerfile
 maybe_add "$ARMTLS_MESH" armtls-mesh ghcr.io/confidential-dot-ai/armtls-mesh cmd/armtls-mesh/Dockerfile
 maybe_add "$NRI_IMAGE_POLICY" nri-image-policy ghcr.io/confidential-dot-ai/nri-image-policy cmd/nri-image-policy/Dockerfile

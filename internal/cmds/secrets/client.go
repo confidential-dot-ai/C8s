@@ -8,12 +8,12 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/confidential-dot-ai/c8s/internal/readutil"
-	intsecrets "github.com/confidential-dot-ai/c8s/internal/secrets"
-	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/readutil"
+	intsecrets "github.com/confidential-dot-ai/confidential-kubernetes/internal/secrets"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
 )
 
-// client writes secrets to CDS over an attested channel.
+// client writes secrets to the Trust Authority over an attested channel.
 type client struct {
 	baseURL string
 	http    *http.Client
@@ -88,7 +88,7 @@ func (c client) put(ctx context.Context, path string, value []byte, overwrite bo
 	}
 }
 
-// explain asks CDS what a sandbox resolves to and why.
+// explain asks Trust Authority what a sandbox resolves to and why.
 func (c client) explain(ctx context.Context, sandboxID string, auth authorizer) (intsecrets.ExplainResponse, error) {
 	var out intsecrets.ExplainResponse
 	url := c.baseURL + "/secrets-explain/" + sandboxID
@@ -116,6 +116,6 @@ func (c client) explain(ctx context.Context, sandboxID string, auth authorizer) 
 	return out, nil
 }
 
-// maxResponseBytes bounds a CDS reply. The largest is an explain report over
+// maxResponseBytes bounds a Trust Authority reply. The largest is an explain report over
 // every workload entry; anything approaching this is a wrong endpoint.
 const maxResponseBytes = 1 << 20

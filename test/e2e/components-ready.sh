@@ -16,7 +16,7 @@ router_ns=c8s-router
 
 if [ "${C8S_NODE_IMAGE:-}" = 1 ]; then
   : "${C8S_MEASUREMENTS_CONFIG:?node-image checks require the full server policy}"
-  : "${C8S_ALLOWLIST_URL:?node-image checks require the measured CDS front door}"
+  : "${C8S_ALLOWLIST_URL:?node-image checks require the measured TA front door}"
   workloads=(deployment/c8s-operator)
   # The authenticated credential listener can become available before RKE2
   # has applied the complete AddOn. Require every core workload to exist.
@@ -27,8 +27,8 @@ if [ "${C8S_NODE_IMAGE:-}" = 1 ]; then
   done
   kubectl -n "$router_ns" rollout status deployment/c8s-router --timeout=8m
   # Public policies are host-staged, not stored in Kubernetes. The router's
-  # cds-attest reads its CDS pin from the read-only node file. The router's
-  # credential clients take the node's CDS endpoint and pins from the mount the
+  # cds-attest reads its TA pin from the read-only node file. The router's
+  # credential clients take the node's TA endpoint and pins from the mount the
   # enforcer adds at admission, so the spec must set neither. The external
   # armTLS request below verifies the actual endpoint against the signed policy.
   kubectl get deployments -A -l app.kubernetes.io/instance=c8s -o json | jq -e '
@@ -49,7 +49,7 @@ if [ "${C8S_NODE_IMAGE:-}" = 1 ]; then
         any((.spec.template.spec | .containers + (.initContainers // []))[];
           .name == $container and
           all((.args // [])[];
-            test("^--(cds-url|image-policy-file|image-policy-json)(=|$)") | not)));
+            test("^--(cds-url|ta-url|(ta-)?image-policy-(file|json))(=|$)") | not)));
     policy("c8s-router"; "cds-attest"; "--image-policy-file=/run/c8s-node/cds.json") and
     nodepins("c8s-router"; "c8s-cert") and
     nodepins("c8s-router"; "allowlist-proxy") and
@@ -110,7 +110,7 @@ if [ "${C8S_NODE_IMAGE:-}" = 1 ]; then
     fi
     sleep 5
   done
-  [ "$ready" = 1 ] || fail "measured CDS/front-door services did not become ready under the server policy; last probe: ${probe:-no output}"
+  [ "$ready" = 1 ] || fail "measured TA/front-door services did not become ready under the server policy; last probe: ${probe:-no output}"
 fi
 
 echo "PASS: all $total c8s Kubernetes components Running"

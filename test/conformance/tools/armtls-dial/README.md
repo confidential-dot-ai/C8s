@@ -20,7 +20,7 @@ issued by another CA.
 armtls-dial [flags] <node-ip:port> <dest-ip:port>
 armtls-dial --mesh [flags] <pod-ip:port>
   --mesh                      dial a pod's application address as a mesh peer: offer ALPN c8s-mesh/1, send no destination header
-  --cert FILE --key FILE      present this PEM chain and key (a CDS-issued leaf written by get-cert)
+  --cert FILE --key FILE      present this PEM chain and key (get-cert writes the leaf issued by the Trust Authority)
   --self-signed               mint a P-256 key and a self-signed certificate, attested when --attestation-url and --platform are given
   --foreign-ca                present a leaf signed by a throwaway CA, sent along with it: the leaf a peer with its own mesh CA would present
   --attestation-url URL       the attestation API --self-signed gets evidence from: http(s)://host:port, or unix:///path/to.sock

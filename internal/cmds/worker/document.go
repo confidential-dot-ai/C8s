@@ -9,11 +9,11 @@ import (
 	"net"
 	"net/netip"
 
-	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/nodeservices"
-	"github.com/confidential-dot-ai/c8s/internal/issuer"
-	"github.com/confidential-dot-ai/c8s/internal/yamlutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/nodeservices"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/issuer"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/taconfig"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/yamlutil"
 )
 
 const SchemaVersion = "c8s-worker/v1"
@@ -25,11 +25,11 @@ const MaxDocumentSize = 1024 * 1024
 // Document is the worker.yaml wire contract.
 type Document struct {
 	SchemaVersion string `yaml:"schemaVersion"`
-	// CDS is where this cluster's CDS listens and the pin binding the
+	// Trust Authority is where this cluster's Trust Authority listens and the pin binding the
 	// configuration it runs on.
-	CDS cmdsutil.CDS `yaml:"cds"`
+	TA cmdsutil.TA `yaml:"cds"`
 	// TLSSAN is the DNS name of the router's front-door certificate, which
-	// the CDS signs onto its leaf.
+	// the Trust Authority signs onto its leaf.
 	TLSSAN string `yaml:"tlsSAN"`
 	// Router selects the router's public hostnames and front-door limits;
 	// nil when the document sets none.
@@ -67,13 +67,13 @@ func (d Document) validate() error {
 	if d.SchemaVersion != SchemaVersion {
 		return fmt.Errorf("schemaVersion must be %s", SchemaVersion)
 	}
-	cds, err := d.CDS.Parse()
+	ta, err := d.TA.Parse()
 	if err != nil {
 		return err
 	}
-	config, err := cdsconfig.Parse(cds.LaunchFile)
+	config, err := taconfig.Parse(ta.LaunchFile)
 	if err != nil {
-		return fmt.Errorf("cds.measurements: the pinned CDS configuration: %w", err)
+		return fmt.Errorf("cds.measurements: the pinned Trust Authority configuration: %w", err)
 	}
 	nodeSubnets, err := pinnedNodeSubnets(config)
 	if err != nil {
@@ -83,7 +83,7 @@ func (d Document) validate() error {
 		return fmt.Errorf("tlsSAN %w", err)
 	}
 	if !(issuer.CSRPolicy{DNSSANPatterns: config.DNSSANPatterns}).AdmitsDNSName(d.TLSSAN) {
-		return fmt.Errorf("tlsSAN %q is not a DNS name the pinned CDS configuration lets a leaf carry", d.TLSSAN)
+		return fmt.Errorf("tlsSAN %q is not a DNS name the pinned Trust Authority configuration lets a leaf carry", d.TLSSAN)
 	}
 	if _, err := d.router().Validate(); err != nil {
 		return err
@@ -100,28 +100,28 @@ func (d Document) router() nodeservices.Router {
 	return *d.Router
 }
 
-// operatorKeys are the pinned CDS configuration's operator keys, PEM-encoded:
+// operatorKeys are the pinned Trust Authority configuration's operator keys, PEM-encoded:
 // the keys the router verifies route manifests under.
 func (d Document) operatorKeys() ([]byte, error) {
-	cds, err := d.CDS.Parse()
+	ta, err := d.TA.Parse()
 	if err != nil {
 		return nil, err
 	}
-	config, err := cdsconfig.Parse(cds.LaunchFile)
+	config, err := taconfig.Parse(ta.LaunchFile)
 	if err != nil {
-		return nil, fmt.Errorf("cds.measurements: the pinned CDS configuration: %w", err)
+		return nil, fmt.Errorf("cds.measurements: the pinned Trust Authority configuration: %w", err)
 	}
 	return config.OperatorKeys.PEM(), nil
 }
 
-// pinnedNodeSubnets are the subnets the pinned CDS configuration may dial a
+// pinnedNodeSubnets are the subnets the pinned Trust Authority configuration may dial a
 // node in.
-func pinnedNodeSubnets(config *cdsconfig.Config) ([]netip.Prefix, error) {
+func pinnedNodeSubnets(config *taconfig.Config) ([]netip.Prefix, error) {
 	subnets := make([]netip.Prefix, 0, len(config.NodeCIDRs))
 	for _, subnet := range config.NodeCIDRs {
 		prefix, err := subnetPrefix(subnet)
 		if err != nil {
-			return nil, fmt.Errorf("cds.measurements: the pinned CDS configuration: %w", err)
+			return nil, fmt.Errorf("cds.measurements: the pinned Trust Authority configuration: %w", err)
 		}
 		subnets = append(subnets, prefix)
 	}

@@ -6,7 +6,7 @@ live in [the c8s-lib chart](../../lib/helpers/README.md).
 
 | Reference | Template file | Responsibility |
 | --- | --- | --- |
-| [CDS pin and address](cds/README.md) | [_cds.tpl](../templates/_cds.tpl) | Validated CDS pin document and endpoint address |
+| [Trust Authority (TA) pin and address](ta/README.md) | [_ta.tpl](../templates/_ta.tpl) | Validated TA pin document and endpoint address |
 | [Component shapes](../../lib/helpers/allowlist/README.md#component-shapes) | [_components.tpl](../templates/_components.tpl) | The component workloads this release runs |
 | [NRI image policy](nri-image-policy/README.md) | [nri-image-policy-helpers.tpl](../templates/nri-image-policy-helpers.tpl), [nri-image-policy-install-script.tpl](../templates/nri-image-policy-install-script.tpl) | The installer DaemonSet's paths and the scripts it runs |
 | [Node placement](nodes/README.md) | [_nodes.tpl](../templates/_nodes.tpl) | The confidential nodes the agents and the router run on |

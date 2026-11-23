@@ -30,7 +30,7 @@
 #
 #   --confos-ref   build with this confos commit instead of the pinned one
 #   --branch       build branch name (default: build/<short-sha>)
-#   --repo         GitHub repository (default: confidential-dot-ai/C8s)
+#   --repo         GitHub repository (default: confidential-dot-ai/confidential-kubernetes)
 #   --dry-run      resolve and check, print what would be dispatched, exit 0
 #
 # Needs: gh (authenticated), curl, jq. GH_TOKEN (or gh's own token) is used for
@@ -41,7 +41,7 @@ set -euo pipefail
 registry_host=ghcr.io
 registry_namespace=confidential-dot-ai
 # The repositories images/node-guest/worker/mkosi.sync resolves at C8S_REF.
-components=(c8s-operator nri-image-policy cds armtls-mesh)
+components=(c8s-operator nri-image-policy ta armtls-mesh)
 image_repo=guests/worker
 # One oras artifact and one KubeVirt image per TEE, per commit.
 ref_tags_expected=4
@@ -50,7 +50,7 @@ image_workflow=c8s-image-manual.yml
 poll_seconds="${PUBLISH_REF_IMAGES_POLL_SECONDS:-30}"
 find_run_attempts="${PUBLISH_REF_IMAGES_FIND_ATTEMPTS:-20}"
 
-repo=confidential-dot-ai/C8s
+repo=confidential-dot-ai/confidential-kubernetes
 sha=""
 confos_ref=""
 branch=""

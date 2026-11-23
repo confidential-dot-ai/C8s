@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/internal/readutil"
-	"github.com/confidential-dot-ai/c8s/internal/testutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/readutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
 )
 
 func testPubKey(t *testing.T) *ecdsa.PublicKey {
@@ -53,9 +53,9 @@ func TestSecretResponseMustBeDecodable(t *testing.T) {
 	}
 }
 
-// A CDS answer is one document: a second document after it, or a body past the
+// A Trust Authority answer is one document: a second document after it, or a body past the
 // cap, is refused rather than read as the challenge or the secret.
-func TestCDSAnswersMustBeOneDocument(t *testing.T) {
+func TestTAAnswersMustBeOneDocument(t *testing.T) {
 	const challenge = `{"challenge":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}`
 	const secret = `{"value":"czNjcmV0"}`
 

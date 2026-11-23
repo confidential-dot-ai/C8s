@@ -18,22 +18,22 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
-	"github.com/confidential-dot-ai/c8s/pkg/routes"
-	"github.com/confidential-dot-ai/c8s/pkg/routesclient"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/routes"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/routesclient"
 )
 
 const manifest = `{"schema":"c8s.routes/v1","revision":1,"notBefore":"2026-09-01T00:00:00Z","maxAgeSeconds":60,"hosts":{}}`
 
-// fakeCDS stores what an authorized PUT sends and serves it back, verifying
-// the token as the CDS does.
-type fakeCDS struct {
+// fakeTA stores what an authorized PUT sends and serves it back, verifying
+// the token as the Trust Authority does.
+type fakeTA struct {
 	mu  sync.Mutex
 	env *routes.Envelope
 	key *ecdsa.PublicKey
 }
 
-func (f *fakeCDS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (f *fakeTA) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if r.URL.Path != routes.Path {
@@ -109,7 +109,7 @@ func TestNewRejectsURLWithPath(t *testing.T) {
 // envelope Get returns verifies under the signer's key.
 func TestPutThenGet(t *testing.T) {
 	signer, key := newSigner(t)
-	c := newClient(t, &fakeCDS{key: key})
+	c := newClient(t, &fakeTA{key: key})
 	ctx := context.Background()
 
 	if _, err := c.Get(ctx); !errors.Is(err, routesclient.ErrNotFound) {

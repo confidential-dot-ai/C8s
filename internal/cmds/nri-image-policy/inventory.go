@@ -7,9 +7,9 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/confidential-dot-ai/c8s/internal/admissionhistory"
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/admissionhistory"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 // admissionInventory implements workloadclaims.SandboxResolver for node-CVM:
@@ -81,7 +81,7 @@ func (b *admissionInventory) record(containerID, sandboxID, name, digest string,
 
 // recordObserved notes an admitted container, the platform's own containers
 // included: /digests is an inventory of what was admitted in the sandbox, and
-// role names the one each platform container holds, so CDS drops them from
+// role names the one each platform container holds, so the Trust Authority drops them from
 // workload matching without reading their command line.
 func (b *admissionInventory) recordObserved(containerID, sandboxID, name, digest, role string, argv []string, env *allowlist.EnvObservation, mounts []allowlist.ObservedMount) {
 	if containerID == "" || sandboxID == "" {
@@ -346,7 +346,7 @@ func (b *admissionInventory) DigestsForSandbox(sandboxID string) ([]string, []wo
 }
 
 // podSnapshot keeps every retained admission observation, independently of
-// the latest local pull: CDS evaluates the quote-bound observations itself,
+// the latest local pull: Trust Authority evaluates the quote-bound observations itself,
 // and each observation's spec digest is computed from exactly what admission
 // recorded.
 func (b *admissionInventory) podSnapshot(sandboxID string) ([]workloadclaims.SandboxContainer, uint64, error) {

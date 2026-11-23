@@ -36,7 +36,7 @@ func TestLoadConfigRefusesUnsafeInputs(t *testing.T) {
 				target = cfg.LaunchKeyFile
 				data = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: der})
 			case "unbound-cds-policy":
-				target, data = cfg.CDSImagePolicyFile, providerCDSPolicy(t, nil)
+				target, data = cfg.TAImagePolicyFile, providerTAPolicy(t, nil)
 			}
 			if target != "" {
 				if err := os.WriteFile(target, data, 0o600); err != nil {

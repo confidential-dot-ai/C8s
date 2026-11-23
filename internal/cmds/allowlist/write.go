@@ -11,10 +11,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
-	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
-	"github.com/confidential-dot-ai/c8s/pkg/types"
+	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlistclient"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
 )
 
 func newAddCmd(o *options) *cobra.Command {
@@ -76,7 +76,7 @@ back as one whole-document write, conditional on the version it read.`,
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print the intended entry without calling CDS")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print the intended entry without calling Trust Authority")
 	return cmd
 }
 
@@ -92,9 +92,9 @@ func newUploadCmd(o *options) *cobra.Command {
 		Use:   "upload <file>",
 		Short: "Replace the entire allowlist with the contents of a file",
 		Long: `Atomically replace the entire allowlist with the contents of <file> (the
-canonical JSON 'export' writes). CDS assigns the new version. The replace is
+canonical JSON 'export' writes). Trust Authority assigns the new version. The replace is
 conditional on the version upload read for its diff: if another write landed
-since, CDS refuses it and nothing changes; run upload again to see the new diff.
+since, Trust Authority refuses it and nothing changes; run upload again to see the new diff.
 
 If any required core c8s component is missing from the file's image labels (` + fmt.Sprintf("%v", defaultRequiredComponents) + `),
 upload refuses unless --force, since a cluster missing them cannot pull its own
@@ -197,7 +197,7 @@ before upload; --strict makes lint warnings fatal.`,
 var errAllowlistChanged = errors.New("the allowlist changed since it was read; run the command again to re-read it and see the new diff")
 
 // unconfirmedError is a whole-document write no answer confirmed or refused
-// (a 5xx, or no answer at all) while CDS still serves the version it was
+// (a 5xx, or no answer at all) while the Trust Authority still serves the version it was
 // conditional on: it has not landed, and it still can until another write
 // lands.
 type unconfirmedError struct {
@@ -206,7 +206,7 @@ type unconfirmedError struct {
 }
 
 func (e *unconfirmedError) Error() string {
-	return fmt.Sprintf("the write was not confirmed (%v): CDS still serves version %s without it, and the write "+
+	return fmt.Sprintf("the write was not confirmed (%v): Trust Authority still serves version %s without it, and the write "+
 		"was conditional on that version, so it lands only if no other write lands first; run the command "+
 		"again: the new write is conditional on the version it reads too, so the document is written at most once", e.cause, e.version)
 }
@@ -215,17 +215,17 @@ func (e *unconfirmedError) Unwrap() error { return e.cause }
 
 // replaceIfUnchanged writes doc in place of the allowlist at version, the
 // version of the read doc was built from, so it never overwrites a write made
-// since. CDS commits the document and its operator signature in one write.
+// since. Trust Authority commits the document and its operator signature in one write.
 //
 // When the answer leaves it open whether the write landed, it reads the
-// allowlist back and reports what happened: nil if CDS serves doc, an
-// *unconfirmedError if CDS still serves version, else errAllowlistChanged. A
+// allowlist back and reports what happened: nil if the Trust Authority serves doc, an
+// *unconfirmedError if the Trust Authority still serves version, else errAllowlistChanged. A
 // refusal of the write itself, or an error before sending, is returned as is:
 // nothing was written.
 func replaceIfUnchanged(ctx context.Context, c allowlistclient.Client, doc *pkgallowlist.Allowlist, version string, signer allowlistclient.Authorizer) error {
 	if version == "" {
 		// Without a version the write would be unconditional.
-		return errors.New(`CDS served the allowlist without a version, so the write cannot be made conditional on it`)
+		return errors.New(`the Trust Authority served the allowlist without a version, so the write cannot be made conditional on it`)
 	}
 	err := c.ReplaceAll(ctx, doc, version, signer)
 	if err == nil {
@@ -249,7 +249,7 @@ func replaceIfUnchanged(ctx context.Context, c allowlistclient.Client, doc *pkga
 }
 
 // leavesTheWriteOpen reports whether an answer fails to settle whether the
-// write landed: a 412, which also refuses a resend of a write CDS committed
+// write landed: a 412, which also refuses a resend of a write Trust Authority committed
 // and then answered "not now" for; any 5xx; or no answer at all.
 func leavesTheWriteOpen(err error) bool {
 	var refusal *operatorauth.StatusError
@@ -260,7 +260,7 @@ func leavesTheWriteOpen(err error) bool {
 	return errors.As(err, &unanswered)
 }
 
-// servesDocument reports whether CDS serves doc now, and the version it
+// servesDocument reports whether the Trust Authority serves doc now, and the version it
 // serves.
 func servesDocument(ctx context.Context, c allowlistclient.Client, doc *pkgallowlist.Allowlist) (bool, string, error) {
 	want, err := doc.Canonical()

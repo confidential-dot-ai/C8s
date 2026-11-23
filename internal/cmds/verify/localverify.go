@@ -3,35 +3,28 @@ package verify
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-	"github.com/confidential-dot-ai/c8s/internal/localverify"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/localverify"
 )
 
-// verifyInProcess verifies already-gathered evidence with the shared engine
-// (internal/localverify) and maps its error classes onto this command's exit
-// codes: collateral unavailable = exit 3, any other rejection = a security
-// verdict (exit 2). The --measurements pin is not passed down — newOutcome
-// enforces it, so a pin failure still renders the rejected measurement.
-// --init-data goes the other way: the engine binds it per platform (see
-// internal/localverify Params.ExpectedInitDataHash), so it is passed down and
-// a mismatch is the engine's refusal.
-//
-// MinTCB is passed here AND re-checked in newOutcome (enforceMinTCB): the
-// engine consumes it on the SNP path only, and silently drops it on TDX.
-func verifyInProcess(ctx context.Context, ev *evidence, policy *armtls.VerifyPolicy, initDataHash []byte, minTCB *teetypes.SnpTcb) (*teetypes.VerificationResult, error) {
-	res, err := localverify.Verify(ctx, ev.platform, ev.rawEvidence, localverify.Params{
+var verifyLocally = localverify.VerifyWithCollateralExpiry
+
+// The CLI enforces launch pins after verification so it can report a rejected measurement.
+func verifyInProcess(ctx context.Context, ev *evidence, plan *verifyPlan, minTCB *teetypes.SnpTcb) (*teetypes.VerificationResult, *time.Time, error) {
+	res, expiresAt, err := verifyLocally(ctx, ev.platform, ev.rawEvidence, localverify.Params{
 		ExpectedReportData:   ev.erd,
-		ExpectedInitDataHash: initDataHash,
-		AllowDebug:           policy.Policy.AllowDebug,
+		ExpectedInitDataHash: plan.initDataHash,
+		AllowDebug:           plan.policy.Policy.AllowDebug,
 		MinTCB:               minTCB,
+		TDXTCBStatuses:       plan.tdxTCBStatuses,
 	})
 	if err != nil {
 		if _, ok := errors.AsType[*localverify.CollateralError](err); ok {
-			return nil, &connectError{err: err}
+			return nil, nil, &connectError{err: err}
 		}
-		return nil, &securityError{err: err}
+		return nil, nil, &securityError{err: err}
 	}
-	return res, nil
+	return res, expiresAt, nil
 }

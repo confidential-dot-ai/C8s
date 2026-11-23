@@ -1,4 +1,4 @@
-// Package allowlist defines the CDS-served image allowlist and its deterministic
+// Package allowlist defines the Trust Authority-served image allowlist and its deterministic
 // canonical serialization.
 //
 // The allowlist is a map of named workload entries. Each entry pins an
@@ -30,9 +30,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/confidential-dot-ai/c8s/internal/strictjson"
-	"github.com/confidential-dot-ai/c8s/pkg/types"
-	"github.com/confidential-dot-ai/c8s/pkg/workloadname"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/strictjson"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadname"
 )
 
 // Schema identifies the allowlist document format. It is the first field of the
@@ -153,7 +153,7 @@ func (l *HostPortList) UnmarshalJSON(data []byte) error {
 //
 // Role names the platform role an enforcer grants to these bytes under this
 // policy. It is YAML-only: a document on the wire carries no role, so a role
-// comes from a measured boot config and nothing a CDS serves can claim one.
+// comes from a measured boot config and nothing a Trust Authority serves can claim one.
 type Container struct {
 	Digest types.Digest `json:"digest" yaml:"digest"`
 	Image  string       `json:"image,omitempty" yaml:"image,omitempty"`
@@ -284,17 +284,26 @@ type SecretsPolicy struct {
 // as empty. The result is normalized (digests lowercased and deduplicated,
 // container and path lists sorted) so Canonical is a function of content alone.
 //
-// Use ParseServedJSON for a document pulled from CDS.
+// Use ParseServedJSON for a document pulled from the Trust Authority.
 func ParseJSON(data []byte) (*Allowlist, error) {
 	return parseJSON(data, authoredDocument{})
 }
 
-// ParseServedJSON decodes a document served by CDS, ignoring fields it does not
+// ParseServedJSON decodes a document served by the Trust Authority, ignoring fields it does not
 // know. Its consumers pin a schema version in a launch measurement, so a strict
 // parse would make any newer field freeze their policy until a node-image
 // rebuild.
 func ParseServedJSON(data []byte) (*Allowlist, error) {
 	return parseJSON(data, servedDocument{})
+}
+
+// ParseStoredJSON decodes the document Trust Authority stores, for a write built from it.
+// It refuses what ParseJSON refuses, except that it keeps an entry failing a
+// pinning rule only authored documents face (one a newer release added), so
+// the write can repair or delete that entry. A write that still holds the
+// entry is refused by the Trust Authority's ParseJSON.
+func ParseStoredJSON(data []byte) (*Allowlist, error) {
+	return parseJSON(data, storedDocument{})
 }
 
 func parseJSON(data []byte, p ingestPosture) (*Allowlist, error) {
@@ -343,6 +352,12 @@ type authoredDocument struct{}
 
 // servedDocument is the posture of ParseServedJSON.
 type servedDocument struct{}
+
+// storedDocument is the posture of ParseStoredJSON: authored, but keeping an
+// entry whose grant it cannot prove, as a served one does.
+type storedDocument struct{ authoredDocument }
+
+func (storedDocument) refuseAuthored(string, error) error { return nil }
 
 func (authoredDocument) restrictFields(dec *json.Decoder) { dec.DisallowUnknownFields() }
 
@@ -481,6 +496,7 @@ var (
 	errHostPortsUnpinnedLaunch    = fmt.Errorf("declared host ports need every container to pin its launch: command, args and mounts not any, and env constrained")
 	errCapabilitiesUnpinnedLaunch = fmt.Errorf("declared capabilities need every container to pin its launch: command, args and mounts not any, and env constrained")
 	errStaticPodDeclaresGrants    = fmt.Errorf("a static pod's entry grants no host ports or capabilities, so it may declare none")
+	errEgressUnpinnedEnv          = fmt.Errorf("declared egress needs the env policy to be deny, exact, or match with only exact matchers")
 )
 
 // Digests returns every container digest in the workload (init and main), for
@@ -556,7 +572,9 @@ func (w Workload) PinnedForGrant() error {
 
 // PinnedForEgress reports why declared exits on w would carry out of the TEE
 // whatever a launch the host shaped sends, or nil when the entry declares
-// none or pins its argv and mounts as a secrets grant must.
+// none, or pins its argv and mounts as a secrets grant must and pins its env.
+// Application TLS is an exit's only protection, and the host could turn it off
+// or redirect it through a variable such as HTTPS_PROXY or SSL_CERT_FILE.
 func (w Workload) PinnedForEgress() error {
 	if len(w.Egress) == 0 {
 		return nil
@@ -564,7 +582,19 @@ func (w Workload) PinnedForEgress() error {
 	if err := w.PinnedForGrant(); err != nil {
 		return fmt.Errorf("declared egress needs the launch pinned as a secrets grant does: %w", err)
 	}
+	for _, c := range w.containers() {
+		if !c.envPinned() {
+			return fmt.Errorf("container %s: %w", c.Digest, errEgressUnpinnedEnv)
+		}
+	}
 	return nil
+}
+
+// envPinned reports whether the host chooses no variable or value of c's
+// environment: env is deny, exact, or match with only exact matchers and no
+// service links.
+func (c Container) envPinned() bool {
+	return newEnvConstraint(&c.Env).hostIndependent() && !c.Env.ServiceLinks
 }
 
 // pinnedForHostPorts refuses declared host ports unless every container pins its launch.
@@ -885,7 +915,7 @@ var nodeServicePorts = []int{
 	2379,  // etcd client
 	2380,  // etcd peer
 	6443,  // Kubernetes API
-	8443,  // the router's front door, and a CDS by default
+	8443,  // the router's front door, and a Trust Authority by default
 	9345,  // node-join supervisor
 	10250, // kubelet
 }

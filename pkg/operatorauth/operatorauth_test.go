@@ -21,8 +21,8 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/certutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
 )
 
 // --- test key helpers ---
@@ -574,7 +574,7 @@ func TestOperatorSignatureVector(t *testing.T) {
 	if err := VerifyStored(keys, v.Token, http.MethodPut, "/allowlist", policy); err != nil {
 		t.Fatalf("VerifyStored(vector) = %v", err)
 	}
-	// CDS stores a signature only for canonical bytes, so the vector must be.
+	// Trust Authority stores a signature only for canonical bytes, so the vector must be.
 	al, err := allowlist.ParseJSON(policy)
 	if err != nil {
 		t.Fatal(err)
@@ -584,7 +584,7 @@ func TestOperatorSignatureVector(t *testing.T) {
 	}
 }
 
-// CDS keys spent tokens on header.payload, so two writes of the same body in
+// Trust Authority keys spent tokens on header.payload, so two writes of the same body in
 // the same second must still mint distinct tokens.
 func TestSignerTokensAreDistinct(t *testing.T) {
 	keyPEM, pub := genKey(t, elliptic.P256())

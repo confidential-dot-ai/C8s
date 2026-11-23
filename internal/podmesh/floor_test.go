@@ -3,7 +3,7 @@ package podmesh
 import (
 	"testing"
 
-	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
 // A default drop of a declarable capability would take it from a container the node admits.

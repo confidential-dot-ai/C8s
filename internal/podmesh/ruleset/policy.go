@@ -10,7 +10,8 @@
 // listeners; everything else is denied in both directions, apart from
 // loopback, pod-local addresses, neighbour discovery, the resolver trusted
 // policy names, the pod's exits, and the destinations each platform role is
-// bound to.
+// bound to. An exit guard in the node's own namespace drops a pod's exit
+// connection that the node translates to another destination.
 //
 // Standalone Pods capture exact signed peer TCP tuples and admit other
 // IPv4 TCP/UDP egress. Guest rules route and masquerade that egress while
@@ -24,8 +25,8 @@ import (
 	"reflect"
 	"slices"
 
-	"github.com/confidential-dot-ai/c8s/internal/podmesh"
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/podmesh"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
 // resolverPort is the only destination port the resolver exception permits.
@@ -113,8 +114,8 @@ type Role struct {
 	UID          uint32
 	Destinations []Destination
 	// OutsidePort is one TCP port this role reaches on any address outside
-	// Policy.ClusterRanges: where this cluster's CDS serves. Trusted policy
-	// names that CDS by <host>:<port>, and the name is resolved by whatever
+	// Policy.ClusterRanges: where this cluster's Trust Authority serves. Trusted policy
+	// names that Trust Authority by <host>:<port>, and the name is resolved by whatever
 	// dials it, so no rule can name its address. 0 names none.
 	OutsidePort uint16
 }

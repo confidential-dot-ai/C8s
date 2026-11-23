@@ -16,7 +16,7 @@ import (
 
 	agarmtls "github.com/confidential-dot-ai/attestation-go/armtls"
 	"github.com/confidential-dot-ai/attestation-go/remote"
-	"github.com/confidential-dot-ai/c8s/pkg/certutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
 )
 
 // VerifyPolicy defines what attestation claims are acceptable.
@@ -133,7 +133,7 @@ func VerifyCert(cert *x509.Certificate, policy *VerifyPolicy, nonce []byte) (*Ve
 		return nil, fmt.Errorf("%w: %v", ErrCertValidity, err)
 	}
 	// This path verifies no chain, so the leaf must be self-issued: the
-	// evidence binds the key alone. A CDS-issued leaf is verified on the
+	// evidence binds the key alone. A Trust Authority-issued leaf is verified on the
 	// chain path (NewMeshClientTLSConfig).
 	if err := requireSelfIssued(cert, now); err != nil {
 		return nil, fmt.Errorf("armtls: peer certificate body: %w", err)
@@ -185,7 +185,7 @@ func (p *VerifyPolicy) requireAttestationApi() error {
 }
 
 // CheckSandboxPin enforces expectedID against a leaf whose CA chain the caller
-// has ALREADY verified. The ID is stamped by CDS into the signed area after it
+// has ALREADY verified. The ID is stamped by the Trust Authority into the signed area after it
 // verifies the inventory-signed sandbox token, so the mesh CA signature — not
 // the hardware evidence — is what authenticates it. Calling this on an
 // unverified (e.g. self-signed) leaf would pin an attacker-chosen string.

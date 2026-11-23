@@ -3,7 +3,7 @@ package nriimagepolicy
 import (
 	"github.com/containerd/nri/pkg/api"
 
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
 // The kubelet sets kubernetes.io/config.source on every pod it runs,

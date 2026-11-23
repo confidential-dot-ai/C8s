@@ -29,10 +29,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/podstatus"
-	"github.com/confidential-dot-ai/c8s/internal/podassign"
-	"github.com/confidential-dot-ai/c8s/internal/podlaunch"
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/podstatus"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/podassign"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/podlaunch"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 // fixtureConfig exercises the production mounted-file loader. No test-only
@@ -56,10 +56,10 @@ func fixtureConfig(t *testing.T) *Config {
 	}
 	write("launch.key", pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: private}))
 	write("token", []byte("test-provider-token\n"))
-	write("cds.json", providerCDSPolicy(t, []byte("schemaVersion: c8s-cds/v1\nclusterID: test-cluster\n")))
+	write("cds.json", providerTAPolicy(t, []byte("schemaVersion: c8s-cds/v1\nclusterID: test-cluster\n")))
 	write("manifest.json", []byte(`{"version":1,"build":{"platform":"tdx"},"tdx":{"mrtd":"`+strings.Repeat("11", 48)+`","rtmr1":"`+strings.Repeat("22", 48)+`","rtmr2":"`+strings.Repeat("33", 48)+`"}}`))
 	write("workloads.json", []byte(`{"schema":"c8s.allowlist/v1","workloads":{"app":{"containers":[{"digest":"sha256:`+strings.Repeat("a", 64)+`","command":{"policy":"any"},"args":{"policy":"any"}}]}}}`))
-	cfg := Config{ProviderID: "test-provider", NodeName: "pod-cvm-node", Namespace: "provider-system", CloudURL: "https://cloud.example", CloudTokenFile: "token", Image: "c8s-pod@2026.10.26-1", ImageManifestFile: "manifest.json", LaunchKeyFile: "launch.key", CDSAddress: "cds.example.test:8443", CDSImagePolicyFile: "cds.json", WorkloadsFile: "workloads.json", ClusterID: "test-cluster", Size: "c1.2x", Location: "eu", VCPUs: 2, MemoryMiB: 8192, ReservedMemoryMiB: 1024, MaxPods: 10, MeshPeers: []string{"203.0.113.2:9443"}}
+	cfg := Config{ProviderID: "test-provider", NodeName: "pod-cvm-node", Namespace: "provider-system", CloudURL: "https://cloud.example", CloudTokenFile: "token", Image: "c8s-pod@2026.10.26-1", ImageManifestFile: "manifest.json", LaunchKeyFile: "launch.key", TAAddress: "cds.example.test:8443", TAImagePolicyFile: "cds.json", WorkloadsFile: "workloads.json", ClusterID: "test-cluster", Size: "c1.2x", Location: "eu", VCPUs: 2, MemoryMiB: 8192, ReservedMemoryMiB: 1024, MaxPods: 10, MeshPeers: []string{"203.0.113.2:9443"}}
 	b, err := json.Marshal(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -151,9 +151,10 @@ type fakeGuest struct {
 	r                              *Reconciler
 	key                            *ecdsa.PrivateKey
 	assigned                       map[string]bool
-	prepares, sends                int
+	prepares, sends, reads         int
 	lostResponse, failBeforeCommit bool
 	beforeSend                     func()
+	onVerify, afterPrepare         func()
 }
 
 type fakeSession struct {
@@ -164,6 +165,9 @@ type fakeSession struct {
 func (g *fakeGuest) verify(_ context.Context, rec *record, _ string) (assignmentSession, error) {
 	if g.assigned[rec.Key] {
 		return nil, errors.New("generic measurements are not empty")
+	}
+	if g.onVerify != nil {
+		g.onVerify()
 	}
 	return &fakeSession{g, rec}, nil
 }
@@ -183,6 +187,9 @@ func (s *fakeSession) Prepare(_ context.Context, key *ecdsa.PrivateKey, manifest
 	req, err := podassign.Sign(key, &s.guest.key.PublicKey, podassign.Request{Nonce: nonce, Manifest: manifest, Entries: entries, MeshPeers: peers, ClientDocument: clientDocument})
 	if err != nil {
 		return nil, err
+	}
+	if s.guest.afterPrepare != nil {
+		s.guest.afterPrepare()
 	}
 	return podassign.Encode(req)
 }
@@ -214,6 +221,7 @@ func (s *fakeSession) Send(ctx context.Context, body []byte) (string, error) {
 }
 func (*fakeSession) Close() {}
 func (g *fakeGuest) read(_ context.Context, rec *record, _ string) (podstatus.PodProjection, error) {
+	g.reads++
 	if !g.assigned[rec.Key] {
 		return podstatus.PodProjection{}, errors.New("guest waiting for assignment")
 	}
@@ -314,7 +322,7 @@ func TestLaunchIntentPrecedesCloudAndSurvivesLostResponse(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if doc.Role != podlaunch.Pod || doc.Node.Name != key || doc.CDS != r.cfg.cds {
+		if doc.Role != podlaunch.Pod || doc.Node.Name != key || doc.TA != r.cfg.ta {
 			t.Fatal("launch document is not the generic document of this pod CVM")
 		}
 		if rec.Entries != r.cfg.workloads || !reflect.DeepEqual(rec.MeshPeers, r.cfg.MeshPeers) || len(req.Network.Ingress) != 2 || req.Network.Ingress[1].Name != "app-8080" {
@@ -343,8 +351,8 @@ func TestLaunchIntentPrecedesCloudAndSurvivesLostResponse(t *testing.T) {
 	// request and UID assignment, never produce a second randomized document.
 	next := *r.cfg
 	next.Image = "c8s-pod@2026.11.01-1"
-	next.CDSAddress = "replacement-cds.example.test:9443"
-	next.cds.Address = next.CDSAddress
+	next.TAAddress = "replacement-cds.example.test:9443"
+	next.ta.Address = next.TAAddress
 	restarted := restartReconciler(r, guest)
 	restarted.cfg = &next
 	runToRunning(t, restarted, pod)

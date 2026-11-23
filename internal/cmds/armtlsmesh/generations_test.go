@@ -19,9 +19,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/internal/credvolume"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
-	"github.com/confidential-dot-ai/c8s/pkg/certutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/credvolume"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
 )
 
 // testInstanceID is the workload instance a published leaf names.
@@ -65,7 +65,7 @@ type leafSpec struct {
 	purposes       []x509.ExtKeyUsage
 	omitInstanceID bool
 	// armtlsExt is an armTLS attestation extension the leaf also carries, as
-	// CDS copies the requester's onto it.
+	// Trust Authority copies the requester's onto it.
 	armtlsExt *pkix.Extension
 }
 

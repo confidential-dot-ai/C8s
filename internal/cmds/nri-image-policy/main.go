@@ -1,5 +1,5 @@
 // Package nriimagepolicy is an NRI plugin that validates container images
-// against a digest allowlist. Every plugin polls a remote CDS service (pull
+// against a digest allowlist. Every plugin polls a remote Trust Authority service (pull
 // mode) for the allowlist, with a base allowlist baked into its boot config
 // (allowlist.base) as the cold-boot baseline.
 package nriimagepolicy
@@ -26,16 +26,16 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
-	"github.com/confidential-dot-ai/c8s/internal/audit"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
-	ctrdresolver "github.com/confidential-dot-ai/c8s/internal/containerd"
-	"github.com/confidential-dot-ai/c8s/internal/launchbinding"
-	"github.com/confidential-dot-ai/c8s/internal/version"
-	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
-	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
-	"github.com/confidential-dot-ai/c8s/pkg/certutil"
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/audit"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
+	ctrdresolver "github.com/confidential-dot-ai/confidential-kubernetes/internal/containerd"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/launchbinding"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/version"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlistclient"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/attestclient"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 // Pull-startup retry parameters. Declared as vars so tests can shrink
@@ -55,7 +55,7 @@ var newContainerdResolver = func(socket, namespace string) (containerdConnection
 }
 
 var (
-	errInitialAllowlistNotModified = errors.New("initial allowlist fetch returned not modified without a cached CDS allowlist")
+	errInitialAllowlistNotModified = errors.New("initial allowlist fetch returned not modified without a cached Trust Authority allowlist")
 	errInitialAllowlistNil         = errors.New("initial allowlist fetch returned nil allowlist")
 	errPluginDied                  = errors.New("NRI plugin died during allowlist init")
 )
@@ -163,27 +163,27 @@ func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health
 
 	store := newPolicyStore(cfg.Allowlist.Base)
 
-	// Every CDS client of this node is built on one pin source, so the
+	// Every Trust Authority client of this node is built on one pin source, so the
 	// source comes before the first of them.
-	cdsPins, decrees, err := cdsPinSource(cfg, logger)
+	taPins, decrees, err := taPinSource(cfg, logger)
 	if err != nil {
 		return err
 	}
 
 	var (
-		wlClient      allowlistclient.Client
-		pull          *allowlistPull
-		cdsHTTPClient *http.Client
+		wlClient     allowlistclient.Client
+		pull         *allowlistPull
+		taHTTPClient *http.Client
 	)
 	if cfg.PullEnabled() {
 		logger.Info("initializing allowlist client", "url", cfg.pullURL())
-		httpClient, err := allowlistPullHTTPClient(cfg.Allowlist.Pull, cdsPins, cfg.Mesh.Resolver)
+		httpClient, err := allowlistPullHTTPClient(cfg.Allowlist.Pull, taPins, cfg.Mesh.Resolver)
 		if err != nil {
 			return fmt.Errorf("create allowlist client: %w", err)
 		}
-		pull = newAllowlistPull(cfg.cdsAddress, time.Now, logger)
+		pull = newAllowlistPull(cfg.taAddress, time.Now, logger)
 		wlClient = allowlistclient.NewClientWithHTTP(cfg.pullURL(), httpClient).ForNodes()
-		cdsHTTPClient = httpClient
+		taHTTPClient = httpClient
 	}
 
 	logNodeRoot(logger, cfg.AllowlistEnabled(), nodeRootUnavailable)
@@ -196,11 +196,11 @@ func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health
 	}
 	var podSecretsClient *http.Client
 	if cfg.PullEnabled() && cfg.podRole() {
-		if podSecretsClient, err = cdsHTTPClientWithLeaf(cfg.Allowlist.Pull, cdsPins, cfg.Mesh.Resolver, plugin.podLeafCertificate); err != nil {
+		if podSecretsClient, err = taHTTPClientWithLeaf(cfg.Allowlist.Pull, taPins, cfg.Mesh.Resolver, plugin.podLeafCertificate); err != nil {
 			return fmt.Errorf("create Pod secrets client: %w", err)
 		}
 	}
-	if err := plugin.preparePodBroker(ctx, cdsHTTPClient, podSecretsClient); err != nil {
+	if err := plugin.preparePodBroker(ctx, taHTTPClient, podSecretsClient); err != nil {
 		return fmt.Errorf("prepare Pod credential broker: %w", err)
 	}
 	defer plugin.closePodBroker()
@@ -218,14 +218,14 @@ func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health
 	target := policyTargetFor(cfg, plugin)
 	// Before the plugin serves a single container creation: a pod admitted
 	// without this mount would read no pins at all.
-	if err := plugin.prepareCDSPins(cdsPins); err != nil {
-		return fmt.Errorf("prepare the CDS pins handed to injected clients: %w", err)
+	if err := plugin.prepareTAPins(taPins); err != nil {
+		return fmt.Errorf("prepare the Trust Authority pins handed to injected clients: %w", err)
 	}
 	holdContainersForFirstDecree(plugin, decrees)
 	if err := plugin.prepareCDSAddress(); err != nil {
-		return fmt.Errorf("prepare the CDS address handed to injected clients: %w", err)
+		return fmt.Errorf("prepare the Trust Authority address handed to injected clients: %w", err)
 	}
-	logger.Info("CDS policy for injected clients", "pins", plugin.cdsPins, "address", plugin.cdsAddress)
+	logger.Info("Trust Authority policy for injected clients", "pins", plugin.taPins, "address", plugin.taAddress)
 
 	logger.Info("policy store seeded", "base_entries", store.base.Size())
 
@@ -264,12 +264,12 @@ func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health
 
 	if cfg.injectsCredentialClients() {
 		socketPath := filepath.Join(cfg.WorkloadClaims.SocketDir, workloadclaims.SocketName)
-		if err := startAdmissionInventory(ctx, logger, cfg, cdsPins, plugin, socketPath); err != nil {
+		if err := startAdmissionInventory(ctx, logger, cfg, taPins, plugin, socketPath); err != nil {
 			return fmt.Errorf("start admission inventory: %w", err)
 		}
 	}
 
-	// INVARIANT: after NRI registration started. A CDS that drops packets
+	// INVARIANT: after NRI registration started. A Trust Authority that drops packets
 	// holds the look for its whole budget, and containerd kills a plugin
 	// that misses its registration timeout.
 	plugin.serveAfterFirstDecreeLook(decrees)
@@ -278,7 +278,7 @@ func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health
 		workers.Add(1)
 		go func() {
 			defer workers.Done()
-			runWorkerRouterPlacement(ctx, cfg, cdsHTTPClient, logger)
+			runWorkerRouterPlacement(ctx, cfg, taHTTPClient, logger)
 		}()
 	}
 
@@ -298,7 +298,7 @@ func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health
 			switch {
 			// INVARIANT: shutdown is read off the parent context, never off
 			// the error chain. pullInitial gives every attempt its own
-			// deadline, so a merely slow CDS returns an error wrapping
+			// deadline, so a merely slow Trust Authority returns an error wrapping
 			// context.DeadlineExceeded that is indistinguishable from a
 			// SIGTERM by inspection — and taking that branch parks the
 			// process on pluginErrCh forever, never ready and never pulling.
@@ -355,33 +355,33 @@ func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health
 	return nil
 }
 
-// decreePollInterval spaces the looks no CDS connection prompted.
+// decreePollInterval spaces the looks no Trust Authority connection prompted.
 const decreePollInterval = time.Minute
 
-// cdsPinSource is the set this node holds its CDS to, and the decree source
-// behind it. A node that reaches no CDS at all has neither.
-func cdsPinSource(cfg *config, logger *slog.Logger) (armtls.PinSource, *followedPins, error) {
+// taPinSource is the set this node holds its Trust Authority to, and the decree source
+// behind it. A node that reaches no Trust Authority at all has neither.
+func taPinSource(cfg *config, logger *slog.Logger) (armtls.PinSource, *followedPins, error) {
 	if !cfg.PullEnabled() {
 		return nil, nil, nil
 	}
-	return cfg.Allowlist.Pull.cdsPinSource(logger)
+	return cfg.Allowlist.Pull.taPinSource(logger)
 }
 
-// holdContainersForFirstDecree refuses every container the node's CDS pins
+// holdContainersForFirstDecree refuses every container the node's Trust Authority pins
 // would be mounted into: a rebooted node's launch pins may name an image the
 // operator has since retired.
 func holdContainersForFirstDecree(p *plugin, decrees *followedPins) {
 	if decrees == nil {
 		return
 	}
-	decrees.mountInto(p.cdsPins)
-	if p.cdsPins != "" {
+	decrees.mountInto(p.taPins)
+	if p.taPins != "" {
 		p.awaitingDecree.Store(true)
 	}
 }
 
-// serveAfterFirstDecreeLook hands CDS pins out whether or not the look
-// succeeded: holding CDS to the launch document's pins is worth an error
+// serveAfterFirstDecreeLook hands Trust Authority pins out whether or not the look
+// succeeded: holding Trust Authority to the launch document's pins is worth an error
 // rather than a node that admits nothing.
 func (p *plugin) serveAfterFirstDecreeLook(decrees *followedPins) {
 	if decrees == nil {
@@ -389,11 +389,11 @@ func (p *plugin) serveAfterFirstDecreeLook(decrees *followedPins) {
 	}
 	defer p.awaitingDecree.Store(false)
 	if err := decrees.Refresh(); err != nil {
-		p.logger.Error("no CDS pin decree at start: holding CDS to the launch document's pins until a look succeeds", "error", err)
+		p.logger.Error("no Trust Authority pin decree at start: holding Trust Authority to the launch document's pins until a look succeeds", "error", err)
 	}
 }
 
-// pollForNewerDecrees moves a node talking to no CDS at all.
+// pollForNewerDecrees moves a node talking to no Trust Authority at all.
 func pollForNewerDecrees(ctx context.Context, decrees *followedPins, logger *slog.Logger) {
 	if decrees == nil {
 		return
@@ -401,22 +401,22 @@ func pollForNewerDecrees(ctx context.Context, decrees *followedPins, logger *slo
 	go func() {
 		for sleepCtx(ctx, decreePollInterval) {
 			if err := decrees.Refresh(); err != nil {
-				logger.Warn("could not look for a newer CDS pin decree", "error", err)
+				logger.Warn("could not look for a newer Trust Authority pin decree", "error", err)
 			}
 		}
 	}()
 }
 
-// allowlistPullHTTPClient builds the armTLS client for the CDS pull. The pull
+// allowlistPullHTTPClient builds the armTLS client for the Trust Authority pull. The pull
 // URL is always https (enforced by config.Validate), so this always verifies
-// the CDS attestation handshake.
+// the Trust Authority attestation handshake.
 func allowlistPullHTTPClient(cfg pullConfig, pins armtls.PinSource, clusterDNS netip.Addr) (*http.Client, error) {
-	return cdsHTTPClientWithLeaf(cfg, pins, clusterDNS, nil)
+	return taHTTPClientWithLeaf(cfg, pins, clusterDNS, nil)
 }
 
-// cdsHTTPClientWithLeaf is allowlistPullHTTPClient presenting clientCert, when
+// taHTTPClientWithLeaf is allowlistPullHTTPClient presenting clientCert, when
 // set, as its TLS client certificate.
-func cdsHTTPClientWithLeaf(cfg pullConfig, pins armtls.PinSource, clusterDNS netip.Addr, clientCert func(*tls.CertificateRequestInfo) (*tls.Certificate, error)) (*http.Client, error) {
+func taHTTPClientWithLeaf(cfg pullConfig, pins armtls.PinSource, clusterDNS netip.Addr, clientCert func(*tls.CertificateRequestInfo) (*tls.Certificate, error)) (*http.Client, error) {
 	dial := clusterFirstDialer(netip.AddrPortFrom(clusterDNS, clusterDNSPort)).DialContext
 	transport, err := armtls.NewRefreshingTransport(pins, func(set armtls.Pins) (*http.Transport, error) {
 		built, err := armtls.ClientTransport(set, cfg.AttestationApiURL)
@@ -430,7 +430,7 @@ func cdsHTTPClientWithLeaf(cfg pullConfig, pins armtls.PinSource, clusterDNS net
 		return built, nil
 	})
 	if err != nil {
-		return nil, fmt.Errorf("CDS armTLS client: %w", err)
+		return nil, fmt.Errorf("the Trust Authority armTLS client: %w", err)
 	}
 	return &http.Client{
 		Timeout:   cfg.Timeout,
@@ -551,7 +551,7 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 var newSandboxTokenSigner = sandboxTokenSigner
 
 // sandboxTokenSigner builds the inventory's sandbox-token signer. The key needs
-// no credential of its own: CDS reads it from this inventory's digests endpoint
+// no credential of its own: Trust Authority reads it from this inventory's digests endpoint
 // on a privileged port, which is what establishes whose key it is.
 // followSandboxHost keeps the signed host current.
 func sandboxTokenSigner(cfg *config, logger *slog.Logger) (*workloadclaims.SandboxTokenSigner, error) {
@@ -567,13 +567,13 @@ func sandboxTokenSigner(cfg *config, logger *slog.Logger) (*workloadclaims.Sandb
 	return signer, nil
 }
 
-// digestsAdvertiseHost is the node IP every sandbox token names for CDS's
+// digestsAdvertiseHost is the node IP every sandbox token names for Trust Authority's
 // digests callback: the configured override, else the node-ip file. Route inference is the last resort and
-// usually wrong here — the chart points the plugin at the CDS NodePort on
+// usually wrong here — the chart points the plugin at the Trust Authority NodePort on
 // loopback, whose route source is loopback.
 func digestsAdvertiseHost(cfg *config) (string, error) {
 	// This node's configured address, then the environment. None of these
-	// needs to be trustworthy: a wrong host makes CDS fetch a key the token
+	// needs to be trustworthy: a wrong host makes Trust Authority fetch a key the token
 	// signature fails under, so it can only fail closed, never redirect.
 	host := nodeConfiguredHost(cfg)
 	if host == "" {
@@ -586,9 +586,9 @@ func digestsAdvertiseHost(cfg *config) (string, error) {
 	return workloadclaims.ResolveAdvertiseHost(ctx, host, cfg.pullURL())
 }
 
-// startSandboxDigests serves the CDS-facing digests endpoint over
+// startSandboxDigests serves the Trust Authority-facing digests endpoint over
 // mutually-attested armTLS (docs/armtls.md, "Sandbox identity").
-func startSandboxDigests(ctx context.Context, logger *slog.Logger, cfg *config, cdsPins armtls.PinSource, resolver workloadclaims.SandboxResolver, signer *workloadclaims.SandboxTokenSigner) error {
+func startSandboxDigests(ctx context.Context, logger *slog.Logger, cfg *config, taPins armtls.PinSource, resolver workloadclaims.SandboxResolver, signer *workloadclaims.SandboxTokenSigner) error {
 	attestationApiURL := cfg.Allowlist.Pull.AttestationApiURL
 	var journal string
 	if cfg.WorkloadClaims.SocketDir != "" {
@@ -599,14 +599,14 @@ func startSandboxDigests(ctx context.Context, logger *slog.Logger, cfg *config, 
 	return workloadclaims.StartDigestsEndpoint(ctx, logger, resolver, signer.PublicKeyDER(),
 		cfg.NormalizedPlatform(),
 		attestclient.MakeSNPARMTLSAttestFunc(attestclient.NewClient(""), attestationApiURL),
-		attestationApiURL, cdsPins, journal)
+		attestationApiURL, taPins, journal)
 }
 
 // startAdmissionInventory serves the node-CVM token socket (docs/armtls.md).
-// Without pull config there is no CDS in the picture at all, so tokens are
+// Without pull config there is no Trust Authority in the picture at all, so tokens are
 // disabled and get-cert issues without a sandbox ID. Otherwise the signer
 // initializes in the background and the socket answers 503 until it does.
-func startAdmissionInventory(ctx context.Context, logger *slog.Logger, cfg *config, cdsPins armtls.PinSource, resolver workloadclaims.SandboxResolver, socketPath string) error {
+func startAdmissionInventory(ctx context.Context, logger *slog.Logger, cfg *config, taPins armtls.PinSource, resolver workloadclaims.SandboxResolver, socketPath string) error {
 	l, err := workloadclaims.ListenUnix(socketPath, workloadclaims.InventorySocketGID)
 	if err != nil {
 		return err
@@ -618,14 +618,14 @@ func startAdmissionInventory(ctx context.Context, logger *slog.Logger, cfg *conf
 		}
 	}
 	if !cfg.PullEnabled() {
-		logger.Warn("admission inventory has no CDS pull config; sandbox tokens disabled")
+		logger.Warn("admission inventory has no Trust Authority pull config; sandbox tokens disabled")
 		go func() { serve(workloadclaims.ServeTokens(ctx, l, resolver, nil)) }()
 		return nil
 	}
 	var signer atomic.Pointer[workloadclaims.SandboxTokenSigner]
 	go func() { serve(workloadclaims.ServePendingTokens(ctx, l, resolver, &signer)) }()
 	go initSandboxTokens(ctx, logger, cfg, &signer, func(s *workloadclaims.SandboxTokenSigner) error {
-		return startSandboxDigests(ctx, logger, cfg, cdsPins, resolver, s)
+		return startSandboxDigests(ctx, logger, cfg, taPins, resolver, s)
 	})
 	return nil
 }
@@ -640,10 +640,10 @@ func initSandboxTokens(ctx context.Context, logger *slog.Logger, cfg *config, si
 	for {
 		s, err := newSandboxTokenSigner(cfg, logger)
 		if err == nil {
-			// A missing digests endpoint only degrades issuance — CDS refuses
+			// A missing digests endpoint only degrades issuance — Trust Authority refuses
 			// tokens it cannot check — so issuance is enabled regardless.
 			if err := serveDigests(s); err != nil {
-				logger.Error("sandbox-digests endpoint disabled; CDS will refuse requests carrying a sandbox token", "error", err)
+				logger.Error("sandbox-digests endpoint disabled; Trust Authority will refuse requests carrying a sandbox token", "error", err)
 			}
 			signer.Store(s)
 			ok := true
@@ -662,8 +662,8 @@ func initSandboxTokens(ctx context.Context, logger *slog.Logger, cfg *config, si
 
 // followSandboxHost re-signs with the current node address when it changed,
 // keeping the key the digests endpoint serves. Tokens naming a stale address
-// would send CDS to a dead or foreign digests endpoint. When the address
-// cannot be resolved it keeps the last one: CDS then fails closed on it. It
+// would send Trust Authority to a dead or foreign digests endpoint. When the address
+// cannot be resolved it keeps the last one: Trust Authority then fails closed on it. It
 // reports whether the address resolved, and warns only when wasOK was true,
 // so an address that stays unresolved logs once rather than every recheck.
 func followSandboxHost(cfg *config, logger *slog.Logger, signer *atomic.Pointer[workloadclaims.SandboxTokenSigner], wasOK bool) bool {
@@ -771,6 +771,11 @@ func policyMeasurer(cfg *config, logger *slog.Logger) func(digest string) error 
 			}
 			return fmt.Errorf("allowlist policy measurement unavailable: %w", err)
 		}
+		if retryableOpen(err) {
+			// An unreconciled register must not be extended: reopen next call.
+			journal = nil
+			return fmt.Errorf("allowlist policy measurement unavailable: %w", err)
+		}
 		if err != nil {
 			// A diverged journal refuses every extend, so policy updates stop.
 			logger.Error("allowlist policy measurement journal", "error", err)
@@ -809,6 +814,23 @@ func policyMeasurer(cfg *config, logger *slog.Logger) func(digest string) error 
 		}
 		return err
 	}
+}
+
+// retryableOpen reports whether err from OpenJournalSeeded holds a problem
+// other than a diverged register, which already refuses every extend, or a
+// skipped malformed entry.
+func retryableOpen(err error) bool {
+	errs := []error{err}
+	var joined interface{ Unwrap() []error }
+	if errors.As(err, &joined) {
+		errs = joined.Unwrap()
+	}
+	for _, e := range errs {
+		if e != nil && !errors.Is(e, runtimemeasure.ErrRegisterDiverged) && !errors.Is(e, runtimemeasure.ErrMalformedEntry) {
+			return true
+		}
+	}
+	return false
 }
 
 // checkJournalRoom refuses a digest the journal does not hold once it holds

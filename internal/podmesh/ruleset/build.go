@@ -251,7 +251,7 @@ func serverClusterRuleName(port uint16, in netip.Prefix) string {
 // serverUpstreamRules match the upstream identity's TCP wherever it goes,
 // which it carries itself: it dials a member pod or a pod CVM's endpoint as a
 // mesh client and refuses a peer whose leaf names another workload or agent,
-// an address backend over TLS to the route's anchors, and its CDS over
+// an address backend over TLS to the route's anchors, and its Trust Authority over
 // armTLS. No other identity of the pod matches them, so every other
 // container's connection, nginx's included, is captured.
 func serverUpstreamRules(p Policy, kind expr.VerdictKind) []rule {

@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
-	"github.com/confidential-dot-ai/c8s/pkg/certutil"
+	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
 )
 
 // testHeldAllowlist is a minimal one-entry policy document; its Canonical()
@@ -51,7 +51,7 @@ func testHeldAllowlist(t *testing.T) ([]byte, []byte) {
 }
 
 // caSignedWorkloadLeaf mints a leaf carrying the matched-workload stamp and
-// signed by a fresh CA, returning the leaf and CA bundle path — the shape CDS
+// signed by a fresh CA, returning the leaf and CA bundle path — the shape Trust Authority
 // produces.
 func caSignedWorkloadLeaf(t *testing.T, matched *armtls.MatchedWorkload) (*x509.Certificate, string) {
 	t.Helper()

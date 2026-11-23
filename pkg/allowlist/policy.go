@@ -3,7 +3,7 @@ package allowlist
 import (
 	"slices"
 
-	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
 )
 
 // Index answers admission queries for enforcers in O(1). Build it once from a
@@ -44,7 +44,7 @@ func (i *Index) Size() int {
 
 // AdmitsDigest reports whether an image with this digest may run at all — as
 // any workload container. It ignores argv, so it answers the coarse "are these
-// bytes allowlisted" question the CDS issuance gate asks.
+// bytes allowlisted" question the Trust Authority issuance gate asks.
 func (i *Index) AdmitsDigest(digest string) bool {
 	if i == nil {
 		return false
@@ -397,21 +397,34 @@ func (i *Index) GrantsHostPorts(r RunningContainer, ports []HostPort) bool {
 	})
 }
 
-// DeclaresMountKind reports whether some entry for digest has a mount rule of
-// kind, such as MountNodeRootFile.
-func (i *Index) DeclaresMountKind(digest string, kind MountClass) bool {
+// NodeRootBinds returns the mounts whose source a nodeRootFile rule of some
+// entry for digest names.
+func (i *Index) NodeRootBinds(digest string, mounts []ObservedMount) []ObservedMount {
 	if i == nil {
-		return false
+		return nil
 	}
 	d, err := types.ParseDigest(digest)
 	if err != nil {
-		return false
+		return nil
 	}
-	return slices.ContainsFunc(i.byDigest[d.String()], func(c Container) bool {
-		return slices.ContainsFunc(c.Mounts.Rules, func(rule MountRule) bool {
-			return rule.Kind == kind
-		})
-	})
+	var sources []string
+	for _, c := range i.byDigest[d.String()] {
+		for _, rule := range c.Mounts.Rules {
+			if rule.Kind != MountNodeRootFile {
+				continue
+			}
+			if source, err := HostSourceDigest(rule.Source); err == nil {
+				sources = append(sources, source)
+			}
+		}
+	}
+	var named []ObservedMount
+	for _, m := range mounts {
+		if slices.Contains(sources, m.HostSourceDigest) {
+			named = append(named, m)
+		}
+	}
+	return named
 }
 
 // HasFSVerityMountRules reports whether any entry has an fsVerityFile mount

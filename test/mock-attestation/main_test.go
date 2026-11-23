@@ -13,7 +13,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
-	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
 )
 
 // TestWriteDecodeErrorShapes mirrors internal/mockapi.TestStubRejectsUndecodableBody:
@@ -63,7 +63,7 @@ func TestWriteDecodeErrorShapes(t *testing.T) {
 
 // TestVerifyRefusesMismatchAndGarbage pins the /verify refusal: a report-data
 // mismatch or unparseable evidence is a 422 verification_failed JSON envelope —
-// the real api's shape mock-cds classifies (never a 200+false verdict).
+// the real api's shape mock-ta classifies (never a 200+false verdict).
 func TestVerifyRefusesMismatchAndGarbage(t *testing.T) {
 	for _, tc := range []struct {
 		name     string

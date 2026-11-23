@@ -11,11 +11,11 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 )
 
-// NodePins is a client's CDS pin set as the node's enforcer mounts it. The
-// enforcer rewrites that file in place as the cluster's pin decrees move CDS
+// NodePins is a client's Trust Authority pin set as the node's enforcer mounts it. The
+// enforcer rewrites that file in place as the cluster's pin decrees move Trust Authority
 // to another image. A file read mid-rewrite does not parse, and leaves the
 // set in force.
 type NodePins struct {
@@ -68,7 +68,7 @@ func (n *NodePins) Refresh() error {
 	if err != nil {
 		return fmt.Errorf("node policy %s: %w", n.path, err)
 	}
-	if _, err := CDSLaunchFile(set); err != nil {
+	if _, err := TALaunchFile(set); err != nil {
 		return fmt.Errorf("node policy %s %w", n.path, err)
 	}
 	document, err := refvalues.Format(set)
@@ -79,7 +79,7 @@ func (n *NodePins) Refresh() error {
 	return nil
 }
 
-// reread drops a retired CDS image without waiting for a pin miss, which a
+// reread drops a retired Trust Authority image without waiting for a pin miss, which a
 // client whose own requests keep succeeding never has.
 func (n *NodePins) reread(ctx context.Context, every time.Duration) {
 	ticker := time.NewTicker(every)

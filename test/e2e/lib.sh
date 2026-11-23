@@ -26,27 +26,27 @@ cw_namespace() {
 # cw_namespace_owned lets cleanup check ownership without adopting old state.
 cw_namespace_owned() { [ "${CW_NAMESPACE_CREATED:-}" = "$1" ]; }
 
-# cds_measurement_args fills the measurement_args array with the CDS endpoint
+# ta_measurement_args fills the measurement_args array with the TA endpoint
 # pin: a complete policy file (C8S_MEASUREMENTS_CONFIG) when supplied, else the
 # launch-only digest (C8S_MEASUREMENTS), which is then required.
 # shellcheck disable=SC2034  # the array is consumed by the sourcing script
-cds_measurement_args() {
+ta_measurement_args() {
   if [ -n "${C8S_MEASUREMENTS_CONFIG:-}" ]; then
     measurement_args=(--image-policy-file "$C8S_MEASUREMENTS_CONFIG")
   else
-    : "${C8S_MEASUREMENTS:?pins the launch measurement of the CDS endpoint}"
+    : "${C8S_MEASUREMENTS:?pins the launch measurement of the TA endpoint}"
     measurement_args=(--measurements "$C8S_MEASUREMENTS")
   fi
 }
 
-# cds_write <command...> runs one signed CDS write, such as `c8s allowlist
-# add`. A CDS without persistence refuses operator tokens for
-# --jwt-clock-skew (30s) after it starts (docs/operator.md, "CDS runs as one
+# ta_write <command...> runs one signed TA write, such as `c8s allowlist
+# add`. A TA without persistence refuses operator tokens for
+# --jwt-clock-skew (30s) after it starts (docs/operator.md, "TA runs as one
 # VM"), and the first write of a lane can land inside that window, so
 # that refusal is retried, re-running the command for a fresh token, for
 # longer than the window. Any other outcome returns at once with the
 # command's status, its stdout and its stderr.
-cds_write() {
+ta_write() {
   local status err noted=
   for _ in $(seq 1 20); do
     status=0
@@ -56,7 +56,7 @@ cds_write() {
       return "$status"
     fi
     if [ -z "$noted" ]; then
-      echo "note: CDS refuses operator tokens until --jwt-clock-skew after it starts; retrying the write with a fresh token" >&2
+      echo "note: TA refuses operator tokens until --jwt-clock-skew after it starts; retrying the write with a fresh token" >&2
       noted=1
     fi
     sleep 2

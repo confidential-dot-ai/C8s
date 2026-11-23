@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 func TestHistoryRetainsDistinctAdmissions(t *testing.T) {
@@ -329,7 +329,7 @@ func TestHistoryRestoresEvictedEvidence(t *testing.T) {
 	}
 }
 
-// Every variant sits at the per-record evidence limits; CDS reads at most 1 MiB.
+// Every variant sits at the per-record evidence limits; Trust Authority reads at most 1 MiB.
 func TestHistoryInventoryFitsResponseLimit(t *testing.T) {
 	var h History
 	for image := range 4 {

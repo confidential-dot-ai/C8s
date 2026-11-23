@@ -1,6 +1,6 @@
 package main
 
-import "github.com/confidential-dot-ai/c8s/internal/cmds/probefile"
+import "github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/probefile"
 
 func init() {
 	rootCmd.AddCommand(probefile.NewCmd())

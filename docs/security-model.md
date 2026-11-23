@@ -26,10 +26,10 @@ of its own.
   [Identity comes from hardware evidence](guarantees.md#identity-comes-from-hardware-evidence).
 - **Answer as a TEE of its own, or with a recorded report**: in-cluster armTLS
   refuses a pin set naming no guest before any request, and an issuance binds a
-  single-use challenge into the report ([armtls.md](armtls.md#cds-issuance));
+  single-use challenge into the report ([armtls.md](armtls.md#ta-issuance));
   [Identity comes from hardware evidence](guarantees.md#identity-comes-from-hardware-evidence).
 - **Relaunch a node with other settings**: the digest of the `c8s-worker/v1`
-  document a worker boots with binds into its evidence, and CDS certifies a
+  document a worker boots with binds into its evidence, and the Trust Authority (TA) certifies a
   worker only under an image entry bound to that document
   ([launch-configuration.md](launch-configuration.md));
   [Identity comes from hardware evidence](guarantees.md#identity-comes-from-hardware-evidence).
@@ -66,16 +66,15 @@ object in the cluster.
   signature over that exact method, path, and body, made outside the cluster
   ([allowlist-and-capabilities.md](allowlist-and-capabilities.md#writing-policy)).
   A baked node — one booted from the measured node image — takes the operator
-  keys from the CDS configuration its document pins; elsewhere they are cluster
+  keys from the TA configuration its document pins; elsewhere they are cluster
   configuration,
   so pin the route digest or those keys
   ([operator.md](operator.md#route-manifest));
   [Only allowlisted code runs](guarantees.md#only-allowlisted-code-runs),
   [Routes are what the operator signed](guarantees.md#routes-are-what-the-operator-signed).
-- **Issue a workload certificate**: only CDS — the Certificate Distribution
-  Service, the VM outside the cluster holding C8s policy — signs leaves, and its
+- **Issue a workload certificate**: only the TA — the VM outside the cluster holding C8s policy — signs leaves, and its
   mesh CA key lives only in process memory, never in a Kubernetes Secret
-  ([armtls.md](armtls.md#cds-issuance));
+  ([armtls.md](armtls.md#ta-issuance));
   [Identity comes from hardware evidence](guarantees.md#identity-comes-from-hardware-evidence).
 
 The node-side defences above are the measured node image's. On the chart lanes
@@ -84,9 +83,9 @@ same administrator writes
 ([overview.md](overview.md#cvm-modes-and-hardware-platforms)), and the
 host-namespace policy is a cluster policy the chart always renders, which that
 administrator can delete, so an
-adversarial administrator means the measured node image. Deleting CDS drops the
+adversarial administrator means the measured node image. Deleting the TA drops the
 served entries, the secrets, and the route manifest, after which every member
-pod must be recreated ([operator.md](operator.md#cds-runs-as-one-vm)).
+pod must be recreated ([operator.md](operator.md#the-ta-runs-as-one-vm)).
 
 ## The pod network
 
@@ -117,12 +116,12 @@ egress is the other way out in the clear.
 - **Collect another workload's secret, or have its volume opened**: release
   needs a leaf chaining to the mesh CA, a fresh token naming that sandbox, an
   inventory report matching exactly one entry, and a grant covering the path
-  ([secrets.md](secrets.md#what-cds-checks)); volumed mounts only into the
+  ([secrets.md](secrets.md#what-the-ta-checks)); volumed mounts only into the
   calling pod's own directory ([volumes.md](volumes.md#opening-a-volume));
   [Data stays in the TEE](guarantees.md#data-stays-in-the-tee).
 - **Vouch for a sandbox itself**: answering as the inventory takes privileged
   port 1019 at the node's address, which takes host networking or a host port,
-  given to no tenant pod, plus evidence CDS's pins accept from an address the
+  given to no tenant pod, plus evidence the TA's pins accept from an address the
   operator's inventory set names — and whatever holds all that can sign for any
   sandbox that node admitted ([armtls.md](armtls.md#sandbox-identity));
   [No privileged way in](guarantees.md#no-privileged-way-in).
@@ -156,8 +155,8 @@ node is out of scope. Pin every container of an entry that holds a grant.
 
 - **Serve other bytes under a release tag**: a release publishes
   `release-statement.json` with a Sigstore bundle signed keyless through GitHub
-  Actions, naming the commit, the tag, the chart digest, and each CLI binary's
-  SHA-256
+  Actions, naming the commit, the tag, the chart digest, and the SHA-256 of
+  each CLI binary and allowlist seed
   ([releases.md](releases.md#verify-a-release));
   [Anyone can verify it](guarantees.md#anyone-can-verify-it).
 - **Move a tag under a running cluster**: every admission decision keys on the
@@ -180,7 +179,7 @@ build, which `c8s measurements derive` turns into a measurements config
 - **Be routed somewhere the operator did not sign**: the router routes by the
   signed manifest alone — 503 before one is applied, 404 off it — and dials a
   workload backend only on a leaf carrying that route's workload name under the
-  allowlist digest its own leaf carries, where CDS stamped one
+  allowlist digest its own leaf carries, where the TA stamped one
   ([operator.md](operator.md#route-manifest));
   [Routes are what the operator signed](guarantees.md#routes-are-what-the-operator-signed).
 - **Move a session after its handshake**: a session routes by the manifest and

@@ -1,4 +1,4 @@
-# PERMANENT lint for images/node-guest/ and images/cds-guest/ — the invariants
+# PERMANENT lint for images/node-guest/ and images/ta-guest/ — the invariants
 # that moved here with the measured profiles from confos bin/lint (c8s#264),
 # plus the cloud-init disable gate. These jobs lint content this repo owns. The
 # fragment superset check compares against confos's gpu fragment at the pinned
@@ -17,6 +17,10 @@ on:
 
 permissions:
   contents: read
+
+concurrency:
+  group: node-guest-image-lint-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   changes:
@@ -38,7 +42,8 @@ jobs:
             relevant:
               - ".github/actions/relevant-changes/**"
               - "images/node-guest/**"
-              - "images/cds-guest/**"
+              - "images/ta-guest/**"
+              - "internal/cmds/ta/**"
               - "test/e2e/**"
               - "test/conformance/**"
               - ".github/workflows/node-guest-image-lint.yml"
@@ -48,8 +53,8 @@ jobs:
               # here, not on the next images/node-guest change.
               - "Makefile"
               # The invariants gate body; a script-only change must run the gate.
-              - ".github/scripts/cds-guest-image-invariants.sh"
-              - ".github/scripts/tests/test-cds-guest-image-invariants.sh"
+              - ".github/scripts/ta-guest-image-invariants.sh"
+              - ".github/scripts/tests/test-ta-guest-image-invariants.sh"
               - ".github/workflows/c8s-image.yml"
               - ".github/workflows/c8s-image-publish.yml"
               - ".github/workflows/c8s-image-manual.yml"
@@ -129,8 +134,8 @@ jobs:
       - name: Check the baked containerd configuration's handlers
         run: make test-node-guest-image-containerd
 
-  cds-image:
-    name: cds-guest-image invariants
+  ta-image:
+    name: ta-guest-image invariants
     runs-on: ubuntu-latest
     needs: changes
     if: needs.changes.outputs.relevant == 'true'
@@ -154,25 +159,27 @@ jobs:
           path: confos
           persist-credentials: false
 
-      - name: cds-guest-image invariants
+      - name: ta-guest-image invariants
         run: |
-          .github/scripts/cds-guest-image-invariants.sh
-          bash .github/scripts/tests/test-cds-guest-image-invariants.sh
+          .github/scripts/ta-guest-image-invariants.sh
+          bash .github/scripts/tests/test-ta-guest-image-invariants.sh
 
       - uses: ./.github/actions/setup-go-c8s
 
-      - name: The unit's arguments are the ones `c8s cds` accepts
+      - name: The unit's arguments are the ones `c8s ta` accepts
         # ci.yml is gated on Go paths, so a unit-only change reaches this
         # check here.
-        run: go test -count=1 -run TestCDSImageServiceArguments ./internal/cmds/cds
-
-      - name: Shellcheck the CDS image scripts
         run: |
-          shellcheck images/cds-guest/build \
-            images/cds-guest/cds/mkosi.sync \
-            images/cds-guest/cds/mkosi.finalize \
-            .github/scripts/cds-guest-image-invariants.sh \
-            .github/scripts/tests/test-cds-guest-image-invariants.sh
+          go test -list '^TestTAImageServiceArguments$' ./internal/cmds/ta | grep -Fx TestTAImageServiceArguments
+          go test -count=1 -run '^TestTAImageServiceArguments$' ./internal/cmds/ta
+
+      - name: Shellcheck the Trust Authority image scripts
+        run: |
+          shellcheck images/ta-guest/build \
+            images/ta-guest/ta/mkosi.sync \
+            images/ta-guest/ta/mkosi.finalize \
+            .github/scripts/ta-guest-image-invariants.sh \
+            .github/scripts/tests/test-ta-guest-image-invariants.sh
 
   immutable-root:
     name: immutable root and c8s writable state
@@ -260,15 +267,15 @@ jobs:
           CONFOS_RELEASE: ${{ needs.lint.outputs.confos-release }}
         run: make test-node-guest-image-apparmor
 
-      - name: Check the CDS replica launch binding and Service ports
-        run: bash test/e2e/cds-ha-vms-test.sh
+      - name: Check the TA replica launch binding and Service ports
+        run: bash test/e2e/ta-ha-vms-test.sh
 
       - name: Shellcheck the AppArmor and end-to-end scripts
         run: |
           shellcheck -x -P SCRIPTDIR images/node-guest/check-apparmor-config.sh \
             images/node-guest/tests/apparmor-{config,enforce,kernel}-test.sh
           shellcheck -x -P SCRIPTDIR test/e2e/lib{,-test}.sh
-          shellcheck -x -P SCRIPTDIR test/e2e/cds-ha-vms{,-test}.sh
+          shellcheck -x -P SCRIPTDIR test/e2e/ta-ha-vms{,-test}.sh
           shellcheck -x -P SCRIPTDIR test/conformance/run.sh test/conformance/backends/*.sh
 
       - name: Exercise the real AppArmor kernel and parser
@@ -279,7 +286,7 @@ jobs:
   result:
     name: node-guest-image lint result
     runs-on: ubuntu-latest
-    needs: [changes, lint, systemd, containerd, cds-image, immutable-root, cloud-init-disabled, gpu-cc, scratch, apparmor]
+    needs: [changes, lint, systemd, containerd, ta-image, immutable-root, cloud-init-disabled, gpu-cc, scratch, apparmor]
     if: always()
     steps:
       # A job skipped by a failed dependency also reports skipped, so the changes job is read on its own.

@@ -7,8 +7,8 @@ import (
 
 	"github.com/containerd/nri/pkg/api"
 
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
 )
 
 // cvmRole is the half of admission a node CVM and a pod CVM answer differently:
@@ -78,9 +78,9 @@ func (nodeCVM) imageOf(_ *api.PodSandbox, ctr *api.Container) (string, error) {
 
 func (c nodeCVM) enforcerMounts() enforcerMounts {
 	return enforcerMounts{
-		socketDir:  c.p.cfg.WorkloadClaims.SocketDir,
-		cdsPins:    c.p.cdsPins,
-		cdsAddress: c.p.cdsAddress,
+		socketDir: c.p.cfg.WorkloadClaims.SocketDir,
+		taPins:    c.p.taPins,
+		taAddress: c.p.taAddress,
 	}
 }
 

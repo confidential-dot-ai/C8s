@@ -18,10 +18,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/internal/readutil"
-	"github.com/confidential-dot-ai/c8s/internal/routerdiscovery"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
-	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/readutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/routerdiscovery"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
 )
 
 // frontDoorObservation is what a discovery gather's live TLS handshake showed
@@ -45,7 +45,7 @@ const (
 )
 
 // gatherFromDiscovery fetches the router discovery document and builds evidence
-// from the embedded attestation, bound to the CDS cert key + the issuance
+// from the embedded attestation, bound to the Trust Authority cert key + the issuance
 // challenge. The challenge is fixed at issuance time, so this is NOT a freshness
 // proof (fresh=false) — but it ships the VCEK, so it verifies offline.
 //
@@ -140,7 +140,7 @@ func fetchDiscoveryDoc(ctx context.Context, client *http.Client, base *url.URL, 
 // binding (reportDataForCSR → armtls.ReportDataForKey). The parsed certificate
 // gets the same body authentication as every other cert-sourced path, and is
 // retained as the evidence leaf so the --mesh-ca / --sandbox-id / --workload
-// pins work against discovery targets too. A CDS-issued (CA-vouched) cert in
+// pins work against discovery targets too. A Trust Authority-issued (CA-vouched) cert in
 // the document is authenticated by a --mesh-ca chain check; without one the
 // document is rejected rather than verified against a body nothing signed for
 // (authorizeLeafBody).
@@ -205,7 +205,7 @@ func evidenceFromDiscovery(data []byte, source string, trust leafTrust, observed
 		fresh:               false,
 		source:              source,
 		certSHA256:          hex.EncodeToString(sum[:]),
-		bindingNote:         "REPORTDATA binds the CDS cert key + issuance challenge from the discovery doc (ships the VCEK; no per-request nonce — replayable within the authenticated certificate validity window)",
+		bindingNote:         "REPORTDATA binds the Trust Authority cert key + issuance challenge from the discovery doc (ships the VCEK; no per-request nonce — replayable within the authenticated certificate validity window)",
 		leaf:                cert,
 		leafBody:            body,
 		leafChainVerified:   chainVerified,

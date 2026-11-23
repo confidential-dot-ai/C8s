@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/attestclient"
 )
 
 // unreachableRenewalConfig is a config whose certificate requests always fail
@@ -20,8 +20,8 @@ import (
 // into the renewal loop via continue-on-initial-error.
 func unreachableRenewalConfig(t *testing.T) config {
 	return stagePodEnvironment(t, config{
-		CDSURL:                 "https://127.0.0.1:1",
-		MeasurementsConfigJSON: testCDSPin,
+		TAURL:                  "https://127.0.0.1:1",
+		MeasurementsConfigJSON: testTAPin,
 		AttestationApiURL:      "http://127.0.0.1:1",
 		SAN:                    "host.example.com",
 		InitialRetryTimeout:    0,
@@ -209,15 +209,15 @@ func TestRunRetriesInitialCertOffTheRetryBackoff(t *testing.T) {
 	terminateRun(t, stop, done)
 }
 
-// The retry cadence has to actually produce a certificate: a CDS that refuses
+// The retry cadence has to actually produce a certificate: a Trust Authority that refuses
 // twice and then issues must leave the loop holding a generation well inside
 // --renew-interval.
 func TestRenewLoopRetriesInitialCertBeforeRenewInterval(t *testing.T) {
 	stageInventory(t, testInstanceID)
-	cdsURL, attURL := startFakeServersRefusing(t, newTestCA(t), 2)
+	taURL, attURL := startFakeServersRefusing(t, newTestCA(t), 2)
 
 	cfg := config{
-		CDSURL:                cdsURL,
+		TAURL:                 taURL,
 		AttestationApiURL:     attURL,
 		SAN:                   "host.example.com",
 		WorkloadClaimsTimeout: 5 * time.Second,
@@ -231,7 +231,7 @@ func TestRenewLoopRetriesInitialCertBeforeRenewInterval(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		done <- renewLoop(ctx, cfg, plaintextCDSClient(cfg.CDSURL), plaintextPolicyClient(cfg.CDSURL), creds)
+		done <- renewLoop(ctx, cfg, plaintextTAClient(cfg.TAURL), plaintextPolicyClient(cfg.TAURL), creds)
 	}()
 
 	waitForFile(t, cfg.CertPath, done)
@@ -251,10 +251,10 @@ func TestRenewLoopRetriesInitialCertBeforeRenewInterval(t *testing.T) {
 // the retry backoff must not keep re-requesting for the life of the process.
 func TestRenewLoopStopsRetryingAfterFirstCert(t *testing.T) {
 	stageInventory(t, testInstanceID)
-	cdsURL, attURL := startFakeServers(t, newTestCA(t))
+	taURL, attURL := startFakeServers(t, newTestCA(t))
 
 	cfg := config{
-		CDSURL:                cdsURL,
+		TAURL:                 taURL,
 		AttestationApiURL:     attURL,
 		SAN:                   "host.example.com",
 		WorkloadClaimsTimeout: 5 * time.Second,
@@ -268,7 +268,7 @@ func TestRenewLoopStopsRetryingAfterFirstCert(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		done <- renewLoop(ctx, cfg, plaintextCDSClient(cfg.CDSURL), plaintextPolicyClient(cfg.CDSURL), creds)
+		done <- renewLoop(ctx, cfg, plaintextTAClient(cfg.TAURL), plaintextPolicyClient(cfg.TAURL), creds)
 	}()
 
 	waitForFile(t, cfg.CertPath, done)
@@ -311,7 +311,7 @@ func waitForFile(t *testing.T, path string, done <-chan error) {
 }
 
 // startFakeCAServer serves /ca with whatever PEM serve() returns, so a test
-// can swap the "current" CDS mesh CA mid-flight.
+// can swap the "current" Trust Authority mesh CA mid-flight.
 func startFakeCAServer(t *testing.T, serve func() string) string {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -351,21 +351,21 @@ func TestServedCAStale(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		cds     string
+		ta      string
 		served  string
 		want    bool
 		wantErr bool
 	}{
-		{name: "same CA", cds: caA, served: caA, want: false},
-		{name: "regenerated CA", cds: caB, served: caA, want: false},
-		{name: "served file holds two certificates", cds: caA, served: caB + caA, wantErr: true},
-		{name: "unparseable cds response", cds: "not pem", served: caA, wantErr: true},
-		{name: "unparseable served file", cds: caA, served: "not pem", wantErr: true},
+		{name: "same CA", ta: caA, served: caA, want: false},
+		{name: "regenerated CA", ta: caB, served: caA, want: false},
+		{name: "served file holds two certificates", ta: caA, served: caB + caA, wantErr: true},
+		{name: "unparseable cds response", ta: "not pem", served: caA, wantErr: true},
+		{name: "unparseable served file", ta: caA, served: "not pem", wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			url := startFakeCAServer(t, func() string { return tt.cds })
-			stale, err := servedCAStale(context.Background(), plaintextCDSClient(url), bound, writeServed(t, tt.served))
+			url := startFakeCAServer(t, func() string { return tt.ta })
+			stale, err := servedCAStale(context.Background(), plaintextTAClient(url), bound, writeServed(t, tt.served))
 			if tt.wantErr != (err != nil) {
 				t.Fatalf("servedCAStale err = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -377,20 +377,20 @@ func TestServedCAStale(t *testing.T) {
 
 	t.Run("missing served file", func(t *testing.T) {
 		url := startFakeCAServer(t, func() string { return caA })
-		if _, err := servedCAStale(context.Background(), plaintextCDSClient(url), bound, servedIn(filepath.Join(t.TempDir(), "missing.pem"))); err == nil {
+		if _, err := servedCAStale(context.Background(), plaintextTAClient(url), bound, servedIn(filepath.Join(t.TempDir(), "missing.pem"))); err == nil {
 			t.Fatal("servedCAStale succeeded, want read error")
 		}
 	})
 
 	t.Run("cds unreachable", func(t *testing.T) {
-		if _, err := servedCAStale(context.Background(), plaintextCDSClient("http://127.0.0.1:1"), bound, writeServed(t, caA)); err == nil {
+		if _, err := servedCAStale(context.Background(), plaintextTAClient("http://127.0.0.1:1"), bound, writeServed(t, caA)); err == nil {
 			t.Fatal("servedCAStale succeeded, want transport error")
 		}
 	})
 }
 
 // A renewed certificate under the bound CA key triggers an immediate renewal.
-func TestRenewLoopRenewsWhenCDSMeshCAChanges(t *testing.T) {
+func TestRenewLoopRenewsWhenTAMeshCAChanges(t *testing.T) {
 	ca := newTestCA(t)
 	caA := ca.pem(t)
 	caB := ca.issueSelf(t, 48*time.Hour).pem(t)
@@ -418,7 +418,7 @@ func TestRenewLoopRenewsWhenCDSMeshCAChanges(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- renewLoop(ctx, cfg, plaintextCDSClient(url), plaintextPolicyClient(url), creds) }()
+	go func() { done <- renewLoop(ctx, cfg, plaintextTAClient(url), plaintextPolicyClient(url), creds) }()
 
 	// A matching CA: many watch ticks must pass without a renewal.
 	time.Sleep(100 * time.Millisecond)
@@ -551,7 +551,7 @@ func TestRenewLoopPicksUpNameWithinSeconds(t *testing.T) {
 	done := make(chan error, 1)
 	start := time.Now()
 	go func() {
-		done <- renewLoop(ctx, cfg, plaintextCDSClient("http://127.0.0.1:1"), plaintextPolicyClient("http://127.0.0.1:1"), creds)
+		done <- renewLoop(ctx, cfg, plaintextTAClient("http://127.0.0.1:1"), plaintextPolicyClient("http://127.0.0.1:1"), creds)
 	}()
 
 	at := waitForAttempts(t, attempts, 1)

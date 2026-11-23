@@ -1,8 +1,8 @@
-module github.com/confidential-dot-ai/c8s/test/mock-inventory
+module github.com/confidential-dot-ai/confidential-kubernetes/test/mock-inventory
 
 go 1.27.3
 
-require github.com/confidential-dot-ai/c8s v0.0.0
+require github.com/confidential-dot-ai/confidential-kubernetes v0.0.0
 
 require (
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
@@ -21,10 +21,10 @@ require (
 	github.com/x448/float16 v0.8.4 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
-	golang.org/x/crypto v0.58.0 // indirect
-	golang.org/x/net v0.62.0 // indirect
+	golang.org/x/crypto v0.59.0 // indirect
+	golang.org/x/net v0.63.0 // indirect
 	golang.org/x/sys v0.50.0 // indirect
-	golang.org/x/text v0.43.0 // indirect
+	golang.org/x/text v0.44.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
@@ -38,4 +38,4 @@ require (
 	sigs.k8s.io/structured-merge-diff/v6 v6.4.2 // indirect
 )
 
-replace github.com/confidential-dot-ai/c8s => ../..
+replace github.com/confidential-dot-ai/confidential-kubernetes => ../..

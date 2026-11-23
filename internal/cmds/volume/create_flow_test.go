@@ -20,8 +20,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/cdsconn"
-	intsecrets "github.com/confidential-dot-ai/c8s/internal/secrets"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/taconn"
+	intsecrets "github.com/confidential-dot-ai/confidential-kubernetes/internal/secrets"
 )
 
 // flowFixture is a source directory, an output path, and an escrow path.
@@ -77,9 +77,9 @@ func operatorKeyFile(t *testing.T, dir string) string {
 	return path
 }
 
-// A dry run builds the image and writes escrow but never reaches CDS, so an
+// A dry run builds the image and writes escrow but never reaches Trust Authority, so an
 // operator can produce an artifact offline.
-func TestRunCreateDryRunBuildsAndEscrowsWithoutCDS(t *testing.T) {
+func TestRunCreateDryRunBuildsAndEscrowsWithoutTA(t *testing.T) {
 	f := newFlowFixture(t)
 	fake := newFake()
 	cfg := f.config(fake)
@@ -120,8 +120,8 @@ func TestRunCreateDryRunBuildsAndEscrowsWithoutCDS(t *testing.T) {
 	if !bytes.Equal(plain.Bytes(), want) {
 		t.Fatal("escrowed key does not decrypt the image it was written alongside")
 	}
-	if !strings.Contains(out.String(), "CDS not called") {
-		t.Errorf("dry run did not say CDS was skipped: %s", out.String())
+	if !strings.Contains(out.String(), "Trust Authority not called") {
+		t.Errorf("dry run did not say Trust Authority was skipped: %s", out.String())
 	}
 }
 
@@ -139,7 +139,7 @@ func TestRunCreateStoresBlobAndPrintsGuidance(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	o := &options{Options: cdsconn.Options{
+	o := &options{Options: taconn.Options{
 		URL:         srv.URL,
 		Insecure:    true,
 		OperatorKey: operatorKeyFile(t, f.dir)}}
@@ -166,7 +166,7 @@ func TestRunCreateStoresBlobAndPrintsGuidance(t *testing.T) {
 		t.Fatalf("stored value is not a key blob: %v", err)
 	}
 
-	// What CDS holds and what escrow holds have to be the same key, or a
+	// What Trust Authority holds and what escrow holds have to be the same key, or a
 	// restart recovers a volume nobody can open.
 	escrowRaw, err := os.ReadFile(f.escrow)
 	if err != nil {
@@ -177,9 +177,10 @@ func TestRunCreateStoresBlobAndPrintsGuidance(t *testing.T) {
 		t.Fatalf("escrow blob: %v", err)
 	}
 	if stored.Key != escrowed.Key ||
+		stored.Name != cfg.name || escrowed.Name != cfg.name ||
 		(stored.Verity == nil) != (escrowed.Verity == nil) ||
 		(stored.Verity != nil && *stored.Verity != *escrowed.Verity) {
-		t.Fatal("the blob stored in CDS differs from the escrowed one")
+		t.Fatal("the blob stored in Trust Authority differs from the escrowed one")
 	}
 
 	got := out.String()
@@ -190,25 +191,25 @@ func TestRunCreateStoresBlobAndPrintsGuidance(t *testing.T) {
 	}
 }
 
-// A CDS refusal must not leave a half-finished volume looking successful.
-func TestRunCreateSurfacesCDSRefusal(t *testing.T) {
+// A Trust Authority refusal must not leave a half-finished volume looking successful.
+func TestRunCreateSurfacesTARefusal(t *testing.T) {
 	f := newFlowFixture(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusConflict)
 	}))
 	defer srv.Close()
 
-	o := &options{Options: cdsconn.Options{
+	o := &options{Options: taconn.Options{
 		URL: srv.URL, Insecure: true, OperatorKey: operatorKeyFile(t, f.dir)}}
 	cmd, _ := captureCmd()
 	err := runCreate(cmd, o, f.config(newFake()))
 	if err == nil || !strings.Contains(err.Error(), "not replaceable") {
 		t.Fatalf("got %v, want a refusal naming the occupied path", err)
 	}
-	// Escrow is written before CDS, so the key survives a failed store — the
+	// Escrow is written before Trust Authority, so the key survives a failed store — the
 	// image on disk is openable once the path question is resolved.
 	if _, statErr := os.Stat(f.escrow); statErr != nil {
-		t.Errorf("escrow missing after a CDS refusal: %v", statErr)
+		t.Errorf("escrow missing after a Trust Authority refusal: %v", statErr)
 	}
 }
 
@@ -241,7 +242,7 @@ func TestExecRunnerPinsEnvAndWrapsFailure(t *testing.T) {
 }
 
 // A mutable dry run builds the ext4 image, escrows a key-only blob, and never
-// reaches CDS — the same escrow-then-store ordering the immutable path holds.
+// reaches Trust Authority — the same escrow-then-store ordering the immutable path holds.
 func TestRunCreateMutableDryRunBuildsAndEscrows(t *testing.T) {
 	f := newFlowFixture(t)
 	fake := newFake()
@@ -272,6 +273,9 @@ func TestRunCreateMutableDryRunBuildsAndEscrows(t *testing.T) {
 	}
 	if !blob.Mutable || blob.Verity != nil {
 		t.Fatalf("escrow blob = %+v, want mutable with no verity", blob)
+	}
+	if blob.Name != cfg.name {
+		t.Fatalf("escrow name = %q, want %q", blob.Name, cfg.name)
 	}
 
 	// The escrowed key must decrypt the image, or the escrow recovers nothing.

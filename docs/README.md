@@ -12,7 +12,7 @@ Everyone: [overview.md](overview.md), then [guarantees.md](guarantees.md).
 
 - Platform operator: [operator.md](operator.md),
   [allowlist-and-capabilities.md](allowlist-and-capabilities.md),
-  [cloud-cds.md](cloud-cds.md), [upgrade.md](upgrade.md).
+  [cloud-ta.md](cloud-ta.md), [upgrade.md](upgrade.md).
 - Workload owner: [DEMO.md](DEMO.md), [workloads.md](workloads.md),
   [allowlist-entries.md](allowlist-entries.md), [secrets.md](secrets.md),
   [volumes.md](volumes.md).
@@ -42,20 +42,20 @@ Everyone: [overview.md](overview.md), then [guarantees.md](guarantees.md).
 | [certificate-extensions.md](certificate-extensions.md) | reference | Every X.509 extension C8s issues, and who checks it |
 | **Workload data** | | |
 | [secrets.md](secrets.md) | explanation | Secret release |
-| [pod-secrets.md](pod-secrets.md) | reference | Pod CVM secret release brokered to a KMS, and the CDS-to-KMS wire |
+| [pod-secrets.md](pod-secrets.md) | reference | Pod CVM secret release brokered to a KMS, and the protocol between the Trust Authority (TA) and KMS |
 | [volumes.md](volumes.md) | explanation | Encrypted volumes |
 | [workloads.md](workloads.md) | how-to | Onboard your own workload |
 | [DEMO.md](DEMO.md) | tutorial | Deploy the sample workload and inspect what was injected |
 | **Ingress and routing** | | |
 | [routes-evidence.md](routes-evidence.md) | explanation | Proving which routes the router serves |
 | **Operating a cluster** | | |
-| [operator.md](operator.md) | explanation | Running a cluster: install, the Certificate Distribution Service, the router |
-| [cloud-cds.md](cloud-cds.md) | how-to | Where a cloud cluster's CDS runs, the flows it needs, node pins on AKS and GKE |
+| [operator.md](operator.md) | explanation | Running a cluster: install, the Trust Authority, the router |
+| [cloud-ta.md](cloud-ta.md) | how-to | Where a cloud cluster's TA runs, the flows it needs, node pins on AKS and GKE |
 | [launch-configuration.md](launch-configuration.md) | reference | The launch document a measured worker boots with |
 | [pod-cvm-provider.md](pod-cvm-provider.md) | reference | Scheduling annotated Pods as Cloud Pod CVMs |
-| [cds-ha.md](cds-ha.md) | explanation | Running a cluster's CDS as several VMs |
-| [cds-ha-runbooks.md](cds-ha-runbooks.md) | how-to | Starting, rolling, recovering a replicated CDS |
-| [cds-ha-alerts.md](cds-ha-alerts.md) | reference | What to watch on a replicated CDS |
+| [ta-ha.md](ta-ha.md) | explanation | Running a cluster's TA as several VMs |
+| [ta-ha-runbooks.md](ta-ha-runbooks.md) | how-to | Starting, rolling, recovering a replicated TA |
+| [ta-ha-alerts.md](ta-ha-alerts.md) | reference | What to watch on a replicated TA |
 | [upgrade.md](upgrade.md) | how-to | Upgrade a cluster to a new release |
 | **Verifying a deployment** | | |
 | [verify.md](verify.md) | how-to | Verify a deployment from outside |

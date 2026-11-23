@@ -25,8 +25,8 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/podstatus"
-	"github.com/confidential-dot-ai/c8s/internal/readutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/podstatus"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/readutil"
 )
 
 func TestGuestReaderRefusesUnattestedStatusAndRemovesTrustFiles(t *testing.T) {
@@ -35,7 +35,7 @@ func TestGuestReaderRefusesUnattestedStatusAndRemovesTrustFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rec := &record{instanceIntent: instanceIntent{Request: req, Manifest: cfg.manifest}}
+	rec := &record{instanceIntent: instanceIntent{Request: req, Manifest: cfg.manifest}, ServingKey: []byte("saved")}
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"metadata":{"uid":"11111111-1111-1111-1111-111111111111"},"status":{"phase":"Running","conditions":[{"type":"Ready","status":"True"}]}}`))
@@ -149,9 +149,10 @@ func TestStatusReadIsPinnedToTheAssignedServingKey(t *testing.T) {
 		t.Fatalf("assigned serving key refused: %+v, %v", projection, err)
 	}
 	rec.ServingKey = nil
-	if _, err := readGuest(t.Context(), rec, address); err != nil {
-		t.Fatalf("unassigned guest refused before any key was frozen: %v", err)
+	if _, err := readGuest(t.Context(), rec, address); err == nil || err.Error() != "guest status unavailable" {
+		t.Fatalf("status was read without a saved serving key: %v", err)
 	}
+	rec.ServingKey = assigned
 	invalid.Store(true)
 	if _, err := readGuest(t.Context(), rec, address); err == nil || err.Error() != "guest status projection is invalid" {
 		t.Fatalf("invalid projection accepted: %v", err)

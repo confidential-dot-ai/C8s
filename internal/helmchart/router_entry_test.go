@@ -10,10 +10,10 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
-	"github.com/confidential-dot-ai/c8s/internal/secrets"
-	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/secrets"
+	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 // routerPrefix starts the seeded router entry's name; the rest hashes its content.
@@ -33,7 +33,7 @@ func TestChartRouterNginxImageIsNotAValue(t *testing.T) {
 	t.Parallel()
 	for _, pin := range []string{
 		"router.nginx.image.digest=sha256:" + strings.Repeat("4", 64),
-		"router.nginx.image.tag=1.30.6-alpine-slim",
+		"router.nginx.image.tag=1.30.7-alpine-slim",
 	} {
 		out, err := helmTemplate(t, "--set-string", pin)
 		if err == nil {
@@ -302,7 +302,7 @@ func TestChartRouterEntryPresence(t *testing.T) {
 	}
 }
 
-// A changed digest or argv must seed a new entry: CDS skips a name it holds.
+// A changed digest or argv must seed a new entry: Trust Authority skips a name it holds.
 func TestChartRouterEntryNameTracksContent(t *testing.T) {
 	t.Parallel()
 	name := func(args ...string) string {

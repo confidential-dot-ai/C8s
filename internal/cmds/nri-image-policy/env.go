@@ -10,7 +10,7 @@ import (
 	"github.com/containerd/nri/pkg/api"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
 // ValidateContainerAdjustment runs after all create-time plugins. Unlike a
@@ -46,6 +46,9 @@ func (p *plugin) ValidateContainerAdjustment(ctx context.Context, req *api.Valid
 		imageRef: imageRef,
 		env:      env,
 		mounts:   p.adjustedMounts(req, ctr),
+		// The gate and the static-pod check run ahead of admission; all three
+		// share one lookup, so they judge one digest.
+		lookup: p.digestLookup(ctx, imageRef),
 	}
 	// The gate runs ahead of the admission check and independently of
 	// policy.mode: a protected pod's container runs only once it is verified.
@@ -63,11 +66,12 @@ func (p *plugin) ValidateContainerAdjustment(ctx context.Context, req *api.Valid
 	if err := p.unpinnedStaticPod(ctx, p.cfg, observed); err != nil {
 		return p.denyContainerCreation(req.GetPod().GetId(), ctr.GetName(), err)
 	}
-	verdict, reason := p.checkContainerObserved(ctx, p.cfg, observed, launchFinal)
+	snap := p.policy.current()
+	verdict, reason := p.checkContainerObserved(ctx, p.cfg, snap, observed, launchFinal)
 	if verdict == verdictDeny && p.cfg.Policy.Mode != ModeAudit {
 		return p.denyContainerCreation(req.GetPod().GetId(), ctr.GetName(), fmt.Errorf("%s", reason))
 	}
-	p.noteCapabilityGrant(ctx, observed)
+	p.noteCapabilityGrant(ctx, p.cfg, snap, observed)
 	// No inventory record here: later validators can still reject creation, and
 	// CDI transformations under an any policy have not happened yet.
 	return nil
@@ -76,11 +80,16 @@ func (p *plugin) ValidateContainerAdjustment(ctx context.Context, req *api.Valid
 // noteCapabilityGrant records what the allowlists declare for this launch, for
 // the runtime wrapper to hold the container's create to (capabilitygrants.go).
 // The record belongs to this hook: a validator that does not answer fails the
-// create, and the wrapper reads the record before the start check runs.
-func (p *plugin) noteCapabilityGrant(ctx context.Context, observed observedContainer) {
-	launch := p.observedLaunch(ctx, observed)
+// create, and the wrapper reads the record before the start check runs. It
+// reads the digest and snapshot admission judged; with no allowlist nothing
+// declares a capability, so it looks up no digest.
+func (p *plugin) noteCapabilityGrant(ctx context.Context, cfg *config, snap *policySnapshot, observed observedContainer) {
+	var declared [][]string
+	if cfg.AllowlistEnabled() {
+		declared = p.policy.declaredCapabilities(snap, p.observedLaunch(ctx, observed))
+	}
 	id := observed.ctr.GetId()
-	if err := p.capGrants.note(id, p.policy.declaredCapabilities(launch)); err != nil {
+	if err := p.capGrants.note(id, declared); err != nil {
 		p.logger.Error("cannot record the container's capability grant; the runtime wrapper refuses it every capability beyond the node's default set", "container", id, "error", err)
 	}
 }

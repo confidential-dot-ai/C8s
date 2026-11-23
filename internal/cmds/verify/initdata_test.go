@@ -11,8 +11,8 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
-	"github.com/confidential-dot-ai/c8s/internal/testutil"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 )
 
 // The Genoa fixture's HOST_DATA is 32 zero bytes.
@@ -335,14 +335,14 @@ func TestApplyInitDataNote(t *testing.T) {
 	}
 }
 
-// A CDS pin binds HOST_DATA to the launch file the VM boots on, which is the
+// A Trust Authority pin binds HOST_DATA to the launch file the VM boots on, which is the
 // field this note reports: a launch-bound policy must not read as compared
 // against nothing. On TDX that field is MR_CONFIG_ID, which no launch-file pin
 // touches, so the note stays unpinned there.
 func TestApplyInitDataNoteLaunchFilePin(t *testing.T) {
-	cfg := config{measurementsConfig: testutil.CDSPinFile(t)}
+	cfg := config{measurementsConfig: testutil.TAPinFile(t)}
 	plan := mustPlan(t, cfg)
-	binding := runtimemeasure.HostData([]byte(testutil.CDSLaunchFile))
+	binding := runtimemeasure.HostData([]byte(testutil.TALaunchFile))
 	result := &teetypes.VerificationResult{
 		SignatureValid: true,
 		Platform:       teetypes.PlatformSNP,

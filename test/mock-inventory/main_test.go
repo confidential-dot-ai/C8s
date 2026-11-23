@@ -10,11 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
-// TestTokenRouteIssuesAVerifiableToken is the contract get-cert and mock-cds
+// TestTokenRouteIssuesAVerifiableToken is the contract get-cert and mock-ta
 // share with this mock: the socket hands out a token naming the fixed sandbox,
 // bound to the requester key and the challenge, and it verifies under the key
 // IdentityPath serves.
@@ -48,7 +48,7 @@ func TestTokenRouteIssuesAVerifiableToken(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The verification key comes from the served DER, the bytes mock-cds reads.
+	// The verification key comes from the served DER, the bytes mock-ta reads.
 	served, err := x509.ParsePKIXPublicKey(signer.PublicKeyDER())
 	if err != nil {
 		t.Fatal(err)
@@ -67,7 +67,7 @@ func TestTokenRouteIssuesAVerifiableToken(t *testing.T) {
 	if sandbox.InventoryHost != host {
 		t.Errorf("inventory host = %q, want %q", sandbox.InventoryHost, host)
 	}
-	// get-cert compares the ID against the leaf extension CDS stamps it into.
+	// get-cert compares the ID against the leaf extension Trust Authority stamps it into.
 	if err := armtls.ValidateSandboxID(sandbox.SandboxID); err != nil {
 		t.Error(err)
 	}

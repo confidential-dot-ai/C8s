@@ -27,9 +27,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/internal/fileutil"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
-	"github.com/confidential-dot-ai/c8s/pkg/certutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/fileutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
 )
 
 const (
@@ -54,7 +54,7 @@ var (
 	errFailClosed = errors.New("the CA key binding cannot be recovered; fail closed until the pod is recreated")
 )
 
-// generation is one credential set: a key, the leaf CDS issued for it, and the
+// generation is one credential set: a key, the leaf Trust Authority issued for it, and the
 // mesh CA that leaf chains to.
 type generation struct {
 	ChainPEM []byte
@@ -196,7 +196,7 @@ func (v credentialVolume) pruneGenerations(published, previous string) error {
 	return nil
 }
 
-// issuedGeneration is the set CDS just returned: the chain is leaf first with
+// issuedGeneration is the set Trust Authority just returned: the chain is leaf first with
 // its CA trailing.
 func issuedGeneration(chainPEM string, key *ecdsa.PrivateKey, keyPEM []byte) (*generation, error) {
 	caPEM, err := caBundleFromChain([]byte(chainPEM))
@@ -261,7 +261,7 @@ func newGeneration(chainPEM, keyPEM, caPEM []byte, key *ecdsa.PrivateKey) (*gene
 	}, nil
 }
 
-// soleCA is the one mesh CA a generation's CA file holds. CDS holds one mesh
+// soleCA is the one mesh CA a generation's CA file holds. Trust Authority holds one mesh
 // CA, so any other count is a response or a file this pod does not accept.
 func soleCA(caPEM []byte) (*x509.Certificate, error) {
 	cas, err := certutil.ParsePEMCertificates(caPEM)
@@ -299,7 +299,7 @@ func issuerKeyIDOf(cert *x509.Certificate) (issuerKeyID, error) {
 	return issuerKeyID(hex.EncodeToString(sum[:])), nil
 }
 
-// verifyGeneration is the check CDS's response does not get to skip: the leaf
+// verifyGeneration is the check Trust Authority's response does not get to skip: the leaf
 // matches the key it was issued for, names the pod's workload instance, and
 // chains to the generation's own CA at now. It returns the issuing CA key.
 func verifyGeneration(g *generation, instanceID string, now time.Time) (issuerKeyID, error) {
@@ -527,7 +527,7 @@ func writeIssuerRecord(v credentialVolume, id issuerKeyID) error {
 	if err != nil {
 		return fmt.Errorf("write issuer record: %w", err)
 	}
-	slog.Info("pod bound to CDS CA key", "issuer_key", id)
+	slog.Info("pod bound to the Trust Authority CA key", "issuer_key", id)
 	return nil
 }
 

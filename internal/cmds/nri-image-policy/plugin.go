@@ -15,11 +15,11 @@ import (
 	"github.com/containerd/nri/pkg/stub"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 
-	"github.com/confidential-dot-ai/c8s/internal/audit"
-	ctrdresolver "github.com/confidential-dot-ai/c8s/internal/containerd"
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/types"
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/audit"
+	ctrdresolver "github.com/confidential-dot-ai/confidential-kubernetes/internal/containerd"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 const (
@@ -91,20 +91,20 @@ type plugin struct {
 	// restartPolicy Always keeps recreating refused containers.
 	podEnded atomic.Bool
 
-	// cdsPins is the node-side path of the CDS attestation policy handed to
+	// taPins is the node-side path of the Trust Authority attestation policy handed to
 	// the injected credential clients, or "" when no pod of this node is
-	// injected. prepareCDSPins sets it before any container can be created (cdspins.go).
-	cdsPins string
+	// injected. prepareTAPins sets it before any container can be created (tapins.go).
+	taPins string
 
-	// awaitingDecree holds back every container cdsPins would be mounted
-	// into while the node takes its first CDS pin decree (main.go).
+	// awaitingDecree holds back every container taPins would be mounted
+	// into while the node takes its first Trust Authority pin decree (main.go).
 	awaitingDecree atomic.Bool
 
-	// cdsAddress is the node-side path of the CDS endpoint handed to those
+	// taAddress is the node-side path of the Trust Authority endpoint handed to those
 	// same clients, or "" when no pod of this node is injected.
 	// prepareCDSAddress sets it before any container can be created
-	// (cdsaddress.go).
-	cdsAddress string
+	// (taaddress.go).
+	taAddress string
 
 	// clientDocument is the guest-side path of a Pod CVM's client document,
 	// bound read-only into every container of the Pod, or "" when the
@@ -224,7 +224,7 @@ func (p *plugin) SetReady() {
 	p.ready.Store(true)
 }
 
-// AppliedAllowlistVersion is the CDS version of the allowlist admission decides
+// AppliedAllowlistVersion is the Trust Authority version of the allowlist admission decides
 // with: the last pull apply accepted, so a pull the anti-rollback check ignored
 // does not move it. It is 0 until a pull applied.
 func (p *plugin) AppliedAllowlistVersion() uint64 {
@@ -461,9 +461,9 @@ func (p *plugin) imageDigest(ctx context.Context, imageRef string) (string, erro
 }
 
 // resolveDigest returns the canonical store digest for imageRef using the same
-// path checkImagePhase admits on: the inline digest if present, else the containerd
+// path checkImageAt admits on: the inline digest if present, else the containerd
 // content store. Empty on an unresolvable or absent reference. Quiet — the
-// callers that need an audit trail (checkImagePhase) do their own logging.
+// callers that need an audit trail (checkImageAt) do their own logging.
 func (p *plugin) resolveDigest(ctx context.Context, imageRef string) string {
 	if d := extractDigest(imageRef); d != "" {
 		return d
@@ -533,7 +533,29 @@ func (p *plugin) bindsRoleMounts(launch allowlist.RunningContainer, role string)
 
 // observedLaunch is the container as a role lookup reads it.
 func (p *plugin) observedLaunch(ctx context.Context, observed observedContainer) allowlist.RunningContainer {
-	return observed.launch(p.resolveDigest(ctx, observed.imageRef))
+	return observed.launch(p.observedDigest(ctx, observed))
+}
+
+// observedDigest is the digest observed.lookup gives, "" when it fails.
+func (p *plugin) observedDigest(ctx context.Context, observed observedContainer) string {
+	if observed.lookup == nil {
+		return p.resolveDigest(ctx, observed.imageRef)
+	}
+	digest, _ := observed.lookup() // a failed lookup is "", which no entry admits
+	return digest
+}
+
+// digestLookup resolves imageRef at most once, so the checks of one container
+// judge one digest, and one needing none costs no containerd round-trip. It
+// returns containerd's error: checkImageAt denies on it as resolve_failed,
+// and every other caller reads a failed lookup as "", which nothing admits.
+func (p *plugin) digestLookup(ctx context.Context, imageRef string) func() (string, error) {
+	return sync.OnceValues(func() (string, error) {
+		if digest := extractDigest(imageRef); digest != "" || imageRef == "" {
+			return digest, nil
+		}
+		return p.resolve(ctx, imageRef)
+	})
 }
 
 // extractDigest returns the canonical "sha256:<64hex>" digest from an image

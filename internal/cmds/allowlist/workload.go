@@ -15,9 +15,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
-	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
+	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlistclient"
 )
 
 func newGetCmd(o *options) *cobra.Command {
@@ -52,7 +52,7 @@ apply reads the live allowlist, puts the entries into it, and writes the
 result back as one whole-document write: every entry lands or none does. The
 write is signed by the operator key like an upload, so the key signs the whole
 resulting document, not only the entries in <file>. It is conditional on the
-version apply read: if another write landed since, CDS refuses it, and apply
+version apply read: if another write landed since, Trust Authority refuses it, and apply
 re-reads the allowlist, prints what the other write changed, and puts the
 entries into the newer document, up to ` + fmt.Sprint(maxApplyAttempts) + ` writes in all. Other entries
 the other write changed are kept; an entry in <file> is set to the file's value
@@ -367,7 +367,7 @@ func writeFailure(unconfirmedHeading, refusedHeading string, err error) error {
 	return fmt.Errorf("%s: %w", refusedHeading, err)
 }
 
-// changeAlreadyServed reports whether CDS already serves the document the
+// changeAlreadyServed reports whether the Trust Authority already serves the document the
 // change builds: on a re-read the change is in it, made by a write of ours
 // that landed unconfirmed or by the write that beat it. The first attempt
 // writes without asking, since its document came from its own read.
@@ -445,18 +445,20 @@ func requireEntries(read allowlistRead, names []string) error {
 //
 // INVARIANT: every entry the write does not name goes back with all of its
 // fields. The served parse is lenient: it drops fields this c8s does not know
-// and entries no longer valid (an over-long legacy name). The write path's
-// strict parse refuses both instead, so nothing is lost by writing back.
+// and entries no longer valid (an over-long legacy name). The stored parse
+// refuses both instead, so nothing is lost by writing back. It keeps an entry
+// that fails a pinning rule added since it was written, so delete or edit can
+// remove or repair it; Trust Authority refuses any write that keeps it.
 func readForWrite(ctx context.Context, c allowlistclient.Client) (allowlistRead, error) {
 	raw, version, err := c.CanonicalBytes(ctx)
 	if err != nil {
 		return allowlistRead{}, err
 	}
-	live, err := pkgallowlist.ParseJSON(raw)
+	live, err := pkgallowlist.ParseStoredJSON(raw)
 	if err != nil {
 		return allowlistRead{}, fmt.Errorf("the served allowlist holds content this c8s cannot write back unchanged "+
 			"(a field it does not know, or an entry no longer valid such as a name over 63 bytes); "+
-			"use a c8s as new as CDS, or delete the invalid entry first: %w", err)
+			"use a c8s as new as Trust Authority, or delete the invalid entry first: %w", err)
 	}
 	return allowlistRead{document: live, version: version}, nil
 }
@@ -565,7 +567,11 @@ func editWorkloadInEditor(w pkgallowlist.Workload, name string) (*pkgallowlist.W
 	if err != nil {
 		return nil, err
 	}
-	return pkgallowlist.ParseWorkloadJSON(edited)
+	entry, err := pkgallowlist.ParseWorkloadJSON(edited)
+	if err != nil {
+		return nil, fmt.Errorf("workload %q: %w", name, err)
+	}
+	return entry, nil
 }
 
 func runEditor(path string) error {

@@ -14,7 +14,7 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	sigsyaml "sigs.k8s.io/yaml"
 
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 // workerChart is the c8s-worker chart in the repository layout.
@@ -162,7 +162,7 @@ func TestWorkerChartRouterLaunchContract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	// The CDS every client verifies is the VM the signed launch file names, so
+	// The Trust Authority every client verifies is the VM the signed launch file names, so
 	// the one component argv naming a policy reads it from the staged copy.
 	wantPolicies := map[string]string{"c8s-router/cds-attest": "cds.json"}
 	workloads := renderedPodSpecs(t, out)
@@ -213,7 +213,7 @@ func TestWorkerChartRouterLaunchContract(t *testing.T) {
 		}
 		assertRouterGracePeriodBelowDefault(t, deployment.Spec.Template.Spec)
 		if selector := deployment.Spec.Template.Spec.NodeSelector; !maps.Equal(selector, map[string]string{"confidential.ai/router-eligible": "true"}) {
-			t.Errorf("%s selects nodes by %v, want current CDS eligibility", name, selector)
+			t.Errorf("%s selects nodes by %v, want current Trust Authority eligibility", name, selector)
 		}
 	}
 	cert, ok := findContainer(renderedDeploymentInitContainers(t, out, "c8s-router"), "c8s-cert")
@@ -397,11 +397,11 @@ func TestWorkerChartRouterRequestsWorkloadIdentity(t *testing.T) {
 }
 
 // The router's credential clients hold the measured credentials role, so the
-// enforcer hands them the node's CDS endpoint, pins and attestation-api, and
+// enforcer hands them the node's Trust Authority endpoint, pins and attestation-api, and
 // refuses an argument naming another (cmdsutil.ResolveCDSEndpoint,
-// cmdsutil.ResolveCDSPins, cmdsutil.RequireNodeVerifier). The chart passes no
+// cmdsutil.ResolveTAPins, cmdsutil.RequireNodeVerifier). The chart passes no
 // endpoint and no pins and names the node's own verifier.
-func TestWorkerChartRouterTakesItsCDSFromTheNode(t *testing.T) {
+func TestWorkerChartRouterTakesItsTAFromTheNode(t *testing.T) {
 	out, err := helmTemplateWorker(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)

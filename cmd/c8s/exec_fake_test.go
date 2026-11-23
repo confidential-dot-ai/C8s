@@ -129,41 +129,41 @@ func resetCLIState(t *testing.T) {
 		installImagePullSecret, installChartDir                                   string
 		installOperatorKeys, installUpstream                                      string
 		uninstallNamespace, uninstallRelease                                      string
-		installCDSAddress, installCDSPin, installSeedOut                          string
+		installTAAddress, installTAPin, installSeedOut                            string
 		installValues, installWorkloadRefs                                        []string
 		installWait, installForce                                                 bool
 		uninstallWait, uninstallHostSweep, uninstallHostSweepOnly, uninstallForce bool
 		uninstallDeleteCRDs, uninstallDeleteNamespace, installVolumes             bool
 		installOperatorKey, installRoutesOut                                      string
 		installRoutesMaxAge                                                       time.Duration
-		installCDS                                                                *cdsPin
+		installTA                                                                 *taPin
 	}{
 		installNamespace, installRelease, installPlatform,
 		installImagePullSecret, installChartDir,
 		installOperatorKeys, installUpstream,
 		uninstallNamespace, uninstallRelease,
-		installCDSAddress, installCDSPin, installSeedOut,
+		installTAAddress, installTAPin, installSeedOut,
 		slices.Clone(installValues), slices.Clone(installWorkloadRefs),
 		installWait, installForce,
 		uninstallWait, uninstallHostSweep, uninstallHostSweepOnly, uninstallForce,
 		uninstallDeleteCRDs, uninstallDeleteNamespace, installVolumes,
 		installOperatorKey, installRoutesOut,
 		installRoutesMaxAge,
-		installCDS,
+		installTA,
 	}
 	t.Cleanup(func() {
 		installNamespace, installRelease, installPlatform = saved.installNamespace, saved.installRelease, saved.installPlatform
 		installImagePullSecret, installChartDir = saved.installImagePullSecret, saved.installChartDir
 		installOperatorKeys, installUpstream = saved.installOperatorKeys, saved.installUpstream
 		uninstallNamespace, uninstallRelease = saved.uninstallNamespace, saved.uninstallRelease
-		installCDSAddress, installCDSPin, installSeedOut = saved.installCDSAddress, saved.installCDSPin, saved.installSeedOut
+		installTAAddress, installTAPin, installSeedOut = saved.installTAAddress, saved.installTAPin, saved.installSeedOut
 		installValues, installWorkloadRefs = saved.installValues, saved.installWorkloadRefs
 		installWait, installForce = saved.installWait, saved.installForce
 		uninstallWait, uninstallHostSweep, uninstallHostSweepOnly, uninstallForce = saved.uninstallWait, saved.uninstallHostSweep, saved.uninstallHostSweepOnly, saved.uninstallForce
 		uninstallDeleteCRDs, uninstallDeleteNamespace = saved.uninstallDeleteCRDs, saved.uninstallDeleteNamespace
 		installVolumes = saved.installVolumes
 		installOperatorKey, installRoutesOut, installRoutesMaxAge = saved.installOperatorKey, saved.installRoutesOut, saved.installRoutesMaxAge
-		installCDS = saved.installCDS
+		installTA = saved.installTA
 	})
 
 	installNamespace, installRelease = "c8s-system", "c8s"
@@ -173,8 +173,8 @@ func resetCLIState(t *testing.T) {
 	installVolumes = false
 	installOperatorKeys, installForce = "", false
 	installUpstream, installWorkloadRefs = "", nil
-	installCDSAddress, installCDSPin, installSeedOut = "", "", ""
-	installCDS = nil
+	installTAAddress, installTAPin, installSeedOut = "", "", ""
+	installTA = nil
 	uninstallNamespace, uninstallRelease = "c8s-system", "c8s"
 	uninstallWait, uninstallHostSweep, uninstallHostSweepOnly = true, true, false
 	uninstallForce, uninstallDeleteCRDs, uninstallDeleteNamespace = false, false, false
@@ -236,7 +236,7 @@ config)
   *cds*) echo '{"config":{"Entrypoint":["/c8s","cds"],"Env":["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin","SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"]}}' ;;
   *armtls-mesh*) echo '{"config":{"Entrypoint":["/app/c8s","armtls-mesh"],"Env":["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"]}}' ;;
   *volumed*) echo '{"config":{"Entrypoint":["/app/c8s","volumed"],"Env":["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"]}}' ;;
-  *nginx*) echo '{"config":{"Entrypoint":["/docker-entrypoint.sh"],"Cmd":["nginx","-g","daemon off;"],"Env":["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin","NGINX_VERSION=1.30.6","PKG_RELEASE=1","DYNPKG_RELEASE=1"]}}' ;;
+  *nginx*) echo '{"config":{"Entrypoint":["/docker-entrypoint.sh"],"Cmd":["nginx","-g","daemon off;"],"Env":["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin","NGINX_VERSION=1.30.7","PKG_RELEASE=1","DYNPKG_RELEASE=1"]}}' ;;
   *attestation-api*) echo '{"config":{"Entrypoint":["/attestation-api"],"Env":["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"]}}' ;;
   *) echo '{"config":{"Entrypoint":["/c8s"],"Env":["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin","SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"]}}' ;;
   esac ;;

@@ -392,7 +392,7 @@ func newDetachCmd(a Attacher) *cobra.Command {
 		Long: `Unwind what 'attach' built for <name>.
 
 This removes the device, not the image: the ciphertext stays where it is, and
-the key stays in CDS. A volume still mounted into a running pod should be
+the key stays in Trust Authority. A volume still mounted into a running pod should be
 released by deleting that pod first — the node tears a mount down when the pod's
 cgroup goes away.`,
 		Args:         cobra.ExactArgs(1),

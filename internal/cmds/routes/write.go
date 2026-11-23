@@ -12,10 +12,10 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
-	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
-	pkgroutes "github.com/confidential-dot-ai/c8s/pkg/routes"
-	"github.com/confidential-dot-ai/c8s/pkg/routesclient"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
+	pkgroutes "github.com/confidential-dot-ai/confidential-kubernetes/pkg/routes"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/routesclient"
 )
 
 func newPutCmd(o *options) *cobra.Command {
@@ -24,7 +24,7 @@ func newPutCmd(o *options) *cobra.Command {
 		Use:   "put <file>",
 		Short: "Sign and store a manifest file verbatim",
 		Long: `Validate a manifest file, sign its exact bytes with --operator-key and store
-them on CDS. Its revision must be greater than the stored one.`,
+them on the Trust Authority. Its revision must be greater than the stored one.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			manifest, m, err := readManifest(args[0])
@@ -50,7 +50,7 @@ them on CDS. Its revision must be greater than the stored one.`,
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "validate the file and print its revision and digest without calling CDS")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "validate the file and print its revision and digest without calling Trust Authority")
 	return cmd
 }
 
@@ -66,20 +66,20 @@ func newAddCmd(o *options) *cobra.Command {
 		Use:   "add",
 		Short: "Add or replace one route and store the next revision",
 		Long: `Fetch the stored manifest, verify it against --operator-keys (required once
-CDS stores one), add a route for --host, and store the next revision. notBefore
+Trust Authority stores one), add a route for --host, and store the next revision. notBefore
 becomes now, or keeps the stored value when it is later. A route with the same
---path and --match is replaced. When CDS stores no route manifest, add refuses
+--path and --match is replaced. When Trust Authority stores no route manifest, add refuses
 unless --new is passed, and then writes a new one with --max-age; otherwise it
-keeps the stored maxAgeSeconds. After a CDS reset, 'c8s routes put' your last
+keeps the stored maxAgeSeconds. After a Trust Authority reset, 'c8s routes put' your last
 manifest instead: once routers apply manifests, a new one outranks the routes
 they hold and drops all but this one.
---dry-run also fetches the stored manifest from CDS.
+--dry-run also fetches the stored manifest from the Trust Authority.
 
 Name the backend in one of two ways:
   --workload            an allowlist workload name; the router requires it in
                         the backend's named leaf.
   --server-name, --ca   a TLS server name and a PEM file of trust anchors; the
-                        anchors must not include the CDS mesh CA.`,
+                        anchors must not include the Trust Authority mesh CA.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if (workload == "") == (serverName == "" && ca == "") {
@@ -121,9 +121,9 @@ Name the backend in one of two ways:
 	f.StringVar(&serverName, "server-name", "", "TLS server name of an address backend")
 	f.StringVar(&ca, "ca", "", "PEM file of trust anchors for an address backend")
 	f.DurationVar(&maxAge, "max-age", 24*time.Hour, "maxAgeSeconds of a manifest --new starts; otherwise add keeps the stored value")
-	f.BoolVar(&newManifest, "new", false, "start a new manifest when CDS stores none (the first route of a cluster)")
+	f.BoolVar(&newManifest, "new", false, "start a new manifest when the Trust Authority stores none (the first route of a cluster)")
 	bindRevisionFlag(f, &revision)
-	f.BoolVar(&dryRun, "dry-run", false, "fetch the stored manifest from CDS and print the new one without storing it")
+	f.BoolVar(&dryRun, "dry-run", false, "fetch the stored manifest from the Trust Authority and print the new one without storing it")
 	cmdsutil.RequireFlags(cmd, "host", "path", "address")
 	return cmd
 }
@@ -141,7 +141,7 @@ func newRmCmd(o *options) *cobra.Command {
 the route of --host at --path, and store the next revision. notBefore becomes
 now, or keeps the stored value when it is later. A host left with no routes is
 removed. Pass --match when the host has both an exact and a prefix route at
---path. --dry-run also fetches the stored manifest from CDS.`,
+--path. --dry-run also fetches the stored manifest from the Trust Authority.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if match != "" && match != string(pkgroutes.MatchExact) && match != string(pkgroutes.MatchPrefix) {
@@ -157,7 +157,7 @@ removed. Pass --match when the host has both an exact and a prefix route at
 	f.StringVar(&path, "path", "", "route path (required)")
 	f.StringVar(&match, "match", "", "exact or prefix; needed only when both exist at --path")
 	bindRevisionFlag(f, &revision)
-	f.BoolVar(&dryRun, "dry-run", false, "fetch the stored manifest from CDS and print the new one without storing it")
+	f.BoolVar(&dryRun, "dry-run", false, "fetch the stored manifest from the Trust Authority and print the new one without storing it")
 	cmdsutil.RequireFlags(cmd, "host", "path")
 	return cmd
 }
@@ -174,7 +174,7 @@ func newAddPatternCmd(o *options) *cobra.Command {
 		Use:   "add-pattern",
 		Short: "Add or replace one pattern rule and store the next revision",
 		Long: `Fetch the stored manifest, verify it against --operator-keys (required once
-CDS stores one), add a pattern rule for --host-suffix, and store the next
+Trust Authority stores one), add a pattern rule for --host-suffix, and store the next
 revision, as 'add' does. A pattern with the same --host-suffix is replaced.
 
 A pattern sends every request for <label>.<host-suffix> to the agent with that
@@ -202,9 +202,9 @@ pattern.`,
 	f.StringVar(&p.Workload, "workload", "", "allowlist workload name the agent's named leaf must carry (required)")
 	f.Uint16Var(&p.Port, "port", 0, "application port the agent serves on (required)")
 	f.DurationVar(&maxAge, "max-age", 24*time.Hour, "maxAgeSeconds of a manifest --new starts; otherwise the stored value is kept")
-	f.BoolVar(&newManifest, "new", false, "start a new manifest when CDS stores none")
+	f.BoolVar(&newManifest, "new", false, "start a new manifest when the Trust Authority stores none")
 	bindRevisionFlag(f, &revision)
-	f.BoolVar(&dryRun, "dry-run", false, "fetch the stored manifest from CDS and print the new one without storing it")
+	f.BoolVar(&dryRun, "dry-run", false, "fetch the stored manifest from the Trust Authority and print the new one without storing it")
 	cmdsutil.RequireFlags(cmd, "host-suffix", "workload", "port")
 	return cmd
 }
@@ -230,7 +230,7 @@ the pattern rule for --host-suffix, and store the next revision.`,
 	f := cmd.Flags()
 	f.StringVar(&hostSuffix, "host-suffix", "", "host suffix of the pattern (required)")
 	bindRevisionFlag(f, &revision)
-	f.BoolVar(&dryRun, "dry-run", false, "fetch the stored manifest from CDS and print the new one without storing it")
+	f.BoolVar(&dryRun, "dry-run", false, "fetch the stored manifest from the Trust Authority and print the new one without storing it")
 	cmdsutil.RequireFlags(cmd, "host-suffix")
 	return cmd
 }
@@ -241,7 +241,7 @@ func bindRevisionFlag(f *pflag.FlagSet, revision *uint64) {
 
 // NextRevision returns the revision after stored (C6): revision when nonzero,
 // else the later of stored+1 and now in Unix seconds, so a manifest written
-// after a CDS reset outranks the revisions routers keep once they apply
+// after a Trust Authority reset outranks the revisions routers keep once they apply
 // manifests.
 func NextRevision(stored, revision uint64, now time.Time) (uint64, error) {
 	if revision == 0 {
@@ -254,7 +254,7 @@ func NextRevision(stored, revision uint64, now time.Time) (uint64, error) {
 }
 
 // edit fetches the stored manifest, applies change, and stores the result at
-// NextRevision. newMaxAge > 0 lets it start a new manifest when CDS stores
+// NextRevision. newMaxAge > 0 lets it start a new manifest when the Trust Authority stores
 // none; otherwise it refuses.
 func (o *options) edit(cmd *cobra.Command, dryRun bool, newMaxAge time.Duration, revision uint64, change func(*pkgroutes.Manifest) (string, error)) error {
 	var signer operatorauth.Authorizer
@@ -283,9 +283,9 @@ func (o *options) edit(cmd *cobra.Command, dryRun bool, newMaxAge time.Duration,
 	case errors.Is(err, routesclient.ErrNotFound) && newMaxAge > 0:
 		m = &pkgroutes.Manifest{MaxAge: newMaxAge, Hosts: map[string]pkgroutes.Host{}}
 	case errors.Is(err, routesclient.ErrNotFound):
-		// A CDS reset also looks like this. Once routers apply manifests, a
+		// A Trust Authority reset also looks like this. Once routers apply manifests, a
 		// new one outranks the routes they hold and drops all but this one.
-		return errors.New("CDS stores no route manifest. After a CDS reset, 'c8s routes put' the last manifest you stored; to start the first one, run 'c8s routes add --new'")
+		return errors.New("the Trust Authority stores no route manifest. After a Trust Authority reset, 'c8s routes put' the last manifest you stored; to start the first one, run 'c8s routes add --new'")
 	case err != nil:
 		return err
 	default:

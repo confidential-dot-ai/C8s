@@ -1,4 +1,4 @@
-// The mesh endpoint's seeded launch. CDS serves the chart's seed and the node
+// The mesh endpoint's seeded launch. Trust Authority serves the chart's seed and the node
 // image bakes it, and the enforcer admits a container that either the measured
 // base or the served document admits — so a seed entry wider than the measured
 // base (images/node-guest/worker/image-policy.yaml.in) is what the mesh image may
@@ -11,7 +11,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/utils/ptr"
 
-	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
 const (
@@ -83,7 +83,7 @@ func TestChartSeedPinsTheMeshEndpointLaunch(t *testing.T) {
 		"@ROUTER_DIGEST@":   chartImageDigest(t, componentsFile, "routerNginx", "image", "digest"),
 	}).BuildIndex()
 
-	// CDS refuses to issue a certificate to a pod running a digest its
+	// Trust Authority refuses to issue a certificate to a pod running a digest its
 	// allowlist does not list, so the entry stays, pinned rather than absent.
 	if !seed.AdmitsDigest(meshSeedDigest) {
 		t.Fatal("the seed lists no mesh digest, so no member pod is issued a certificate")

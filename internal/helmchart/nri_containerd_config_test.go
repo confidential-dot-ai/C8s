@@ -7,7 +7,7 @@ import (
 
 	toml "github.com/pelletier/go-toml/v2"
 
-	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
 // nriPlugin is containerd's NRI plugin id: the one table its NRI

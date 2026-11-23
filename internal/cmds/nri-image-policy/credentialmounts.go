@@ -7,20 +7,20 @@ import (
 
 	"github.com/containerd/nri/pkg/api"
 
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 // containerMounts bind-mounts what the node hands a credential client,
 // read-only: the inventory's socket directory at
 // workloadclaims.SidecarSocketDir into the socket consumers
-// (workloadclaims.IsSocketConsumer) of an injected pod, the node's CDS
-// attestation policy at workloadclaims.CDSPinsPath, and the CDS endpoint it
+// (workloadclaims.IsSocketConsumer) of an injected pod, the node's Trust Authority
+// attestation policy at workloadclaims.CDSPinsPath, and the Trust Authority endpoint it
 // dials at workloadclaims.CDSAddressPath. All are OCI-level replacements for a
 // pod-spec hostPath volume, which PodSecurity baseline and restricted would
 // reject. nil for every other container, and whenever the inventory is
 // disabled.
 //
-// The two policy mounts are what make the CDS a client reaches trusted: it
+// The two policy mounts are what make the Trust Authority a client reaches trusted: it
 // reads compiled paths, so a pod cannot name another source and the control
 // plane cannot pass one as an argument. A container running as the credentials
 // identity that this node's measured base grants no such role is refused.
@@ -30,14 +30,14 @@ func (c nodeCVM) containerMounts(ctx context.Context, pod *api.PodSandbox, ctr *
 		if err := p.refusedUntilFirstDecree(); err != nil {
 			return nil, err
 		}
-		return p.routerCDSMount(), nil
+		return p.routerTAMount(), nil
 	}
 	injected := injectedCredentialSidecar(pod, ctr)
 	if !holdsCredentialsIdentity(ctr) && !injected {
 		return nil, nil
 	}
 	if holdsCredentialsIdentity(ctr) && p.measuredRole(ctx, pod, ctr) != CredentialRole {
-		return nil, fmt.Errorf("container %q runs as the credentials identity (uid %d) but this node's measured base grants it no %s role, so it would reach CDS unpinned",
+		return nil, fmt.Errorf("container %q runs as the credentials identity (uid %d) but this node's measured base grants it no %s role, so it would reach Trust Authority unpinned",
 			ctr.GetName(), workloadclaims.CredentialsUID, CredentialRole)
 	}
 	socketDir := ""
@@ -47,8 +47,8 @@ func (c nodeCVM) containerMounts(ctx context.Context, pod *api.PodSandbox, ctr *
 	var mounts []*api.Mount
 	for _, bind := range []struct{ source, destination string }{
 		{socketDir, workloadclaims.SidecarSocketDir},
-		{p.cdsPins, workloadclaims.CDSPinsPath},
-		{p.cdsAddress, workloadclaims.CDSAddressPath},
+		{p.taPins, workloadclaims.CDSPinsPath},
+		{p.taAddress, workloadclaims.CDSAddressPath},
 	} {
 		if bind.source != "" && takesNodeMount(pod, ctr, bind.destination) {
 			mounts = append(mounts, readOnlyBind(bind.source, bind.destination))
@@ -76,13 +76,13 @@ func (c podCVM) containerMounts(_ context.Context, _ *api.PodSandbox, _ *api.Con
 // creation.
 func (p *plugin) refusedUntilFirstDecree() error {
 	if p.awaitingDecree.Load() {
-		return errors.New("the node is still taking its first CDS pin decree; retry once it has")
+		return errors.New("the node is still taking its first Trust Authority pin decree; retry once it has")
 	}
 	return nil
 }
 
 // holdsCredentialsIdentity reports whether this container runs as the identity
-// the pod ruleset admits the node's CDS for. The grant itself is the measured
+// the pod ruleset admits the node's Trust Authority for. The grant itself is the measured
 // role.
 func holdsCredentialsIdentity(ctr *api.Container) bool {
 	return ctr.GetUser().GetUid() == workloadclaims.CredentialsUID
@@ -90,7 +90,7 @@ func holdsCredentialsIdentity(ctr *api.Container) bool {
 
 // fetchesRouteManifest reports whether this container is the one the router's
 // route manifest comes through: its attest sidecar, on the upstream identity
-// that pod's ruleset admits the node's CDS for (meshgate_linux.go). The pod is
+// that pod's ruleset admits the node's Trust Authority for (meshgate_linux.go). The pod is
 // the chart's own in a namespace the enforcer compiles in, and the measured
 // base binds every container of it to a role, so the name holds no privilege
 // of its own.
@@ -100,17 +100,17 @@ func fetchesRouteManifest(pod *api.PodSandbox, ctr *api.Container) bool {
 		ctr.GetUser().GetUid() == workloadclaims.UpstreamUID
 }
 
-// routerCDSMount is the CDS endpoint and the node's CDS pins: without the
+// routerTAMount is the Trust Authority endpoint and the node's Trust Authority pins: without the
 // followed pins the router loses its routes the moment an image roll retires
 // its launch-time set. The pins land at a path of their own, so the router is
 // not handed a credential client's trust root.
-func (p *plugin) routerCDSMount() *api.ContainerAdjustment {
+func (p *plugin) routerTAMount() *api.ContainerAdjustment {
 	var mounts []*api.Mount
-	if p.cdsAddress != "" {
-		mounts = append(mounts, readOnlyBind(p.cdsAddress, workloadclaims.CDSAddressPath))
+	if p.taAddress != "" {
+		mounts = append(mounts, readOnlyBind(p.taAddress, workloadclaims.CDSAddressPath))
 	}
-	if p.cdsPins != "" {
-		mounts = append(mounts, readOnlyBind(p.cdsPins, workloadclaims.RouterCDSPinsPath))
+	if p.taPins != "" {
+		mounts = append(mounts, readOnlyBind(p.taPins, workloadclaims.RouterCDSPinsPath))
 	}
 	if len(mounts) == 0 {
 		return nil

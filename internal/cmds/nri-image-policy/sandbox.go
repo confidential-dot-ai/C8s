@@ -7,9 +7,9 @@ import (
 
 	"github.com/containerd/nri/pkg/api"
 
-	"github.com/confidential-dot-ai/c8s/internal/audit"
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/audit"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 // Sandbox policy modes (policy.sandbox). The policy is the fixed host-privilege
@@ -167,11 +167,12 @@ type hostBindGrant interface {
 // declaredBindGrant hands a launch the binds an allowlist entry declares for it.
 type declaredBindGrant struct {
 	policy *policyStore
+	snap   *policySnapshot
 	launch allowlist.RunningContainer
 }
 
 func (g declaredBindGrant) grants(m allowlist.ObservedMount) bool {
-	return g.policy.grantsHostBind(g.launch, m)
+	return g.policy.grantsHostBind(g.snap, g.launch, m)
 }
 
 // noBindGrant hands a launch no bind.
@@ -354,8 +355,8 @@ func grantsBind(source, destination string, mounts []allowlist.ObservedMount, gr
 // enforcerMounts names the sources this enforcer binds into a container itself.
 type enforcerMounts struct {
 	socketDir      string
-	cdsPins        string
-	cdsAddress     string
+	taPins         string
+	taAddress      string
 	clientDocument string
 }
 
@@ -383,9 +384,9 @@ func takesNodeMount(pod *api.PodSandbox, ctr *api.Container, destination string)
 func isInjectedNodeMount(pod *api.PodSandbox, ctr *api.Container, m *api.Mount, own enforcerMounts) bool {
 	source := map[string]string{
 		workloadclaims.SidecarSocketDir:   own.socketDir,
-		workloadclaims.CDSPinsPath:        own.cdsPins,
-		workloadclaims.RouterCDSPinsPath:  own.cdsPins,
-		workloadclaims.CDSAddressPath:     own.cdsAddress,
+		workloadclaims.CDSPinsPath:        own.taPins,
+		workloadclaims.RouterCDSPinsPath:  own.taPins,
+		workloadclaims.CDSAddressPath:     own.taAddress,
 		workloadclaims.ClientDocumentPath: own.clientDocument,
 	}[m.GetDestination()]
 	return source != "" && m.GetSource() == source && endsReadOnly(m) && takesNodeMount(pod, ctr, m.GetDestination())

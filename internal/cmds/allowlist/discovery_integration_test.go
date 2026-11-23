@@ -30,12 +30,12 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
-	"github.com/confidential-dot-ai/c8s/internal/localverify"
-	"github.com/confidential-dot-ai/c8s/internal/routerdiscovery"
-	"github.com/confidential-dot-ai/c8s/internal/testutil"
-	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
-	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/localverify"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/routerdiscovery"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
+	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
 )
 
 // workloadWrites is the set of workload names written through the fake front
@@ -47,7 +47,7 @@ type workloadWrites struct {
 
 // routerServer stands in for the router front door: a TLS server whose serving
 // cert carries NO armTLS extension, serving its discovery document plus the
-// CDS allowlist read and workload-write handlers it proxies. Every response
+// Trust Authority allowlist read and workload-write handlers it proxies. Every response
 // carries Connection: close, like nginx locations with keepalive_timeout 0.
 func routerServer(t *testing.T, measurementChallenge []byte) (*httptest.Server, *workloadWrites) {
 	t.Helper()
@@ -91,7 +91,7 @@ func routerServer(t *testing.T, measurementChallenge []byte) (*httptest.Server, 
 	mux.HandleFunc("GET /allowlist", seededAllowlistHandler(t))
 	// A whole-document write, conditional on the served version, writes the
 	// entries it adds, changes or drops relative to the served document. The
-	// operator signature is CDS's to check; the front door only relays.
+	// operator signature is Trust Authority's to check; the front door only relays.
 	seeded := seededAllowlist(t)
 	mux.HandleFunc("PUT /allowlist", func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("If-Match") != `"1"` {
@@ -150,7 +150,7 @@ func seededAllowlist(t *testing.T) *pkgallowlist.Allowlist {
 }
 
 // seededAllowlistHandler serves a canonical allowlist (one entry admitting
-// digA) as CDS's read endpoint would.
+// digA) as Trust Authority's read endpoint would.
 func seededAllowlistHandler(t *testing.T) http.HandlerFunc {
 	t.Helper()
 	al := seededAllowlist(t)
@@ -173,32 +173,32 @@ func approvingVerify(measurement []byte) localverify.VerifyFunc {
 			return nil, localverify.ErrMeasurementNotAllowed
 		}
 		match := true
-		return &teetypes.VerificationResult{SignatureValid: true, ReportDataMatch: &match}, nil
+		result := &teetypes.VerificationResult{Platform: teetypes.NormalizePlatform(platform), SignatureValid: true, ReportDataMatch: &match}
+		result.Claims.LaunchDigest = hex.EncodeToString(measurement)
+		return result, nil
 	}
 }
 
-// boundCDSVerify approves the fixture's evidence as this cluster's CDS: one
-// launch digest, bound to the launch file writeCDSPin names.
-func boundCDSVerify(measurement []byte) localverify.VerifyFunc {
+// boundTAVerify approves the fixture's evidence as this cluster's Trust Authority: one
+// launch digest, bound to the launch file writeTAPin names.
+func boundTAVerify(measurement []byte) localverify.VerifyFunc {
 	return func(ctx context.Context, platform string, evidence json.RawMessage, p localverify.Params) (*teetypes.VerificationResult, error) {
 		result, err := approvingVerify(measurement)(ctx, platform, evidence, p)
 		if err != nil {
 			return nil, err
 		}
-		result.Platform = teetypes.PlatformSNP
-		result.Claims.LaunchDigest = hex.EncodeToString(measurement)
-		binding := runtimemeasure.HostData([]byte(testutil.CDSLaunchFile))
+		binding := runtimemeasure.HostData([]byte(testutil.TALaunchFile))
 		result.Claims.InitData = binding[:]
 		return result, nil
 	}
 }
 
-// writeCDSPin stages the pin a direct CDS URL requires: the measurement bound
-// to the exact launch file that CDS runs on.
-func writeCDSPin(t *testing.T, measurement []byte) string {
+// writeTAPin stages the pin a direct Trust Authority URL requires: the measurement bound
+// to the exact launch file that Trust Authority runs on.
+func writeTAPin(t *testing.T, measurement []byte) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "cds-pin.json")
-	document := testutil.CDSPinDocument(hex.EncodeToString(measurement), testutil.CDSLaunchFile)
+	document := testutil.TAPinDocument(hex.EncodeToString(measurement), testutil.TALaunchFile)
 	if err := os.WriteFile(path, []byte(document), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -288,22 +288,22 @@ func TestListThroughRouterFailsClosed(t *testing.T) {
 	}
 }
 
-// cdsBehindRouterRenewingOnEveryRequest puts fakeCDS behind a router that
+// taBehindRouterRenewingOnEveryRequest puts fakeTA behind a router that
 // renews its serving cert on every allowlist request, as after an allowlist
 // change, and closes that request's connection, as nginx does to an idle or
 // minute-old connection. So every request after the first needs a new
 // connection to a leaf the client has not attested yet.
-func cdsBehindRouterRenewingOnEveryRequest(t *testing.T, pinned []*ecdsa.PublicKey) (*testutil.RenewingRouter, *fakeCDS) {
+func taBehindRouterRenewingOnEveryRequest(t *testing.T, pinned []*ecdsa.PublicKey) (*testutil.RenewingRouter, *fakeTA) {
 	t.Helper()
-	cds := newFakeCDS(pinned)
+	ta := newFakeTA(pinned)
 	router := testutil.NewRenewingRouter(t, func(router *testutil.RenewingRouter) http.Handler {
-		backend := testutil.CloseEveryResponse(cds.mux())
+		backend := testutil.CloseEveryResponse(ta.mux())
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			router.Renew()
 			backend.ServeHTTP(w, r)
 		})
 	})
-	return router, cds
+	return router, ta
 }
 
 // TestWritesThroughARenewingRouter is the command-level regression test for a
@@ -314,8 +314,8 @@ func TestWritesThroughARenewingRouter(t *testing.T) {
 
 	t.Run("edit", func(t *testing.T) {
 		keyPath, pub := newOperatorKeypair(t, t.TempDir(), "op.key")
-		router, cds := cdsBehindRouterRenewingOnEveryRequest(t, []*ecdsa.PublicKey{pub})
-		cds.seedWorkload("web", mustParseAllowlist(t, `{"schema":"c8s.allowlist/v1","workloads":{
+		router, ta := taBehindRouterRenewingOnEveryRequest(t, []*ecdsa.PublicKey{pub})
+		ta.seedWorkload("web", mustParseAllowlist(t, `{"schema":"c8s.allowlist/v1","workloads":{
 			"web":{"containers":[`+ctrJSON(digA, "/app")+`]}}}`).Workloads["web"])
 		setEditor(t, `{"label":"v2","containers":[`+ctrJSON(digA, "/app")+`]}`)
 
@@ -323,14 +323,14 @@ func TestWritesThroughARenewingRouter(t *testing.T) {
 		if _, errOut, err := runCmdWithIn(approvingVerify(measurement), "y\n", args...); err != nil {
 			t.Fatalf("edit through a renewing router: %v (stderr: %s)", err, errOut)
 		}
-		if wl, _ := cds.workload("web"); wl.Label != "v2" {
+		if wl, _ := ta.workload("web"); wl.Label != "v2" {
 			t.Fatalf("label = %q, want v2", wl.Label)
 		}
 	})
 
 	t.Run("apply two entries", func(t *testing.T) {
 		keyPath, pub := newOperatorKeypair(t, t.TempDir(), "op.key")
-		router, cds := cdsBehindRouterRenewingOnEveryRequest(t, []*ecdsa.PublicKey{pub})
+		router, ta := taBehindRouterRenewingOnEveryRequest(t, []*ecdsa.PublicKey{pub})
 		file := writeFile(t, "wl.json", `{"schema":"c8s.allowlist/v1","workloads":{
 			"web":{"containers":[`+ctrJSON(digA, "/app")+`]},
 			"worker":{"containers":[`+ctrJSON(digB, "/work")+`]}}}`)
@@ -339,16 +339,16 @@ func TestWritesThroughARenewingRouter(t *testing.T) {
 		if _, errOut, err := runCmdWith(approvingVerify(measurement), args...); err != nil {
 			t.Fatalf("apply through a renewing router: %v (stderr: %s)", err, errOut)
 		}
-		if got := cds.count(); got != 2 {
+		if got := ta.count(); got != 2 {
 			t.Fatalf("store has %d entries, want 2", got)
 		}
 	})
 }
 
-// armtlsCDSServer stands in for the cluster's CDS VM: a TLS server whose
+// armtlsTAServer stands in for the cluster's Trust Authority VM: a TLS server whose
 // serving cert DOES carry the armTLS extension (an embedded SNP envelope),
 // serving the allowlist read handler and no discovery document.
-func armtlsCDSServer(t *testing.T) *httptest.Server {
+func armtlsTAServer(t *testing.T) *httptest.Server {
 	t.Helper()
 
 	key, _, err := armtls.GenerateKeyPair()
@@ -380,7 +380,7 @@ func armtlsCDSServer(t *testing.T) *httptest.Server {
 // cert-key anchor — then reads the allowlist over the verified handshake.
 func TestListDirectARMTLS(t *testing.T) {
 	measurement := bytes.Repeat([]byte{0x42}, armtls.SNPMeasurementSize)
-	cds := armtlsCDSServer(t)
+	ta := armtlsTAServer(t)
 
 	var sawVerify bool
 	verify := func(ctx context.Context, platform string, evidence json.RawMessage, p localverify.Params) (*teetypes.VerificationResult, error) {
@@ -391,15 +391,15 @@ func TestListDirectARMTLS(t *testing.T) {
 		if len(p.ExpectedReportData) != sha512.Size384 {
 			t.Fatalf("expected_report_data is %d bytes, want the unpadded %d-byte cert-key anchor", len(p.ExpectedReportData), sha512.Size384)
 		}
-		return boundCDSVerify(measurement)(ctx, platform, evidence, p)
+		return boundTAVerify(measurement)(ctx, platform, evidence, p)
 	}
 
 	out, errOut, err := runCmdWith(verify, "list",
-		"--url", cds.URL,
-		"--image-policy-file", writeCDSPin(t, measurement),
+		"--url", ta.URL,
+		"--image-policy-file", writeTAPin(t, measurement),
 	)
 	if err != nil {
-		t.Fatalf("list against a direct armTLS CDS failed: %v (stderr: %s)", err, errOut)
+		t.Fatalf("list against a direct armTLS Trust Authority failed: %v (stderr: %s)", err, errOut)
 	}
 	if !sawVerify {
 		t.Fatal("evidence verifier was not called")
@@ -414,11 +414,11 @@ func TestListDirectARMTLS(t *testing.T) {
 func TestListDirectARMTLSFailsClosed(t *testing.T) {
 	pinned := bytes.Repeat([]byte{0x42}, armtls.SNPMeasurementSize)
 	reported := bytes.Repeat([]byte{0x01}, armtls.SNPMeasurementSize)
-	cds := armtlsCDSServer(t)
+	ta := armtlsTAServer(t)
 
-	_, _, err := runCmdWith(boundCDSVerify(reported), "list",
-		"--url", cds.URL,
-		"--image-policy-file", writeCDSPin(t, pinned),
+	_, _, err := runCmdWith(boundTAVerify(reported), "list",
+		"--url", ta.URL,
+		"--image-policy-file", writeTAPin(t, pinned),
 	)
 	if err == nil {
 		t.Fatal("expected a measurement mismatch to fail the command")

@@ -10,10 +10,10 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/volume"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/volumed"
-	"github.com/confidential-dot-ai/c8s/internal/testutil"
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/volume"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/volumed"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 const e2ePodUID = "3f4a1b2c-5d6e-7f80-9a0b-1c2d3e4f5061"
@@ -135,11 +135,11 @@ func startDaemon(t *testing.T, dir string) *recordingOps {
 }
 
 // The whole delivery path in one test: the sidecar redeems a token from a real
-// inventory, reads the blob from CDS, and hands it to a real volumed, which
+// inventory, reads the blob from the Trust Authority, and hands it to a real volumed, which
 // opens the device and mounts it into the pod's own emptyDir.
 func TestSidecarOpensAVolumeEndToEnd(t *testing.T) {
 	endpoint := "unix://" + testutil.StartInventory(t)
-	_, url := newFakeCDS(t, map[string][]reply{
+	_, url := newFakeTA(t, map[string][]reply{
 		"GET /secrets/tenant-a/volumes/weights": {{status: http.StatusOK, value: testBlobJSON(t)}},
 	})
 
@@ -172,7 +172,7 @@ func TestSidecarOpensAVolumeEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	if string(ops.key) != string(stored) {
-		t.Error("the key handed to dm-crypt is not the one CDS released")
+		t.Error("the key handed to dm-crypt is not the one Trust Authority released")
 	}
 	if ops.verity.RootHash != testBlob(t).Verity.RootHash {
 		t.Error("the verity anchor did not come from the blob")
@@ -196,7 +196,7 @@ func TestSidecarOpensAVolumeEndToEnd(t *testing.T) {
 // mapping for it.
 func TestSidecarRepeatIsIdempotent(t *testing.T) {
 	endpoint := "unix://" + testutil.StartInventory(t)
-	_, url := newFakeCDS(t, map[string][]reply{
+	_, url := newFakeTA(t, map[string][]reply{
 		"GET /secrets/tenant-a/volumes/weights": {
 			{status: http.StatusOK, value: testBlobJSON(t)},
 			{status: http.StatusOK, value: testBlobJSON(t)},
@@ -226,8 +226,14 @@ func TestSidecarRepeatIsIdempotent(t *testing.T) {
 // mistaken for success.
 func TestSidecarReportsADaemonRefusal(t *testing.T) {
 	endpoint := "unix://" + testutil.StartInventory(t)
-	_, url := newFakeCDS(t, map[string][]reply{
-		"GET /secrets/tenant-a/volumes/weights": {{status: http.StatusOK, value: testBlobJSON(t)}},
+	blob := testBlob(t)
+	blob.Name = "absent"
+	raw, err := blob.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, url := newFakeTA(t, map[string][]reply{
+		"GET /secrets/tenant-a/volumes/absent": {{status: http.StatusOK, value: raw}},
 	})
 
 	socketDir := t.TempDir()
@@ -236,7 +242,7 @@ func TestSidecarReportsADaemonRefusal(t *testing.T) {
 	cfg := flowConfig(t, url)
 	cfg.SocketDir = socketDir
 	// A volume the pod has no emptyDir for: the daemon has nowhere to mount it.
-	cfg.Volumes = []volumeRequest{{Name: "absent", Path: "/tenant-a/volumes/weights"}}
+	cfg.Volumes = []volumeRequest{{Name: "absent", Path: "/tenant-a/volumes/absent"}}
 	daemon, daemonBase := daemonClient(cfg)
 	if err := openAllWith(context.Background(), cfg, http.DefaultClient, testKey(t), endpoint, daemon, daemonBase); err == nil {
 		t.Fatal("a refused open was reported as success")
@@ -247,7 +253,7 @@ func TestSidecarReportsADaemonRefusal(t *testing.T) {
 // mounts the crypt device itself, writable ext4.
 func TestSidecarOpensAMutableVolumeEndToEnd(t *testing.T) {
 	endpoint := "unix://" + testutil.StartInventory(t)
-	_, url := newFakeCDS(t, map[string][]reply{
+	_, url := newFakeTA(t, map[string][]reply{
 		"GET /secrets/tenant-a/volumes/weights": {{status: http.StatusOK, value: testMutableBlobJSON(t)}},
 	})
 
@@ -295,7 +301,7 @@ func containsDir(path, want string) bool {
 // as SIGTERM leaves it — and the daemon unwinds the pod's whole stack.
 func TestSidecarClosesItsVolumesAtTermination(t *testing.T) {
 	endpoint := "unix://" + testutil.StartInventory(t)
-	_, url := newFakeCDS(t, map[string][]reply{
+	_, url := newFakeTA(t, map[string][]reply{
 		"GET /secrets/tenant-a/volumes/weights": {{status: http.StatusOK, value: testBlobJSON(t)}},
 	})
 

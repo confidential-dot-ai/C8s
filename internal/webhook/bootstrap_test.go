@@ -27,7 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
-	"github.com/confidential-dot-ai/c8s/internal/issuer"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/issuer"
 )
 
 func TestBootstrapServingCertWritesLeafToCertDir(t *testing.T) {

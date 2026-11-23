@@ -19,11 +19,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/internal/pendingattestation"
-	"github.com/confidential-dot-ai/c8s/internal/readutil"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
-	"github.com/confidential-dot-ai/c8s/pkg/overenc"
-	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/pendingattestation"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/readutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/overenc"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
 )
 
 // gatherFromAttestLB fetches attest-lb evidence over one TLS connection and
@@ -133,7 +133,7 @@ func evidenceFromAttestLBJSON(data, nonce, servingLeaf []byte, fresh bool, route
 	if err != nil {
 		return nil, err
 	}
-	leaf, ca, err := committedMeshChain(r.CDSCertPEM, r.IdentityProof)
+	leaf, ca, err := committedMeshChain(r.TACertPEM, r.IdentityProof)
 	if err != nil {
 		return nil, err
 	}

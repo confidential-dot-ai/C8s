@@ -1,13 +1,13 @@
 // Package operatorauth implements the operator-credential scheme that
-// authorizes C8s operator requests: CDS allowlist writes (PUT/DELETE under
+// authorizes C8s operator requests: Trust Authority allowlist writes (PUT/DELETE under
 // /allowlist), route writes (PUT /routes), secret writes (PUT /secrets/*) and
 // secret explain (GET /secrets-explain/*).
 //
-// STOP-GAP DESIGN — pinned public keys. CDS is configured with a set of trusted
+// STOP-GAP DESIGN — pinned public keys. Trust Authority is configured with a set of trusted
 // operator EC public keys. For each write the client mints a short-lived
 // ES256/384/512 JWT signed with an operator EC private key, carrying a `pbh`
 // claim equal to the SHA-256 of the exact request body plus `htm`/`htu` claims
-// naming the method and path. CDS verifies the signature against its pinned
+// naming the method and path. Trust Authority verifies the signature against its pinned
 // keys, re-hashes the body against pbh, matches htm/htu against the request,
 // and rejects any token whose exp−iat exceeds MaxTokenValidity — so a captured
 // token cannot be replayed against a different payload, verb, or path, and
@@ -21,7 +21,7 @@
 // Either way this is the sole authorization path for those requests.
 //
 // ErrTokenReused, ErrTokenBeforeStart and ErrTokenNotRecorded are shared
-// sentinels for CDS's single-use token layer; Verifier never returns them.
+// sentinels for Trust Authority's single-use token layer; Verifier never returns them.
 package operatorauth
 
 import (
@@ -41,7 +41,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 
-	"github.com/confidential-dot-ai/c8s/pkg/certutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
 )
 
 // claimPayloadBodyHash binds a token to a specific request body using
@@ -51,7 +51,7 @@ const claimPayloadBodyHash = "pbh"
 // claimHTTPMethod and claimHTTPPath bind a token to the request's method and
 // path (names per RFC 9449 DPoP).
 // DEVIATION: htu carries only the URL path, not the full URI RFC 9449 specifies
-// — the client-visible host may differ from CDS's behind a proxy or LB.
+// — the client-visible host may differ from the Trust Authority's behind a proxy or LB.
 const (
 	claimHTTPMethod = "htm"
 	claimHTTPPath   = "htu"
@@ -130,7 +130,7 @@ func (s *Signer) WithTTL(ttl time.Duration) *Signer {
 // allowlistclient.Authorizer; the caller must pass the exact method, URL path,
 // and body bytes it will send so the htm/htu/pbh claims match server-side.
 func (s *Signer) Authorization(method, path string, body []byte) (string, error) {
-	// CDS spends each token once, keyed on its signed claims; the jti keeps two
+	// Trust Authority spends each token once, keyed on its signed claims; the jti keeps two
 	// identical writes in the same second from colliding.
 	var jti [16]byte
 	if _, err := rand.Read(jti[:]); err != nil {
@@ -287,7 +287,7 @@ func verifyToken(keys []*ecdsa.PublicKey, tokenStr, method, path string, body []
 }
 
 // ParsePublicKeysPEM parses one or more PEM "PUBLIC KEY" (PKIX/SubjectPublicKeyInfo)
-// blocks into EC public keys. It is the single parser shared by CDS's
+// blocks into EC public keys. It is the single parser shared by the Trust Authority's
 // --operator-keys load path and the install-time validation, and it fails when
 // no EC public key is present so a wrong file cannot silently disable writes.
 func ParsePublicKeysPEM(pemBytes []byte) ([]*ecdsa.PublicKey, error) {

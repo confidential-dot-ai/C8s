@@ -49,7 +49,7 @@ jobs:
               - ".golangci.yml"
               - "charts/**"
               # The integration harness (test/integration) and its mocks
-              # (test/mock-*) gate PRs via the Integration job below.
+              # (test/mock-*) gate merges via the Integration job below.
               - "test/**"
               - "scripts/coverage-gate.sh"
               - "scripts/shipped-deps-guard.sh"
@@ -210,7 +210,9 @@ jobs:
     name: Integration
     runs-on: ubuntu-latest
     needs: changes
-    if: needs.changes.outputs.relevant == 'true'
+    # Main's merge queue runs it instead of PRs into main: it still blocks the
+    # merge, without slowing every PR push.
+    if: needs.changes.outputs.relevant == 'true' && (github.event_name != 'pull_request' || github.base_ref != 'main')
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -224,7 +226,9 @@ jobs:
     name: Integration (cluster)
     runs-on: ubuntu-latest
     needs: changes
-    if: needs.changes.outputs.relevant == 'true'
+    # Main's merge queue runs it instead of PRs into main: it still blocks the
+    # merge, without slowing every PR push.
+    if: needs.changes.outputs.relevant == 'true' && (github.event_name != 'pull_request' || github.base_ref != 'main')
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -330,11 +334,14 @@ jobs:
     name: Mutation (advisory)
     runs-on: ubuntu-latest
     needs: changes
-    # Diff-based vs the base branch; no meaningful base ref on push.
-    if: needs.changes.outputs.relevant == 'true' && (github.event_name == 'pull_request' || github.event_name == 'merge_group')
+    # Diff-based vs the base branch, reported on the PR; the queue gains nothing from it.
+    if: needs.changes.outputs.relevant == 'true' && github.event_name == 'pull_request'
     timeout-minutes: 20
     # Advisory: never blocks the PR, even if the tool itself breaks.
     continue-on-error: true
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -349,19 +356,56 @@ jobs:
           version: v3.14.4
 
       - name: Mutation testing vs base
+        id: mutation
         env:
-          # merge_group names the base branch as a full ref; pull_request does not.
-          BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref }}
+          BASE_REF: ${{ github.base_ref }}
         run: |
           # Leave time for reporting and cleanup before the 20-minute job limit.
-          if timeout --kill-after=30s 12m ./scripts/mutation-check.sh run "origin/${BASE_REF#refs/heads/}"; then
-            :
-          else
-            status=$?
-            echo "::notice::Mutation testing stopped (exit $status; advisory)."
-            echo "Mutation testing incomplete (exit $status; advisory)." >> "$GITHUB_STEP_SUMMARY"
-          fi
-          ./scripts/mutation-check.sh summary >> "$GITHUB_STEP_SUMMARY"
+          status=0
+          timeout --kill-after=30s 12m ./scripts/mutation-check.sh run "origin/$BASE_REF" || status=$?
+          {
+            if [ "$status" -ne 0 ]; then
+              echo "::notice::Mutation testing stopped (exit $status; advisory)." >&2
+              echo "Mutation testing incomplete (exit $status; advisory)."
+              echo
+            fi
+            ./scripts/mutation-check.sh summary
+          } > mutation-summary.md
+          cat mutation-summary.md >> "$GITHUB_STEP_SUMMARY"
+          # A pass: the run finished and no mutant lived or went uncovered.
+          survivors=$(jq '[.files[]?.mutations[]? | select(.status == "LIVED" or .status == "NOT COVERED")] | length' mutation.json 2>/dev/null || echo error)
+          pass=false
+          if [ "$status" -eq 0 ] && [ "$survivors" = 0 ]; then pass=true; fi
+          echo "pass=$pass" >> "$GITHUB_OUTPUT"
+
+      # Fork PRs get a read-only token; their results stay in the step summary.
+      - name: Comment mutation results on the PR
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          PASS: ${{ steps.mutation.outputs.pass }}
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- c8s-mutation-report -->';
+            const pr = context.payload.pull_request;
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              ...context.repo, issue_number: pr.number, per_page: 100,
+            });
+            const prev = comments.find(c => c.body && c.body.includes(marker));
+            // A clean run only refreshes an earlier report, so a fixed PR does not keep stale survivors.
+            if (process.env.PASS === 'true' && !prev) return;
+            const body = [
+              marker,
+              fs.readFileSync('mutation-summary.md', 'utf8').slice(0, 60000),
+              '',
+              `<sub>On ${pr.head.sha.slice(0, 7)}, [run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})</sub>`,
+            ].join('\n');
+            if (prev) {
+              await github.rest.issues.updateComment({...context.repo, comment_id: prev.id, body});
+            } else {
+              await github.rest.issues.createComment({...context.repo, issue_number: pr.number, body});
+            }
 
   result:
     name: CI result

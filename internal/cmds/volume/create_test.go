@@ -9,11 +9,11 @@ import (
 	"strings"
 	"testing"
 
-	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
 // runCreateDryRun drives the command through cobra so flag validation and the
-// build run exactly as they do for an operator, minus the CDS call.
+// build run exactly as they do for an operator, minus the Trust Authority call.
 func runCreateDryRun(t *testing.T, dir string, extra ...string) (string, error) {
 	t.Helper()
 	src := filepath.Join(dir, "src")
@@ -110,7 +110,7 @@ func TestWriteEscrowRefusesToOverwrite(t *testing.T) {
 	if err := os.WriteFile(dest, []byte("existing"), 0o600); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	blob, err := NewBlob(testKey(), validVerity())
+	blob, err := NewBlob("weights", testKey(), validVerity())
 	if err != nil {
 		t.Fatalf("blob: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestWriteEscrowRefusesToOverwrite(t *testing.T) {
 func TestWriteEscrowIsOwnerOnlyAndReloadable(t *testing.T) {
 	dir := t.TempDir()
 	dest := filepath.Join(dir, "escrow.json")
-	blob, err := NewBlob(testKey(), validVerity())
+	blob, err := NewBlob("weights", testKey(), validVerity())
 	if err != nil {
 		t.Fatalf("blob: %v", err)
 	}
@@ -213,7 +213,7 @@ func containsStr(hay []string, needle string) bool {
 }
 
 func TestWriteEscrowReportsAnUnwritableDestination(t *testing.T) {
-	blob, err := NewBlob(testKey(), validVerity())
+	blob, err := NewBlob("weights", testKey(), validVerity())
 	if err != nil {
 		t.Fatalf("blob: %v", err)
 	}

@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/internal/issuer"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/issuer"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 )
 
 func namedLeaf(t *testing.T) *x509.Certificate {
@@ -32,7 +32,7 @@ func leafNaming(t *testing.T, name string) *x509.Certificate {
 	return &x509.Certificate{Extensions: []pkix.Extension{ext}}
 }
 
-// expiring returns a copy of leaf that CDS just issued with the given TTL: no
+// expiring returns a copy of leaf that Trust Authority just issued with the given TTL: no
 // backdated NotBefore, exactly as certutil.NewLeafTemplate builds one.
 func expiring(leaf *x509.Certificate, ttl time.Duration) *x509.Certificate {
 	out := *leaf
@@ -345,7 +345,7 @@ func TestRenewalRetryInterval(t *testing.T) {
 
 func TestValidateConfigUnnamedRenewInterval(t *testing.T) {
 	base := config{
-		CDSURL:            "https://cds:8443",
+		TAURL:             "https://cds:8443",
 		AttestationApiURL: "http://localhost:8400",
 		SAN:               "workload.example.com",
 	}

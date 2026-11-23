@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
-	"github.com/confidential-dot-ai/c8s/internal/strictjson"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/strictjson"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 )
 
 const maxPolicyBytes = 4 << 20
@@ -24,16 +24,16 @@ type Checker struct {
 	verificationURL string
 }
 
-// The client authenticates CDS; evidence and verification belong to this worker.
+// The client authenticates Trust Authority; evidence and verification belong to this worker.
 func New(
 	client *http.Client,
-	cdsURL string,
+	taURL string,
 	evidence *armtls.SelfSignedProvider,
 	verificationURL string,
 ) *Checker {
 	return &Checker{
 		client:          client,
-		measurementsURL: strings.TrimRight(cdsURL, "/") + "/measurements",
+		measurementsURL: strings.TrimRight(taURL, "/") + "/measurements",
 		evidence:        evidence,
 		verificationURL: verificationURL,
 	}

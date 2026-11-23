@@ -27,7 +27,7 @@ type AttestRequestBody struct {
 	// pod (workloadclaims.SignedSandboxToken as JSON): its CRI sandbox ID and
 	// the inventory's callback address, bound to the requester's CSR key and
 	// this request's challenge, signed by the inventory's armTLS key.
-	// CDS verifies the token, asks that inventory which images
+	// Trust Authority verifies the token, asks that inventory which images
 	// the sandbox is running, and stamps the sandbox ID into the leaf
 	// (armtls.OIDSandboxID) — docs/armtls.md, "Sandbox identity". Kept opaque
 	// here (types must not import workloadclaims).
@@ -39,7 +39,7 @@ type AttestRequestBody struct {
 	PodClaims json.RawMessage `json:"pod_claims,omitempty"`
 
 	// RuntimeExtensions is the requester's claimed TDX RTMR[3] runtime
-	// extension list, canonical digests in extend order. CDS replays it
+	// extension list, canonical digests in extend order. Trust Authority replays it
 	// against the quote and trusts only the prefix that matches.
 	RuntimeExtensions []string `json:"runtime_extensions,omitempty"`
 }

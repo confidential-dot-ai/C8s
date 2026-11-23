@@ -15,7 +15,7 @@ import (
 	"github.com/cenkalti/backoff/v5"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-	"github.com/confidential-dot-ai/c8s/pkg/certutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
 )
 
 // Logger is an optional structured logger for armTLS operations.
@@ -65,7 +65,7 @@ type ServerConfig struct {
 	// ClientCA, when set, has crypto/tls verify a presented client certificate
 	// against that root: a leaf that does not chain is rejected in the
 	// handshake. Mutually exclusive with ClientPolicy, which admits a
-	// self-issued armTLS peer — for a handler that reads a CDS-stamped field
+	// self-issued armTLS peer — for a handler that reads a Trust Authority-stamped field
 	// out of the leaf (the sandbox ID), that would let any attested TEE assert
 	// an arbitrary value.
 	//
@@ -538,7 +538,7 @@ func (s *certState) effectiveSyncCooldown() time.Duration {
 
 // SwapProvider atomically replaces the certificate provider and triggers
 // an immediate re-provisioning. Used for runtime upgrades (e.g., self-signed
-// to CDS-issued). The old certificate continues serving until the new one
+// to the Trust Authority-issued). The old certificate continues serving until the new one
 // is ready — if provisioning fails, the old cert and provider remain active.
 func (s *certState) SwapProvider(ctx context.Context, provider CertProvider) error {
 	// Provision with the new provider BEFORE swapping. This prevents a
@@ -627,7 +627,7 @@ func (m *CertManager) SetOnRotationFail(fn func()) {
 
 // SwapProvider replaces the underlying certificate provider at runtime and
 // immediately provisions a certificate from the new provider. Use this for
-// runtime upgrades (e.g., self-signed to CDS-issued).
+// runtime upgrades (e.g., self-signed to the Trust Authority-issued).
 func (m *CertManager) SwapProvider(ctx context.Context, provider CertProvider) error {
 	return m.state.SwapProvider(ctx, provider)
 }
@@ -734,7 +734,7 @@ func certPoolOf(ca *x509.Certificate) *x509.CertPool {
 
 // NewClientTLSConfig creates a tls.Config for an armTLS client. Peer
 // verification checks key-bound TEE evidence of a self-issued certificate; a
-// CDS-issued leaf is verified on the chain path instead
+// Trust Authority-issued leaf is verified on the chain path instead
 // (NewMeshClientTLSConfig).
 //
 // If Platform and AttestFunc are set (or CertProvider is set), the client
@@ -844,10 +844,10 @@ func verifyPeerCallback(policy *VerifyPolicy, peerPurpose x509.ExtKeyUsage) func
 // application byte moves (docs/armtls.md, "The mesh endpoint profile").
 const MeshALPN = "c8s-mesh/1"
 
-// MeshConfig configures a mesh endpoint: it presents its pod's CDS-issued leaf
+// MeshConfig configures a mesh endpoint: it presents its pod's Trust Authority-issued leaf
 // and authenticates peers on the chain path alone.
 type MeshConfig struct {
-	// CertProvider provisions the pod's CDS-issued credentials.
+	// CertProvider provisions the pod's Trust Authority-issued credentials.
 	CertProvider CertProvider
 
 	// MeshCA is the mesh CA a peer's leaf must chain to. Required.
@@ -870,13 +870,13 @@ type Peer struct {
 	// SandboxID is the workload instance the leaf names, never empty.
 	SandboxID string
 	// WorkloadName is the allowlist entry the leaf's attested container set
-	// matched at issuance, empty where CDS stamped none.
+	// matched at issuance, empty where the Trust Authority stamped none.
 	WorkloadName string
 	// AllowlistVersion and AllowlistDigest name the allowlist snapshot that
 	// match was decided under, empty with WorkloadName.
 	AllowlistVersion string
 	AllowlistDigest  []byte
-	// ClientDocumentDigest is the client document digest CDS stamped on the
+	// ClientDocumentDigest is the client document digest Trust Authority stamped on the
 	// leaf, nil where it stamped none.
 	ClientDocumentDigest []byte
 	// Purpose is the TLS purpose the peer's role required of it:
@@ -935,7 +935,7 @@ func newCertificateIdentityVerifiedTLSConfig(cfg *MeshConfig, peerPurpose x509.E
 }
 
 // chainVerifyPeerCallback returns a VerifyPeerCertificate function that
-// authenticates a mesh peer by its CDS-issued chain and the workload instance
+// authenticates a mesh peer by its Trust Authority-issued chain and the workload instance
 // it names, then hands the identity it read to acceptPeer where the endpoint
 // set one. A leaf that does not chain is rejected, never retried against its
 // embedded evidence, so a self-signed peer and a peer from another mesh CA

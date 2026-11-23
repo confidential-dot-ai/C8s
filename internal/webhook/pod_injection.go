@@ -8,9 +8,9 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/volume"
-	"github.com/confidential-dot-ai/c8s/internal/podmesh"
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/volume"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/podmesh"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 // meshContainer is the pod's mesh endpoint: a native sidecar carrying the
@@ -75,7 +75,7 @@ func sanArg(san string) string {
 
 // certWaitTimeout bounds how long c8s-cert-wait blocks before failing (and
 // being restarted by the kubelet, which re-waits). Comfortably exceeds
-// get-cert's own initial-fetch retry so a slow CDS cold start is absorbed in
+// get-cert's own initial-fetch retry so a slow Trust Authority cold start is absorbed in
 // one wait, while a genuinely stuck bootstrap surfaces as Init:Error/CrashLoop
 // rather than a silent Init hang.
 const certWaitTimeout = 3 * time.Minute
@@ -109,8 +109,8 @@ func discoveryArgs(discovery discoverySpec) []string {
 	if discovery.Out != "" {
 		args = append(args, "--discovery-out="+discovery.Out)
 	}
-	if discovery.CDSCertURL != "" {
-		args = append(args, "--discovery-cds-cert-url="+discovery.CDSCertURL)
+	if discovery.TACertURL != "" {
+		args = append(args, "--discovery-cds-cert-url="+discovery.TACertURL)
 	}
 	if discovery.PublicTLSMode != "" {
 		args = append(args, "--discovery-public-tls-mode="+discovery.PublicTLSMode)
@@ -170,7 +170,7 @@ func fieldRef(path string) *corev1.EnvVarSource {
 
 // getCertSecurityContext is the credential role's floor: its reserved
 // identity, and no capabilities. The identity is fixed, not a pod's to choose:
-// the node binds it to the CDS address and refuses it in any other container
+// the node binds it to the Trust Authority address and refuses it in any other container
 // (pkg/workloadclaims.CredentialsUID).
 func getCertSecurityContext() *corev1.SecurityContext {
 	return &corev1.SecurityContext{

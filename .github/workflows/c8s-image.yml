@@ -8,8 +8,8 @@
 # artifact carries no suffix). The floating :{tdx,sev-snp}[-kubevirt] tags track
 # main; c8s-image-publish.yml adds :vX.Y.Z-{tdx,sev-snp}[-kubevirt].
 #
-# The same callers publish the CDS image from images/cds-guest/:
-# ghcr.io/confidential-dot-ai/guests/cds, tags :<ref>[-kubevirt] and the
+# The same callers publish the Trust Authority image from images/ta-guest/:
+# ghcr.io/confidential-dot-ai/guests/ta, tags :<ref>[-kubevirt] and the
 # floating :main[-kubevirt]; c8s-image-publish.yml adds :vX.Y.Z[-kubevirt]. One
 # build serves both TEE families, so it has no platform matrix.
 
@@ -714,8 +714,8 @@ jobs:
             echo "- confos ref: \`${CONFOS_REF}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
-  cds-image:
-    name: Build the C8s CDS image
+  ta-image:
+    name: Build the C8s Trust Authority image
     needs: host-deps
     # Published from the same c8s ref as the worker image. Repro-gate legs
     # build the worker image only.
@@ -731,10 +731,10 @@ jobs:
     runs-on: the-machine
     timeout-minutes: 120
     env:
-      IMAGE: ghcr.io/confidential-dot-ai/guests/cds
-      # One image for both TEE families: images/cds-guest/build measures the
+      IMAGE: ghcr.io/confidential-dot-ai/guests/ta
+      # One image for both TEE families: images/ta-guest/build measures the
       # SNP launch digests and the TDX block in a single build.
-      VARIANT: cds
+      VARIANT: ta
     steps:
       - name: Checkout c8s
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -803,12 +803,12 @@ jobs:
           key: ${{ runner.os }}-tools-v2-mkosi-${{ steps.pins.outputs.mkosi }}-${{ hashFiles('confidential-os-builder/mkosi/kernel-builder/mkosi.conf','confidential-os-builder/mkosi/kernel-builder/mkosi.sandbox/**') }}
 
       - name: Cache kernel
-        # The CDS image passes no kernel fragment, so this flavor's inputs are
+        # The Trust Authority image passes no kernel fragment, so this flavor's inputs are
         # confos's own kernel configs; it shares nothing with the worker's.
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: confidential-os-builder/output/kernel
-          key: ${{ runner.os }}-kernel-v3-cds-mkosi-${{ steps.pins.outputs.mkosi }}-${{ hashFiles('confidential-os-builder/mkosi/kernel-builder/mkosi.conf','confidential-os-builder/mkosi/kernel-builder/mkosi.sandbox/**','confidential-os-builder/kernel/required.config','confidential-os-builder/kernel/hardening.config','confidential-os-builder/kernel/confidential.config','confidential-os-builder/kernel/config-x86_64.snapshot','confidential-os-builder/kernel/randstruct.seed','confidential-os-builder/kernel/version') }}
+          key: ${{ runner.os }}-kernel-v3-ta-mkosi-${{ steps.pins.outputs.mkosi }}-${{ hashFiles('confidential-os-builder/mkosi/kernel-builder/mkosi.conf','confidential-os-builder/mkosi/kernel-builder/mkosi.sandbox/**','confidential-os-builder/kernel/required.config','confidential-os-builder/kernel/hardening.config','confidential-os-builder/kernel/confidential.config','confidential-os-builder/kernel/config-x86_64.snapshot','confidential-os-builder/kernel/randstruct.seed','confidential-os-builder/kernel/version') }}
 
       - name: Rebuild the kernel when its toolchain is gone
         if: steps.tools-tree.outputs.cache-hit != 'true'
@@ -820,13 +820,13 @@ jobs:
           path: |
             confidential-os-builder/mkosi/base/mkosi.tools
             confidential-os-builder/mkosi/base/mkosi.tools.manifest
-          key: ${{ runner.os }}-cds-tools-mkosi-${{ steps.pins.outputs.mkosi }}-${{ hashFiles('confidential-os-builder/mkosi/base/mkosi.conf.d/tools.conf','confidential-os-builder/mkosi/base/mkosi.profiles/*/mkosi.conf','c8s/images/cds-guest/cds/mkosi.conf') }}
+          key: ${{ runner.os }}-ta-tools-mkosi-${{ steps.pins.outputs.mkosi }}-${{ hashFiles('confidential-os-builder/mkosi/base/mkosi.conf.d/tools.conf','confidential-os-builder/mkosi/base/mkosi.profiles/*/mkosi.conf','c8s/images/ta-guest/ta/mkosi.conf') }}
 
       - name: Cache apt package cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: confidential-os-builder/mkosi/base/mkosi.pkgcache
-          key: ${{ runner.os }}-pkgcache-cds-${{ hashFiles('confidential-os-builder/mkosi/base/mkosi.conf','confidential-os-builder/mkosi/base/mkosi.conf.d/*.conf','confidential-os-builder/mkosi/base/mkosi.profiles/*/mkosi.conf','confidential-os-builder/mkosi/base/mkosi.sandbox/**','c8s/images/cds-guest/cds/mkosi.conf') }}
+          key: ${{ runner.os }}-pkgcache-ta-${{ hashFiles('confidential-os-builder/mkosi/base/mkosi.conf','confidential-os-builder/mkosi/base/mkosi.conf.d/*.conf','confidential-os-builder/mkosi/base/mkosi.profiles/*/mkosi.conf','confidential-os-builder/mkosi/base/mkosi.sandbox/**','c8s/images/ta-guest/ta/mkosi.conf') }}
           restore-keys: |
             ${{ runner.os }}-pkgcache-
 
@@ -838,7 +838,7 @@ jobs:
           echo "${{ secrets.GITHUB_TOKEN }}" | oras login "$REGISTRY" \
             -u "${{ github.actor }}" --password-stdin
 
-      - name: Build the CDS image
+      - name: Build the Trust Authority image
         timeout-minutes: 60
         working-directory: confidential-os-builder
         env:
@@ -849,7 +849,7 @@ jobs:
           # Short SHA matches docker.yml's component tags; the profile's
           # mkosi.sync resolves c8s-operator:<ref> to a digest from it.
           export C8S_REF="${C8S_REF_INPUT:-${HEAD_SHA::7}}"
-          ../c8s/images/cds-guest/build
+          ../c8s/images/ta-guest/build
 
       - name: Make the tools trees cache-safe
         run: |
@@ -906,7 +906,7 @@ jobs:
           PUSHED_TAGS: ${{ steps.push.outputs.tags }}
         run: |
           {
-            echo "### C8s CDS confidential image"
+            echo "### C8s Trust Authority confidential image"
             tr ',' '\n' <<< "$PUSHED_TAGS" | sed "s|^|- \`${IMAGE}:|; s|\$|\`|"
             echo "- confos ref: \`${{ steps.pins.outputs.confos }}\`"
           } >> "$GITHUB_STEP_SUMMARY"

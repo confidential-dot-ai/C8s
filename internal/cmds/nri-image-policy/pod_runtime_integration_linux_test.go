@@ -25,11 +25,11 @@ import (
 	"gopkg.in/yaml.v3"
 	cri "k8s.io/cri-api/pkg/apis/runtime/v1"
 
-	imageverifier "github.com/confidential-dot-ai/c8s/internal/containerd"
-	"github.com/confidential-dot-ai/c8s/internal/podstart"
-	"github.com/confidential-dot-ai/c8s/internal/testutil"
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	imageverifier "github.com/confidential-dot-ai/confidential-kubernetes/internal/containerd"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/podstart"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 type runtimeFixture struct{ Tag, Pin, Reference string }
@@ -177,7 +177,7 @@ func TestPodRuntimeAdmissionIntegration(t *testing.T) {
 	}
 	defer resolver.Close()
 	cases := make(map[string]any)
-	results := map[string]any{"runId": inputs.RunID, "architecture": runtime.GOARCH, "sandboxId": sandbox.PodSandboxId, "cases": cases, "sandbox-started-without-workload-permission": true, "runtime-scope": "native snapshotter; simulated TEE register and broker; digest-pinned registry release runtime; guest airgap byte equivalence unverified; no mesh/CDS hardware assertion"}
+	results := map[string]any{"runId": inputs.RunID, "architecture": runtime.GOARCH, "sandboxId": sandbox.PodSandboxId, "cases": cases, "sandbox-started-without-workload-permission": true, "runtime-scope": "native snapshotter; simulated TEE register and broker; digest-pinned registry release runtime; guest airgap byte equivalence unverified; no mesh/Trust Authority hardware assertion"}
 	for _, mode := range []string{"absent", "deny", "failed-extend", "late", "socket-lost", "disconnect", "replayed", "admit"} {
 		t.Run(mode, func(t *testing.T) {
 			cases[mode] = runRuntimeStartCase(t, ctx, client, runtimeService, resolver, fixture, pod, sandbox.PodSandboxId, mode)
@@ -381,8 +381,8 @@ func writeRuntimeWrapperPolicy(t *testing.T, fixture runtimeFixture) {
 	cfg.Allowlist.NodeTCB = false
 	cfg.Policy.Sandbox = SandboxEnforce
 	cfg.Allowlist.Pull.URL = "https://127.0.0.1:1/allowlist"
-	// This independent fixture CDS binds its launch file, not a node anchor.
-	cfg.Allowlist.Pull.CDSMeasurementsConfig = testutil.CDSPinFile(t)
+	// This independent fixture Trust Authority binds its launch file, not a node anchor.
+	cfg.Allowlist.Pull.TAMeasurementsConfig = testutil.TAPinFile(t)
 	cfg.Allowlist.Pull.MeasurePolicies = false
 	cfg.Measure.RTMR3 = true
 	cfg.Pod = &podConfig{UID: "signed-runtime-uid", Namespace: "validation", Name: "start-gate", Images: map[string]string{"app": fixture.Pin, workloadclaims.MeshContainerName: meshImageDigest}}

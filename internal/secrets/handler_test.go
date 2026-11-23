@@ -23,10 +23,10 @@ import (
 	"testing"
 	"time"
 
-	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
-	"github.com/confidential-dot-ai/c8s/pkg/types"
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 const (
@@ -166,7 +166,7 @@ func componentEntry(t *testing.T, digest, image string) pkgallowlist.Workload {
 	}}}
 }
 
-// leafFor mints a client certificate carrying sandboxID, as CDS stamps it.
+// leafFor mints a client certificate carrying sandboxID, as Trust Authority stamps it.
 func leafFor(t *testing.T, sandboxID string) (*x509.Certificate, *ecdsa.PrivateKey) {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -363,7 +363,7 @@ func (hn *harness) seedAs(t *testing.T, path string, holder Holder) {
 	}
 }
 
-// loggedHolder is one census entry as it lands in CDS's JSON log.
+// loggedHolder is one census entry as it lands in Trust Authority's JSON log.
 type loggedHolder struct {
 	Holder string `json:"holder"`
 	Paths  int    `json:"paths"`
@@ -868,7 +868,7 @@ func TestQuotaIsPerWorkloadNotPerSandbox(t *testing.T) {
 
 // A workload that has spent none of its quota is still refused by the ceiling
 // when other holders have filled the store, and the refusal names the ceiling
-// rather than the quota. Who holds the paths reaches the CDS log; the body
+// rather than the quota. Who holds the paths reaches the Trust Authority log; the body
 // carries the code and nothing else.
 func TestCeilingRefusesAWorkloadUnderItsQuota(t *testing.T) {
 	hn := newHarness(t)

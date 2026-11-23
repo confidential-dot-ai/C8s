@@ -16,9 +16,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
-	"github.com/confidential-dot-ai/c8s/pkg/overenc"
-	"github.com/confidential-dot-ai/c8s/pkg/routes"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/overenc"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/routes"
 )
 
 // routeCheck is how a run checks the route digest an attested transcript
@@ -54,7 +54,7 @@ type boundRoute struct {
 }
 
 // maxPublicationBytes bounds a /.well-known/c8s/routes response, like the
-// CDS client's bound on GET /routes.
+// Trust Authority client's bound on GET /routes.
 const maxPublicationBytes = 4 << 20
 
 // attestedMode reports whether the run verifies an attested transcript, the
@@ -66,7 +66,7 @@ func attestedMode(cfg config) bool {
 
 // parseRouteCheck validates the route flags and reads --operator-keys once.
 // It returns nil when the run checks no route digest. Outside the attested
-// modes --operator-keys keeps its kind=cds meaning.
+// modes --operator-keys keeps its kind=ta meaning.
 func parseRouteCheck(cfg config) (*routeCheck, error) {
 	// The override replaces the transcript, and with it the route digest the
 	// transcript binds.
@@ -100,8 +100,8 @@ func parseRouteCheck(cfg config) (*routeCheck, error) {
 		}
 		return parseRoutePins(cfg.routeDigests)
 	case cfg.operatorKeys != "":
-		if cfg.kind == "cds" {
-			return nil, errors.New("--operator-keys in --mode " + resolveMode(cfg) + " checks the published route manifest, not the /operator-keys set --kind cds checks: drop --kind cds or the mode")
+		if cfg.kind == "ta" {
+			return nil, errors.New("--operator-keys in --mode " + resolveMode(cfg) + " checks the published route manifest, not the /operator-keys set --kind ta checks: drop --kind ta or the mode")
 		}
 		if cfg.fromFile != "" {
 			return nil, errors.New("--operator-keys checks the manifest the live router publishes; to verify a saved receipt, pass --route-digest")

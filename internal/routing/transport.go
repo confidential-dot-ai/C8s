@@ -16,8 +16,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
-	"github.com/confidential-dot-ai/c8s/pkg/routes"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/routes"
 )
 
 const (
@@ -342,7 +342,7 @@ func (t *Transports) meshClientConfig(workload, agentLabel string, stamped *[]by
 	if err != nil {
 		return nil, nil, fmt.Errorf("routing: mesh credential: %w", err)
 	}
-	// CDS publishes the one mesh CA its members are verified against.
+	// Trust Authority publishes the one mesh CA its members are verified against.
 	if len(cred.MeshCAs) != 1 {
 		return nil, nil, fmt.Errorf("routing: mesh CA bundle holds %d certificates, want one", len(cred.MeshCAs))
 	}
@@ -397,7 +397,7 @@ func (t *Transports) meshCAs() ([]*x509.Certificate, error) {
 
 // acceptWorkload fails the handshake unless the peer the chain path
 // authenticated is the workload the signed route names (B1), stamped under
-// the router's own allowlist digest (B8). A leaf CDS stamped no workload on
+// the router's own allowlist digest (B8). A leaf Trust Authority stamped no workload on
 // names none, and is refused with the rest. For a pattern route, agentLabel
 // is set, and the peer's client document digest must have that label. With an allowlist history, a peer
 // stamped under another digest passes the handshake with its digest written to

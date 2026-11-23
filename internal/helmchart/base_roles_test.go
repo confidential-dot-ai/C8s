@@ -4,8 +4,8 @@ import (
 	"slices"
 	"testing"
 
-	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 // The reserved uids of the injected platform roles carry no identity of their
@@ -210,11 +210,11 @@ func TestChartBaseGrantsTheRouterPodItsRoles(t *testing.T) {
 	)
 	// Named as the lane's store scan names it, so it overrides the front door's shape.
 	floorArgs = append(floorArgs,
-		anyArgvEntryArgs("nginx-unprivileged-"+roleNginxDigest[len("sha256:"):][:12], roleNginxDigest, "docker.io/nginxinc/nginx-unprivileged@"+roleNginxDigest)...,
+		anyArgvEntryArgs("nginx-unprivileged-"+roleNginxDigest[len("sha256:"):][:12], roleNginxDigest, "docker.io/nginx/nginx-unprivileged@"+roleNginxDigest)...,
 	)
 	// A tenant's nginx from the same repository, as the lane's workload image.
 	floorArgs = append(floorArgs,
-		anyArgvEntryArgs("nginx-tenant-floor", roleTenantNginxDigest, "docker.io/nginxinc/nginx-unprivileged@"+roleTenantNginxDigest)...,
+		anyArgvEntryArgs("nginx-tenant-floor", roleTenantNginxDigest, "docker.io/nginx/nginx-unprivileged@"+roleTenantNginxDigest)...,
 	)
 	// Pinned operator keys put one more data mount on cds-attest, so the base
 	// the same values render must name it.

@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/internal/issuer"
-	"github.com/confidential-dot-ai/c8s/pkg/certutil"
-	"github.com/confidential-dot-ai/c8s/pkg/secretbroker"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/issuer"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/secretbroker"
 )
 
 type fixture struct {
@@ -91,7 +91,7 @@ func TestVerifyRefuses(t *testing.T) {
 		want   string
 	}{
 		{name: "version", change: func(r *secretbroker.ReleaseRequest) { r.Version = "c8s-secret-release/v0" }, want: "version"},
-		{name: "another CDS", change: func(r *secretbroker.ReleaseRequest) { r.BrokerChain = other.chain }, want: "pinned"},
+		{name: "another Trust Authority", change: func(r *secretbroker.ReleaseRequest) { r.BrokerChain = other.chain }, want: "pinned"},
 		{name: "chain without CA", change: func(r *secretbroker.ReleaseRequest) { r.BrokerChain = r.BrokerChain[:1] }, want: "chain"},
 		{name: "mesh leaf is no broker", change: func(r *secretbroker.ReleaseRequest) {
 			r.BrokerChain = [][]byte{podLeaf, r.BrokerChain[1]}

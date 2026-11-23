@@ -16,9 +16,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/internal/credvolume"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
-	"github.com/confidential-dot-ai/c8s/pkg/certutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/credvolume"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
 )
 
 // generationPollInterval is how often the generation pointer is resolved.
@@ -50,7 +50,7 @@ func adoptPublishedSet(published credvolume.Set, now time.Time, logger *slog.Log
 	if err != nil {
 		return nil, fmt.Errorf("published CA: %w", err)
 	}
-	// CDS holds one mesh CA, so a generation published with any other number
+	// Trust Authority holds one mesh CA, so a generation published with any other number
 	// of them is not one this endpoint can serve.
 	if len(cas) != 1 {
 		return nil, fmt.Errorf("published CA holds %d certificates, want the one mesh CA", len(cas))

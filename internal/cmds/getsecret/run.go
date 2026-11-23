@@ -1,7 +1,7 @@
 // Package getsecret implements the get-secret subcommand: the sidecar that
-// fetches a workload's secrets from CDS and writes them into the pod.
+// fetches a workload's secrets from the Trust Authority and writes them into the pod.
 //
-// It runs as a native sidecar rather than an init container because CDS only
+// It runs as a native sidecar rather than an init container because Trust Authority only
 // releases once every main container is running — release is gated on the whole
 // container set matching a workload entry, and an init container would be
 // asking before its siblings exist (docs/secrets.md). So it starts alongside the
@@ -20,12 +20,12 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/sidecar"
-	"github.com/confidential-dot-ai/c8s/internal/fileutil"
-	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
-	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/sidecar"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/fileutil"
+	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
 )
 
 // config is everything the sidecar needs. The webhook renders all of it.
@@ -55,7 +55,7 @@ func parseSecretSpec(spec string) (secretRequest, error) {
 	if name == "" || strings.ContainsAny(name, `/\`) || name == "." || name == ".." {
 		return secretRequest{}, fmt.Errorf("secret name %q must be non-empty and not a path", name)
 	}
-	// Canonicalised with the same code CDS matches grants against, so a path
+	// Canonicalised with the same code Trust Authority matches grants against, so a path
 	// this sidecar accepts is one the server can answer for.
 	canonical, err := pkgallowlist.CanonicalSecretPath(strings.TrimSpace(path))
 	if err != nil {
@@ -145,7 +145,7 @@ func fetchOne(ctx context.Context, cfg config, client *http.Client, pub crypto.P
 	case status == http.StatusCreated:
 		return value, nil
 	case status == http.StatusInsufficientStorage:
-		// The ceiling clears only on a CDS restart; the holder quota clears
+		// The ceiling clears only on a Trust Authority restart; the holder quota clears
 		// whenever an operator moves a charge off this entry.
 		var refusal *sidecar.StatusError
 		if errors.As(err, &refusal) && refusal.Code == types.ErrorCodeSecretStoreFull {

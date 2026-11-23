@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
 // The worker image's floor template is the plugin's other config schema
@@ -24,7 +24,7 @@ const (
 	meshImageDigest     = "sha256:" + "11111111111111111111111111111111111111111111111111111111111111ab"
 	operatorImageRepo   = "ghcr.io/confidential-dot-ai/c8s-operator"
 	operatorImageDigest = "sha256:" + "22222222222222222222222222222222222222222222222222222222222222cd"
-	routerImageRepo     = "docker.io/nginxinc/nginx-unprivileged"
+	routerImageRepo     = "docker.io/nginx/nginx-unprivileged"
 	routerImageDigest   = "sha256:" + "33333333333333333333333333333333333333333333333333333333333333ef"
 )
 

@@ -11,7 +11,7 @@ import (
 
 	"github.com/containerd/nri/pkg/api"
 
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
 func TestNodeRootProvenanceRequiresReadOnlyFileBind(t *testing.T) {
@@ -95,24 +95,31 @@ func TestNodeRootMissingNamesCause(t *testing.T) {
 }
 
 func TestMissingProvenanceCauseOnlyForItsRuleKind(t *testing.T) {
+	probes := 0
 	original := nodeRootUnavailableReason
-	nodeRootUnavailableReason = func() (string, bool) { return "root filesystem is not read-only", false }
+	nodeRootUnavailableReason = func() (string, bool) {
+		probes++
+		return "root filesystem is not read-only", false
+	}
 	t.Cleanup(func() { nodeRootUnavailableReason = original })
 	file := filepath.Join(t.TempDir(), "tool")
 	if err := os.WriteFile(file, []byte("bytes"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
-		name  string
-		kind  allowlist.MountClass
-		cause string
+		name   string
+		kind   allowlist.MountClass
+		source string
+		cause  string
 	}{
-		{"host rule", allowlist.MountHost, ""},
-		{"nodeRootFile rule", allowlist.MountNodeRootFile, "node_root_unavailable"},
-		{"fsVerityFile rule", allowlist.MountFSVerityFile, "fs_verity_unavailable"},
+		{"host rule", allowlist.MountHost, "/usr/bin/tool", ""},
+		{"nodeRootFile rule naming the bind", allowlist.MountNodeRootFile, file, "node_root_unavailable"},
+		{"nodeRootFile rule naming another file", allowlist.MountNodeRootFile, "/usr/bin/tool", ""},
+		{"fsVerityFile rule", allowlist.MountFSVerityFile, "/usr/bin/tool", "fs_verity_unavailable"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			rule := allowlist.MountRule{Destination: "/opt/tool", Kind: tc.kind, Source: "/usr/bin/tool", ReadOnly: true}
+			probes = 0
+			rule := allowlist.MountRule{Destination: "/opt/tool", Kind: tc.kind, Source: tc.source, ReadOnly: true}
 			if tc.kind == allowlist.MountFSVerityFile {
 				rule.VerityDigest = strings.Repeat("ab", 32)
 			}
@@ -137,6 +144,9 @@ func TestMissingProvenanceCauseOnlyForItsRuleKind(t *testing.T) {
 				if got, want := strings.Contains(logs.String(), cause), cause == tc.cause; got != want {
 					t.Fatalf("checkImagePhase(%s) logged %s = %t, want %t: %s", tc.name, cause, got, want, logs.String())
 				}
+			}
+			if got, want := probes > 0, tc.cause == "node_root_unavailable"; got != want {
+				t.Fatalf("checkImagePhase(%s) probed the root %d times, want probe %t", tc.name, probes, want)
 			}
 		})
 	}

@@ -11,7 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 // SocketName is the daemon's socket, created inside the same directory the
@@ -40,7 +40,7 @@ func NewCmd() *cobra.Command {
 		Short: "Agent that opens encrypted volumes for entitled pods",
 		Long: `volumed opens an encrypted volume for a pod.
 
-An injected sidecar fetches the volume's key from CDS over the attested secrets
+An injected sidecar fetches the volume's key from the Trust Authority over the attested secrets
 flow and hands it to this daemon, which opens the device and mounts the result
 into that pod and no other — read-only under dm-verity for an immutable volume,
 read-write ext4 for a mutable one.

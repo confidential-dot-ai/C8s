@@ -17,15 +17,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/internal/strictjson"
-	"github.com/confidential-dot-ai/c8s/pkg/workloadname"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/strictjson"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadname"
 )
 
 // Schema identifies the manifest format (D1).
 const Schema = "c8s.routes/v1"
 
 const (
-	// Path is the CDS endpoint that stores and serves the signed manifest,
+	// Path is the Trust Authority endpoint that stores and serves the signed manifest,
 	// and the htu a write token for it carries (W2).
 	Path = "/routes"
 	// PublicationPath is where the automated ingress service publishes its

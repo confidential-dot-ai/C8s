@@ -20,41 +20,41 @@ ADOPTED_LOCAL_PORT=18445
 # route manifest's host.
 ROUTER_HOST="c8s-router.$ROUTER_NS.svc"
 # The mock attestation-api's synthetic launch digest (all zero). It is the
-# measurement of the CDS pin and of the node pins the CDS configuration
+# measurement of the Trust Authority (TA) pin and of the node pins the TA configuration
 # carries, so every armTLS hop is verified against it, exactly as a pinned
 # production measurement.
 MOCK_MEASUREMENT="000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
 
-# The CDS this cluster trusts runs outside it: two containers on the kind
+# The TA this cluster trusts runs outside it: two containers on the kind
 # network, the attestation-api reporting the launch binding of the
-# configuration CDS boots on, and CDS itself in its network namespace, so the
-# self-report it reads comes over loopback. cds_start writes the address they
+# configuration TA boots on, and TA itself in its network namespace, so the
+# self-report it reads comes over loopback. ta_start writes the address they
 # answer on, so a driver sourcing this file after a kept run addresses the
-# same CDS. kind puts every node on that docker network, and the CDS joins it.
+# same TA. kind puts every node on that docker network, and the TA joins it.
 KIND_NETWORK="${C8S_IT_KIND_NETWORK:-kind}"
-CDS_ATTESTATION_CONTAINER="${C8S_IT_CDS_ATTESTATION:-c8s-it-cds-attestation}"
-CDS_CONTAINER="${C8S_IT_CDS:-c8s-it-cds}"
-# The port CDS serves on, which the address its clients dial carries.
-CDS_PORT=8443
+TA_ATTESTATION_CONTAINER="${C8S_IT_TA_ATTESTATION:-c8s-it-ta-attestation}"
+TA_CONTAINER="${C8S_IT_TA:-c8s-it-ta}"
+# The port TA serves on, which the address its clients dial carries.
+TA_PORT=8443
 # Short enough that the conformance suite's ~140 waits for a write to take
-# effect on nodes fit its timeout. CDS requires --router-cert-ttl positive and
-# shorter than --allowlist-node-delay (internal/cmds/cds/run.go).
+# effect on nodes fit its timeout. TA requires --router-cert-ttl positive and
+# shorter than --allowlist-node-delay (internal/cmds/ta/run.go).
 ROUTER_CERT_TTL=12s
 ALLOWLIST_NODE_DELAY=13s
-cds_address() { cat "$WORKDIR/cds-address"; }
-cds_host() {
+ta_address() { cat "$WORKDIR/ta-address"; }
+ta_host() {
     local address
-    address="$(cds_address)"
+    address="$(ta_address)"
     echo "${address%:*}"
 }
-cds_url() { echo "https://$(cds_address)"; }
+ta_url() { echo "https://$(ta_address)"; }
 
-# The CDS's mock attestation-api, which shares the CDS container's address and
+# The TA's mock attestation-api, which shares the TA container's address and
 # answers this host.
-cds_mock_attestation_url() { echo "http://$(cds_host):8400"; }
+ta_mock_attestation_url() { echo "http://$(ta_host):8400"; }
 # Test-client and workload images. The workload image joins the install-time
 # floor; the test-client image stays out of it so the admission test can
-# drive a deny-then-allow transition through the signed CDS API.
+# drive a deny-then-allow transition through the signed TA API.
 CURL_IMAGE=curlimages/curl:8.10.1@sha256:d9b4541e214bcd85196d6e92e2753ac6d0ea699f0af5741f8c6cccbfcf00ef4b
 WORKLOAD_IMAGE=nginxinc/nginx-unprivileged@sha256:3af0c10d960cc2502427fe1219c52989d309e7d65596869c60a34fd2fa2406f0
 
@@ -84,7 +84,7 @@ diagnostics() {
     kubectl -n "$ROUTER_NS" describe pods 2>&1 | tail -60 || true
     kubectl -n "$ROUTER_NS" get pods -o json 2>&1 || true
     kubectl -n "$ROUTER_NS" logs deploy/c8s-router -c cds-attest --tail=40 2>&1 || true
-    docker logs "$CDS_CONTAINER" --tail 40 2>&1 || true
+    docker logs "$TA_CONTAINER" --tail 40 2>&1 || true
     kubectl -n "$NS" logs deploy/c8s-operator --tail=40 2>&1 || true
     kubectl -n "$NS" logs ds/c8s-nri-image-policy-worker -c install --tail=80 2>&1 || true
     if [ -n "$NODE" ]; then
@@ -115,41 +115,43 @@ store_digests() {
     node_exec ctr -n k8s.io images ls | awk 'NR > 1 && $1 !~ /^sha256:/ {print $3 "\t" $1}'
 }
 
-# --- CDS API helpers ---
+# --- TA API helpers ---
 
-cds_healthy() { curl -sSk "$(cds_url)/healthz" >/dev/null 2>&1; }
+ta_healthy() { curl -sSk "$(ta_url)/healthz" >/dev/null 2>&1; }
 
-# cds_start runs the CDS the cluster trusts: the attestation-api, reporting
-# the launch binding of the configuration CDS boots on, and CDS itself in that
+# ta_start runs the TA the cluster trusts: the attestation-api, reporting
+# the launch binding of the configuration TA boots on, and TA itself in that
 # container's network namespace, so the self-report it reads comes over
-# loopback, as in a CDS VM. The address is the attestation container's, so
-# cds_serve brings CDS back on the one the cluster trusts.
-cds_start() {
+# loopback, as in a TA VM. The address is the attestation container's, so
+# ta_serve brings TA back on the one the cluster trusts.
+ta_start() {
     local ip
-    cds_stop
+    ta_stop
     docker run -d \
-        --name "$CDS_ATTESTATION_CONTAINER" \
+        --name "$TA_ATTESTATION_CONTAINER" \
         --network "$KIND_NETWORK" \
-        -e "HOST_DATA=$(sha256sum "$WORKDIR/cds/cds-config.yaml" | cut -d' ' -f1)" \
+        -e "HOST_DATA=$(sha256sum "$WORKDIR/ta/cds-config.yaml" | cut -d' ' -f1)" \
         "ghcr.io/confidential-dot-ai/mock-attestation:$IMAGE_TAG" >/dev/null \
-        || fail "could not start the CDS attestation-api"
-    ip=$(docker inspect "$CDS_ATTESTATION_CONTAINER" \
+        || fail "could not start the TA attestation-api"
+    ip=$(docker inspect "$TA_ATTESTATION_CONTAINER" \
         -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
-    [ -n "$ip" ] || fail "the CDS has no address on the $KIND_NETWORK network"
-    echo "$ip:$CDS_PORT" > "$WORKDIR/cds-address"
-    cds_serve
+    [ -n "$ip" ] || fail "the TA has no address on the $KIND_NETWORK network"
+    echo "$ip:$TA_PORT" > "$WORKDIR/ta-address"
+    ta_serve
 }
 
-# cds_serve [extra `c8s cds` flags...] replaces the CDS container on that
+# ta_serve [extra `c8s ta` flags...] replaces the TA container on that
 # address: the flags the chart renders today, plus any given here, which a
-# later flag of the same name overrides.
-cds_serve() {
-    docker rm -f "$CDS_CONTAINER" >/dev/null 2>&1 || true
+# later flag of the same name overrides. The three limits are the TA's own
+# defaults, stated so that the conformance backend can name them (kind.sh,
+# ta_arg).
+ta_serve() {
+    docker rm -f "$TA_CONTAINER" >/dev/null 2>&1 || true
     docker run -d \
-        --name "$CDS_CONTAINER" \
-        --network "container:$CDS_ATTESTATION_CONTAINER" \
-        -v "$WORKDIR/cds:/etc/confai:ro" \
-        "ghcr.io/confidential-dot-ai/cds:$IMAGE_TAG" \
+        --name "$TA_CONTAINER" \
+        --network "container:$TA_ATTESTATION_CONTAINER" \
+        -v "$WORKDIR/ta:/etc/confai:ro" \
+        "ghcr.io/confidential-dot-ai/ta:$IMAGE_TAG" \
         --config=/etc/confai/cds-config.yaml \
         --attestation-api-url=http://127.0.0.1:8400 \
         --allowlist-db=/tmp/allowlist.db \
@@ -157,31 +159,34 @@ cds_serve() {
         --san-validation=true \
         --router-cert-ttl="$ROUTER_CERT_TTL" \
         --allowlist-node-delay="$ALLOWLIST_NODE_DELAY" \
-        --port="$CDS_PORT" \
+        --challenge-ttl=60s \
+        --jwt-clock-skew=30 \
+        --secrets-max-paths-per-workload=64 \
+        --port="$TA_PORT" \
         --log-level=debug \
         "$@" >/dev/null \
-        || fail "could not start CDS"
+        || fail "could not start TA"
 }
 
-# cds_wait blocks until the CDS container serves: it refuses to serve at all
+# ta_wait blocks until the TA container serves: it refuses to serve at all
 # until a verified self-report binds the configuration it booted on.
-cds_wait() {
+ta_wait() {
     for _ in $(seq 1 60); do
-        cds_healthy && return 0
+        ta_healthy && return 0
         sleep 1
     done
-    docker logs "$CDS_CONTAINER" 2>&1 | tail -30 || true
-    fail "CDS never answered /healthz at $(cds_url)"
+    docker logs "$TA_CONTAINER" 2>&1 | tail -30 || true
+    fail "TA never answered /healthz at $(ta_url)"
 }
 
-cds_stop() {
-    docker rm -f "$CDS_CONTAINER" "$CDS_ATTESTATION_CONTAINER" >/dev/null 2>&1 || true
+ta_stop() {
+    docker rm -f "$TA_CONTAINER" "$TA_ATTESTATION_CONTAINER" >/dev/null 2>&1 || true
 }
 
 # --- Pod CVM provider ---
 
 # The Cloud the operator's Pod CVM provider launches into is test/mock-cloud,
-# a container of the kind network like the CDS. It starts no VM, so a pod
+# a container of the kind network like the TA. It starts no VM, so a pod
 # bound to the provider's node gets a record and an instance and never a
 # verified guest. The provider's identity, its node and its pod budget are
 # what pod_cvm_secret configures.
@@ -220,10 +225,10 @@ cloud_stop() {
 # pod_cvm_secret: write the provider's trusted configuration and the files it
 # names (docs/pod-cvm-provider.md) into the Secret the chart mounts. The launch
 # key is generated here; the image manifest holds placeholder TDX registers,
-# which nothing verifies while no guest answers. The CDS policy is this
+# which nothing verifies while no guest answers. The TA policy is this
 # cluster's pin with a placeholder launch file: the pin's own carries the
 # whole floor, and the launch document that embeds the policy may not exceed
-# the Cloud's 64 KiB. No guest boots to dial that CDS.
+# the Cloud's 64 KiB. No guest boots to dial that TA.
 pod_cvm_secret() {
     local dir="$WORKDIR/pod-cvm" register
     rm -rf "$dir"
@@ -231,7 +236,7 @@ pod_cvm_secret() {
     openssl ecparam -genkey -name prime256v1 -noout -out "$dir/pod.key" 2>/dev/null
     echo c8s-it-cloud-token > "$dir/cloud-token"
     jq --arg cluster "$CLUSTER" '.measurements[].launch_file = "schemaVersion: c8s-cds/v1\nclusterID: \($cluster)\n"' \
-        "$WORKDIR/cds/cds-pin.json" > "$dir/cds.json"
+        "$WORKDIR/ta/cds-pin.json" > "$dir/ta.json"
     register="$(printf '%096d' 0)"
     jq -n --arg r "$register" \
         '{version: 1, build: {platform: "tdx"}, tdx: {mrtd: $r, rtmr1: $r, rtmr2: $r}}' > "$dir/manifest.json"
@@ -239,12 +244,12 @@ pod_cvm_secret() {
         '{schema: "c8s.allowlist/v1", workloads: {app: {containers: [{digest: $digest, command: {policy: "any"}, args: {policy: "any"}}]}}}' \
         > "$dir/workloads.json"
     jq -n --arg provider "$POD_CVM_PROVIDER" --arg node "$POD_CVM_NODE" --arg ns "$NS" \
-        --arg cloud "$(cloud_url)" --arg cds "$(cds_address)" --arg cluster "$CLUSTER" \
+        --arg cloud "$(cloud_url)" --arg ta "$(ta_address)" --arg cluster "$CLUSTER" \
         --argjson pods "$POD_CVM_MAX_PODS" --argjson deadline "$POD_CVM_VERIFICATION_SECONDS" \
         --argjson memory "$POD_CVM_MEMORY_MIB" \
         '{providerID: $provider, nodeName: $node, namespace: $ns, cloudURL: $cloud,
           cloudTokenFile: "cloud-token", image: "c8s-pod@it", imageManifestFile: "manifest.json",
-          launchKeyFile: "pod.key", cdsAddress: $cds, cdsImagePolicyFile: "cds.json",
+          launchKeyFile: "pod.key", cdsAddress: $ta, cdsImagePolicyFile: "ta.json",
           workloadsFile: "workloads.json", clusterID: $cluster, size: "it", location: "it",
           vCPUs: 4, memoryMiB: $memory, maxPods: $pods, verificationTimeoutSeconds: $deadline}' \
         > "$dir/config.json"
@@ -267,7 +272,7 @@ any_workload() {
 # A write replaces the whole document, so every write starts here.
 allowlist_document() {
     local name="$1" entry="${2:-}"
-    cds_get /allowlist "$WORKDIR/allowlist-live.json" >/dev/null
+    ta_get /allowlist "$WORKDIR/allowlist-live.json" >/dev/null
     if [ -n "$entry" ]; then
         jq -c --arg n "$name" --slurpfile e "$entry" '.workloads[$n] = $e[0]' "$WORKDIR/allowlist-live.json"
     else
@@ -279,22 +284,22 @@ allowlist_document() {
 # allowlist_document prints, signed with the operator key.
 allowlist_set() {
     allowlist_document "$@" > "$WORKDIR/allowlist-write.json"
-    cds_write PUT /allowlist "$WORKDIR/allowlist-write.json"
+    ta_write PUT /allowlist "$WORKDIR/allowlist-write.json"
 }
 
-# cds_write <method> <path> <body-file> -> http code; signed with the operator key.
-# A CDS without persistence refuses tokens for --jwt-clock-skew after it
+# ta_write <method> <path> <body-file> -> http code; signed with the operator key.
+# A TA without persistence refuses tokens for --jwt-clock-skew after it
 # starts, so a 401 saying so is retried with a fresh token.
-cds_write() {
+ta_write() {
     local method="$1" path="$2" bodyfile="$3" token code
     for _ in $(seq 1 30); do
         token="$("$WORKDIR/optoken" "$WORKDIR/operator.key" "$method" "$path" "$bodyfile")"
         # Always exit 0: curl prints 000 on transport failure, and callers
         # assert on the code itself.
-        code="$(curl -sSk -o "$WORKDIR/cds-write.out" -w '%{http_code}' -X "$method" \
+        code="$(curl -sSk -o "$WORKDIR/ta-write.out" -w '%{http_code}' -X "$method" \
             -H "Authorization: $token" -H 'Content-Type: application/json' \
-            --data-binary "@$bodyfile" "$(cds_url)$path" || true)"
-        if [ "$code" != 401 ] || ! grep -q 'issued too early' "$WORKDIR/cds-write.out"; then
+            --data-binary "@$bodyfile" "$(ta_url)$path" || true)"
+        if [ "$code" != 401 ] || ! grep -q 'issued too early' "$WORKDIR/ta-write.out"; then
             break
         fi
         sleep 2
@@ -302,9 +307,9 @@ cds_write() {
     echo "$code"
 }
 
-# cds_get <path> <out-file> -> http code; the response body lands in out-file.
-cds_get() {
-    curl -sSk -o "$2" -w '%{http_code}' "$(cds_url)$1" || true
+# ta_get <path> <out-file> -> http code; the response body lands in out-file.
+ta_get() {
+    curl -sSk -o "$2" -w '%{http_code}' "$(ta_url)$1" || true
 }
 
 # route_manifest <revision> [<ca-pem-file>]: print a route manifest with one

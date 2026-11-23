@@ -7,11 +7,11 @@ import (
 	"testing"
 
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 )
 
 // The webhook renders these flags, so a malformed --secret has to fail at parse
-// rather than reaching CDS.
+// rather than reaching Trust Authority.
 func TestNewCmdRejectsBadSecretSpec(t *testing.T) {
 	cmd := NewCmd()
 	cmd.SetArgs([]string{
@@ -25,11 +25,11 @@ func TestNewCmdRejectsBadSecretSpec(t *testing.T) {
 	}
 }
 
-func TestNewCmdRejectsMissingCDSURL(t *testing.T) {
+func TestNewCmdRejectsMissingTAURL(t *testing.T) {
 	cmd := NewCmd()
 	cmd.SetArgs([]string{"--secret=DB=/api/db"})
-	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "--cds-url") {
-		t.Fatalf("err = %v, want a missing --cds-url failure", err)
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "--ta-url") {
+		t.Fatalf("err = %v, want a missing --ta-url failure", err)
 	}
 }
 
@@ -49,7 +49,7 @@ func TestNewCmdDefaults(t *testing.T) {
 
 func TestRunRejectsInvalidConfig(t *testing.T) {
 	cfg := validConfig(t)
-	cfg.CDSURL = ""
+	cfg.TAURL = ""
 	if err := run(t.Context(), cfg); err == nil {
 		t.Fatal("an invalid config was accepted")
 	}

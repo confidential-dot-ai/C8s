@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
 const testDigest = "sha256:effd250754b8a70517c27eab8f18463b395a7b2a8e868fd919226c3180636939"
@@ -71,7 +71,7 @@ func TestDeriveCoversInitContainers(t *testing.T) {
 	if !ok {
 		t.Fatalf("entry not keyed by name: %v", got)
 	}
-	// CDS matches the whole candidate set, so an undeclared init container
+	// Trust Authority matches the whole candidate set, so an undeclared init container
 	// refuses every release with "no workload entry matches the running
 	// containers".
 	if len(w.InitContainers) != 1 {

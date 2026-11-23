@@ -1,9 +1,9 @@
 // Package routes implements the `c8s routes` operator CLI for the signed
-// route manifest that CDS stores and serves at /routes (route policy §8).
+// route manifest that Trust Authority stores and serves at /routes (route policy §8).
 //
 // show and digest only read. put, add and rm send a manifest signed with the
 // operator key, through the same connection and credential flags as
-// `c8s allowlist` (internal/cmds/cdsconn).
+// `c8s allowlist` (internal/cmds/taconn).
 package routes
 
 import (
@@ -18,15 +18,15 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/cdsconn"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
-	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
-	pkgroutes "github.com/confidential-dot-ai/c8s/pkg/routes"
-	"github.com/confidential-dot-ai/c8s/pkg/routesclient"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/taconn"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
+	pkgroutes "github.com/confidential-dot-ai/confidential-kubernetes/pkg/routes"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/routesclient"
 )
 
 type options struct {
-	cdsconn.Options
+	taconn.Options
 
 	// operatorKeys is a PEM file of trusted operator public keys. When set,
 	// every fetched manifest is verified as W2 requires.
@@ -38,22 +38,22 @@ func NewCmd() *cobra.Command {
 	return newCmd(nil)
 }
 
-func newCmd(verifier cdsconn.PinVerifier) *cobra.Command {
-	o := &options{Options: cdsconn.Options{Verifier: verifier}}
+func newCmd(verifier taconn.PinVerifier) *cobra.Command {
+	o := &options{Options: taconn.Options{Verifier: verifier}}
 	cmd := &cobra.Command{
 		Use:   "routes",
-		Short: "Manage the signed route manifest on CDS",
-		Long: `Read and write the route manifest (c8s.routes/v1) that CDS stores at /routes.
+		Short: "Manage the signed route manifest on the Trust Authority",
+		Long: `Read and write the route manifest (c8s.routes/v1) that Trust Authority stores at /routes.
 
-CDS keeps one signed route manifest: the manifest bytes and the write token
+Trust Authority keeps one signed route manifest: the manifest bytes and the write token
 that authorized them. A write must carry a revision greater than the stored
-one. 'put' writes a file verbatim, for example after a CDS restart that lost
+one. 'put' writes a file verbatim, for example after a Trust Authority restart that lost
 its database. 'add' and 'rm' fetch the stored route manifest, verify it
 against --operator-keys, change one route, and write the next revision. They
 set notBefore to now, or keep the stored notBefore when it is later. The next
 revision is the later of the stored one plus one and the current Unix time in
 seconds, or --revision. Once routers apply the manifest, a router keeps the
-highest revision it accepted, applied or staged, even across a CDS reset, so
+highest revision it accepted, applied or staged, even across a Trust Authority reset, so
 after a reset write one above it. 'add' refuses an empty store unless --new
 starts the first manifest. Before signing, they print every route the new
 revision carries, since the write re-authorizes them all.
@@ -61,16 +61,16 @@ revision carries, since the write re-authorizes them all.
 To sign writes, pass the operator key with --operator-key (or
 C8S_OPERATOR_KEY), as for 'c8s allowlist'. --operator-keys names the operator
 public keys you trust. 'show' verifies against them when given; 'add' and
-'rm' require them once CDS stores a manifest, since they re-sign the stored
+'rm' require them once the Trust Authority stores a manifest, since they re-sign the stored
 routes.
 
-Point --url at CDS itself, with no path, because the router does not relay
-/routes, and pin CDS with --image-policy-file cds-pin.json, the pin
-'c8s cds config new' wrote.`,
+Point --url at Trust Authority itself, with no path, because the router does not relay
+/routes, and pin Trust Authority with --image-policy-file cds-pin.json, the pin
+'c8s ta config new' wrote.`,
 		SilenceUsage: true,
 	}
 	pf := cmd.PersistentFlags()
-	cdsconn.BindFlags(pf, &o.Options)
+	taconn.BindFlags(pf, &o.Options)
 	pf.StringVar(&o.operatorKeys, "operator-keys", "", "PEM file of trusted operator public keys; verifies the write token of every fetched route manifest")
 
 	digest := newDigestCmd()
@@ -154,7 +154,7 @@ func put(ctx context.Context, c routesclient.Client, manifest []byte, signer ope
 	return err
 }
 
-// SpentToken reports whether err is the CDS's 409 for a write token that
+// SpentToken reports whether err is the Trust Authority's 409 for a write token that
 // already authorized a write, which a fresh token fixes, unlike a stale
 // revision's 409.
 func SpentToken(err error) bool {

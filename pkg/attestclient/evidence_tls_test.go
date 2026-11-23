@@ -11,11 +11,11 @@ import (
 	"testing"
 
 	"github.com/confidential-dot-ai/attestation-go/remote"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 )
 
 // An attestation-api with a certificate the system roots trust verifies even
-// though the client reaches CDS over armTLS, as get-cert builds it: the CDS
+// though the client reaches Trust Authority over armTLS, as get-cert builds it: the Trust Authority
 // verification refuses any ordinary certificate. The system roots are read
 // once per process, so the check runs in a child whose SSL_CERT_FILE holds the
 // test server's CA; httptest serves the same certificate in both.
@@ -43,12 +43,12 @@ func TestGenerateEvidenceVerifiesSystemRootsBesideArmTLS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cds := &http.Client{Transport: &http.Transport{TLSClientConfig: tlsCfg}}
-	if _, err := cds.Get(srv.URL); err == nil {
+	ta := &http.Client{Transport: &http.Transport{TLSClientConfig: tlsCfg}}
+	if _, err := ta.Get(srv.URL); err == nil {
 		t.Fatal("the armTLS client accepted an ordinary certificate; the test proves nothing")
 	}
-	c := NewClientWithHTTP("https://cds.invalid", cds)
+	c := NewClientWithHTTP("https://cds.invalid", ta)
 	if _, err := c.GenerateEvidenceContext(context.Background(), srv.URL, []byte("report-data")); err != nil {
-		t.Fatalf("GenerateEvidenceContext beside an armTLS CDS client: %v", err)
+		t.Fatalf("GenerateEvidenceContext beside an armTLS Trust Authority client: %v", err)
 	}
 }

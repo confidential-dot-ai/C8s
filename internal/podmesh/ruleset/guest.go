@@ -14,7 +14,7 @@ import (
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 // GuestPolicy routes one standalone Pod's egress and authenticated ingress.
@@ -143,9 +143,17 @@ func matchInterface(key expr.MetaKey, value string) []expr.Any {
 	return []expr.Any{meta(key), compare(name)}
 }
 
+// matchSource pins an address to its family, like matchDestination.
 func matchSource(addr netip.Addr) []expr.Any {
-	return []expr.Any{meta(expr.MetaKeyNFPROTO), compare([]byte{unix.NFPROTO_IPV4}),
-		loadHeader(expr.PayloadBaseNetworkHeader, 12, 4), compare(addr.AsSlice())}
+	family := uint8(unix.NFPROTO_IPV4)
+	offset := uint32(12)
+	if addr.Is6() {
+		family = unix.NFPROTO_IPV6
+		offset = 8
+	}
+	raw := addr.AsSlice()
+	return []expr.Any{meta(expr.MetaKeyNFPROTO), compare([]byte{family}),
+		loadHeader(expr.PayloadBaseNetworkHeader, offset, uint32(len(raw))), compare(raw)}
 }
 
 func matchCtReply() []expr.Any {

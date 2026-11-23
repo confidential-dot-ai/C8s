@@ -22,11 +22,11 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
-	"github.com/confidential-dot-ai/c8s/internal/launchbinding"
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
-	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/launchbinding"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlistclient"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
 )
 
 const (
@@ -62,7 +62,7 @@ func mustDigestOrPanic(s string) types.Digest {
 	return d
 }
 
-// canonicalBody renders an allowlist as the CDS /allowlist wire body.
+// canonicalBody renders an allowlist as the Trust Authority /allowlist wire body.
 func canonicalBody(t *testing.T, al *allowlist.Allowlist) []byte {
 	t.Helper()
 	b, err := al.Canonical()
@@ -141,7 +141,7 @@ func TestPolicyStoreEpochAntiRollback(t *testing.T) {
 		t.Fatalf("version = %d, want 5", store.current().version)
 	}
 
-	// A lower version (rolled-back / withheld CDS) must be ignored.
+	// A lower version (rolled-back / withheld Trust Authority) must be ignored.
 	if store.apply(anyAllowlist(map[string]string{pushDigestC: "v3"}), 3) {
 		t.Fatal("rolled-back version 3 was applied")
 	}
@@ -166,7 +166,7 @@ func TestPolicyStoreEpochAntiRollback(t *testing.T) {
 
 // After a restart the store is fresh (version 0), so it trusts the first pull it
 // sees whatever its version — even one below what a prior process had applied.
-// Rollback protection is per-process-lifetime; state re-syncs from CDS.
+// Rollback protection is per-process-lifetime; state re-syncs from the Trust Authority.
 func TestPolicyStoreTrustsFirstVersionAfterRestart(t *testing.T) {
 	// A prior process reached version 9.
 	prior := newPolicyStore(anyAllowlist(map[string]string{}))
@@ -184,7 +184,7 @@ func TestPolicyStoreTrustsFirstVersionAfterRestart(t *testing.T) {
 
 // --- pull loop ---
 
-// flippingHandler serves a canonical allowlist body per version as CDS does,
+// flippingHandler serves a canonical allowlist body per version as Trust Authority does,
 // tagged with its digest, honoring If-None-Match with a 304. idx advances
 // after each 200 so a test can script a version sequence.
 type flippingHandler struct {
@@ -457,8 +457,8 @@ func TestPullLoop304RaisesAppliedVersion(t *testing.T) {
 	<-done
 }
 
-// A 304 reaches CDS, so a failure right after it is not yet a stall.
-func TestPullLoop304CountsAsReachingCDS(t *testing.T) {
+// A 304 reaches Trust Authority, so a failure right after it is not yet a stall.
+func TestPullLoop304CountsAsReachingTA(t *testing.T) {
 	body := canonicalBody(t, anyAllowlist(map[string]string{pushDigestA: "image-1"}))
 	srv := httptest.NewServer(&flippingHandler{
 		versions: []string{"1"},
@@ -470,7 +470,7 @@ func TestPullLoop304CountsAsReachingCDS(t *testing.T) {
 	advance(pullStallAfter)
 	pull.failed(errors.New("lookup cds.private: no such host"))
 	if pull.stall() == "" {
-		t.Fatal("no stall reported for a CDS the node reached nothing from")
+		t.Fatal("no stall reported for a Trust Authority the node reached nothing from")
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -506,7 +506,7 @@ func TestPullLoop304CountsAsReachingCDS(t *testing.T) {
 	<-done
 	pull.failed(errors.New("read: connection reset by peer"))
 	if stall := pull.stall(); stall != "" {
-		t.Fatalf("stall = %q after a 304 reached CDS, want none", stall)
+		t.Fatalf("stall = %q after a 304 reached Trust Authority, want none", stall)
 	}
 }
 
@@ -596,7 +596,7 @@ func TestPullLoopKeepsTheBaseBesidePulled(t *testing.T) {
 }
 
 // TestPullLoopIgnoresRolledBackFetch drives the anti-rollback guard through the
-// fetch path: CDS serves version 5, then a withheld/rolled-back version 3. The
+// fetch path: Trust Authority serves version 5, then a withheld/rolled-back version 3. The
 // loop must keep version 5 and never admit the rolled-back digest.
 func TestPullLoopIgnoresRolledBackFetch(t *testing.T) {
 	srv := httptest.NewServer(&flippingHandler{
@@ -854,7 +854,7 @@ func servedDigest(body []byte) string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
-// servedTag is the ETag CDS serves body under.
+// servedTag is the ETag Trust Authority serves body under.
 func servedTag(body []byte) string {
 	return allowlist.EntityTag(servedDigest(body))
 }
@@ -998,9 +998,10 @@ func TestPolicyMeasurer(t *testing.T) {
 
 // memRegister is an in-memory RTMR[3] seeded by the launch anchor.
 type memRegister struct {
-	val     [runtimemeasure.Size]byte
-	extends int
-	fail    error
+	val      [runtimemeasure.Size]byte
+	extends  int
+	fail     error
+	readFail error
 }
 
 func (r *memRegister) Extend(event []byte) error {
@@ -1012,7 +1013,12 @@ func (r *memRegister) Extend(event []byte) error {
 	return nil
 }
 
-func (r *memRegister) Extension() ([]byte, error) { return slices.Clone(r.val[:]), nil }
+func (r *memRegister) Extension() ([]byte, error) {
+	if r.readFail != nil {
+		return nil, r.readFail
+	}
+	return slices.Clone(r.val[:]), nil
+}
 
 // The hook extends each digest once and leaves the journal readable by the
 // router's non-root cds-attest, also after a failed extend rewrote it 0600.
@@ -1238,6 +1244,39 @@ func TestPolicyMeasurerRetriesOpen(t *testing.T) {
 	}
 	if err := hook(digest); err != nil {
 		t.Fatalf("hook(%s) after the register came up = %v, want nil", digest, err)
+	}
+	if reg.extends != 1 {
+		t.Errorf("register extended %d times, want 1", reg.extends)
+	}
+}
+
+// A journal opened over an unreadable register is not reconciled with it, so
+// the hook extends nothing and reopens it on the next call.
+func TestPolicyMeasurerRetriesUnreadableRegister(t *testing.T) {
+	anchor := []byte("operator key")
+	origKey, origOpen := readOperatorKey, openPolicyJournal
+	t.Cleanup(func() { readOperatorKey, openPolicyJournal = origKey, origOpen })
+	readOperatorKey = func() ([]byte, error) { return anchor, nil }
+	reg := &memRegister{val: runtimemeasure.Seed(anchor), readFail: errors.New("register unreadable")}
+	openPolicyJournal = func(runtimeDir string, _ teetypes.PlatformType, anchor []byte) (*runtimemeasure.Journal, error) {
+		return runtimemeasure.OpenJournalSeeded(filepath.Join(runtimeDir, armtls.MeasuredPoliciesJournal), reg, runtimemeasure.Seed(anchor))
+	}
+	cfg := &config{
+		Platform:       "tdx",
+		WorkloadClaims: workloadClaimsConfig{SocketDir: t.TempDir()},
+		Allowlist:      allowlistConfig{Pull: pullConfig{MeasurePolicies: true}},
+	}
+	hook := policyMeasurer(cfg, discardLogger())
+	digest := "sha256:" + strings.Repeat("1", 64)
+	if err := hook(digest); err == nil || errors.Is(err, errPolicyRefused) {
+		t.Fatalf("hook(%s) over an unreadable register = %v, want a retryable error", digest, err)
+	}
+	if reg.extends != 0 {
+		t.Fatalf("register extended %d times over an unreadable register, want 0", reg.extends)
+	}
+	reg.readFail = nil
+	if err := hook(digest); err != nil {
+		t.Fatalf("hook(%s) after the register became readable = %v, want nil", digest, err)
 	}
 	if reg.extends != 1 {
 		t.Errorf("register extended %d times, want 1", reg.extends)

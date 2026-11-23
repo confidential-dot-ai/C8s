@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/pkg/routes"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/routes"
 )
 
 func simpleManifest(revision uint64, address string) manifestSpec {
@@ -334,7 +334,7 @@ func TestB1RotationRetiresInFlightConnection(t *testing.T) {
 	done := make(chan int)
 	go func() { done <- f.get("/slow").Code }()
 	<-web.entered
-	// CDS holds one mesh CA, so a rotation replaces the published bundle
+	// Trust Authority holds one mesh CA, so a rotation replaces the published bundle
 	// rather than adding to it: the backend's leaf no longer chains.
 	f.publish(t, caPEM(newCA(t, "mesh-2")))
 	if err := f.transports.dropMeshPools(); err != nil {

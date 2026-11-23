@@ -22,42 +22,42 @@ After step 3, do only the steps you need; terms left undefined here are in
 - `mkfs.erofs` for step 5, or `mkfs.ext4` with `--mutable`: `c8s volume create`
   builds the volume's filesystem with it.
 
-## 1. Open a path to CDS
+## 1. Open a path to the Trust Authority (TA)
 
-Allowlist, secret, volume, and route writes go to CDS, which holds the allowlist
+Allowlist, secret, volume, and route writes go to the TA, which holds the allowlist
 and signs workload certificates. They travel over armTLS: mutual TLS whose
-certificates carry the peer's TEE evidence, so you verify what CDS runs rather
-than a name. The front door relays the allowlist API only, so reach CDS itself:
+certificates carry the peer's TEE evidence, so you verify what the TA runs rather
+than a name. The front door relays the allowlist API only, so reach the TA itself:
 
 ```sh
-CDS=https://<CDS_ADDRESS>
-PIN="--url $CDS --image-policy-file cds-pin.json"
+TA=https://<TA_ADDRESS>
+PIN="--url $TA --image-policy-file cds-pin.json"
 KEY="--operator-key c8s-operator.key"
 ```
 
-`<CDS_ADDRESS>` is the `<host>:<port>` the install named with `--cds-address`,
-and `cds-pin.json` the document it named with `--cds-pin`: it binds the exact
-configuration that VM runs on, so it names this cluster's CDS rather than any
+`<TA_ADDRESS>` is the `<host>:<port>` the install named with `--ta-address`,
+and `cds-pin.json` the document it named with `--ta-pin`: it binds the exact
+configuration that VM runs on, so it names this cluster's TA rather than any
 VM of the same image. Every later step uses `$PIN` and `$KEY`, so run this
 block in each new shell.
 
-Confirm the path by listing the entries CDS serves, then read the mesh CA
+Confirm the path by listing the entries the TA serves, then read the mesh CA
 bundle, the anchor workload certificates chain to:
 
 ```sh
 c8s allowlist list $PIN
-c8s cds ca $PIN --out mesh-ca.pem
+c8s ta ca $PIN --out mesh-ca.pem
 ```
 
-Secret and volume writes hold CDS to that bundle. The read takes whatever
+Secret and volume writes hold the TA to that bundle. The read takes whatever
 answered under the pin: record the certificate SHA-256 it prints on stderr and
-compare it on later reads. CDS makes the mesh CA in process, so a restart replaces it and the bundle
-has to be read again ([operator.md](operator.md#cds-runs-as-one-vm) lists what
+compare it on later reads. The TA makes the mesh CA in process, so a restart replaces it and the bundle
+has to be read again ([operator.md](operator.md#the-ta-runs-as-one-vm) lists what
 else a restart drops).
 
 ## 2. Write a workload entry
 
-The entry makes your containers admissible, and its name is the identity CDS
+The entry makes your containers admissible, and its name is the identity the TA
 stamps on the pod's certificate when exactly one entry matches. Derive it from
 the live object, so it covers what actually runs, init containers included:
 
@@ -106,7 +106,7 @@ router reach it.
 c8s secrets put /tenant-a/db --from-file db.txt --mesh-ca mesh-ca.pem $PIN $KEY
 ```
 
-The write refuses a CDS that does not serve a mesh CA from `--mesh-ca`, unless
+The write refuses a TA that does not serve a mesh CA from `--mesh-ca`, unless
 you pass `--force`. Grant the path in the entry as step 6 shows, then ask for
 the value on the pod template, beside `confidential.ai/cw`:
 
@@ -116,7 +116,7 @@ confidential.ai/c8s-secrets: "DB=/tenant-a/db"
 
 Each item is `NAME=/store/path`, and `NAME` is the file written under
 `/run/c8s/secrets`. That file appears only after every main container is running
-([secrets.md](secrets.md) has the checks CDS makes), so the consumer waits for
+([secrets.md](secrets.md) has the checks the TA makes), so the consumer waits for
 it rather than reading it at startup:
 
 ```sh
@@ -125,7 +125,7 @@ until [ -f /run/c8s/secrets/DB ]; do sleep 1; done
 
 On a measured node you cannot look inside the pod to check: exec, attach, and
 port-forward are denied there ([node-exec-mode.md](node-exec-mode.md)). The
-workload's own logs show that wait finishing, and step 8 reports what CDS
+workload's own logs show that wait finishing, and step 8 reports what the TA
 decided.
 
 ## 5. Create and attach a volume
@@ -139,9 +139,9 @@ c8s volume create --name weights --source ./weights --out ./weights.img \
   --node <NODE> --mesh-ca mesh-ca.pem $PIN $KEY
 ```
 
-Keep the escrow file: it and the CDS process hold the only copies of the
-volume's key, and a CDS restart drops the stored one
-([operator.md](operator.md#cds-runs-as-one-vm)). A run that builds the image but
+Keep the escrow file: it and the TA process hold the only copies of the
+volume's key, and a TA restart drops the stored one
+([operator.md](operator.md#the-ta-runs-as-one-vm)). A run that builds the image but
 cannot store the key leaves both files and says so; store the key with
 `c8s secrets put <path> --from-file <escrow>`, since `--out` refuses a second
 build.
@@ -226,7 +226,7 @@ c8s routes add --host api.example.com --path / --workload <ENTRY> \
 
 `<PORT>` is the port the workload itself listens on, not a C8s port. `--new`
 starts the first manifest of a cluster; without it `add` refuses an empty store.
-`--operator-keys` is required once CDS stores a manifest, because the write
+`--operator-keys` is required once the TA stores a manifest, because the write
 re-signs every stored route.
 `--workload` is the entry name the backend's certificate must carry, so the
 router handshakes with the pod's mesh endpoint and answers 502 rather than reach
@@ -245,8 +245,8 @@ A container stuck in `CreateContainerError` or `RunContainerError` was refused
 by its node: `kubectl -n <NAMESPACE> describe pod <POD>` shows the refusal, and
 one from the privilege floor names the `securityContext` field to set.
 
-A pod that runs but never gets its secret or volume was refused by CDS, and only
-CDS can say why — the container set it compared is invisible to the pod:
+A pod that runs but never gets its secret or volume was refused by the TA, and only
+the TA can say why — the container set it compared is invisible to the pod:
 
 ```sh
 c8s secrets explain --sandbox <SANDBOX_ID> $PIN $KEY

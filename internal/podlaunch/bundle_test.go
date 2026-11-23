@@ -8,18 +8,18 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/confidential-dot-ai/c8s/pkg/certutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
 )
 
 func podBundleOptions(t *testing.T) PodBundleOptions {
 	t.Helper()
 	return PodBundleOptions{
-		Dir:                filepath.Join(t.TempDir(), "bundle"),
-		ClusterID:          "cluster-one",
-		ManifestPath:       writeManifest(t, "tdx"),
-		NodeName:           "p-1",
-		CDSAddress:         "cds.example.org:8443",
-		CDSImagePolicyPath: writePodCDSPin(t),
+		Dir:               filepath.Join(t.TempDir(), "bundle"),
+		ClusterID:         "cluster-one",
+		ManifestPath:      writeManifest(t, "tdx"),
+		NodeName:          "p-1",
+		TAAddress:         "cds.example.org:8443",
+		TAImagePolicyPath: writePodTAPin(t),
 	}
 }
 
@@ -32,11 +32,11 @@ func TestNewPodBundleRefuses(t *testing.T) {
 		want   string
 	}{
 		{"no node name", func(_ *testing.T, o *PodBundleOptions) { o.NodeName = "" }, "are required"},
-		{"missing CDS policy", func(t *testing.T, o *PodBundleOptions) {
-			o.CDSImagePolicyPath = filepath.Join(t.TempDir(), "absent.json")
+		{"missing Trust Authority policy", func(t *testing.T, o *PodBundleOptions) {
+			o.TAImagePolicyPath = filepath.Join(t.TempDir(), "absent.json")
 		}, "--cds-image-policy-file"},
-		{"CDS policy is not a pin document", func(t *testing.T, o *PodBundleOptions) {
-			o.CDSImagePolicyPath = writeFile(t, "cds.json", "not a policy")
+		{"Trust Authority policy is not a pin document", func(t *testing.T, o *PodBundleOptions) {
+			o.TAImagePolicyPath = writeFile(t, "cds.json", "not a policy")
 		}, "cds.measurements"},
 		{"missing image manifest", func(t *testing.T, o *PodBundleOptions) {
 			o.ManifestPath = filepath.Join(t.TempDir(), "absent.json")

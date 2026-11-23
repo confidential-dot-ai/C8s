@@ -21,12 +21,12 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote"
-	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
 )
 
 // SNP report layout (AMD SEV-SNP ABI): the fields the synthetic report
 // carries. MEASUREMENT names the launch identity it reports, and a lane's
-// CDS or node pin names the same value.
+// Trust Authority or node pin names the same value.
 const (
 	snpReportSize     = 1184
 	reportDataOffset  = 0x50

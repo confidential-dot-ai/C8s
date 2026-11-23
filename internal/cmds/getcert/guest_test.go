@@ -16,12 +16,12 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/attestation-go/remote"
-	"github.com/confidential-dot-ai/c8s/internal/attestation"
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
-	"github.com/confidential-dot-ai/c8s/pkg/certutil"
-	"github.com/confidential-dot-ai/c8s/pkg/types"
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/attestation"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/attestclient"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 func guestTestClaims(t *testing.T) workloadclaims.PodClaims {
@@ -52,7 +52,7 @@ func TestGuestIssuanceChecksSnapshotBeforePublishing(t *testing.T) {
 				_, _ = io.WriteString(w, `{"platform":"tdx","evidence":{"quote":"fake"}}`)
 			}))
 			defer attester.Close()
-			cds := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ta := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path == "/authenticate" {
 					_ = json.NewEncoder(w).Encode(types.ChallengeResponse{Challenge: base64.StdEncoding.EncodeToString(nonce)})
 					return
@@ -95,7 +95,7 @@ func TestGuestIssuanceChecksSnapshotBeforePublishing(t *testing.T) {
 				}
 				_, _ = io.WriteString(w, chain)
 			}))
-			defer cds.Close()
+			defer ta.Close()
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			v := credentialVolume{dir: t.TempDir(), leafName: "tls.crt", keyName: "tls.key", caName: "ca.crt"}
@@ -114,7 +114,7 @@ func TestGuestIssuanceChecksSnapshotBeforePublishing(t *testing.T) {
 					}
 					return publish()
 				}}
-			err := obtainGuestCert(ctx, guest, attestclient.NewClientWithHTTP(cds.URL, cds.Client()), creds)
+			err := obtainGuestCert(ctx, guest, attestclient.NewClientWithHTTP(ta.URL, ta.Client()), creds)
 			if mode == "publish" {
 				if err != nil || creds.current == nil {
 					t.Fatalf("no generation: %v", err)

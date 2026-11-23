@@ -15,7 +15,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
 )
 
 func TestPrepareFailsClosedOnBrokenBakedInputs(t *testing.T) {
@@ -41,7 +41,7 @@ func TestPrepareFailsClosedOnBrokenBakedInputs(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			root := prepareRoot(t)
 			tc.break_(root)
-			err := Prepare(root, FloorInputs{CDS: testCDS(t)})
+			err := Prepare(root, FloorInputs{TA: testTA(t)})
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("got %v, want %q", err, tc.want)
 			}
@@ -52,14 +52,14 @@ func TestPrepareFailsClosedOnBrokenBakedInputs(t *testing.T) {
 	}
 }
 
-// The document names the cluster's CDS, so the plugin pulls from the address
+// The document names the cluster's Trust Authority, so the plugin pulls from the address
 // it carries, the credential clients reach only that endpoint, and the policy
-// pods read is the document's own: every launch digest of the CDS image, on
+// pods read is the document's own: every launch digest of the Trust Authority image, on
 // that VM's own TEE family.
-func TestPrepareNamesTheExternalCDS(t *testing.T) {
+func TestPrepareNamesTheExternalTA(t *testing.T) {
 	root := prepareRoot(t)
 
-	if err := Prepare(root, FloorInputs{CDS: testCDS(t)}); err != nil {
+	if err := Prepare(root, FloorInputs{TA: testTA(t)}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -76,46 +76,46 @@ func TestPrepareNamesTheExternalCDS(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got := staged.Allowlist.Pull["url"]; got != "https://cds.example.org:8443" {
-		t.Errorf("pull url = %v, want the CDS the document names", got)
+		t.Errorf("pull url = %v, want the Trust Authority the document names", got)
 	}
 	roles := stagedMeshPolicy(t, root).Roles
 	if len(roles) != 2 {
 		t.Fatalf("staged roles = %+v, want the measured mesh role plus the credential role", roles)
 	}
 	if roles[1].Port != 8443 {
-		t.Errorf("credential role port = %d, want the port the document's CDS serves on", roles[1].Port)
+		t.Errorf("credential role port = %d, want the port the document's Trust Authority serves on", roles[1].Port)
 	}
 	published, err := refvalues.Load(filepath.Join(root, PublicDir, "cds.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if published.Family != teetypes.FamilySNP || len(published.Images) != 2 {
-		t.Fatalf("published CDS policy = %+v, want both SNP launch digests", published)
+		t.Fatalf("published Trust Authority policy = %+v, want both SNP launch digests", published)
 	}
 	for _, image := range published.Images {
 		if len(image.LaunchFile) == 0 {
-			t.Fatalf("published CDS pin %s lost its launch file", image.Name)
+			t.Fatalf("published Trust Authority pin %s lost its launch file", image.Name)
 		}
 	}
 }
 
-// A document whose CDS pins cannot be rendered publishes nothing: the node
+// A document whose Trust Authority pins cannot be rendered publishes nothing: the node
 // services would otherwise hand every pod an unusable policy.
-func TestPrepareRefusesAnUnrenderableCDSPolicy(t *testing.T) {
+func TestPrepareRefusesAnUnrenderableTAPolicy(t *testing.T) {
 	root := prepareRoot(t)
-	unrenderable := cmdsutil.CDS{Address: "192.0.2.50:8443", Measurements: "{"}
+	unrenderable := cmdsutil.TA{Address: "192.0.2.50:8443", Measurements: "{"}
 
-	if err := Prepare(root, FloorInputs{CDS: unrenderable}); err == nil {
-		t.Fatal("accepted a document whose CDS policy does not parse")
+	if err := Prepare(root, FloorInputs{TA: unrenderable}); err == nil {
+		t.Fatal("accepted a document whose Trust Authority policy does not parse")
 	}
 	if _, err := os.Stat(filepath.Join(root, PublicDir)); !errors.Is(err, os.ErrNotExist) {
-		t.Fatal("published public state despite an invalid CDS policy")
+		t.Fatal("published public state despite an invalid Trust Authority policy")
 	}
 }
 
-// externalCDSPin is the pin document of a CDS VM on another TEE family than
+// externalTAPin is the pin document of a Trust Authority VM on another TEE family than
 // this node's, with one entry per vCPU count it may boot with.
-func externalCDSPin(t *testing.T) []byte {
+func externalTAPin(t *testing.T) []byte {
 	t.Helper()
 	launchFile := []byte("schemaVersion: c8s-cds/v1\n")
 	data, err := refvalues.Format(refvalues.ReferenceValues{
@@ -150,7 +150,7 @@ func TestPrepareBindsClusterRangesTheBakedPolicyAllows(t *testing.T) {
 			root := prepareRoot(t)
 			writeInput(t, root, "/usr/lib/c8s/image-policy.yaml", []byte(fmt.Sprintf(baked, tc.baked)))
 			err := Prepare(root, FloorInputs{
-				CDS:           testCDS(t),
+				TA:            testTA(t),
 				ClusterRanges: tc.ranges,
 				Placeholders:  floorValues(),
 			})
@@ -191,21 +191,21 @@ func stagedMeshRanges(t *testing.T, root string) []string {
 	return staged.Mesh.ClusterRanges
 }
 
-// Staging writes its own CDS pin, and every other output it takes is one it
+// Staging writes its own Trust Authority pin, and every other output it takes is one it
 // also clears, so none outlives the staging that wrote it.
 func TestPrepareRefusesAnOutputItCannotManage(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		want error
 	}{
-		{CDSOutput, errOutputIsCDSPin},
+		{TAOutput, errOutputIsTAPin},
 		{"kubeconfig", errOutputNotCleared},
 		{"router/../peers.json", errOutputNotCleared},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := prepareRoot(t)
 			in := FloorInputs{
-				CDS:     testCDS(t),
+				TA:      testTA(t),
 				Outputs: map[string][]byte{tc.name: []byte("x")},
 			}
 			if err := Prepare(root, in); !errors.Is(err, tc.want) {
@@ -233,7 +233,7 @@ func TestPrepareBindsTheResolverTheBakedPolicyAllows(t *testing.T) {
 			root := prepareRoot(t)
 			writeInput(t, root, "/usr/lib/c8s/image-policy.yaml", []byte(strings.Replace(placeholderFloor, bakedResolver, tc.baked, 1)))
 			err := Prepare(root, FloorInputs{
-				CDS:          testCDS(t),
+				TA:           testTA(t),
 				Resolver:     tc.resolver,
 				Placeholders: floorValues(),
 			})

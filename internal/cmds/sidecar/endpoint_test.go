@@ -13,15 +13,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 // An injected sidecar dials the endpoint its node mounts; without a mount
 // --cds-url stands as it was given, and Validate canonicalises it.
-func TestResolveCDSEndpointTakesTheNodesEndpoint(t *testing.T) {
+func TestResolveTAEndpointTakesTheNodesEndpoint(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "cds-address")
-	if err := os.WriteFile(path, cmdsutil.FormatCDSAddress("cds.example.org:30808"), 0o600); err != nil {
+	if err := os.WriteFile(path, cmdsutil.FormatTAAddress("cds.example.org:30808"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	previousPath := nodeAddressPath
@@ -33,26 +33,26 @@ func TestResolveCDSEndpointTakesTheNodesEndpoint(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(previousLogger) })
 
 	injected := &Config{}
-	if err := injected.ResolveCDSEndpoint(); err != nil {
+	if err := injected.ResolveTAEndpoint(); err != nil {
 		t.Fatalf("ResolveCDSEndpoint: %v", err)
 	}
-	if injected.CDSURL != "https://cds.example.org:30808" {
-		t.Fatalf("CDSURL = %q, want the node's endpoint", injected.CDSURL)
+	if injected.TAURL != "https://cds.example.org:30808" {
+		t.Fatalf("CDSURL = %q, want the node's endpoint", injected.TAURL)
 	}
 	line := logged.String()
-	if !strings.Contains(line, `msg="CDS endpoint resolved"`) ||
+	if !strings.Contains(line, `msg="Trust Authority endpoint resolved"`) ||
 		!strings.Contains(line, "cds_url=https://cds.example.org:30808") ||
 		!strings.Contains(line, "from_node=true") {
 		t.Fatalf("logged %q, want the resolved endpoint line", line)
 	}
 
 	nodeAddressPath = filepath.Join(t.TempDir(), "absent")
-	supplied := &Config{CDSURL: "https://cds:8443/"}
-	if err := supplied.ResolveCDSEndpoint(); err != nil {
+	supplied := &Config{TAURL: "https://cds:8443/"}
+	if err := supplied.ResolveTAEndpoint(); err != nil {
 		t.Fatalf("ResolveCDSEndpoint: %v", err)
 	}
-	if supplied.CDSURL != "https://cds:8443/" {
-		t.Fatalf("CDSURL = %q, want --cds-url as it was given", supplied.CDSURL)
+	if supplied.TAURL != "https://cds:8443/" {
+		t.Fatalf("CDSURL = %q, want --cds-url as it was given", supplied.TAURL)
 	}
 }
 

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/confidential-dot-ai/c8s/internal/testutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
 )
 
 // The sidecars announce the set they resolved; the conformance steps read
@@ -16,26 +16,26 @@ func TestParsePinsAnnouncesTheResolvedSet(t *testing.T) {
 	previous := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
 	t.Cleanup(func() { slog.SetDefault(previous) })
-	cfg := Config{MeasurementsConfigJSON: testutil.CDSPinDocument(testutil.TestMeasurement, testutil.CDSLaunchFile)}
+	cfg := Config{MeasurementsConfigJSON: testutil.TAPinDocument(testutil.TestMeasurement, testutil.TALaunchFile)}
 	if _, err := cfg.ParsePins(t.Context()); err != nil {
 		t.Fatalf("ParsePins: %v", err)
 	}
 	line := logged.String()
-	if !strings.Contains(line, `msg="CDS pins resolved"`) || !strings.Contains(line, "from_node=false") {
+	if !strings.Contains(line, `msg="Trust Authority pins resolved"`) || !strings.Contains(line, "from_node=false") {
 		t.Fatalf("logged %q, want the resolved pins line", line)
 	}
 }
 
-// Where no node pins CDS and nothing names a pin, the sidecar reaches no CDS
+// Where no node pins Trust Authority and nothing names a pin, the sidecar reaches no Trust Authority
 // it can hold to anything.
-func TestParsePinsRefusesAnUnpinnedCDS(t *testing.T) {
+func TestParsePinsRefusesAnUnpinnedTA(t *testing.T) {
 	if _, err := (&Config{}).ParsePins(t.Context()); err == nil || !strings.Contains(err.Error(), "pins no image") {
-		t.Fatalf("error = %v, want an unpinned-CDS refusal", err)
+		t.Fatalf("error = %v, want an unpinned-Trust Authority refusal", err)
 	}
 }
 
-func TestParsePinsAcceptsAPinnedCDS(t *testing.T) {
-	cfg := Config{MeasurementsConfigJSON: testutil.CDSPinDocument(testutil.TestMeasurement, testutil.CDSLaunchFile)}
+func TestParsePinsAcceptsAPinnedTA(t *testing.T) {
+	cfg := Config{MeasurementsConfigJSON: testutil.TAPinDocument(testutil.TestMeasurement, testutil.TALaunchFile)}
 	got, err := cfg.ParsePins(t.Context())
 	if err != nil {
 		t.Fatalf("ParsePins: %v", err)
@@ -45,8 +45,8 @@ func TestParsePinsAcceptsAPinnedCDS(t *testing.T) {
 	}
 }
 
-// A CDS is pinned to the configuration it runs on, so a document naming only
-// its image admits any CDS VM.
+// A Trust Authority is pinned to the configuration it runs on, so a document naming only
+// its image admits any Trust Authority VM.
 func TestParsePinsRejectsAPinWithoutALaunchBinding(t *testing.T) {
 	unbound := `{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"cds","measurement":"` + testutil.TestMeasurement + `"}]}`
 	cfg := Config{MeasurementsConfigJSON: unbound}
@@ -56,7 +56,7 @@ func TestParsePinsRejectsAPinWithoutALaunchBinding(t *testing.T) {
 }
 
 func TestParsePinsRejectsAnUnusablePinSource(t *testing.T) {
-	bound := testutil.CDSPinDocument(testutil.TestMeasurement, testutil.CDSLaunchFile)
+	bound := testutil.TAPinDocument(testutil.TestMeasurement, testutil.TALaunchFile)
 	for name, cfg := range map[string]Config{
 		"two sources":  {MeasurementsConfig: "policy.json", MeasurementsConfigJSON: bound},
 		"missing file": {MeasurementsConfig: "missing-file"},
