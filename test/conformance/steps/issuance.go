@@ -23,7 +23,7 @@ import (
 	"github.com/cucumber/godog"
 )
 
-// Sentences about the leaves the CDS issues: to a pod carrying a workload ID,
+// Sentences about the leaves the Trust Authority issues: to a pod carrying a workload ID,
 // whose requester the webhook injects and which the scenario watches from
 // outside (the files in its certificate volume, its requester's log), and to
 // a requester the scenario drives itself (requester.go). What a leaf carries
@@ -31,8 +31,8 @@ import (
 // the operator's verifier.
 func registerIssuance(sc *godog.ScenarioContext) {
 	sc.Step(`^"([^"]*)" carries a workload ID$`, carriesWorkloadID)
-	sc.Step(`^"([^"]*)" holds a leaf the CDS issued$`, holdsLeaf)
-	sc.Step(`^"([^"]*)" holds no leaf the CDS issued$`, holdsNoLeaf)
+	sc.Step(`^"([^"]*)" holds a leaf the (?:Trust Authority|CDS) issued$`, holdsLeaf)
+	sc.Step(`^"([^"]*)" holds no leaf the (?:Trust Authority|CDS) issued$`, holdsNoLeaf)
 	sc.Step(`^"([^"]*)" renews its leaf$`, renewsLeaf)
 	sc.Step(`^the leaf "([^"]*)" holds has been replaced$`, leafReplaced)
 	sc.Step(`^the leaf "([^"]*)" holds is the one it held before$`, leafUnchanged)
@@ -49,7 +49,7 @@ func registerIssuance(sc *godog.ScenarioContext) {
 	sc.Step(`^the extended key usage of the leaf "([^"]*)" holds includes "([^"]*)"$`, leafExtKeyUsage)
 	sc.Step(`^the leaf "([^"]*)" holds is read$`, leafRead)
 	sc.Step(`^its TTL is at most (\d+) hours$`, leafTTLAtMost)
-	sc.Step(`^it does not chain to the mesh CA the CDS now serves$`, leafDoesNotChainToServedCA)
+	sc.Step(`^it does not chain to the mesh CA the (?:Trust Authority|CDS) now serves$`, leafDoesNotChainToServedCA)
 	sc.Step(`^its matched workload records the version of the served allowlist$`, matchedRecordsVersion)
 	sc.Step(`^its matched workload records the digest of the served allowlist$`, matchedRecordsDigest)
 	sc.Step(`^both containers of "([^"]*)" hold the same leaf$`, containersShareLeaf)
@@ -60,10 +60,10 @@ func registerIssuance(sc *godog.ScenarioContext) {
 	sc.Step(`^the relying party expects the matched workload name "([^"]*)"$`, relyingPartyExpectsWorkload)
 	sc.Step(`^the relying party verifies the leaf "([^"]*)" holds$`, relyingPartyVerifies)
 	sc.Step(`^the relying party (accepts|rejects) that leaf$`, relyingPartyVerdict)
-	sc.Step(`^the CDS pins launch digests$`, cdsPinsDigests)
-	sc.Step(`^the CDS has an empty pin set$`, cdsEmptyPins)
+	sc.Step(`^the (?:Trust Authority|CDS) pins launch digests$`, taPinsDigests)
+	sc.Step(`^the (?:Trust Authority|CDS) has an empty pin set$`, taEmptyPins)
 	sc.Step(`^IP SAN binding is (on|off)$`, ipSANBinding)
-	sc.Step(`^the configured node address range of the CDS covers no node$`, inventoryRangeCoversNoNode)
+	sc.Step(`^the configured node address range of the (?:Trust Authority|CDS) covers no node$`, inventoryRangeCoversNoNode)
 	sc.Step(`^the sandbox inventory on node "([^"]*)" restarts$`, inventoryRestarts)
 }
 
@@ -76,7 +76,7 @@ const certContainer = "c8s-cert"
 // at most 30s plus jitter, and the request itself.
 const renewWindow = 120 * time.Second
 
-// refusal is the CDS's error document for an attest request it refused: the
+// refusal is the Trust Authority's error document for an attest request it refused: the
 // A3 error code and message, as a requester logged or received it.
 type refusal struct {
 	Code    string `json:"error"`
@@ -96,7 +96,7 @@ type issuanceState struct {
 	// read is the leaf "is read" named, for the sentences that follow it.
 	read *leaf
 	// sanBinding records that a scenario turned IP SAN binding on, so a CSR
-	// carrying the requester's own address needs the CDS to observe that
+	// carrying the requester's own address needs the Trust Authority to observe that
 	// address as the request source (requester_source_is_own_address).
 	sanBinding bool
 }
@@ -245,7 +245,7 @@ const (
 
 var errorField = regexp.MustCompile(`error="((?:[^"\\]|\\.)*)"`)
 
-// parseRefusal reads the CDS's error document out of a logged failure, which
+// parseRefusal reads the Trust Authority's error document out of a logged failure, which
 // quotes the error the client returned around it.
 func parseRefusal(line string) (*refusal, bool) {
 	m := errorField.FindStringSubmatch(line)
@@ -654,7 +654,7 @@ func leafTTLAtMost(ctx context.Context, hours int) error {
 }
 
 // leafDoesNotChainToServedCA: the leaf read earlier was signed by a mesh CA
-// the CDS no longer holds.
+// the Trust Authority no longer holds.
 func leafDoesNotChainToServedCA(ctx context.Context) error {
 	w := getWorld(ctx)
 	l, err := w.readLeaf()
@@ -666,7 +666,7 @@ func leafDoesNotChainToServedCA(ctx context.Context) error {
 		return err
 	}
 	if err := l.cert.CheckSignatureFrom(ca); err == nil {
-		return fmt.Errorf("the leaf (serial %s) chains to the mesh CA the CDS now serves", l.serial())
+		return fmt.Errorf("the leaf (serial %s) chains to the mesh CA the Trust Authority now serves", l.serial())
 	}
 	return nil
 }
@@ -891,24 +891,24 @@ func relyingPartyVerdict(ctx context.Context, want string) error {
 	return nil
 }
 
-// cdsPinsDigests is a precondition this environment may not meet: a CDS
+// taPinsDigests is a precondition this environment may not meet: a Trust Authority
 // installed with no pins cannot show what pinned ones refuse.
-func cdsPinsDigests(ctx context.Context) error {
+func taPinsDigests(ctx context.Context) error {
 	pins, err := getWorld(ctx).pins()
 	if err != nil {
 		return err
 	}
 	if len(pins) == 0 {
-		return skipf("the CDS pins no launch digests here")
+		return skipf("the Trust Authority pins no launch digests here")
 	}
 	return nil
 }
 
-func cdsEmptyPins(ctx context.Context) error {
+func taEmptyPins(ctx context.Context) error {
 	return getWorld(ctx).reconfigure("pins", "none")
 }
 
-// ipSANBinding turns the CDS's --san-validation on or off, restarting it
+// ipSANBinding turns the Trust Authority's --san-validation on or off, restarting it
 // only when the installed value differs.
 func ipSANBinding(ctx context.Context, state string) error {
 	w := getWorld(ctx)
@@ -924,7 +924,7 @@ func ipSANBinding(ctx context.Context, state string) error {
 	return w.reconfigure("san-validation", want)
 }
 
-// inventoryRangeCoversNoNode bounds the inventories the CDS may dial to a
+// inventoryRangeCoversNoNode bounds the inventories the Trust Authority may dial to a
 // documentation range no node has an address in.
 func inventoryRangeCoversNoNode(ctx context.Context) error {
 	return getWorld(ctx).reconfigure("inventory-cidr", "192.0.2.0/24")

@@ -26,7 +26,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/routes"
 )
 
-// The router polls the CDS every 30s by default; three polls and the
+// The router polls the Trust Authority every 30s by default; three polls and the
 // first-apply backoff fit well inside this.
 const routesApplyTimeout = 3 * time.Minute
 
@@ -39,7 +39,7 @@ type routesState struct {
 	pending map[string]any
 }
 
-// routesRead is the CDS's stored manifest as a step read it, and the
+// routesRead is the Trust Authority's stored manifest as a step read it, and the
 // revision to write next.
 type routesRead struct {
 	env    routes.Envelope
@@ -50,22 +50,22 @@ type routesRead struct {
 
 func registerRoutes(sc *godog.ScenarioContext) {
 	sc.Step(`^the operator (writes|has written) a route manifest$`, operatorWritesManifest)
-	sc.Step(`^that caller sends the CDS a route manifest$`, callerSendsManifest)
+	sc.Step(`^that caller sends the (?:Trust Authority|CDS) a route manifest$`, callerSendsManifest)
 	sc.Step(`^the operator writes a route manifest with the revision of the stored one$`, operatorWritesSameRevision)
 	sc.Step(`^the operator writes a route manifest naming (the route digest of the stored one|a route digest other than the stored one's) in If-Match$`, operatorWritesIfMatch)
 	sc.Step(`^the operator writes a route manifest (carrying an unknown member|whose backend is neither a workload backend nor an address backend)$`, operatorWritesInvalidManifest)
-	sc.Step(`^the CDS accepts the write$`, func(ctx context.Context) error {
-		return getWorld(ctx).cdsAnswered(http.StatusNoContent, "stored")
+	sc.Step(`^the (?:Trust Authority|CDS) accepts the write$`, func(ctx context.Context) error {
+		return getWorld(ctx).taAnswered(http.StatusNoContent, "stored")
 	})
-	sc.Step(`^the CDS refuses the write as stale$`, func(ctx context.Context) error {
-		return getWorld(ctx).cdsAnswered(http.StatusConflict, "the revision is not greater than the stored one")
+	sc.Step(`^the (?:Trust Authority|CDS) refuses the write as stale$`, func(ctx context.Context) error {
+		return getWorld(ctx).taAnswered(http.StatusConflict, "the revision is not greater than the stored one")
 	})
-	sc.Step(`^the CDS refuses the write as conflicting$`, func(ctx context.Context) error {
-		return getWorld(ctx).cdsAnswered(http.StatusPreconditionFailed, "If-Match differs from the stored route digest")
+	sc.Step(`^the (?:Trust Authority|CDS) refuses the write as conflicting$`, func(ctx context.Context) error {
+		return getWorld(ctx).taAnswered(http.StatusPreconditionFailed, "If-Match differs from the stored route digest")
 	})
-	sc.Step(`^the CDS serves that route manifest with its write token$`, cdsServesManifest)
+	sc.Step(`^the (?:Trust Authority|CDS) serves that route manifest with its write token$`, taServesManifest)
 	sc.Step(`^the router has applied a route manifest routing path "([^"]*)" on host "([^"]*)"$`, routerApplied)
-	sc.Step(`^the router has applied a route manifest routing path "([^"]*)" on host "([^"]*)" to the CDS under trust anchors that did not issue its certificate$`, routerAppliedUnrelatedCA)
+	sc.Step(`^the router has applied a route manifest routing path "([^"]*)" on host "([^"]*)" to the (?:Trust Authority|CDS) under trust anchors that did not issue its certificate$`, routerAppliedUnrelatedCA)
 	sc.Step(`^a client requests path "([^"]*)" on host "([^"]*)" through the router$`, func(ctx context.Context, path, host string) error {
 		w := getWorld(ctx)
 		w.router.lastHost = w.routeHost(host)
@@ -133,9 +133,9 @@ func (w *world) routeHost(logical string) string {
 // and the clock, so that a manifest an earlier run left never outranks it.
 // The scenario's first read is the manifest its undo writes back: under a
 // revision past whatever the scenario stored, or as an empty manifest when
-// none was stored, since the CDS has no removal.
+// none was stored, since the Trust Authority has no removal.
 func (w *world) readRoutes() (r routesRead, err error) {
-	a, err := w.cdsRequest(http.MethodGet, routes.Path, nil, "", "", "")
+	a, err := w.taRequest(http.MethodGet, routes.Path, nil, "", "", "")
 	if err != nil {
 		return r, err
 	}
@@ -181,7 +181,7 @@ func (w *world) restoreRoutes(before routesRead) error {
 	if err := w.operatorWrite(w.routesWrite(body, "")); err != nil {
 		return err
 	}
-	return w.cdsAnswered(http.StatusNoContent, "restoring the route manifest")
+	return w.taAnswered(http.StatusNoContent, "restoring the route manifest")
 }
 
 // manifest is a route manifest at revision routing hosts, valid since an
@@ -269,7 +269,7 @@ func operatorWritesManifest(ctx context.Context, tense string) error {
 		return err
 	}
 	if tense == "has written" {
-		return w.cdsAnswered(http.StatusNoContent, "stored")
+		return w.taAnswered(http.StatusNoContent, "stored")
 	}
 	return nil
 }
@@ -290,7 +290,7 @@ func operatorWritesSameRevision(ctx context.Context) error {
 		return err
 	}
 	if !r.found {
-		return errors.New("the CDS stores no route manifest")
+		return errors.New("the Trust Authority stores no route manifest")
 	}
 	return w.operatorWrite(w.routesWrite(mustJSON(w.appManifest(r.stored, closedBackend())), ""))
 }
@@ -302,7 +302,7 @@ func operatorWritesIfMatch(ctx context.Context, which string) error {
 		return err
 	}
 	if !r.found {
-		return errors.New("the CDS stores no route manifest")
+		return errors.New("the Trust Authority stores no route manifest")
 	}
 	digest := routes.Digest(r.env.Manifest)
 	if which != "the route digest of the stored one" {
@@ -325,8 +325,8 @@ func operatorWritesInvalidManifest(ctx context.Context, fault string) error {
 	return w.operatorWrite(w.routesWrite(mustJSON(m), ""))
 }
 
-// cdsServesManifest compares bytes: the CDS stores both verbatim (C2).
-func cdsServesManifest(ctx context.Context) error {
+// taServesManifest compares bytes: the Trust Authority stores both verbatim (C2).
+func taServesManifest(ctx context.Context) error {
 	w := getWorld(ctx)
 	r, err := w.readRoutes()
 	if err != nil {
@@ -334,11 +334,11 @@ func cdsServesManifest(ctx context.Context) error {
 	}
 	switch {
 	case !r.found:
-		return errors.New("the CDS stores no route manifest")
+		return errors.New("the Trust Authority stores no route manifest")
 	case !bytes.Equal(r.env.Manifest, w.routes.sent):
-		return fmt.Errorf("the CDS serves a route manifest other than the one sent:\n%s", tail(string(r.env.Manifest), 5))
+		return fmt.Errorf("the Trust Authority serves a route manifest other than the one sent:\n%s", tail(string(r.env.Manifest), 5))
 	case "Bearer "+r.env.Token != w.api.lastToken:
-		return errors.New("the CDS serves a write token other than the one the manifest was sent with")
+		return errors.New("the Trust Authority serves a write token other than the one the manifest was sent with")
 	}
 	return nil
 }
@@ -358,7 +358,7 @@ func (w *world) applyRoutes(hosts map[string]any) error {
 	if err := w.operatorWrite(w.routesWrite(mustJSON(manifest(r.next, hosts)), "")); err != nil {
 		return err
 	}
-	if err := w.cdsAnswered(http.StatusNoContent, "the route manifest to apply"); err != nil {
+	if err := w.taAnswered(http.StatusNoContent, "the route manifest to apply"); err != nil {
 		return err
 	}
 	// The router refetches every 30s by default; a faster poll only spends
@@ -383,7 +383,7 @@ func routerApplied(ctx context.Context, path, host string) error {
 	return w.applyRoutes(map[string]any{w.routeHost(host): prefixRoute(path, closedWorkload())})
 }
 
-// routerAppliedUnrelatedCA routes to the CDS as an address backend whose ca
+// routerAppliedUnrelatedCA routes to the Trust Authority as an address backend whose ca
 // is a CA that issued no certificate, so the dial's verification fails (B3).
 func routerAppliedUnrelatedCA(ctx context.Context, path, host string) error {
 	w := getWorld(ctx)

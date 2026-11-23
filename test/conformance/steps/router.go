@@ -23,17 +23,17 @@ import (
 func registerRouter(sc *godog.ScenarioContext) {
 	sc.Step(`^the built-in allowlist route is enabled$`, allowlistRouteEnabled)
 	sc.Step(`^discovery publication is enabled$`, discoveryEnabled)
-	sc.Step(`^the CDS-issued credential is the selected public TLS credential$`, cdsCredentialSelected)
+	sc.Step(`^the (?:Trust Authority|CDS)-issued credential is the selected public TLS credential$`, taCredentialSelected)
 	sc.Step(`^(?:a|the) client reads the allowlist through the built-in allowlist route$`, readsThroughRoute)
 	sc.Step(`^a client requests a lookalike of the built-in allowlist route$`, requestsLookalike)
 	sc.Step(`^the client (does not receive|receives) the served allowlist$`, clientReceivesServed)
 	sc.Step(`^the client (does not receive|receives) the relay failure$`, clientReceivesRelayFailure)
 	sc.Step(`^the operator sends that write through the built-in allowlist route with that write token$`, operatorSendsThroughRoute)
 	sc.Step(`^that caller sends a write of a workload entry "([^"]*)" admitting image "([^"]*)" under any argv through the built-in allowlist route$`, callerWritesThroughRoute)
-	sc.Step(`^the allowlist relay cannot reach the CDS$`, relayCannotReachCDS)
+	sc.Step(`^the allowlist relay cannot reach the (?:Trust Authority|CDS)$`, relayCannotReachTA)
 	sc.Step(`^the router serves the discovery document$`, servesDiscovery)
 	sc.Step(`^a client connects to the router$`, connectsToRouter)
-	sc.Step(`^the certificate the router presents is its CDS-issued certificate$`, presentsCDSCertificate)
+	sc.Step(`^the certificate the router presents is its (?:Trust Authority|CDS)-issued certificate$`, presentsTACertificate)
 }
 
 // The router's built-in allowlist route (exact and prefix), a path that only
@@ -41,7 +41,7 @@ func registerRouter(sc *godog.ScenarioContext) {
 const (
 	allowlistRoute     = "/allowlist"
 	allowlistLookalike = "/allowlisted"
-	relayFailureBody   = "CDS unavailable"
+	relayFailureBody   = "Trust Authority unavailable"
 	// backendDigestMismatchBody is the 502 the router returns while its
 	// workload backend pool lags the allowlist digest a request was checked
 	// against: a transient state after an allowlist or route change. A
@@ -120,7 +120,7 @@ func (w *world) routerConf() (*nginxConf, error) {
 
 // published is the exact location serving a mounted file as contentType,
 // and, when file is given, a file of that name: the discovery document
-// (application/json) or the CDS-issued certificate (tls.crt, beside the
+// (application/json) or the Trust Authority-issued certificate (tls.crt, beside the
 // mesh CA's ca.crt, both application/x-pem-file).
 func (c *nginxConf) published(contentType, file string) string {
 	for path, block := range c.exact {
@@ -173,13 +173,13 @@ func discoveryEnabled(ctx context.Context) error {
 	return nil
 }
 
-func cdsCredentialSelected(ctx context.Context) error {
+func taCredentialSelected(ctx context.Context) error {
 	mode, err := getWorld(ctx).be.call("router_tls_mode")
 	if err != nil {
 		return err
 	}
 	if mode != "cds" {
-		return skipf("the router presents its %s credential here, not the CDS-issued one", mode)
+		return skipf("the router presents its %s credential here, not the Trust Authority-issued one", mode)
 	}
 	return nil
 }
@@ -227,7 +227,7 @@ func (w *world) routerAnswer() (*answer, error) {
 	return w.router.answer, nil
 }
 
-// clientReceivesServed compares documents, not bytes: the CDS's own read
+// clientReceivesServed compares documents, not bytes: the Trust Authority's own read
 // may differ in whitespace from what the relay passed on.
 func clientReceivesServed(ctx context.Context, quantifier string) error {
 	w := getWorld(ctx)
@@ -265,7 +265,8 @@ func clientReceivesRelayFailure(ctx context.Context, quantifier string) error {
 	if err != nil {
 		return err
 	}
-	failure := a.status == http.StatusBadGateway && strings.TrimSpace(string(a.body)) == relayFailureBody
+	body := strings.TrimSpace(string(a.body))
+	failure := a.status == http.StatusBadGateway && (body == relayFailureBody || body == "CDS unavailable")
 	switch {
 	case quantifier == "receives" && !failure:
 		return fmt.Errorf("the router answered %d %q, not the relay failure (502 %q)", a.status, tail(string(a.body), 3), relayFailureBody)
@@ -300,7 +301,7 @@ func callerWritesThroughRoute(ctx context.Context, name, image string) error {
 	return w.sendVia("router_request", wr, "")
 }
 
-func relayCannotReachCDS(ctx context.Context) error {
+func relayCannotReachTA(ctx context.Context) error {
 	w := getWorld(ctx)
 	w.onUndo(func() error {
 		_, err := w.be.call("cds_relay_unblock")
@@ -359,9 +360,9 @@ func connectsToRouter(ctx context.Context) error {
 	return nil
 }
 
-// presentsCDSCertificate compares the leaf on the wire with the first
-// certificate the router publishes as its CDS-issued certificate (P1).
-func presentsCDSCertificate(ctx context.Context) error {
+// presentsTACertificate compares the leaf on the wire with the first
+// certificate the router publishes as its Trust Authority-issued certificate (P1).
+func presentsTACertificate(ctx context.Context) error {
 	w := getWorld(ctx)
 	if w.router.serving == nil {
 		return errors.New("no client has connected to the router")
@@ -372,7 +373,7 @@ func presentsCDSCertificate(ctx context.Context) error {
 	}
 	path := c.published("application/x-pem-file", "tls.crt")
 	if path == "" {
-		return errors.New("the router publishes no CDS-issued certificate")
+		return errors.New("the router publishes no Trust Authority-issued certificate")
 	}
 	a, err := w.httpRequest("router_request", http.MethodGet, path, nil, "", "", "")
 	if err != nil {

@@ -67,7 +67,7 @@ func TestTokenRouteIssuesAVerifiableToken(t *testing.T) {
 	if sandbox.InventoryHost != host {
 		t.Errorf("inventory host = %q, want %q", sandbox.InventoryHost, host)
 	}
-	// get-cert compares the ID against the leaf extension CDS stamps it into.
+	// get-cert compares the ID against the leaf extension Trust Authority stamps it into.
 	if err := armtls.ValidateSandboxID(sandbox.SandboxID); err != nil {
 		t.Error(err)
 	}

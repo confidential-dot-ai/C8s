@@ -19,7 +19,7 @@ type world struct {
 	namespace string
 	pods      map[string]*pod
 	lastPod   *pod
-	// entries the scenario describes, written to CDS when it says the plugin
+	// entries the scenario describes, written to the Trust Authority when it says the plugin
 	// has applied the served allowlist; written and removed are undone after
 	// the scenario.
 	entries map[string]*entry
@@ -27,8 +27,8 @@ type world struct {
 	bases      map[string]string
 	written    map[string]bool
 	removed    map[string]json.RawMessage
-	api        cdsAPIState
-	cds        cdsState
+	api        taAPIState
+	ta         taState
 	issuance   issuanceState
 	podMesh    podMeshState
 	podCVM     podCVMState
@@ -45,13 +45,13 @@ type world struct {
 	appliedVersion string
 	// running maps an image to the pod a scenario started a container of.
 	running map[string]*pod
-	// What the scenario did to the node and the CDS, undone after it: the
+	// What the scenario did to the node and the Trust Authority, undone after it: the
 	// Kubernetes nodes whose plugin it addressed, those it left stopped,
-	// whether it blocked the pull and whether it restarted the CDS.
-	nodes        map[string]bool
-	pluginDown   map[string]bool
-	cdsBlocked   bool
-	cdsRestarted bool
+	// whether it blocked the pull and whether it restarted the Trust Authority.
+	nodes       map[string]bool
+	pluginDown  map[string]bool
+	taBlocked   bool
+	taRestarted bool
 }
 
 type pod struct {
@@ -69,12 +69,12 @@ type pod struct {
 	refusal    *refusal
 	// How the pod is rendered: pod_manifest options, its namespace, the name
 	// of its first container, and how its certificate container verifies the
-	// CDS; and the port of its hello API and its datagram listener, and the
+	// Trust Authority; and the port of its hello API and its datagram listener, and the
 	// container whose log shows the datagrams received.
 	opts      []string
 	namespace string
 	first     string
-	verifyCDS []string // as the probe's flags
+	verifyTA  []string // as the probe's flags
 	hello     int
 	datagram  int
 	listener  string
@@ -131,9 +131,9 @@ func initializeScenario(be backend) func(*godog.ScenarioContext) {
 			// Before may have failed before storing the world.
 			if w, ok := ctx.Value(worldKey{}).(*world); ok {
 				_, _ = kubectl(nil, "delete", "namespace", w.namespace, "--ignore-not-found", "--wait=false")
-				// The undo list first, which brings the CDS back to its
+				// The undo list first, which brings the Trust Authority back to its
 				// installed configuration; then the node, whose plugins pull
-				// from that CDS; then the allowlist, written through it.
+				// from that Trust Authority; then the allowlist, written through it.
 				return ctx, errors.Join(w.runUndo(), w.restoreNode(), w.restoreAllowlist())
 			}
 			return ctx, nil
@@ -153,8 +153,8 @@ func initializeScenario(be backend) func(*godog.ScenarioContext) {
 		})
 		registerAdmission(sc)
 		registerAllowlist(sc)
-		registerCDSAPI(sc)
-		registerCDS(sc)
+		registerTAAPI(sc)
+		registerTA(sc)
 		registerIssuance(sc)
 		registerRequester(sc)
 		registerNode(sc)
@@ -280,9 +280,9 @@ func (w *world) digestOf(image string) (string, error) {
 }
 
 // entry is a workload entry in the served document's shape: what the steps
-// read from CDS and what they write to it. It is deliberately not
+// read from the Trust Authority and what they write to it. It is deliberately not
 // pkg/allowlist: the steps observe the cluster from outside, through the
-// document CDS serves, so a change to the package cannot change what the
+// document Trust Authority serves, so a change to the package cannot change what the
 // suite accepts.
 type entry struct {
 	Label          string           `json:"label,omitempty"`
@@ -370,7 +370,7 @@ func (e *entry) admitsAnyArgv(digest string) bool {
 	return false
 }
 
-// served is an allowlist document as CDS serves it: its entries parsed, and
+// served is an allowlist document as Trust Authority serves it: its entries parsed, and
 // raw for putting one back as it was.
 type served struct {
 	schema  string
@@ -378,7 +378,7 @@ type served struct {
 	raw     map[string]json.RawMessage
 }
 
-// served is the document CDS serves at the moment of the call.
+// served is the document Trust Authority serves at the moment of the call.
 func (w *world) served() (served, error) {
 	out, err := w.be.call("served_allowlist")
 	if err != nil {

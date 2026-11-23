@@ -25,7 +25,7 @@ import (
 
 // The non-critical extensions a leaf carries under the C8s arc
 // 1.3.6.1.4.1.66378.1: the certificate evidence copied from the CSR (.1,
-// oidARMTLSAttestation in ta.go), the digest of the evidence the CDS
+// oidARMTLSAttestation in ta.go), the digest of the evidence the Trust Authority
 // verified (.2), the sandbox ID the inventory bound (.4) and the matched
 // workload (.5).
 var (
@@ -35,7 +35,7 @@ var (
 	errNoMatchedWorkload = errors.New("the leaf carries no matched workload")
 )
 
-// leaf is a certificate a pod, a requester or the CDS itself presents, with
+// leaf is a certificate a pod, a requester or the Trust Authority itself presents, with
 // the chain it came in and when it was first seen.
 type leaf struct {
 	cert  *x509.Certificate

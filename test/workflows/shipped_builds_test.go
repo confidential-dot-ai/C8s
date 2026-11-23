@@ -7,12 +7,12 @@ import (
 	"testing"
 )
 
-// devTag swaps the CDS replica set's timers for ones fast enough to test with
+// devTag swaps the Trust Authority replica set's timers for ones fast enough to test with
 // (internal/cmds/ta/ha_dev.go). A shipped binary that carried the tag would
 // run its elections and leases on those timers.
 const devTag = "c8s_dev"
 
-// shippedBuilds are the recipes that build a binary a CDS VM or a node
+// shippedBuilds are the recipes that build a binary a Trust Authority VM or a node
 // measures: the Makefile's binaries, the images that carry them, and the
 // workflows that publish them.
 var shippedBuilds = []string{
@@ -26,7 +26,7 @@ var shippedBuilds = []string{
 	"../../.github/workflows/c8s-image-publish.yml",
 }
 
-// No release build and no build the CDS image bakes carries the c8s_dev tag.
+// No release build and no build the Trust Authority image bakes carries the c8s_dev tag.
 func TestShippedBuildsCarryNoDevTag(t *testing.T) {
 	for _, recipe := range shippedBuilds {
 		body, err := os.ReadFile(filepath.Clean(recipe))

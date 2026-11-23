@@ -20,37 +20,37 @@ import (
 	"github.com/cucumber/godog"
 )
 
-// Sentences about the CDS itself: the documents it serves to any client, its
+// Sentences about the Trust Authority itself: the documents it serves to any client, its
 // serving certificate and the evidence in it, its mesh CA, its readiness, and
 // what a restart with another configuration changes. Every reconfiguration
 // is undone after the scenario.
-func registerCDS(sc *godog.ScenarioContext) {
+func registerTA(sc *godog.ScenarioContext) {
 	sc.Step(`^(?:a client reads|a client has read|the client reads) the (mesh CA certificate|reference values|operator key set|allowlist)$`, clientReads)
 	sc.Step(`^it is a single certificate$`, singleCertificate)
 	sc.Step(`^it is self-signed$`, selfSigned)
-	sc.Step(`^the mesh CA certificate the CDS serves carries a different public key$`, meshCADifferentKey)
-	sc.Step(`^the CDS serves the (mesh CA certificate|reference values|operator key set|allowlist)$`, cdsServes)
-	sc.Step(`^the CDS reports that it has no operator keys$`, reportsNoOperatorKeys)
+	sc.Step(`^the mesh CA certificate the (?:Trust Authority|CDS) serves carries a different public key$`, meshCADifferentKey)
+	sc.Step(`^the (?:Trust Authority|CDS) serves the (mesh CA certificate|reference values|operator key set|allowlist)$`, taServes)
+	sc.Step(`^the (?:Trust Authority|CDS) reports that it has no operator keys$`, reportsNoOperatorKeys)
 	sc.Step(`^it matches the operator keys the client holds$`, matchesHeldKeys)
 	sc.Step(`^they (do not )?match the pins the client holds$`, matchesHeldPins)
 	sc.Step(`^a client presents no client certificate$`, noClientCertificate)
 	sc.Step(`^a client requests the mesh CA certificate over plain HTTP$`, requestsPlainHTTP)
 	sc.Step(`^the client receives no mesh CA certificate$`, receivesNoMeshCA)
-	sc.Step(`^a client holds the operator keys the CDS loaded at startup$`, holdsOperatorKeys)
-	sc.Step(`^a client holds the pins the CDS was started with$`, holdsPins)
-	sc.Step(`^the CDS has no operator keys$`, cdsNoOperatorKeys)
-	sc.Step(`^the CDS has been restarted with different pins$`, restartedDifferentPins)
-	sc.Step(`^the CDS is serving$`, cdsServing)
-	sc.Step(`^the local attestation service on the node of the CDS becomes unavailable$`, attestationServiceStops)
-	sc.Step(`^the readiness state of the CDS is read$`, readinessRead)
-	sc.Step(`^the CDS is not ready$`, cdsNotReady)
-	sc.Step(`^a client reads the serving certificate of the CDS$`, readsServingCert)
+	sc.Step(`^a client holds the operator keys the (?:Trust Authority|CDS) loaded at startup$`, holdsOperatorKeys)
+	sc.Step(`^a client holds the pins the (?:Trust Authority|CDS) was started with$`, holdsPins)
+	sc.Step(`^the (?:Trust Authority|CDS) has no operator keys$`, taNoOperatorKeys)
+	sc.Step(`^the (?:Trust Authority|CDS) has been restarted with different pins$`, restartedDifferentPins)
+	sc.Step(`^the (?:Trust Authority|CDS) is serving$`, taServing)
+	sc.Step(`^the local attestation service on the node of the (?:Trust Authority|CDS) becomes unavailable$`, attestationServiceStops)
+	sc.Step(`^the readiness state of the (?:Trust Authority|CDS) is read$`, readinessRead)
+	sc.Step(`^the (?:Trust Authority|CDS) is not ready$`, taNotReady)
+	sc.Step(`^a client reads the serving certificate of the (?:Trust Authority|CDS)$`, readsServingCert)
 	sc.Step(`^the report data of its evidence commits to the public key the serving certificate carries$`, reportDataCommitsToKey)
 	sc.Step(`^the remaining 16 bytes of its report data are zero$`, reportDataTailZero)
 	sc.Step(`^every Kubernetes object and every file on node "([^"]*)" is searched for a private key matching that certificate$`, searchPrivateKeys)
 	sc.Step(`^none holds it$`, noneHoldsKey)
 	sc.Step(`^a requester running in an admitted TEE holds a key it generated$`, requesterHoldsKey)
-	sc.Step(`^the requester sends the CDS an attest request with evidence that verifies$`, requesterAttests)
+	sc.Step(`^the requester sends the (?:Trust Authority|CDS) an attest request with evidence that verifies$`, requesterAttests)
 	sc.Step(`^the requester receives a leaf signed by the mesh CA$`, receivesLeafSignedByMeshCA)
 }
 
@@ -67,18 +67,18 @@ var documents = map[string]string{
 	"readiness state":     "readiness",
 }
 
-// document is what a client got back from a read of the CDS.
+// document is what a client got back from a read of the Trust Authority.
 type document struct {
 	name   string
 	status int
 	body   []byte
 }
 
-// cdsState is the scenario's view of the CDS: the last document a client
+// taState is the scenario's view of the Trust Authority: the last document a client
 // read, the serving certificate it read, what the client holds, what a
-// search found, what a requester was issued, and whether the CDS has been
+// search found, what a requester was issued, and whether the Trust Authority has been
 // reconfigured, which one restore undoes.
-type cdsState struct {
+type taState struct {
 	doc          *document
 	servingCert  *leaf
 	heldKeys     []string
@@ -88,7 +88,7 @@ type cdsState struct {
 	reconfigured bool
 }
 
-// readDocument reads one of the CDS's documents, over plain HTTP when asked.
+// readDocument reads one of the Trust Authority's documents, over plain HTTP when asked.
 func (w *world) readDocument(name string, plain bool) (*document, error) {
 	args := []string{documents[name]}
 	if plain {
@@ -147,7 +147,7 @@ func firstCertificate(body []byte) (*x509.Certificate, error) {
 	return certs[0], nil
 }
 
-// meshCAServed reads the mesh CA the CDS serves now.
+// meshCAServed reads the mesh CA the Trust Authority serves now.
 func (w *world) meshCAServed() (*x509.Certificate, error) {
 	doc, err := w.readDocument("mesh CA certificate", false)
 	if err != nil {
@@ -169,19 +169,19 @@ func clientReads(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
-	w.cds.doc = doc
+	w.ta.doc = doc
 	return nil
 }
 
 // lastRead is the client's last read, which must have been of name.
 func (w *world) lastRead(name string) (*document, error) {
-	if w.cds.doc == nil {
+	if w.ta.doc == nil {
 		return nil, errors.New("the client has read nothing")
 	}
-	if w.cds.doc.name != name {
-		return nil, fmt.Errorf("the client read the %s, not the %s", w.cds.doc.name, name)
+	if w.ta.doc.name != name {
+		return nil, fmt.Errorf("the client read the %s, not the %s", w.ta.doc.name, name)
 	}
-	return w.cds.doc, nil
+	return w.ta.doc, nil
 }
 
 // lastServed is the client's last read, which must have got name with a 200.
@@ -207,15 +207,15 @@ func (w *world) heldMeshCA() (*x509.Certificate, error) {
 
 func singleCertificate(ctx context.Context) error {
 	w := getWorld(ctx)
-	if w.cds.doc == nil {
+	if w.ta.doc == nil {
 		return errors.New("the client has read nothing")
 	}
-	certs, err := certificates(w.cds.doc.body)
+	certs, err := certificates(w.ta.doc.body)
 	if err != nil {
-		return fmt.Errorf("the %s body: %w", w.cds.doc.name, err)
+		return fmt.Errorf("the %s body: %w", w.ta.doc.name, err)
 	}
 	if len(certs) != 1 {
-		return fmt.Errorf("the %s body holds %d certificates, not one", w.cds.doc.name, len(certs))
+		return fmt.Errorf("the %s body holds %d certificates, not one", w.ta.doc.name, len(certs))
 	}
 	return nil
 }
@@ -245,14 +245,14 @@ func meshCADifferentKey(ctx context.Context) error {
 		return err
 	}
 	if bytes.Equal(now.RawSubjectPublicKeyInfo, before.RawSubjectPublicKeyInfo) {
-		return errors.New("the mesh CA certificate the CDS serves carries the same public key as before")
+		return errors.New("the mesh CA certificate the Trust Authority serves carries the same public key as before")
 	}
 	return nil
 }
 
-// cdsServes checks the last read got the document: a 200 and a body of its
+// taServes checks the last read got the document: a 200 and a body of its
 // kind.
-func cdsServes(ctx context.Context, name string) error {
+func taServes(ctx context.Context, name string) error {
 	doc, err := getWorld(ctx).lastServed(name)
 	if err != nil {
 		return err
@@ -307,7 +307,7 @@ func sortedUnique(in []string) []string {
 
 func matchesHeldKeys(ctx context.Context) error {
 	w := getWorld(ctx)
-	if w.cds.heldKeys == nil {
+	if w.ta.heldKeys == nil {
 		return errors.New("the client holds no operator keys")
 	}
 	doc, err := w.lastServed("operator key set")
@@ -318,8 +318,8 @@ func matchesHeldKeys(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if !slices.Equal(served, w.cds.heldKeys) {
-		return fmt.Errorf("the served key set (%d keys) is not the one the client holds (%d keys)", len(served), len(w.cds.heldKeys))
+	if !slices.Equal(served, w.ta.heldKeys) {
+		return fmt.Errorf("the served key set (%d keys) is not the one the client holds (%d keys)", len(served), len(w.ta.heldKeys))
 	}
 	return nil
 }
@@ -353,7 +353,7 @@ func referenceValues(body []byte) ([]string, error) {
 
 func matchesHeldPins(ctx context.Context, negated string) error {
 	w := getWorld(ctx)
-	if w.cds.heldPins == nil {
+	if w.ta.heldPins == nil {
 		return errors.New("the client holds no pins")
 	}
 	doc, err := w.lastServed("reference values")
@@ -364,14 +364,14 @@ func matchesHeldPins(ctx context.Context, negated string) error {
 	if err != nil {
 		return err
 	}
-	match := slices.Equal(served, sortedUnique(slices.Clone(w.cds.heldPins)))
+	match := slices.Equal(served, sortedUnique(slices.Clone(w.ta.heldPins)))
 	switch {
 	case negated != "" && match:
 		return errors.New("the reference values match the pins the client holds")
 	case negated != "" && len(served) == 0:
-		return errors.New("the CDS serves no reference values at all")
+		return errors.New("the Trust Authority serves no reference values at all")
 	case negated == "" && !match:
-		return fmt.Errorf("the reference values %v are not the pins the client holds %v", served, w.cds.heldPins)
+		return fmt.Errorf("the reference values %v are not the pins the client holds %v", served, w.ta.heldPins)
 	}
 	return nil
 }
@@ -385,7 +385,7 @@ func requestsPlainHTTP(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	w.cds.doc = doc
+	w.ta.doc = doc
 	return nil
 }
 
@@ -411,11 +411,11 @@ func holdsOperatorKeys(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("the keys the client holds: %w", err)
 	}
-	w.cds.heldKeys = keys
+	w.ta.heldKeys = keys
 	return nil
 }
 
-// pins is the launch digests the CDS was started with, lowercased; none
+// pins is the launch digests the Trust Authority was started with, lowercased; none
 // when it pins nothing.
 func (w *world) pins() ([]string, error) {
 	out, err := w.be.call("cds_pins")
@@ -434,34 +434,34 @@ func holdsPins(ctx context.Context) error {
 	if len(pins) == 0 {
 		return errors.New("the backend knows no pins")
 	}
-	w.cds.heldPins = pins
+	w.ta.heldPins = pins
 	return nil
 }
 
-// reconfigure restarts the CDS with one parameter changed. A backend that
+// reconfigure restarts the Trust Authority with one parameter changed. A backend that
 // cannot express the change restarts nothing and records no restore, so a
 // skipped scenario leaves the mesh CA where it was. The first change the
 // backend did run records the one restore of the installed configuration;
 // that restore is itself a restart, as is this change, and a restart is what
-// cdsRestarted notes, so the mesh members are recreated to chain to the CA
+// taRestarted notes, so the mesh members are recreated to chain to the CA
 // each restart mints.
 func (w *world) reconfigure(parameter, value string) error {
 	if _, err := w.be.call("cds_restart_with", parameter, value); err != nil {
 		return err
 	}
-	w.noteCDSRestart()
-	if !w.cds.reconfigured {
-		w.cds.reconfigured = true
+	w.noteTARestart()
+	if !w.ta.reconfigured {
+		w.ta.reconfigured = true
 		w.onUndo(func() error {
 			_, err := w.be.call("cds_restart_with", "default", "")
-			w.noteCDSRestart()
+			w.noteTARestart()
 			return err
 		})
 	}
 	return nil
 }
 
-func cdsNoOperatorKeys(ctx context.Context) error {
+func taNoOperatorKeys(ctx context.Context) error {
 	return getWorld(ctx).reconfigure("operator-keys", "none")
 }
 
@@ -470,7 +470,7 @@ func restartedDifferentPins(ctx context.Context) error {
 	return getWorld(ctx).reconfigure("pins", strings.Repeat("a", 96))
 }
 
-func cdsServing(ctx context.Context) error {
+func taServing(ctx context.Context) error {
 	_, err := getWorld(ctx).meshCAServed()
 	return err
 }
@@ -491,10 +491,10 @@ func readinessRead(ctx context.Context) error {
 	return clientReads(ctx, "readiness state")
 }
 
-// cdsNotReady allows the CDS a few readiness intervals to notice what the
+// taNotReady allows the Trust Authority a few readiness intervals to notice what the
 // scenario changed, re-reading while it reports ready. An answer that is
-// neither ready nor not ready is a CDS that is not serving.
-func cdsNotReady(ctx context.Context) error {
+// neither ready nor not ready is a Trust Authority that is not serving.
+func taNotReady(ctx context.Context) error {
 	w := getWorld(ctx)
 	doc, err := w.lastRead("readiness state")
 	if err != nil {
@@ -508,7 +508,7 @@ func cdsNotReady(ctx context.Context) error {
 			if err := readinessRead(ctx); err != nil {
 				return false, err
 			}
-			doc = w.cds.doc
+			doc = w.ta.doc
 			return false, nil
 		default:
 			return false, fmt.Errorf("the readiness state was answered %d, neither ready nor not ready", doc.status)
@@ -518,7 +518,7 @@ func cdsNotReady(ctx context.Context) error {
 		return err
 	}
 	if !notReady {
-		return errors.New("the CDS still reports ready")
+		return errors.New("the Trust Authority still reports ready")
 	}
 	return nil
 }
@@ -534,17 +534,17 @@ func readsServingCert(ctx context.Context) error {
 		return fmt.Errorf("the serving certificate: %w", err)
 	}
 	if l == nil {
-		return errors.New("the CDS presented no certificate")
+		return errors.New("the Trust Authority presented no certificate")
 	}
-	w.cds.servingCert = l
+	w.ta.servingCert = l
 	return nil
 }
 
 func (w *world) servingCert() (*leaf, error) {
-	if w.cds.servingCert == nil {
+	if w.ta.servingCert == nil {
 		return nil, errors.New("the client has read no serving certificate")
 	}
-	return w.cds.servingCert, nil
+	return w.ta.servingCert, nil
 }
 
 func reportDataCommitsToKey(ctx context.Context) error {
@@ -595,7 +595,7 @@ func privateKeys(body []byte) []crypto.PublicKey {
 	return keys
 }
 
-// searchPrivateKeys collects every private key held outside the CDS's
+// searchPrivateKeys collects every private key held outside the Trust Authority's
 // process memory. A search that finds no key at all has not looked: the
 // node holds its own control-plane keys.
 func searchPrivateKeys(ctx context.Context, node string) error {
@@ -611,8 +611,8 @@ func searchPrivateKeys(ctx context.Context, node string) error {
 	if err != nil {
 		return err
 	}
-	w.cds.found = privateKeys([]byte(out))
-	if len(w.cds.found) == 0 {
+	w.ta.found = privateKeys([]byte(out))
+	if len(w.ta.found) == 0 {
 		return errors.New("harness: the search found no private key anywhere, so it has not looked")
 	}
 	return nil
@@ -620,16 +620,16 @@ func searchPrivateKeys(ctx context.Context, node string) error {
 
 func noneHoldsKey(ctx context.Context) error {
 	w := getWorld(ctx)
-	if w.cds.found == nil {
+	if w.ta.found == nil {
 		return errors.New("nothing has been searched")
 	}
 	ca, err := w.heldMeshCA()
 	if err != nil {
 		return err
 	}
-	for _, pub := range w.cds.found {
+	for _, pub := range w.ta.found {
 		if held, err := certifies(ca, pub); err == nil && held {
-			return errors.New("a private key found outside CDS process memory matches the mesh CA certificate")
+			return errors.New("a private key found outside Trust Authority process memory matches the mesh CA certificate")
 		}
 	}
 	return nil
@@ -652,20 +652,20 @@ func requesterAttests(ctx context.Context) error {
 	if l == nil {
 		return errors.New("the requester received no certificate")
 	}
-	w.cds.issued = l
+	w.ta.issued = l
 	return nil
 }
 
 func receivesLeafSignedByMeshCA(ctx context.Context) error {
 	w := getWorld(ctx)
-	if w.cds.issued == nil {
+	if w.ta.issued == nil {
 		return errors.New("the requester has received no chain")
 	}
 	ca, err := w.meshCAServed()
 	if err != nil {
 		return err
 	}
-	leaf := w.cds.issued.cert
+	leaf := w.ta.issued.cert
 	if !bytes.Equal(leaf.RawIssuer, ca.RawSubject) {
 		return fmt.Errorf("the leaf's issuer %q is not the mesh CA %q", leaf.Issuer, ca.Subject)
 	}

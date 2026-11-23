@@ -1,6 +1,6 @@
 //go:build integration && linux
 
-// Package cdsha_test runs a CDS HA cluster of real processes: three `c8s cds`
+// Package cdsha_test runs a Trust Authority HA cluster of real processes: three `c8s ta`
 // replicas of one cluster on loopback addresses, each with its own
 // attestation-api, and an operator that posts the decrees they act on to
 // them.
@@ -88,8 +88,8 @@ func raftOnly(t *testing.T) {
 	}
 }
 
-// nextCDSImage is the CDS image an image roll adds beside the one the replicas run.
-const nextCDSImage = "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+// nextTAImage is the Trust Authority image an image roll adds beside the one the replicas run.
+const nextTAImage = "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
 
 type nodeImage struct {
 	name string
@@ -131,10 +131,10 @@ func nodeImagesCertifying(images ...nodeImage) string {
 
 const seededWorkload = "attestation-api"
 
-// binaries are the programs the harness runs: the CDS, built with the tag that
+// binaries are the programs the harness runs: the Trust Authority, built with the tag that
 // serves a replica set, and the attestation-api a replica attests through.
 type binaries struct {
-	cds  string
+	ta   string
 	api  string
 	logs string
 }
@@ -147,12 +147,12 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 	built = binaries{
-		cds:  filepath.Join(dir, "c8s"),
+		ta:   filepath.Join(dir, "c8s"),
 		api:  filepath.Join(dir, "mock-attestation"),
 		logs: filepath.Join(dir, "logs"),
 	}
 	for _, build := range [][]string{
-		{"build", "-tags", "c8s_dev", "-o", built.cds, "github.com/confidential-dot-ai/confidential-kubernetes/cmd/c8s"},
+		{"build", "-tags", "c8s_dev", "-o", built.ta, "github.com/confidential-dot-ai/confidential-kubernetes/cmd/c8s"},
 		{"build", "-o", built.api, "github.com/confidential-dot-ai/confidential-kubernetes/test/mock-attestation"},
 	} {
 		cmd := exec.Command("go", build...)
@@ -178,7 +178,7 @@ type shape struct {
 	replicas int
 }
 
-// cluster is one CDS HA cluster under test: the launch file its replicas
+// cluster is one Trust Authority HA cluster under test: the launch file its replicas
 // boot and the replica processes.
 type cluster struct {
 	t          *testing.T
@@ -197,7 +197,7 @@ type cluster struct {
 	genesisIntent string
 }
 
-// replica is one CDS VM: the address it answers at, the attestation-api
+// replica is one Trust Authority VM: the address it answers at, the attestation-api
 // inside it, and the process serving the cluster.
 type replica struct {
 	index  int
@@ -205,9 +205,9 @@ type replica struct {
 	base   string
 	apiURL string
 	db     string
-	// Counts the CDS images this VM has been replaced with.
+	// Counts the Trust Authority images this VM has been replaced with.
 	rolls int
-	cds   *process
+	ta    *process
 	// locked is the connection holding this VM's allowlist database away from
 	// the process serving the cluster.
 	locked *sql.Conn
@@ -280,7 +280,7 @@ func (c *cluster) waitExit(r *replica, within time.Duration) {
 	c.waitFor(exited, within, func() bool {
 		return !c.running(r)
 	})
-	if code := r.cds.cmd.ProcessState.ExitCode(); code == 0 {
+	if code := r.ta.cmd.ProcessState.ExitCode(); code == 0 {
 		c.t.Errorf("the process of replica %d exited %d; a unit restarts on a failure",
 			r.index, code)
 	}
@@ -289,7 +289,7 @@ func (c *cluster) waitExit(r *replica, within time.Duration) {
 
 func (c *cluster) running(r *replica) bool {
 	select {
-	case <-r.cds.exited:
+	case <-r.ta.exited:
 		return false
 	default:
 		return true
@@ -381,7 +381,7 @@ func (c *cluster) configure(size shape) {
 	write(c.t, c.configPath, c.config)
 }
 
-// start runs the attestation-api that reports replica i's launch, and the CDS
+// start runs the attestation-api that reports replica i's launch, and the Trust Authority
 // process serving the cluster at its address.
 func (c *cluster) start(i int) *replica {
 	c.t.Helper()
@@ -397,7 +397,7 @@ func (c *cluster) start(i int) *replica {
 }
 
 // attestationAPI runs one attestation-api on this host's loopback, reporting
-// this CDS image and the launch file of this cluster's replicas.
+// this Trust Authority image and the launch file of this cluster's replicas.
 func (c *cluster) attestationAPI(name, measurement string) string {
 	c.t.Helper()
 	port := freePort(c.t)
@@ -419,11 +419,11 @@ func (c *cluster) attestationAPI(name, measurement string) string {
 	return url
 }
 
-// restart runs a replica's CDS process again, as a systemd restart does: a
+// restart runs a replica's Trust Authority process again, as a systemd restart does: a
 // new member of the cluster, over an allowlist database the log refills.
 func (c *cluster) restart(r *replica) {
 	c.t.Helper()
-	r.cds = c.run(fmt.Sprintf("replica-%d-cds", r.index), built.cds, []string{
+	r.ta = c.run(fmt.Sprintf("replica-%d-cds", r.index), built.ta, []string{
 		"cds",
 		"--config", c.configPath,
 		"--attestation-api-url", r.apiURL,
@@ -435,11 +435,11 @@ func (c *cluster) restart(r *replica) {
 	}, nil)
 }
 
-// kill ends a replica's CDS process, as a lost VM does. The attestation-api
+// kill ends a replica's Trust Authority process, as a lost VM does. The attestation-api
 // inside that VM keeps answering.
 func (c *cluster) kill(r *replica) {
 	c.t.Helper()
-	r.cds.kill()
+	r.ta.kill()
 	c.logf("killed the process of replica %d", r.index)
 }
 
@@ -591,7 +591,7 @@ func (c *cluster) decree(to *replica, d tadecree.Decree) taha.Delivered {
 	return delivered
 }
 
-// Names the CDS images a replica of the cluster may run from then on.
+// Names the Trust Authority images a replica of the cluster may run from then on.
 func (c *cluster) decreePins(to *replica, version uint64, measurements ...string) (string, taha.Delivered) {
 	c.t.Helper()
 	decree := tadecree.Decree{
@@ -721,7 +721,7 @@ func (c *cluster) rollImage(r *replica, measurement string) {
 	r.rolls++
 	r.apiURL = c.attestationAPI(fmt.Sprintf("replica-%d-roll-%d", r.index, r.rolls), measurement)
 	c.restart(r)
-	c.logf("replica %d runs CDS image %s now", r.index, measurement)
+	c.logf("replica %d runs Trust Authority image %s now", r.index, measurement)
 }
 
 // The member is alive and answers nothing, as under a host that drops its packets.
@@ -739,7 +739,7 @@ func (c *cluster) resume(r *replica) {
 
 func (c *cluster) signal(r *replica, sig syscall.Signal) {
 	c.t.Helper()
-	if err := r.cds.cmd.Process.Signal(sig); err != nil {
+	if err := r.ta.cmd.Process.Signal(sig); err != nil {
 		c.t.Fatalf("signal %s to replica %d: %v", sig, r.index, err)
 	}
 }

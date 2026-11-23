@@ -65,7 +65,7 @@ func TestTheDecreedReplicaStartsTheClusterAndTheRestJoinIt(t *testing.T) {
 	}
 }
 
-// requirePinDecree reads the decree behind the images a CDS of this cluster may
+// requirePinDecree reads the decree behind the images a Trust Authority of this cluster may
 // run, which is what a node follows.
 func (c *cluster) requirePinDecree(r *replica, kind tadecree.Kind, intent string) {
 	c.t.Helper()
@@ -393,7 +393,7 @@ func notShort(t *testing.T) {
 	}
 }
 
-// The operator pins the CDS images of the cluster by decree: a replica that
+// The operator pins the Trust Authority images of the cluster by decree: a replica that
 // does not lead hands the posted decree to the leader, the operator reads the
 // version it produced, and every replica then serves it as the decree a node
 // and a client follow.
@@ -402,7 +402,7 @@ func TestAPinDecreeOfTheOperatorAppliesAtEveryReplica(t *testing.T) {
 	leading := c.waitLeader(30 * time.Second)
 	started, _ := c.status(leading)
 
-	intent, delivered := c.decreePins(c.others(leading)[0], started.Version, testutil.TestMeasurement, nextCDSImage)
+	intent, delivered := c.decreePins(c.others(leading)[0], started.Version, testutil.TestMeasurement, nextTAImage)
 
 	if delivered.Version != started.Version+1 || delivered.Refused != "" {
 		t.Errorf("the cluster answered %+v for the decree, want it applied at version %d", delivered, started.Version+1)
@@ -622,17 +622,17 @@ func TestTheClusterRollsOntoANewCDSImageAndRefusesTheRetiredOne(t *testing.T) {
 	started, _ := c.status(leading)
 	// The operator reads a rolling cluster by the pin document naming both
 	// images, as `ha pin-policy --out` writes it.
-	c.client = c.attestedClient(testutil.TestMeasurement, nextCDSImage)
+	c.client = c.attestedClient(testutil.TestMeasurement, nextTAImage)
 
-	accepted, _ := c.decreePins(leading, started.Version, testutil.TestMeasurement, nextCDSImage)
-	c.waitFor("every replica to accept both CDS images", time.Minute, func() bool {
+	accepted, _ := c.decreePins(leading, started.Version, testutil.TestMeasurement, nextTAImage)
+	c.waitFor("every replica to accept both Trust Authority images", time.Minute, func() bool {
 		return c.allApplied(accepted, started.Version+1)
 	})
 
 	for _, r := range c.replicas {
 		c.waitVoter(r, time.Minute)
-		c.rollImage(r, nextCDSImage)
-		c.decreeAdmit(r, testutil.TestMeasurement, nextCDSImage)
+		c.rollImage(r, nextTAImage)
+		c.decreeAdmit(r, testutil.TestMeasurement, nextTAImage)
 		c.waitFor(fmt.Sprintf("the new VM of replica %d to serve the cluster", r.index), 2*time.Minute, func() bool {
 			return slices.Contains(c.serving(), r)
 		})
@@ -641,7 +641,7 @@ func TestTheClusterRollsOntoANewCDSImageAndRefusesTheRetiredOne(t *testing.T) {
 
 	rolling := c.waitLeader(time.Minute)
 	rolled, _ := c.status(rolling)
-	retired, _ := c.decreePins(rolling, rolled.Version, nextCDSImage)
+	retired, _ := c.decreePins(rolling, rolled.Version, nextTAImage)
 	c.waitFor("every replica to pin the new image alone", time.Minute, func() bool {
 		return c.allApplied(retired, rolled.Version+1)
 	})
@@ -652,7 +652,7 @@ func TestTheClusterRollsOntoANewCDSImageAndRefusesTheRetiredOne(t *testing.T) {
 	back := c.others(c.waitLeader(time.Minute))[0]
 	c.waitVoter(back, time.Minute)
 	c.rollImage(back, testutil.TestMeasurement)
-	c.decreeAdmit(back, testutil.TestMeasurement, nextCDSImage)
+	c.decreeAdmit(back, testutil.TestMeasurement, nextTAImage)
 	time.Sleep(longerThanAJoinTakes)
 	if reported, _ := c.status(back); reported.Joined {
 		t.Errorf("a replica of the retired image holds the cluster: %+v", reported)
@@ -663,8 +663,8 @@ func TestTheClusterRollsOntoANewCDSImageAndRefusesTheRetiredOne(t *testing.T) {
 
 	// The same VM on the pinned image joins inside that time, so the refusal
 	// above is the image set and not a cluster that takes no member.
-	c.rollImage(back, nextCDSImage)
-	c.decreeAdmit(back, nextCDSImage)
+	c.rollImage(back, nextTAImage)
+	c.decreeAdmit(back, nextTAImage)
 	c.waitFor("the VM back on the pinned image to serve the cluster", longerThanAJoinTakes, func() bool {
 		return slices.Contains(c.serving(), back)
 	})
@@ -674,9 +674,9 @@ func TestTheClusterRollsOntoANewCDSImageAndRefusesTheRetiredOne(t *testing.T) {
 // passes a c8s_dev build makes.
 const longerThanAJoinTakes = 20 * time.Second
 
-// A node-side client starts from the CDS pins its launch document carries,
+// A node-side client starts from the Trust Authority pins its launch document carries,
 // reads the operator's decree from a replica it already pins, and ends up
-// holding CDS to the images the cluster accepts.
+// holding Trust Authority to the images the cluster accepts.
 func TestANodeSideClientFollowsAnImageRoll(t *testing.T) {
 	c := newCluster(t, threeReplicas)
 	leading := c.waitLeader(30 * time.Second)
@@ -686,7 +686,7 @@ func TestANodeSideClientFollowsAnImageRoll(t *testing.T) {
 	if got := len(node.Current().Images); got != 1 {
 		t.Fatalf("the node pins %d images, want the one its launch document carries", got)
 	}
-	intent, _ := c.decreePins(leading, started.Version, testutil.TestMeasurement, nextCDSImage)
+	intent, _ := c.decreePins(leading, started.Version, testutil.TestMeasurement, nextTAImage)
 	c.waitFor("every replica to hold the pin decree", time.Minute, func() bool {
 		return c.allApplied(intent, started.Version+1)
 	})
@@ -711,7 +711,7 @@ func TestANodeSideClientFollowsAnImageRoll(t *testing.T) {
 	}
 }
 
-// nodeClient is a node's CDS pin source over one replica's armTLS.
+// nodeClient is a node's Trust Authority pin source over one replica's armTLS.
 func (c *cluster) nodeClient(r *replica) *tapins.Source {
 	c.t.Helper()
 	digest, err := hex.DecodeString(testutil.TestMeasurement)
@@ -735,12 +735,12 @@ func (c *cluster) nodeClient(r *replica) *tapins.Source {
 		MinInterval: time.Nanosecond,
 	})
 	if err != nil {
-		c.t.Fatalf("the node's CDS pin source: %v", err)
+		c.t.Fatalf("the node's Trust Authority pin source: %v", err)
 	}
 	return source
 }
 
-// A client names its cluster's CDS by one address that resolves to every
+// A client names its cluster's Trust Authority by one address that resolves to every
 // replica. Losing the leader costs it neither a read nor its trust anchor:
 // every replica answers under the same pin, and the mesh CA is the cluster's.
 func TestAClientReachesItsClusterAtOneNameAcrossALeaderLoss(t *testing.T) {

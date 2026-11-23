@@ -7,16 +7,16 @@ import (
 	"testing"
 )
 
-// CDSLaunchFile is the configuration document a test CDS VM is launched with.
+// CDSLaunchFile is the configuration document a test Trust Authority VM is launched with.
 // Its contents matter only to a test that also reports the matching binding.
 const CDSLaunchFile = "schemaVersion: c8s-cds/v1\nclusterID: lane\n"
 
-// NextCDSImage is the image a CDS pin decree moves a test cluster to.
+// NextCDSImage is the image a Trust Authority pin decree moves a test cluster to.
 const NextCDSImage = "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
 
-// CDSPinDocument renders the only pin shape a CDS client accepts: a refvalues
+// CDSPinDocument renders the only pin shape a Trust Authority client accepts: a refvalues
 // document binding its one image, at measurement, to the exact launch file
-// that CDS runs on.
+// that Trust Authority runs on.
 func CDSPinDocument(measurement, launchFile string) string {
 	return `{"schema_version":"2","tee":"sev-snp","measurements":[{"name":"cds","measurement":"` +
 		measurement + `","launch_file":` + strconv.Quote(launchFile) + `}]}`

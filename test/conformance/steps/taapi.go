@@ -15,18 +15,18 @@ import (
 	"github.com/cucumber/godog"
 )
 
-// Sentences about the CDS as its callers see it: writes by the operator with
+// Sentences about the Trust Authority as its callers see it: writes by the operator with
 // their write tokens, writes by callers holding none or the wrong one, and
 // reads by a relying party, with the version every answer carries. A write
 // here is sent as the sentence says, not through the harness's signed path.
-func registerCDSAPI(sc *godog.ScenarioContext) {
-	sc.Step(`^the CDS has (?:an operator key|operator keys)$`, cdsHasOperatorKey)
-	sc.Step(`^the seed of the CDS declares image "([^"]*)"$`, seedDeclares)
+func registerTAAPI(sc *godog.ScenarioContext) {
+	sc.Step(`^the (?:Trust Authority|CDS) has (?:an operator key|operator keys)$`, taHasOperatorKey)
+	sc.Step(`^the seed of the (?:Trust Authority|CDS) declares image "([^"]*)"$`, seedDeclares)
 	sc.Step(`^the served allowlist has (a|no) workload entry "([^"]*)"$`, servedHasEntry)
 	sc.Step(`^a workload entry in the served allowlist admits image "([^"]*)" under any argv$`, servedAdmitsAnyArgv)
 	sc.Step(`^a caller holds no write token$`, callerHoldsNoToken)
 	sc.Step(`^a caller holds a write token signed with a key that is not an operator key$`, callerHoldsForeignToken)
-	sc.Step(`^that caller sends the CDS a write of a workload entry "([^"]*)" admitting image "([^"]*)" under any argv$`, callerWrites)
+	sc.Step(`^that caller sends the (?:Trust Authority|CDS) a write of a workload entry "([^"]*)" admitting image "([^"]*)" under any argv$`, callerWrites)
 	sc.Step(`^the operator writes a workload entry "([^"]*)" admitting image "([^"]*)" under any argv$`, operatorWritesAnyArgv)
 	sc.Step(`^the operator has written a workload entry "([^"]*)" admitting image "([^"]*)" under any argv$`, operatorHasWrittenAnyArgv)
 	sc.Step(`^the operator writes a workload entry "([^"]*)" admitting image "([^"]*)" under any argv and carrying an unknown member$`, operatorWritesUnknownMember)
@@ -36,14 +36,14 @@ func registerCDSAPI(sc *godog.ScenarioContext) {
 	sc.Step(`^a caller replays the write token of that write on a removal of the workload entry "([^"]*)"$`, replayOnRemoval)
 	sc.Step(`^the operator signs a write token for a write of a workload entry "([^"]*)" admitting image "([^"]*)" under any argv$`, operatorSignsWrite)
 	sc.Step(`^that write token expires (\d+) hours? after it was issued$`, tokenExpiresHours)
-	sc.Step(`^the operator sends the CDS that write with that write token$`, operatorSendsSigned)
-	sc.Step(`^the CDS refuses the write$`, cdsRefusesWrite)
-	sc.Step(`^the CDS refuses the write as invalid$`, cdsRefusesInvalid)
+	sc.Step(`^the operator sends the (?:Trust Authority|CDS) that write with that write token$`, operatorSendsSigned)
+	sc.Step(`^the (?:Trust Authority|CDS) refuses the write$`, taRefusesWrite)
+	sc.Step(`^the (?:Trust Authority|CDS) refuses the write as invalid$`, taRefusesInvalid)
 	sc.Step(`^a relying party reads the version$`, readsVersion)
 	sc.Step(`^a relying party reads the allowlist with no client authentication$`, readsAllowlist)
 	sc.Step(`^that relying party reads the allowlist naming the document it read before$`, readsAllowlistNamingDocument)
 	sc.Step(`^that relying party receives the served allowlist$`, receivesServed)
-	sc.Step(`^the CDS answers with the version and no body$`, answersVersionNoBody)
+	sc.Step(`^the (?:Trust Authority|CDS) answers with the version and no body$`, answersVersionNoBody)
 	sc.Step(`^(a|no) workload entry in the allowlist that relying party received declares image "([^"]*)"$`, receivedDeclares)
 	sc.Step(`^"([^"]*)" is in the allowlist that relying party received$`, receivedHasEntry)
 	sc.Step(`^"([^"]*)" in that allowlist pins the mounts of "([^"]*)" to one rule of kind "([^"]*)" with destination "([^"]*)"$`, receivedPinsMounts)
@@ -56,7 +56,7 @@ const (
 	callerForeign = "foreign"
 )
 
-// write is one request to the CDS's write route; validity is the lifetime its
+// write is one request to the Trust Authority's write route; validity is the lifetime its
 // token is minted with, the signer's default when empty, and headers
 // ("Name: value") go beside the token's Authorization. entry is the workload
 // entry the write sets or, with removes, takes out: the scenario's to undo
@@ -80,10 +80,10 @@ type reading struct {
 
 const allowlistPath = "/allowlist"
 
-// cdsAPIState is the scenario's view of the CDS API (taapi.go): who sends
+// taAPIState is the scenario's view of the Trust Authority API (taapi.go): who sends
 // the next write, the last write's token and status, a write signed before
 // it is sent, and what a relying party read.
-type cdsAPIState struct {
+type taAPIState struct {
 	caller        string
 	lastToken     string
 	lastStatus    int
@@ -218,13 +218,13 @@ func (w *world) operatorWrite(wr write) error {
 	return w.send(wr, token)
 }
 
-func cdsHasOperatorKey(ctx context.Context) error {
+func taHasOperatorKey(ctx context.Context) error {
 	answer, err := getWorld(ctx).be.call("operator_keys")
 	if err != nil {
 		return err
 	}
 	if answer != "yes" {
-		return errors.New("harness precondition: the CDS holds no operator key")
+		return errors.New("harness precondition: the Trust Authority holds no operator key")
 	}
 	return nil
 }
@@ -242,7 +242,7 @@ func seedDeclares(ctx context.Context, image string) error {
 		return err
 	}
 	if answer != "yes" {
-		return skipf("the seed of the CDS does not declare %s here", digest)
+		return skipf("the seed of the Trust Authority does not declare %s here", digest)
 	}
 	return nil
 }
@@ -320,22 +320,22 @@ func operatorWritesAnyArgv(ctx context.Context, name, image string) error {
 }
 
 // operatorHasWrittenAnyArgv is the write as a precondition, so it must take
-// effect. A CDS without persistence refuses operator tokens issued too soon
+// effect. A Trust Authority without persistence refuses operator tokens issued too soon
 // after it started (allowlist_replace in backends/common.sh), so after a
-// restart the write is sent again, with a new token, while the CDS answers 401.
+// restart the write is sent again, with a new token, while the Trust Authority answers 401.
 func operatorHasWrittenAnyArgv(ctx context.Context, name, image string) error {
 	w := getWorld(ctx)
 	for attempt := 0; ; attempt++ {
 		if err := operatorWritesAnyArgv(ctx, name, image); err != nil {
 			return err
 		}
-		if w.api.lastStatus != http.StatusUnauthorized || !w.cdsRestarted || attempt == 30 {
+		if w.api.lastStatus != http.StatusUnauthorized || !w.taRestarted || attempt == 30 {
 			break
 		}
 		time.Sleep(2 * time.Second)
 	}
 	if w.api.lastStatus != http.StatusNoContent {
-		return fmt.Errorf("harness precondition: the CDS answered the write of %q with %d", name, w.api.lastStatus)
+		return fmt.Errorf("harness precondition: the Trust Authority answered the write of %q with %d", name, w.api.lastStatus)
 	}
 	return nil
 }
@@ -437,22 +437,22 @@ func operatorSendsSigned(ctx context.Context) error {
 	return w.operatorWrite(*w.api.pending)
 }
 
-func (w *world) cdsAnswered(status int, what string) error {
+func (w *world) taAnswered(status int, what string) error {
 	if w.api.lastStatus == 0 {
-		return errors.New("the scenario has sent the CDS no write")
+		return errors.New("the scenario has sent the Trust Authority no write")
 	}
 	if w.api.lastStatus != status {
-		return fmt.Errorf("the CDS answered %d, not %d (%s)", w.api.lastStatus, status, what)
+		return fmt.Errorf("the Trust Authority answered %d, not %d (%s)", w.api.lastStatus, status, what)
 	}
 	return nil
 }
 
-func cdsRefusesWrite(ctx context.Context) error {
-	return getWorld(ctx).cdsAnswered(http.StatusUnauthorized, "authorization failed")
+func taRefusesWrite(ctx context.Context) error {
+	return getWorld(ctx).taAnswered(http.StatusUnauthorized, "authorization failed")
 }
 
-func cdsRefusesInvalid(ctx context.Context) error {
-	return getWorld(ctx).cdsAnswered(http.StatusUnprocessableEntity, "validation failed")
+func taRefusesInvalid(ctx context.Context) error {
+	return getWorld(ctx).taAnswered(http.StatusUnprocessableEntity, "validation failed")
 }
 
 // readsVersion records the version and the tag of the document served now.
@@ -463,13 +463,13 @@ func readsVersion(ctx context.Context) error {
 		return err
 	}
 	if r.version == "" {
-		return errors.New("the CDS answered with no version")
+		return errors.New("the Trust Authority answered with no version")
 	}
 	w.api.versionBefore, w.api.tagBefore = r.version, r.tag
 	return nil
 }
 
-// allowlistRequester is whose view of the allowlist a read asks the CDS for:
+// allowlistRequester is whose view of the allowlist a read asks the Trust Authority for:
 // nodes are served a write the node delay after it is written, the operator
 // at once.
 type allowlistRequester string
