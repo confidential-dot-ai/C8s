@@ -25,8 +25,6 @@ func (p *plugin) Synchronize(ctx context.Context, pods []*api.PodSandbox, ctrs [
 	if err := p.cvm().refuseLapsedRuntime(); err != nil {
 		return nil, err
 	}
-	p.restoreStaging.Do(func() { restoreVerifiedMounts(p.logger, pods, ctrs) })
-	releaseUnlistedMounts(p.logger, pods, ctrs)
 	// Seed the inventory's sandbox set now, even when the container check is
 	// deferred: sandbox existence needs no allowlist.
 	if p.inventory != nil {
@@ -120,7 +118,8 @@ func (p *plugin) recoverExisting(ctx context.Context, pods []*api.PodSandbox, ct
 		if pod == nil || !p.mesh.hosts(pod) {
 			continue
 		}
-		launch := p.observedLaunch(ctx, p.observeContainer(pod, ctr, ctr.GetAnnotations()[annotationImageName]))
+		ctx := p.withVerityCheck(ctx)
+		launch := p.observedLaunch(ctx, p.observeContainer(ctx, pod, ctr, ctr.GetAnnotations()[annotationImageName]))
 		role := p.roleOf(launch)
 		// Liveness is the running set, not the registration snapshot: a container
 		// that started in the deferral window is not CONTAINER_RUNNING in the
@@ -241,6 +240,7 @@ func (p *plugin) checkExisting(ctx context.Context, cfg *config, pods []*api.Pod
 	}
 	var killed, failed int
 	for _, ctr := range ctrs {
+		ctx := p.withVerityCheck(ctx)
 		imageRef := ctr.GetAnnotations()[annotationImageName]
 		pod := podByID[ctr.GetPodSandboxId()]
 		p.cvm().recordExisting(ctx, pod, ctr, imageRef)
@@ -293,6 +293,7 @@ func (p *plugin) KillRevoked(ctx context.Context) {
 		if cfg.isExemptNamespace(c.pod.GetNamespace()) {
 			continue
 		}
+		ctx := p.withVerityCheck(ctx)
 		// The same image admission matched: on a Pod guest the staged pin,
 		// not an alias the CRI annotation may have moved since.
 		imageRef, err := p.cvm().imageOf(c.pod, c.ctr)

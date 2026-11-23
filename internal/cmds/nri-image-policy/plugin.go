@@ -59,11 +59,6 @@ type plugin struct {
 	// and the nil-guarded hooks/seeding no-op rather than fail a container
 	// lifecycle callback over bookkeeping.
 	inventory *admissionInventory
-
-	// restoreStaging rebuilds the fs-verity staging registry at the first
-	// Synchronize, the first time the running containers are known. Every
-	// Synchronize then releases pins that no listed container uses.
-	restoreStaging sync.Once
 	// execGrants records the started containers the measured base grants execs,
 	// for the runtime wrapper (execgrants.go). nil where the base grants none.
 	execGrants *grantRecords
@@ -287,10 +282,8 @@ func wasStarted(ctr *api.Container) bool {
 }
 
 // RemoveContainer drops a removed container from the running set and from
-// caller resolution; the sandbox's record keeps it (inventory.remove). It also
-// releases the container's fs-verity staging.
+// caller resolution; the sandbox's record keeps it (inventory.remove).
 func (p *plugin) RemoveContainer(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) error {
-	releaseVerifiedMounts(p.logger, ctr.GetId())
 	defer p.cvm().lockAdmission()()
 	delete(p.podStarts, ctr.GetId())
 	p.running.remove(ctr.GetId())
@@ -413,7 +406,7 @@ func (p *plugin) recordForInventory(ctx context.Context, pod *api.PodSandbox, ct
 	if err != nil {
 		p.logger.Error("cannot resolve the image digest of a running container; any sandbox inventory refuses to answer for its pod, and it is granted no execs", "image", imageRef, "error", err)
 	}
-	p.recordDigest(pod, ctr, digest, p.observedMounts(pod, ctr))
+	p.recordDigest(pod, ctr, digest, p.observedMounts(ctx, pod, ctr))
 }
 
 // recordDigest is the only inventory.record and exec-grant record call site.
@@ -440,11 +433,15 @@ func (p *plugin) recordDigest(pod *api.PodSandbox, ctr *api.Container, digest st
 	p.inventory.recordObserved(ctr.GetId(), ctr.GetPodSandboxId(), ctr.GetName(), digest, role, ctr.GetArgs(), env, mounts)
 }
 
-func (p *plugin) observedMounts(pod *api.PodSandbox, ctr *api.Container) []allowlist.ObservedMount {
+// observedMounts classifies ctr's mounts, with the fs-verity digests that the
+// check ctx carries measures (withVerityCheck).
+func (p *plugin) observedMounts(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) []allowlist.ObservedMount {
 	if pod == nil {
 		return nil
 	}
-	return newMountObserver(p.mountStorage, p.cvm().enforcerMounts()).Observe(pod, ctr)
+	observer := newMountObserver(p.mountStorage, p.cvm().enforcerMounts())
+	observer.verity = verityCheckOf(ctx)
+	return observer.Observe(pod, ctr)
 }
 
 // imageDigest returns imageRef's digest, resolving a tag through containerd.

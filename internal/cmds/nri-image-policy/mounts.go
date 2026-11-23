@@ -49,6 +49,8 @@ type mountObserver struct {
 	handlers []mountHandler
 	storage  mountStorageInspector
 	own      enforcerMounts
+	// verity measures host file binds; nil measures none.
+	verity *verityCheck
 }
 
 func newMountObserver(storage mountStorageInspector, own enforcerMounts) mountObserver {
@@ -110,15 +112,12 @@ func fileBind(m *api.Mount) bool {
 }
 
 func (o mountObserver) observeMount(ctx MountContext, m *api.Mount) allowlist.ObservedMount {
-	if mount, ok := verifiedHostMount(ctx, m); ok {
-		return mount
-	}
 	for _, handler := range o.handlers {
 		if mount, ok := handler.Observe(ctx, m); ok {
 			return mount
 		}
 	}
-	return observeHostMount(m)
+	return o.verity.attach(ctx.Container, m, observeHostMount(m))
 }
 
 func defaultStorage(s mountStorageInspector) mountStorageInspector {
@@ -277,8 +276,8 @@ func nodeRootMissing(mounts []allowlist.ObservedMount) string {
 	return nodeRootBindIneligible
 }
 
-// fsVerityNotStaged is why a read-only host bind carries no fs-verity evidence.
-const fsVerityNotStaged = "mount was not staged at create time; the container's fs-verity staging warnings name the cause"
+// fsVerityUnmeasured is why a read-only host bind carries no fs-verity evidence.
+const fsVerityUnmeasured = "no fs-verity digest was measured for the file; only the start check measures it, and the container's fs-verity warnings name the cause"
 
 // unprovenFileBind reports whether m is a read-only host bind that carries no
 // provenance, so a denial of a verified-file rule names its cause.

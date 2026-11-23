@@ -40,7 +40,7 @@ func (p *plugin) bindExits(ctx context.Context, pod *api.PodSandbox, ctr *api.Co
 	if !p.mesh.hosts(pod) {
 		return nil
 	}
-	launch := p.observedLaunch(ctx, p.observeContainer(pod, ctr, imageRef))
+	launch := p.observedLaunch(ctx, p.observeContainer(ctx, pod, ctr, imageRef))
 	starting := p.sandboxContainer(launch)
 	if len(secrets.WorkloadContainers([]workloadclaims.SandboxContainer{starting})) == 0 {
 		return nil

@@ -72,6 +72,9 @@ type imageCheck struct {
 	// the cause. It names at most a variable, never a value.
 	EnvErr error
 	Mounts []allowlist.ObservedMount
+	// DeferVerity judges fsVerityFile rules without a digest
+	// (allowlist.RunningContainer.DeferVerity).
+	DeferVerity bool
 	// Lookup resolves ImageRef once for every check of one container
 	// (plugin.digestLookup); nil has checkImageAt ask containerd.
 	Lookup func() (string, error)
@@ -140,6 +143,9 @@ func (p *plugin) checkImageAt(ctx context.Context, cfg *config, snap *policySnap
 	// The base allowlist admits what its entries admit. Served entries are
 	// matched against the final OCI argv, environment, and classified mounts.
 	rc := allowlist.RunningContainer{Digest: digest, Argv: check.Argv, Env: check.Env, Mounts: check.Mounts}
+	if check.DeferVerity {
+		rc = rc.DeferVerity()
+	}
 	baseAdmitted := p.policy.baseAdmits(rc, phase)
 
 	// A tag is resolved here, at hook time, while the runtime builds the
@@ -235,7 +241,7 @@ func (p *plugin) denialAttrs(snap *policySnapshot, check imageCheck, rc allowlis
 		attrs = append(attrs, "node_root_unavailable", missing)
 	}
 	if slices.ContainsFunc(rc.Mounts, unprovenFileBind) && p.policy.declaresFSVerity(snap, rc.Digest) {
-		attrs = append(attrs, "fs_verity_unavailable", fsVerityNotStaged)
+		attrs = append(attrs, "fs_verity_unavailable", fsVerityUnmeasured)
 	}
 	return attrs
 }
@@ -255,6 +261,9 @@ type observedContainer struct {
 	imageRef string
 	env      *allowlist.EnvObservation
 	mounts   []allowlist.ObservedMount
+	// deferVerity is set at the validation check, before the container has a
+	// root to measure (allowlist.RunningContainer.DeferVerity).
+	deferVerity bool
 	// lookup resolves imageRef once for every check of one admission
 	// (plugin.digestLookup); nil resolves it on each read.
 	lookup func() (string, error)
@@ -262,25 +271,29 @@ type observedContainer struct {
 
 // observeContainer reads the launch evidence of a container from the spec the
 // runtime reports for it, mounts classified as the final check classifies them.
-func (p *plugin) observeContainer(pod *api.PodSandbox, ctr *api.Container, imageRef string) observedContainer {
+func (p *plugin) observeContainer(ctx context.Context, pod *api.PodSandbox, ctr *api.Container, imageRef string) observedContainer {
 	return observedContainer{
 		pod:      pod,
 		ctr:      ctr,
 		imageRef: imageRef,
 		env:      containerEnv(ctr),
-		mounts:   p.observedMounts(pod, ctr),
+		mounts:   p.observedMounts(ctx, pod, ctr),
 	}
 }
 
 // launch is the observation an allowlist entry is matched against, under a
 // digest the caller has resolved.
 func (o observedContainer) launch(digest string) allowlist.RunningContainer {
-	return allowlist.RunningContainer{
+	launch := allowlist.RunningContainer{
 		Digest: digest,
 		Argv:   o.ctr.GetArgs(),
 		Env:    o.env,
 		Mounts: o.mounts,
 	}
+	if o.deferVerity {
+		return launch.DeferVerity()
+	}
+	return launch
 }
 
 // checkContainer runs the label rules and the image allowlist over a
@@ -312,7 +325,7 @@ func (p *plugin) checkContainerPhase(ctx context.Context, cfg *config, pod *api.
 		lookup:   p.digestLookup(ctx, imageRef),
 	}
 	if phase == launchFinal {
-		observed.mounts = p.observedMounts(pod, ctr)
+		observed.mounts = p.observedMounts(ctx, pod, ctr)
 	}
 	snap := p.policy.current()
 	verdict, reason := p.checkContainerObserved(ctx, cfg, snap, observed, phase)
@@ -345,15 +358,16 @@ func (p *plugin) checkContainerObserved(ctx context.Context, cfg *config, snap *
 	verdict, reason := p.checkLabels(cfg, namespace, podName, ctrName, observed.pod.GetLabels())
 	if verdict != verdictDeny && cfg.AllowlistEnabled() {
 		verdict, reason = p.checkImageAt(ctx, cfg, snap, imageCheck{
-			Namespace: namespace,
-			PodName:   podName,
-			Container: ctrName,
-			ImageRef:  observed.imageRef,
-			Argv:      observed.ctr.GetArgs(),
-			Env:       observed.env,
-			EnvErr:    envError(observed.ctr, observed.env),
-			Mounts:    observed.mounts,
-			Lookup:    observed.lookup,
+			Namespace:   namespace,
+			PodName:     podName,
+			Container:   ctrName,
+			ImageRef:    observed.imageRef,
+			Argv:        observed.ctr.GetArgs(),
+			Env:         observed.env,
+			EnvErr:      envError(observed.ctr, observed.env),
+			Mounts:      observed.mounts,
+			DeferVerity: observed.deferVerity,
+			Lookup:      observed.lookup,
 		}, phase)
 	}
 	return p.exemptNamespace(cfg, observed, verdict, reason)

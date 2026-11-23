@@ -18,13 +18,9 @@ import (
 // Together with containerd's required_plugins configuration this prevents a
 // plugin disconnect between creation and start from bypassing launch admission.
 //
-// A refused creation releases the container's fs-verity staging.
-func (p *plugin) ValidateContainerAdjustment(ctx context.Context, req *api.ValidateContainerAdjustmentRequest) (err error) {
-	defer func() {
-		if err != nil {
-			releaseVerifiedMounts(p.logger, req.GetContainer().GetId())
-		}
-	}()
+// The container has no root to measure yet, so an fsVerityFile rule is judged
+// on its source and read-only mode alone; the start check decides the digest.
+func (p *plugin) ValidateContainerAdjustment(ctx context.Context, req *api.ValidateContainerAdjustmentRequest) error {
 	defer p.cvm().lockAdmission()()
 	if err := p.cvm().refuseLapsedRuntime(); err != nil {
 		return err
@@ -41,11 +37,12 @@ func (p *plugin) ValidateContainerAdjustment(ctx context.Context, req *api.Valid
 		return p.denyContainerCreation(req.GetPod().GetId(), ctr.GetName(), err)
 	}
 	observed := observedContainer{
-		pod:      req.GetPod(),
-		ctr:      ctr,
-		imageRef: imageRef,
-		env:      env,
-		mounts:   p.adjustedMounts(req, ctr),
+		pod:         req.GetPod(),
+		ctr:         ctr,
+		imageRef:    imageRef,
+		env:         env,
+		mounts:      p.adjustedMounts(ctx, req, ctr),
+		deferVerity: true,
 		// The gate and the static-pod check run ahead of admission; all three
 		// share one lookup, so they judge one digest.
 		lookup: p.digestLookup(ctx, imageRef),
@@ -131,7 +128,7 @@ func (p *plugin) gateMesh(ctx context.Context, req *api.ValidateContainerAdjustm
 	// the pod itself asks for: a credential client of any pod also carries the
 	// binds this enforcer adds (credentialMounts), which no declaration names.
 	declared := launch
-	declared.Mounts = p.observedMounts(pod, req.GetContainer())
+	declared.Mounts = p.observedMounts(ctx, pod, req.GetContainer())
 	role, err := p.cvm().adjustmentRole(pod, ctr, launch, declared, observed.mounts)
 	if err != nil {
 		return err
@@ -193,7 +190,7 @@ func adjustedLaunchContainer(req *api.ValidateContainerAdjustmentRequest) (*api.
 }
 
 // adjustedMounts observes cumulative edits; deferred CDI leaves evidence unavailable.
-func (p *plugin) adjustedMounts(req *api.ValidateContainerAdjustmentRequest, ctr *api.Container) []allowlist.ObservedMount {
+func (p *plugin) adjustedMounts(ctx context.Context, req *api.ValidateContainerAdjustmentRequest, ctr *api.Container) []allowlist.ObservedMount {
 	if len(req.GetAdjust().GetCDIDevices()) > 0 {
 		return nil
 	}
@@ -209,5 +206,5 @@ func (p *plugin) adjustedMounts(req *api.ValidateContainerAdjustmentRequest, ctr
 			ctr.Mounts = append(ctr.Mounts, proto.Clone(edit).(*api.Mount))
 		}
 	}
-	return p.observedMounts(req.GetPod(), ctr)
+	return p.observedMounts(ctx, req.GetPod(), ctr)
 }

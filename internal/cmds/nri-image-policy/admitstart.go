@@ -3,11 +3,8 @@ package nriimagepolicy
 import (
 	"context"
 	"fmt"
-	"slices"
 
 	"github.com/containerd/nri/pkg/api"
-
-	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
 // admitWhileInitializing decides a container seen after NRI registration but
@@ -59,37 +56,16 @@ func (p *plugin) CreateContainer(ctx context.Context, pod *api.PodSandbox, ctr *
 	if err != nil && p.cfg.Policy.Mode != ModeAudit {
 		return nil, nil, p.denyContainerCreation(pod.GetId(), ctr.GetName(), err)
 	}
-	return stageVerityMounts(ctx, p.logger, pod, ctr, adjustment, p.fsVerityMountRules(ctx, imageRef, ctr)), nil, nil
-}
-
-// fsVerityMountRules returns the staging candidates for ctr. It resolves the
-// image digest only when a read-only file bind could match an fs-verity rule,
-// so an ordinary container costs no containerd round trip.
-func (p *plugin) fsVerityMountRules(ctx context.Context, imageRef string, ctr *api.Container) []allowlist.MountRule {
-	if p.policy == nil || !slices.ContainsFunc(ctr.GetMounts(), func(m *api.Mount) bool { return fileBind(m) && slices.Contains(m.GetOptions(), "ro") }) {
-		return nil
-	}
-	snap := p.policy.current()
-	if !p.policy.base.HasFSVerityMountRules() && (snap == nil || !snap.index.HasFSVerityMountRules()) {
-		return nil
-	}
-	digest := p.resolveDigest(ctx, imageRef)
-	rules := p.policy.base.FSVerityMountRules(digest)
-	if snap != nil {
-		rules = append(rules, snap.index.FSVerityMountRules(digest)...)
-	}
-	return rules
+	return adjustment, nil, nil
 }
 
 // StartContainer tracks the container as running ahead of its admission, so a
 // KillRevoked that follows an allowlist newer than the one admitStart read
-// still sees it. A refused start never runs, leaves the running set and
-// releases its fs-verity staging.
+// still sees it. A refused start never runs and leaves the running set.
 func (p *plugin) StartContainer(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) error {
 	p.running.add(pod, ctr)
 	if err := p.admitStart(ctx, pod, ctr); err != nil {
 		p.running.remove(ctr.GetId())
-		releaseVerifiedMounts(p.logger, ctr.GetId())
 		return err
 	}
 	return nil
@@ -98,14 +74,15 @@ func (p *plugin) StartContainer(ctx context.Context, pod *api.PodSandbox, ctr *a
 // admitStart runs before task.Start/execve. Its environment is the final
 // persisted OCI spec, unlike CreateContainer (or adjustment validation), which
 // precedes other plugins and runtime CDI injection. Start updates cannot edit
-// argv/env. Failed checks leave no admitted-container evidence.
+// argv/env. Failed checks leave no admitted-container evidence. It is the
+// first check with a container root, so it measures fs-verity digests.
 func (p *plugin) admitStart(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) error {
 	defer p.cvm().lockAdmission()()
 	if err := p.cvm().refuseLapsedRuntime(); err != nil {
 		return err
 	}
 	delete(p.podStarts, ctr.GetId())
-	ctx = withResolved(ctx)
+	ctx = p.withVerityCheck(withResolved(ctx))
 	cfg := p.cfg
 	imageRef, err := p.cvm().imageOf(pod, ctr)
 	if err != nil {
@@ -162,7 +139,7 @@ func (p *plugin) noteMeshStarted(ctx context.Context, pod *api.PodSandbox, ctr *
 	if !p.mesh.hosts(pod) {
 		return
 	}
-	launch := p.observedLaunch(ctx, p.observeContainer(pod, ctr, imageRef))
+	launch := p.observedLaunch(ctx, p.observeContainer(ctx, pod, ctr, imageRef))
 	if p.roleOf(launch) == meshRole {
 		p.mesh.noteMeshStarted(pod.GetId())
 	}

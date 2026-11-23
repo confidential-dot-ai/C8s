@@ -430,12 +430,6 @@ func (i *Index) NodeRootBinds(digest string, mounts []ObservedMount) []ObservedM
 	return named
 }
 
-// HasFSVerityMountRules reports whether any entry has an fsVerityFile mount
-// rule.
-func (i *Index) HasFSVerityMountRules() bool {
-	return i != nil && len(i.fsVerityFiles) > 0
-}
-
 // DeclaresFSVerityFile reports whether an fsVerityFile rule of some entry, for
 // any image, binds source at destination: the binds an enforcer measures,
 // before it resolves an image digest.

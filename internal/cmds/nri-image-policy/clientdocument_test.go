@@ -73,7 +73,7 @@ func TestPodClientDocumentIsBoundIntoEveryContainer(t *testing.T) {
 			t.Fatalf("%s bind = %+v", name, bind)
 		}
 		ctr.Mounts = adjust.Mounts
-		observed := p.observedMounts(pod, ctr)
+		observed := p.observedMounts(t.Context(), pod, ctr)
 		if len(observed) != 1 || observed[0].Class != allowlist.MountPlatform || !observed[0].ReadOnly {
 			t.Fatalf("%s observed %+v", name, observed)
 		}
@@ -84,7 +84,7 @@ func TestPodClientDocumentIsBoundIntoEveryContainer(t *testing.T) {
 
 	// A writable bind, or one from another source, is the workload's own.
 	ctr := &api.Container{Name: "app", PodSandboxId: pod.Id, Mounts: []*api.Mount{{Destination: workloadclaims.ClientDocumentPath, Type: "bind", Source: "/tenant/document", Options: []string{"rbind", "ro"}}}}
-	if observed := p.observedMounts(pod, ctr); slices.ContainsFunc(observed, func(m allowlist.ObservedMount) bool { return m.Class == allowlist.MountPlatform }) {
+	if observed := p.observedMounts(t.Context(), pod, ctr); slices.ContainsFunc(observed, func(m allowlist.ObservedMount) bool { return m.Class == allowlist.MountPlatform }) {
 		t.Fatalf("a foreign bind at the client document path was read as the platform's: %+v", observed)
 	}
 }
