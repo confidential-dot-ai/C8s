@@ -22,8 +22,8 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsdecree"
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdspins"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tadecree"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tapins"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
 )
@@ -61,19 +61,19 @@ func TestTheDecreedReplicaStartsTheClusterAndTheRestJoinIt(t *testing.T) {
 		if code, body := c.get(r, "/allowlist"); code != http.StatusOK || !strings.Contains(string(body), seededWorkload) {
 			t.Errorf("replica %d serves /allowlist = %d %s, want the workload the configuration seeded", r.index, code, body)
 		}
-		c.requirePinDecree(r, cdsdecree.Genesis, c.genesisIntent)
+		c.requirePinDecree(r, tadecree.Genesis, c.genesisIntent)
 	}
 }
 
 // requirePinDecree reads the decree behind the images a CDS of this cluster may
 // run, which is what a node follows.
-func (c *cluster) requirePinDecree(r *replica, kind cdsdecree.Kind, intent string) {
+func (c *cluster) requirePinDecree(r *replica, kind tadecree.Kind, intent string) {
 	c.t.Helper()
 	code, body := c.get(r, "/ha/pins")
 	if code != http.StatusOK {
 		c.t.Fatalf("replica %d serves /ha/pins = %d %s, want the applied pin decree", r.index, code, body)
 	}
-	var pinned cdsdecree.Signed
+	var pinned tadecree.Signed
 	if err := json.Unmarshal(body, &pinned); err != nil {
 		c.t.Fatalf("replica %d serves a pin decree that does not decode: %v: %s", r.index, err, body)
 	}
@@ -411,7 +411,7 @@ func TestAPinDecreeOfTheOperatorAppliesAtEveryReplica(t *testing.T) {
 		return c.allApplied(intent, started.Version+1)
 	})
 	for _, r := range c.replicas {
-		c.requirePinDecree(r, cdsdecree.UpdateMeasurements, intent)
+		c.requirePinDecree(r, tadecree.UpdateMeasurements, intent)
 	}
 }
 
@@ -712,7 +712,7 @@ func TestANodeSideClientFollowsAnImageRoll(t *testing.T) {
 }
 
 // nodeClient is a node's CDS pin source over one replica's armTLS.
-func (c *cluster) nodeClient(r *replica) *cdspins.Source {
+func (c *cluster) nodeClient(r *replica) *tapins.Source {
 	c.t.Helper()
 	digest, err := hex.DecodeString(testutil.TestMeasurement)
 	if err != nil {
@@ -727,10 +727,10 @@ func (c *cluster) nodeClient(r *replica) *cdspins.Source {
 		}},
 	}
 	api := c.attestationAPI("the node", testutil.TestMeasurement)
-	source, err := cdspins.New(cdspins.Config{
+	source, err := tapins.New(tapins.Config{
 		Bootstrap:   bootstrap,
-		Attested:    cdspins.AttestedHTTPFetch(r.base, api),
-		Fetch:       cdspins.HTTPFetch(r.base),
+		Attested:    tapins.AttestedHTTPFetch(r.base, api),
+		Fetch:       tapins.HTTPFetch(r.base),
 		StateFile:   filepath.Join(c.dir, "node-cds-decree.json"),
 		MinInterval: time.Nanosecond,
 	})

@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/attestation-go/remote"
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsdecree"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tadecree"
 )
 
 // maxPostedDecrees is how many decrees a replica holds. Every one of them is
@@ -37,7 +37,7 @@ type Delivered struct {
 }
 
 // TakeDecree takes one decree the operator posted to this replica.
-func (n *Node) TakeDecree(signed cdsdecree.Signed) (Delivered, error) {
+func (n *Node) TakeDecree(signed tadecree.Signed) (Delivered, error) {
 	if err := n.ClockError(); err != nil {
 		return Delivered{}, err
 	}
@@ -52,16 +52,16 @@ func (n *Node) TakeDecree(signed cdsdecree.Signed) (Delivered, error) {
 
 // operatorSigned reports a decree a key of this cluster's operator signed,
 // with everything about it that needs no cluster state.
-func (n *Node) operatorSigned(signed cdsdecree.Signed) error {
-	return cdsdecree.Verify(signed, n.cfg.Launch.OperatorKeys, n.cfg.Launch.ClusterID)
+func (n *Node) operatorSigned(signed tadecree.Signed) error {
+	return tadecree.Verify(signed, n.cfg.Launch.OperatorKeys, n.cfg.Launch.ClusterID)
 }
 
 // actedOnByItsTarget names the decree kinds the replica they name acts on.
-func actedOnByItsTarget(kind cdsdecree.Kind) bool {
+func actedOnByItsTarget(kind tadecree.Kind) bool {
 	switch kind {
-	case cdsdecree.Genesis,
-		cdsdecree.Recover,
-		cdsdecree.Admit:
+	case tadecree.Genesis,
+		tadecree.Recover,
+		tadecree.Admit:
 		return true
 	}
 	return false
@@ -70,7 +70,7 @@ func actedOnByItsTarget(kind cdsdecree.Kind) bool {
 // holdDecree keeps a decree until this replica acts on it. A decree of these
 // kinds is bound to the member id this process minted at its start, so
 // neither another replica nor a restart of this one acts on it.
-func (n *Node) holdDecree(signed cdsdecree.Signed) (Delivered, error) {
+func (n *Node) holdDecree(signed tadecree.Signed) (Delivered, error) {
 	if signed.Decree.TargetMember != string(n.member) {
 		return Delivered{}, fmt.Errorf("cds-ha: the decree names member %q, and this replica is member %q", signed.Decree.TargetMember, n.member)
 	}
@@ -89,15 +89,15 @@ func (n *Node) holdDecree(signed cdsdecree.Signed) (Delivered, error) {
 // postedDecrees are the decrees a replica holds, oldest first.
 type postedDecrees struct {
 	mu   sync.Mutex
-	held []cdsdecree.Signed
+	held []tadecree.Signed
 }
 
 // hold takes one decree in, in place of the one it repeats, and drops the
 // oldest where the replica holds as many as it keeps.
-func (p *postedDecrees) hold(signed cdsdecree.Signed) {
+func (p *postedDecrees) hold(signed tadecree.Signed) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.held = slices.DeleteFunc(p.held, func(other cdsdecree.Signed) bool {
+	p.held = slices.DeleteFunc(p.held, func(other tadecree.Signed) bool {
 		return other.Decree.IntentID == signed.Decree.IntentID
 	})
 	p.held = append(p.held, signed)
@@ -106,7 +106,7 @@ func (p *postedDecrees) hold(signed cdsdecree.Signed) {
 	}
 }
 
-func (p *postedDecrees) all() []cdsdecree.Signed {
+func (p *postedDecrees) all() []tadecree.Signed {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return slices.Clone(p.held)
@@ -130,7 +130,7 @@ func (n *Node) admitAsDecreed() {
 func (n *Node) anyAdmitForThisProcess() *[]remote.ImagePin {
 	held := n.posted.all()
 	for _, signed := range slices.Backward(held) {
-		if signed.Decree.Kind != cdsdecree.Admit {
+		if signed.Decree.Kind != tadecree.Admit {
 			continue
 		}
 		images, err := n.imagesOfAdmit(signed)
@@ -147,7 +147,7 @@ func (n *Node) anyAdmitForThisProcess() *[]remote.ImagePin {
 
 // imagesOfAdmit is the image set an Admit decree hands this replica: inside
 // its expiry, and pinned to the launch file this replica booted.
-func (n *Node) imagesOfAdmit(signed cdsdecree.Signed) ([]remote.ImagePin, error) {
+func (n *Node) imagesOfAdmit(signed tadecree.Signed) ([]remote.ImagePin, error) {
 	if expired(signed.Decree, time.Now().UnixMilli()) {
 		return nil, errors.New("the Admit decree has expired")
 	}

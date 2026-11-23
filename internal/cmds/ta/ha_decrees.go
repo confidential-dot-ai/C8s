@@ -12,8 +12,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsdecree"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsha"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tadecree"
 )
 
 type decreesOptions struct {
@@ -75,7 +75,7 @@ func checkRecords(records []cdsha.DecreeRecord, c decreeConfig) []appliedDecree 
 	checked := make([]appliedDecree, 0, len(records))
 	for _, record := range records {
 		applied := appliedDecree{DecreeRecord: record}
-		if err := cdsdecree.Verify(record.Decree, c.parsed.OperatorKeys.Keys(), c.parsed.ClusterID); err != nil {
+		if err := tadecree.Verify(record.Decree, c.parsed.OperatorKeys.Keys(), c.parsed.ClusterID); err != nil {
 			applied.Unverified = err.Error()
 		}
 		checked = append(checked, applied)

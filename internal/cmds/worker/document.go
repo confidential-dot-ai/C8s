@@ -9,10 +9,10 @@ import (
 	"net"
 	"net/netip"
 
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsconfig"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/nodeservices"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/issuer"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/taconfig"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/yamlutil"
 )
 
@@ -71,7 +71,7 @@ func (d Document) validate() error {
 	if err != nil {
 		return err
 	}
-	config, err := cdsconfig.Parse(cds.LaunchFile)
+	config, err := taconfig.Parse(cds.LaunchFile)
 	if err != nil {
 		return fmt.Errorf("cds.measurements: the pinned CDS configuration: %w", err)
 	}
@@ -107,7 +107,7 @@ func (d Document) operatorKeys() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	config, err := cdsconfig.Parse(cds.LaunchFile)
+	config, err := taconfig.Parse(cds.LaunchFile)
 	if err != nil {
 		return nil, fmt.Errorf("cds.measurements: the pinned CDS configuration: %w", err)
 	}
@@ -116,7 +116,7 @@ func (d Document) operatorKeys() ([]byte, error) {
 
 // pinnedNodeSubnets are the subnets the pinned CDS configuration may dial a
 // node in.
-func pinnedNodeSubnets(config *cdsconfig.Config) ([]netip.Prefix, error) {
+func pinnedNodeSubnets(config *taconfig.Config) ([]netip.Prefix, error) {
 	subnets := make([]netip.Prefix, 0, len(config.NodeCIDRs))
 	for _, subnet := range config.NodeCIDRs {
 		prefix, err := subnetPrefix(subnet)

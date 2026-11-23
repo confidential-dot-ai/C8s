@@ -16,9 +16,9 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsdecree"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/readutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tadecree"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
 )
 
@@ -125,7 +125,7 @@ func parseWorkerImage(measurements []byte) (refvalues.ReferenceValues, error) {
 		return image, fmt.Errorf("--worker-image: %w", err)
 	}
 	for _, pin := range image.Images {
-		if cdsdecree.EntryBindsLaunch(pin) {
+		if tadecree.EntryBindsLaunch(pin) {
 			return image, fmt.Errorf("--worker-image entry %q binds a launch already: pass the image's measurements as 'c8s measurements derive' writes them", pin.Name)
 		}
 	}
@@ -186,7 +186,7 @@ func admittedSet(nodes refvalues.ReferenceValues) ([]byte, error) {
 	if declared.SchemaVersion != launchDigestSchema {
 		return nil, fmt.Errorf("schema_version is %q, want %q, which reads launch_file_digest", declared.SchemaVersion, launchDigestSchema)
 	}
-	images, err := cdsdecree.NewNodeImages(set)
+	images, err := tadecree.NewNodeImages(set)
 	if err != nil {
 		return nil, err
 	}

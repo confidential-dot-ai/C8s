@@ -22,7 +22,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsdecree"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tadecree"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 )
 
@@ -325,7 +325,7 @@ func TestAdmitWritesTheSchemaThatReadsLaunchFileDigests(t *testing.T) {
 func TestADecreeCarriesTheAdmittedSetByteForByte(t *testing.T) {
 	f := newAdmitFixture(t, teetypes.FamilyTDX)
 	a := admitted(t, f, f.document)
-	images, err := cdsdecree.NewNodeImages(a.Nodes)
+	images, err := tadecree.NewNodeImages(a.Nodes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -333,10 +333,10 @@ func TestADecreeCarriesTheAdmittedSetByteForByte(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	signed, err := cdsdecree.Sign(cdsdecree.Decree{
+	signed, err := tadecree.Sign(tadecree.Decree{
 		ClusterID:   "acme",
-		IntentID:    cdsdecree.NewIntentID(),
-		Kind:        cdsdecree.SetNodeImages,
+		IntentID:    tadecree.NewIntentID(),
+		Kind:        tadecree.SetNodeImages,
 		ExpiresAt:   time.Now().Add(time.Minute).UTC().Truncate(time.Second),
 		BaseVersion: 3,
 		NodePins:    images,
@@ -348,11 +348,11 @@ func TestADecreeCarriesTheAdmittedSetByteForByte(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	read, err := cdsdecree.Parse(object)
+	read, err := tadecree.Parse(object)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := cdsdecree.Verify(read, []*ecdsa.PublicKey{&key.PublicKey}, "acme"); err != nil {
+	if err := tadecree.Verify(read, []*ecdsa.PublicKey{&key.PublicKey}, "acme"); err != nil {
 		t.Fatal(err)
 	}
 	carried, err := json.Marshal(read.Decree.NodePins)

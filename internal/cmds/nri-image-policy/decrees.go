@@ -10,7 +10,7 @@ import (
 	"sync"
 
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdspins"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tapins"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 )
 
@@ -22,7 +22,7 @@ const decreeStateName = "cds-decree.json"
 // it. Each change is written into the policy the plugin mounts into its
 // credential clients, so every CDS client of the node moves together.
 type followedPins struct {
-	*cdspins.Source
+	*tapins.Source
 	logger *slog.Logger
 
 	mu sync.Mutex
@@ -78,10 +78,10 @@ func (f *followedPins) handToClients() {
 // where the launch file this node pins names one CDS.
 func (c pullConfig) cdsDecrees(bootstrap refvalues.ReferenceValues, logger *slog.Logger) (*followedPins, error) {
 	url := strings.TrimRight(c.URL, "/")
-	source, err := cdspins.New(cdspins.Config{
+	source, err := tapins.New(tapins.Config{
 		Bootstrap: bootstrap,
-		Attested:  cdspins.AttestedHTTPFetch(url, c.AttestationApiURL),
-		Fetch:     cdspins.HTTPFetch(url),
+		Attested:  tapins.AttestedHTTPFetch(url, c.AttestationApiURL),
+		Fetch:     tapins.HTTPFetch(url),
 		StateFile: filepath.Join(enforcerRuntimeDir, decreeStateName),
 		Floor:     c.CDSPinFloor,
 	})
@@ -104,7 +104,7 @@ func (c pullConfig) cdsPinSource(logger *slog.Logger) (armtls.PinSource, *follow
 	}
 	decrees, err := c.cdsDecrees(set, logger)
 	switch {
-	case errors.Is(err, cdspins.ErrSingleCDS):
+	case errors.Is(err, tapins.ErrSingleCDS):
 		return armtls.FixedPins(set), nil, nil
 	case err != nil:
 		return nil, nil, fmt.Errorf("follow the cluster's CDS pin decrees: %w", err)

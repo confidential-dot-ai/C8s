@@ -8,8 +8,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsconfig"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/taconfig"
 )
 
 // options are one cluster's CDS settings as the operator supplies them.
@@ -33,7 +33,7 @@ type options struct {
 	kmsTLSKey       string
 	// ha is the replica set the cluster's CDS runs as, empty for a cluster
 	// whose CDS is a singleton.
-	ha cdsconfig.HA
+	ha taconfig.HA
 }
 
 func NewCmd() *cobra.Command {
@@ -72,7 +72,7 @@ fix the cluster for its life.`,
 				return err
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "wrote %s and %s\n",
-				filepath.Join(opts.dir, cdsconfig.ConfigFile), filepath.Join(opts.dir, cdsconfig.PinFile))
+				filepath.Join(opts.dir, taconfig.ConfigFile), filepath.Join(opts.dir, taconfig.PinFile))
 			return nil
 		},
 	}
@@ -92,7 +92,7 @@ fix the cluster for its life.`,
 		"regex a leaf's DNS SANs may match in full; repeatable (default the in-cluster Service DNS pattern)")
 	f.StringVar(&opts.kmsURL, "kms-url", "", "optional https URL of the key management service CDS brokers pod secret release to (docs/pod-secrets.md); needs --pod-image-policy-file")
 	f.StringVar(&opts.kmsTLSKey, "kms-tls-key-sha256", "", "lowercase hex SHA-256 of the DER SubjectPublicKeyInfo of the KMS's TLS certificate; required with --kms-url")
-	cdsconfig.BindReplicaSetFlags(f, &opts.ha)
+	taconfig.BindReplicaSetFlags(f, &opts.ha)
 	f.StringVar(&opts.manifest, "image-manifest", "", "manifest.json published with the CDS guest image the VM boots")
 	f.StringVar(&opts.platform, "platform", "", "TEE platform the CDS VM runs on: sev-snp or tdx")
 	f.IntSliceVar(&opts.vcpus, "vcpus", nil, "SEV-SNP only: a vCPU count the CDS VM may boot with, one pin entry each; repeatable")

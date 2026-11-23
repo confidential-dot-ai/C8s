@@ -7,7 +7,7 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsconfig"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/taconfig"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 )
 
@@ -33,7 +33,7 @@ type podSeparatedNodeImages struct {
 
 func (s *podSeparatedNodeImages) Current() refvalues.ReferenceValues {
 	current := s.PinSource.Current()
-	err := cdsconfig.ValidatePodNodeAuthorities(s.pods, current.Images)
+	err := taconfig.ValidatePodNodeAuthorities(s.pods, current.Images)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err == nil {

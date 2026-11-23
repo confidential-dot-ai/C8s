@@ -1,4 +1,4 @@
-package cdsdecree
+package tadecree
 
 import (
 	"bytes"

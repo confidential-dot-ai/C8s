@@ -43,9 +43,9 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsconfig"
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsdecree"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsha"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/taconfig"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tadecree"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
@@ -362,7 +362,7 @@ func (c *cluster) configure(size shape) {
 		addresses = append(addresses, replicaHost(i))
 	}
 	document, err := yaml.Marshal(map[string]any{
-		"schemaVersion":      cdsconfig.SchemaVersion,
+		"schemaVersion":      taconfig.SchemaVersion,
 		"clusterID":          clusterID,
 		"operatorPublicKeys": string(publicKeyPEM(c.t, &c.operator.PublicKey)),
 		"workloads": `{"schema":"c8s.allowlist/v1","workloads":{"` + seededWorkload +
@@ -541,18 +541,18 @@ func (c *cluster) genesis(r *replica) {
 func (c *cluster) genesisCertifying(r *replica, nodeImages string, resumeVersion uint64) {
 	c.t.Helper()
 	reported := c.awaitStatus(r)
-	pins, err := cdsdecree.NewPinDocument([]byte(testutil.CDSPinDocument(testutil.TestMeasurement, string(c.config))))
+	pins, err := tadecree.NewPinDocument([]byte(testutil.CDSPinDocument(testutil.TestMeasurement, string(c.config))))
 	if err != nil {
 		c.t.Fatal(err)
 	}
-	nodes, err := cdsdecree.NewNodeImages([]byte(nodeImages))
+	nodes, err := tadecree.NewNodeImages([]byte(nodeImages))
 	if err != nil {
 		c.t.Fatal(err)
 	}
-	genesis := cdsdecree.Decree{
+	genesis := tadecree.Decree{
 		ClusterID:     clusterID,
-		IntentID:      cdsdecree.NewIntentID(),
-		Kind:          cdsdecree.Genesis,
+		IntentID:      tadecree.NewIntentID(),
+		Kind:          tadecree.Genesis,
 		ExpiresAt:     time.Now().Add(time.Hour),
 		CDSPins:       pins,
 		NodePins:      nodes,
@@ -570,9 +570,9 @@ func (c *cluster) genesisCertifying(r *replica, nodeImages string, resumeVersion
 
 // decree signs one decree and posts it to a replica, as the operator's CLI
 // does over the attested channel.
-func (c *cluster) decree(to *replica, d cdsdecree.Decree) cdsha.Delivered {
+func (c *cluster) decree(to *replica, d tadecree.Decree) cdsha.Delivered {
 	c.t.Helper()
-	signed, err := cdsdecree.Sign(d, c.operator)
+	signed, err := tadecree.Sign(d, c.operator)
 	if err != nil {
 		c.t.Fatal(err)
 	}
@@ -594,10 +594,10 @@ func (c *cluster) decree(to *replica, d cdsdecree.Decree) cdsha.Delivered {
 // Names the CDS images a replica of the cluster may run from then on.
 func (c *cluster) decreePins(to *replica, version uint64, measurements ...string) (string, cdsha.Delivered) {
 	c.t.Helper()
-	decree := cdsdecree.Decree{
+	decree := tadecree.Decree{
 		ClusterID:   clusterID,
-		IntentID:    cdsdecree.NewIntentID(),
-		Kind:        cdsdecree.UpdateMeasurements,
+		IntentID:    tadecree.NewIntentID(),
+		Kind:        tadecree.UpdateMeasurements,
 		ExpiresAt:   time.Now().Add(time.Hour),
 		BaseVersion: version,
 		CDSPins:     c.pinDocument(measurements...),
@@ -609,10 +609,10 @@ func (c *cluster) decreePins(to *replica, version uint64, measurements ...string
 // new image reaches a leader still running the old one.
 func (c *cluster) decreeAdmit(to *replica, measurements ...string) cdsha.Delivered {
 	c.t.Helper()
-	return c.decree(to, cdsdecree.Decree{
+	return c.decree(to, tadecree.Decree{
 		ClusterID:    clusterID,
-		IntentID:     cdsdecree.NewIntentID(),
-		Kind:         cdsdecree.Admit,
+		IntentID:     tadecree.NewIntentID(),
+		Kind:         tadecree.Admit,
 		ExpiresAt:    time.Now().Add(time.Hour),
 		CDSPins:      c.pinDocument(measurements...),
 		TargetMember: c.awaitStatus(to).ID,
@@ -622,14 +622,14 @@ func (c *cluster) decreeAdmit(to *replica, measurements ...string) cdsha.Deliver
 // Carries the whole set of node images the cluster is to certify.
 func (c *cluster) decreeNodeImages(to *replica, version uint64, document string) (string, cdsha.Delivered) {
 	c.t.Helper()
-	nodes, err := cdsdecree.NewNodeImages([]byte(document))
+	nodes, err := tadecree.NewNodeImages([]byte(document))
 	if err != nil {
 		c.t.Fatal(err)
 	}
-	decree := cdsdecree.Decree{
+	decree := tadecree.Decree{
 		ClusterID:   clusterID,
-		IntentID:    cdsdecree.NewIntentID(),
-		Kind:        cdsdecree.SetNodeImages,
+		IntentID:    tadecree.NewIntentID(),
+		Kind:        tadecree.SetNodeImages,
 		ExpiresAt:   time.Now().Add(time.Hour),
 		BaseVersion: version,
 		NodePins:    nodes,
@@ -687,10 +687,10 @@ func (c *cluster) allAtNodeImagesVersion(version uint64) bool {
 // decreeRotateKey posts a RotateKey decree to a replica.
 func (c *cluster) decreeRotateKey(to *replica, version uint64) (string, cdsha.Delivered) {
 	c.t.Helper()
-	decree := cdsdecree.Decree{
+	decree := tadecree.Decree{
 		ClusterID:   clusterID,
-		IntentID:    cdsdecree.NewIntentID(),
-		Kind:        cdsdecree.RotateKey,
+		IntentID:    tadecree.NewIntentID(),
+		Kind:        tadecree.RotateKey,
 		ExpiresAt:   time.Now().Add(time.Hour),
 		BaseVersion: version,
 	}
@@ -698,14 +698,14 @@ func (c *cluster) decreeRotateKey(to *replica, version uint64) (string, cdsha.De
 }
 
 // Each image bound to the launch file every replica of the cluster boots.
-func (c *cluster) pinDocument(measurements ...string) *cdsdecree.PinDocument {
+func (c *cluster) pinDocument(measurements ...string) *tadecree.PinDocument {
 	c.t.Helper()
 	launchFile := strconv.Quote(string(c.config))
 	entries := make([]string, 0, len(measurements))
 	for i, measurement := range measurements {
 		entries = append(entries, fmt.Sprintf(`{"name":"cds-%d","measurement":%q,"launch_file":%s}`, i, measurement, launchFile))
 	}
-	pins, err := cdsdecree.NewPinDocument([]byte(
+	pins, err := tadecree.NewPinDocument([]byte(
 		`{"schema_version":"2","tee":"sev-snp","measurements":[` + strings.Join(entries, ",") + `]}`))
 	if err != nil {
 		c.t.Fatal(err)
@@ -797,10 +797,10 @@ func (c *cluster) waitEveryReplicaJoined(within time.Duration) {
 
 func (c *cluster) decreeVoters(to *replica, version uint64, seats int) (string, cdsha.Delivered) {
 	c.t.Helper()
-	decree := cdsdecree.Decree{
+	decree := tadecree.Decree{
 		ClusterID:   clusterID,
-		IntentID:    cdsdecree.NewIntentID(),
-		Kind:        cdsdecree.SetVoters,
+		IntentID:    tadecree.NewIntentID(),
+		Kind:        tadecree.SetVoters,
 		ExpiresAt:   time.Now().Add(time.Hour),
 		BaseVersion: version,
 		Voters:      seats,

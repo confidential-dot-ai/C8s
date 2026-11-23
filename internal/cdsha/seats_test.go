@@ -9,7 +9,7 @@ import (
 
 	"github.com/hashicorp/raft"
 
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsdecree"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tadecree"
 )
 
 // The seats of a cluster are filled by its own leader: the tests below watch
@@ -151,7 +151,7 @@ func TestASurplusVoterGivesUpItsVote(t *testing.T) {
 func (c *liveCluster) decreeVoters(seats int) {
 	c.t.Helper()
 	leader := c.leader()
-	decree := c.fixture(leader).decree(cdsdecree.SetVoters)
+	decree := c.fixture(leader).decree(tadecree.SetVoters)
 	decree.Voters = seats
 	if delivered := c.posted(leader, c.signDecree(decree)); delivered.Refused != "" {
 		c.t.Fatalf("the cluster refused the SetVoters decree: %s", delivered.Refused)

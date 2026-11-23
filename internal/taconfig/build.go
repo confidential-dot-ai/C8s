@@ -1,4 +1,4 @@
-package cdsconfig
+package taconfig
 
 import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"

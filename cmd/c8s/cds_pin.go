@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsconfig"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/fileutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/taconfig"
 )
 
 // An install names its CDS by address and pin together.
@@ -43,7 +43,7 @@ func cdsInstallValues(address string, pin string) (map[string]any, error) {
 
 // cdsPinConfig is the configuration a CDS pin binds its VM to. One pin binds
 // one launch file, and that file is a CDS configuration.
-func cdsPinConfig(document []byte) (*cdsconfig.Config, error) {
+func cdsPinConfig(document []byte) (*taconfig.Config, error) {
 	set, err := refvalues.Parse(document)
 	if err != nil {
 		return nil, fmt.Errorf("the CDS pin: %w", err)
@@ -52,7 +52,7 @@ func cdsPinConfig(document []byte) (*cdsconfig.Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("the CDS pin %w", err)
 	}
-	config, err := cdsconfig.Parse(file)
+	config, err := taconfig.Parse(file)
 	if err != nil {
 		return nil, fmt.Errorf("the CDS pin names a configuration this release cannot read: %w", err)
 	}
@@ -63,7 +63,7 @@ func cdsPinConfig(document []byte) (*cdsconfig.Config, error) {
 // clients read it from, and the configuration those bytes name.
 type cdsPin struct {
 	path   string
-	config *cdsconfig.Config
+	config *taconfig.Config
 }
 
 // resolveCDSPin is the one pin this install holds its CDS to, read where the

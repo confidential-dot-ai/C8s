@@ -8,12 +8,12 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsdecree"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsha"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tadecree"
 )
 
 // One decree as a replica serves its record of them.
-func recordOf(signed cdsdecree.Signed, version uint64) cdsha.DecreeRecord {
+func recordOf(signed tadecree.Signed, version uint64) cdsha.DecreeRecord {
 	return cdsha.DecreeRecord{
 		Decree:  signed,
 		AtMS:    time.Date(2026, time.October, 30, 12, 0, 0, 0, time.UTC).UnixMilli(),

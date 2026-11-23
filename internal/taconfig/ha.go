@@ -5,7 +5,7 @@
 // lives. Every other field fixes the cluster for its life, because every
 // replica boots one document and clients pin it.
 
-package cdsconfig
+package taconfig
 
 import (
 	"errors"
@@ -14,8 +14,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsdecree"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tadecree"
 )
 
 // HA is the replica set one cluster's CDS runs as.
@@ -105,7 +105,7 @@ func checkReplica(entry string) error {
 }
 
 func checkVoters(voters int) error {
-	if err := cdsdecree.CheckVoterSeats(voters); err != nil {
+	if err := tadecree.CheckVoterSeats(voters); err != nil {
 		return fmt.Errorf("ha.voters: %w", err)
 	}
 	return nil

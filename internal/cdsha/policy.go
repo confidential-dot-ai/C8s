@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsdecree"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tadecree"
 )
 
 // Policy is the limits every replica applies commands under: a sandbox
@@ -62,5 +62,5 @@ func (f *FSM) checkEstablishedPolicy(e Entry) error {
 }
 
 func fixesPolicy(e Entry) bool {
-	return e.Kind == KindDecree && e.Decree != nil && e.Decree.kind() == cdsdecree.Genesis
+	return e.Kind == KindDecree && e.Decree != nil && e.Decree.kind() == tadecree.Genesis
 }

@@ -6,16 +6,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsdecree"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tadecree"
 )
 
 // What a replica admits before it joins a cluster: its own image, and the
 // images an Admit decree names for the member id it minted at its start.
 
 // admitDecree is the Admit decree the operator signs for r.
-func (c *liveCluster) admitDecree(r *liveReplica, digests ...byte) cdsdecree.Decree {
+func (c *liveCluster) admitDecree(r *liveReplica, digests ...byte) tadecree.Decree {
 	c.t.Helper()
-	decree := c.fixture(r).decree(cdsdecree.Admit)
+	decree := c.fixture(r).decree(tadecree.Admit)
 	decree.TargetMember = string(r.node.member)
 	decree.CDSPins = testPins(c.t, digests...)
 	return decree

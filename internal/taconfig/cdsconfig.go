@@ -1,7 +1,7 @@
 // Package cdsconfig is the CDS VM's launch file: one document holding every
 // per-cluster setting CDS runs on, bound to its VM by the launch measurement.
 // The host can read a launch file, so it carries no secrets.
-package cdsconfig
+package taconfig
 
 import (
 	"crypto/ecdsa"

@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsdecree"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tadecree"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
 )
 
@@ -20,7 +20,7 @@ import (
 // names, and the launch file its state belongs to.
 func TestGenesisStartsTheCluster(t *testing.T) {
 	r := newReplica(t)
-	entry := r.entryFor(r.decree(cdsdecree.Genesis))
+	entry := r.entryFor(r.decree(tadecree.Genesis))
 	if res := r.applyDecreeEntry(entry); res.Refused != "" || res.Version != 1 {
 		t.Fatalf("genesis: %+v", res)
 	}
@@ -49,7 +49,7 @@ func TestALoggedNodeImageSetBindingNoLaunchStillApplies(t *testing.T) {
 	r := newReplica(t)
 	r.genesis()
 	unbound := nodeImagesBoundTo(t, nil, 0x44)
-	logged := r.decree(cdsdecree.SetNodeImages)
+	logged := r.decree(tadecree.SetNodeImages)
 	logged.NodePins = unbound
 	if res := r.applyDecreeEntry(r.entryFor(logged)); res.Refused != "" {
 		t.Fatalf("a logged node image set binding no launch was refused: %s", res.Refused)
@@ -67,7 +67,7 @@ func TestSetNodeImagesReplacesTheWholeSet(t *testing.T) {
 		t.Fatalf("the started cluster certifies the node images of version %d at version %d", started.NodeImagesVersion, started.Version)
 	}
 
-	upgrade := r.decree(cdsdecree.SetNodeImages)
+	upgrade := r.decree(tadecree.SetNodeImages)
 	upgrade.NodePins = testNodeImages(t, 0x33, 0x44)
 	upgraded := r.applyDecreeEntry(r.entryFor(upgrade))
 	if upgraded.Refused != "" {
@@ -79,12 +79,12 @@ func TestSetNodeImagesReplacesTheWholeSet(t *testing.T) {
 		t.Fatalf("the cluster certifies %+v, want the image being replaced and the one replacing it", certifiedImages(t, core).Images)
 	case core.NodeImagesVersion != upgraded.Version:
 		t.Fatalf("the node image set is named by version %d, want the %d the decree reached", core.NodeImagesVersion, upgraded.Version)
-	case core.PinsDecree.Decree.Kind != cdsdecree.Genesis:
+	case core.PinsDecree.Decree.Kind != tadecree.Genesis:
 		t.Fatal("a node image command changed the images a CDS of the cluster may run")
 	}
 
 	// The nodes are relaunched, and the next command retires the old image.
-	retire := r.decree(cdsdecree.SetNodeImages)
+	retire := r.decree(tadecree.SetNodeImages)
 	retire.NodePins = testNodeImages(t, 0x44)
 	if res := r.applyDecreeEntry(r.entryFor(retire)); res.Refused != "" {
 		t.Fatal(res.Refused)
@@ -112,7 +112,7 @@ func certifiedImages(t *testing.T, core ClusterState) refvalues.ReferenceValues 
 func TestADecreeAppliesOnceAndOnTheStateItNames(t *testing.T) {
 	r := newReplica(t)
 	r.genesis()
-	applied := r.decree(cdsdecree.UpdateMeasurements)
+	applied := r.decree(tadecree.UpdateMeasurements)
 	if res := r.applyDecreeEntry(r.entryFor(applied)); res.Refused != "" {
 		t.Fatal(res.Refused)
 	}
@@ -122,19 +122,19 @@ func TestADecreeAppliesOnceAndOnTheStateItNames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	signedByAStranger := r.decree(cdsdecree.UpdateMeasurements)
-	strange, err := cdsdecree.Sign(signedByAStranger, stranger)
+	signedByAStranger := r.decree(tadecree.UpdateMeasurements)
+	strange, err := tadecree.Sign(signedByAStranger, stranger)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	expired := r.decree(cdsdecree.UpdateMeasurements)
+	expired := r.decree(tadecree.UpdateMeasurements)
 	expired.ExpiresAt = time.Now().Add(-time.Minute)
 
-	onAnotherVersion := r.decree(cdsdecree.UpdateMeasurements)
+	onAnotherVersion := r.decree(tadecree.UpdateMeasurements)
 	onAnotherVersion.BaseVersion = version + 1
 
-	anotherCluster := r.decree(cdsdecree.UpdateMeasurements)
+	anotherCluster := r.decree(tadecree.UpdateMeasurements)
 	anotherCluster.ClusterID = "other"
 
 	for name, refused := range map[string]DecreeEntry{
@@ -167,13 +167,13 @@ func TestADecreeAppliesOnceAndOnTheStateItNames(t *testing.T) {
 func TestPinsOfAnotherLaunchFileAreRefused(t *testing.T) {
 	r := newReplica(t)
 	r.genesis()
-	d := r.decree(cdsdecree.UpdateMeasurements)
+	d := r.decree(tadecree.UpdateMeasurements)
 	d.CDSPins.LaunchFileSHA256 = strings.Repeat("00", 32)
 	res := r.applyDecreeEntry(r.entryFor(d))
 	if !strings.Contains(res.Refused, "launch file") {
 		t.Fatalf("refusal %q, want the launch file digests", res.Refused)
 	}
-	if r.ClusterState().PinsDecree.Decree.Kind != cdsdecree.Genesis {
+	if r.ClusterState().PinsDecree.Decree.Kind != tadecree.Genesis {
 		t.Fatal("the refused decree replaced the cluster's pins")
 	}
 }
@@ -182,7 +182,7 @@ func TestPinsOfAnotherLaunchFileAreRefused(t *testing.T) {
 // admitted replica replaying a Genesis must not install a CA of its own.
 func TestGenesisTakesOnlyTheMeshCATheDecreeNames(t *testing.T) {
 	r := newReplica(t)
-	entry := r.entryFor(r.decree(cdsdecree.Genesis))
+	entry := r.entryFor(r.decree(tadecree.Genesis))
 	entry.MeshCACert, entry.MeshCAKey = caBytes(t, mintCA(t))
 	if res := r.applyDecreeEntry(entry); !strings.Contains(res.Refused, "another mesh CA") {
 		t.Fatalf("refusal %q", res.Refused)
@@ -203,7 +203,7 @@ func TestAMeshCAEntryCarriesAMatchingKey(t *testing.T) {
 		"no certificate": func(de *DecreeEntry) { de.MeshCACert = []byte("not a certificate") },
 	} {
 		t.Run(name, func(t *testing.T) {
-			entry := r.entryFor(r.decree(cdsdecree.RotateKey))
+			entry := r.entryFor(r.decree(tadecree.RotateKey))
 			edit(&entry)
 			if res := r.applyDecreeEntry(entry); res.Refused == "" {
 				t.Fatal("applied")
@@ -221,7 +221,7 @@ func TestRotateKeyReplacesTheMeshCAOnly(t *testing.T) {
 	r := newReplica(t)
 	r.genesis()
 	pins := r.ClusterState().PinsDecree
-	entry := r.entryFor(r.decree(cdsdecree.RotateKey))
+	entry := r.entryFor(r.decree(tadecree.RotateKey))
 	if res := r.applyDecreeEntry(entry); res.Refused != "" {
 		t.Fatal(res.Refused)
 	}
@@ -237,7 +237,7 @@ func TestRotateKeyReplacesTheMeshCAOnly(t *testing.T) {
 // by the unjoined replica it names rather than applied, and a cluster is
 // started once.
 func TestAKindOutOfItsPlaceInTheClusterIsRefused(t *testing.T) {
-	for _, kind := range []cdsdecree.Kind{cdsdecree.UpdateMeasurements, cdsdecree.RotateKey, cdsdecree.Recover} {
+	for _, kind := range []tadecree.Kind{tadecree.UpdateMeasurements, tadecree.RotateKey, tadecree.Recover} {
 		t.Run(string(kind), func(t *testing.T) {
 			r := newReplica(t)
 			entry := r.entryFor(r.decree(kind))
@@ -252,10 +252,10 @@ func TestAKindOutOfItsPlaceInTheClusterIsRefused(t *testing.T) {
 	}
 	r := newReplica(t)
 	r.genesis()
-	if res := r.applyDecreeEntry(r.entryFor(r.decree(cdsdecree.Admit))); !strings.Contains(res.Refused, "Admit") {
+	if res := r.applyDecreeEntry(r.entryFor(r.decree(tadecree.Admit))); !strings.Contains(res.Refused, "Admit") {
 		t.Fatalf("an Admit decree applied: %+v", res)
 	}
-	if res := r.applyDecreeEntry(r.entryFor(r.decree(cdsdecree.Genesis))); res.Refused == "" {
+	if res := r.applyDecreeEntry(r.entryFor(r.decree(tadecree.Genesis))); res.Refused == "" {
 		t.Fatal("a second Genesis started the cluster again")
 	}
 }
@@ -265,9 +265,9 @@ func TestAKindOutOfItsPlaceInTheClusterIsRefused(t *testing.T) {
 func TestRecoverResumesAboveTheVersionTheOperatorNames(t *testing.T) {
 	r := newReplica(t)
 	r.genesis()
-	lost := r.decree(cdsdecree.UpdateMeasurements)
+	lost := r.decree(tadecree.UpdateMeasurements)
 
-	carryOn := r.decree(cdsdecree.Recover)
+	carryOn := r.decree(tadecree.Recover)
 	carryOn.ResumeVersion = r.ClusterState().Version + 40
 	if res := r.applyDecreeEntry(r.entryFor(carryOn)); res.Refused != "" || res.Version != carryOn.ResumeVersion+1 {
 		t.Fatalf("recover: %+v, want version %d", res, carryOn.ResumeVersion+1)
@@ -281,7 +281,7 @@ func TestRecoverResumesAboveTheVersionTheOperatorNames(t *testing.T) {
 // operator's signature and the leader's stamp.
 func TestTheStartTimeIsTheLaterOfTheSignatureAndTheStamp(t *testing.T) {
 	r := newReplica(t)
-	signed := r.decree(cdsdecree.Genesis)
+	signed := r.decree(tadecree.Genesis)
 	signed.IssuedAtMS = time.Now().Add(10 * time.Minute).UnixMilli()
 	entry := r.entryFor(signed)
 	if res := r.applyDecreeEntry(entry); res.Refused != "" {
@@ -292,7 +292,7 @@ func TestTheStartTimeIsTheLaterOfTheSignatureAndTheStamp(t *testing.T) {
 	}
 
 	later := newReplica(t)
-	stamped := later.decree(cdsdecree.Genesis)
+	stamped := later.decree(tadecree.Genesis)
 	stamped.IssuedAtMS = time.Now().Add(-10 * time.Minute).UnixMilli()
 	entry = later.entryFor(stamped)
 	if res := later.applyDecreeEntry(entry); res.Refused != "" {
@@ -321,7 +321,7 @@ func TestAClusterThatStartsAgainRaisesTheAllowlistVersion(t *testing.T) {
 		t.Fatalf("the allowlist serves version %d, want the cluster's start %d", served, start)
 	}
 
-	recovered := r.decree(cdsdecree.Recover)
+	recovered := r.decree(tadecree.Recover)
 	recovered.IssuedAtMS = start + time.Hour.Milliseconds()
 	if res := r.applyDecreeEntry(r.entryFor(recovered)); res.Refused != "" {
 		t.Fatal(res.Refused)

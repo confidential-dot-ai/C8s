@@ -10,21 +10,21 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsdecree"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tadecree"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
 )
 
 // Signed with the key this cluster's configuration pins.
-func (c operatorCluster) signedDecree(t *testing.T, d cdsdecree.Decree) cdsdecree.Signed {
+func (c operatorCluster) signedDecree(t *testing.T, d tadecree.Decree) tadecree.Signed {
 	t.Helper()
 	key, err := certutil.LoadECPrivateKeyFile(c.keyPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	d.ClusterID = c.clusterID
-	d.IntentID = cdsdecree.NewIntentID()
+	d.IntentID = tadecree.NewIntentID()
 	d.ExpiresAt = time.Now().Add(time.Hour).UTC().Truncate(time.Second)
-	signed, err := cdsdecree.Sign(d, key)
+	signed, err := tadecree.Sign(d, key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,7 +32,7 @@ func (c operatorCluster) signedDecree(t *testing.T, d cdsdecree.Decree) cdsdecre
 }
 
 // Both CDS images a cluster accepts while it rolls.
-func (c operatorCluster) rollPins(t *testing.T) *cdsdecree.PinDocument {
+func (c operatorCluster) rollPins(t *testing.T) *tadecree.PinDocument {
 	t.Helper()
 	pins, err := pinFlags{
 		platform:  "sev-snp",
@@ -47,8 +47,8 @@ func (c operatorCluster) rollPins(t *testing.T) *cdsdecree.PinDocument {
 
 func TestPinPolicyWritesThePinDocumentTheDecreeMakes(t *testing.T) {
 	c := newReplicatedCluster(t)
-	decreed := c.signedDecree(t, cdsdecree.Decree{
-		Kind:        cdsdecree.UpdateMeasurements,
+	decreed := c.signedDecree(t, tadecree.Decree{
+		Kind:        tadecree.UpdateMeasurements,
 		BaseVersion: 3,
 		CDSPins:     c.rollPins(t),
 	})
@@ -83,7 +83,7 @@ func TestPinPolicyWritesThePinDocumentTheDecreeMakes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	written, err := cdsdecree.Parse(handed)
+	written, err := tadecree.Parse(handed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,18 +104,18 @@ func TestPinPolicyRefusesADecreeTheConfigurationDoesNotAnswerFor(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, served := range map[string]any{
-		"a key the configuration does not pin": elsewhere.signedDecree(t, cdsdecree.Decree{
-			Kind:        cdsdecree.UpdateMeasurements,
+		"a key the configuration does not pin": elsewhere.signedDecree(t, tadecree.Decree{
+			Kind:        tadecree.UpdateMeasurements,
 			BaseVersion: 3,
 			CDSPins:     elsewhere.rollPins(t),
 		}),
-		"another launch file": c.signedDecree(t, cdsdecree.Decree{
-			Kind:        cdsdecree.UpdateMeasurements,
+		"another launch file": c.signedDecree(t, tadecree.Decree{
+			Kind:        tadecree.UpdateMeasurements,
 			BaseVersion: 3,
 			CDSPins:     otherLaunchFile,
 		}),
-		"no CDS image": c.signedDecree(t, cdsdecree.Decree{
-			Kind:        cdsdecree.RotateKey,
+		"no CDS image": c.signedDecree(t, tadecree.Decree{
+			Kind:        tadecree.RotateKey,
 			BaseVersion: 3,
 		}),
 	} {

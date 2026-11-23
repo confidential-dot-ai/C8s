@@ -16,8 +16,8 @@ import (
 
 	"github.com/hashicorp/raft"
 
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsdecree"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/issuer"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tadecree"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
 )
 
@@ -51,13 +51,13 @@ func mintMeshCA() (*issuer.CA, error) {
 }
 
 // decreedGenesis is the Genesis decree the operator posted to this process.
-func (n *Node) decreedGenesis() (cdsdecree.Signed, bool) {
+func (n *Node) decreedGenesis() (tadecree.Signed, bool) {
 	for _, signed := range n.posted.all() {
-		if signed.Decree.Kind == cdsdecree.Genesis {
+		if signed.Decree.Kind == tadecree.Genesis {
 			return signed, true
 		}
 	}
-	return cdsdecree.Signed{}, false
+	return tadecree.Signed{}, false
 }
 
 // startable refuses a Genesis this replica must not act on: one where it
@@ -80,7 +80,7 @@ func (n *Node) startable(alone bool, found discovered, answers peerAnswers) erro
 // startCluster makes this replica the one voter of a group with no log and
 // commits the Genesis decree on it. A decree that did not commit is committed
 // by the next tick, on the group this replica already started.
-func (n *Node) startCluster(signed cdsdecree.Signed) {
+func (n *Node) startCluster(signed tadecree.Signed) {
 	if n.ClockError() != nil {
 		return
 	}
@@ -129,7 +129,7 @@ func (n *Node) solo() raft.Configuration {
 }
 
 // genesisEntry is the entry that starts the cluster.
-func (n *Node) genesisEntry(signed cdsdecree.Signed) (*DecreeEntry, error) {
+func (n *Node) genesisEntry(signed tadecree.Signed) (*DecreeEntry, error) {
 	ca, err := n.genesisCA()
 	if err != nil {
 		return nil, err

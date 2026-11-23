@@ -14,8 +14,8 @@ import (
 	"github.com/hashicorp/raft"
 
 	"github.com/confidential-dot-ai/attestation-go/remote"
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsdecree"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/secrets"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tadecree"
 	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
@@ -309,7 +309,7 @@ func TestAPinDecreeThatDropsTheirImageCutsThePeersOff(t *testing.T) {
 	leader := c.leader()
 	res, err := leader.node.propose(Entry{
 		Kind:   KindDecree,
-		Decree: c.decreeEntry(leader, cdsdecree.UpdateMeasurements),
+		Decree: c.decreeEntry(leader, tadecree.UpdateMeasurements),
 	})
 	if err != nil {
 		t.Fatalf("commit a pin decree: %v", err)

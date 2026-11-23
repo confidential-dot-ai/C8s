@@ -1,4 +1,4 @@
-package cdspins
+package tapins
 
 import (
 	"context"
@@ -8,8 +8,8 @@ import (
 	"net/url"
 
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsdecree"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/readutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tadecree"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 )
 
@@ -22,7 +22,7 @@ const maxDecree = 1 << 20
 // AttestedHTTPFetch reads the decree from a CDS that passes pins, over armTLS
 // verified by the attestation-api at attestationAPIURL.
 func AttestedHTTPFetch(cdsURL, attestationAPIURL string) AttestedFetcher {
-	return func(ctx context.Context, pins refvalues.ReferenceValues) (*cdsdecree.Signed, error) {
+	return func(ctx context.Context, pins refvalues.ReferenceValues) (*tadecree.Signed, error) {
 		client, err := armtls.NewVerifyingHTTPClient(armtls.Pins(pins.Policy()), attestationAPIURL)
 		if err != nil {
 			return nil, err
@@ -40,14 +40,14 @@ func HTTPFetch(cdsURL string) Fetcher {
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // the decree is signature-verified
 		},
 	}
-	return func(ctx context.Context) (*cdsdecree.Signed, error) {
+	return func(ctx context.Context) (*tadecree.Signed, error) {
 		return getDecree(ctx, client, cdsURL)
 	}
 }
 
 // getDecree reads the decree a replica serves, and nil where it serves none.
 // It verifies nothing: the Source decides what the bytes are worth.
-func getDecree(ctx context.Context, client *http.Client, cdsURL string) (*cdsdecree.Signed, error) {
+func getDecree(ctx context.Context, client *http.Client, cdsURL string) (*tadecree.Signed, error) {
 	route, err := url.JoinPath(cdsURL, pinDecreePath)
 	if err != nil {
 		return nil, fmt.Errorf("cdspins: the CDS endpoint %q: %w", cdsURL, err)
@@ -72,7 +72,7 @@ func getDecree(ctx context.Context, client *http.Client, cdsURL string) (*cdsdec
 	if err != nil {
 		return nil, fmt.Errorf("cdspins: GET %s: %w", pinDecreePath, err)
 	}
-	served, err := cdsdecree.Parse(body)
+	served, err := tadecree.Parse(body)
 	if err != nil {
 		return nil, fmt.Errorf("cdspins: GET %s: %w", pinDecreePath, err)
 	}

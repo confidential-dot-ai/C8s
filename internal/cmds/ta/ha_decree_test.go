@@ -21,11 +21,11 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsconfig"
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsdecree"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsha"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/taconn"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/localverify"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/taconfig"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tadecree"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
@@ -85,7 +85,7 @@ func newOperatorClusterBooting(
 	writeTestFile(t, c.configPath, c.config)
 	writeTestFile(t, c.keyPath, keyPEM)
 	writeTestFile(t, c.cdsPinPath, []byte(testutil.CDSPinDocument(testutil.TestMeasurement, string(c.config))))
-	parsed, err := cdsconfig.Parse(c.config)
+	parsed, err := taconfig.Parse(c.config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +139,7 @@ func (c operatorCluster) replicaServing(t *testing.T, routes map[string]any) rep
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		signed, err := cdsdecree.Parse(body)
+		signed, err := tadecree.Parse(body)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -156,16 +156,16 @@ func (c operatorCluster) replicaServing(t *testing.T, routes map[string]any) rep
 }
 
 // answerFor holds the kinds a replica acts on itself, and applies the rest.
-func answerFor(d cdsdecree.Decree) cdsha.Delivered {
+func answerFor(d tadecree.Decree) cdsha.Delivered {
 	switch d.Kind {
-	case cdsdecree.Genesis, cdsdecree.Recover, cdsdecree.Admit:
+	case tadecree.Genesis, tadecree.Recover, tadecree.Admit:
 		return cdsha.Delivered{Intent: d.IntentID, Held: true}
 	}
 	return cdsha.Delivered{Intent: d.IntentID, Version: d.BaseVersion + 1}
 }
 
 // pinDecree is a pin decree the cluster has applied, as a replica serves it.
-func (c operatorCluster) pinDecree(t *testing.T, digests ...string) cdsdecree.Signed {
+func (c operatorCluster) pinDecree(t *testing.T, digests ...string) tadecree.Signed {
 	t.Helper()
 	pins, err := pinFlags{platform: "sev-snp", vcpus: []int{2}, manifests: []string{snpManifest(t, digests...)}}.document(c.config)
 	if err != nil {
@@ -175,10 +175,10 @@ func (c operatorCluster) pinDecree(t *testing.T, digests ...string) cdsdecree.Si
 	if err != nil {
 		t.Fatal(err)
 	}
-	signed, err := cdsdecree.Sign(cdsdecree.Decree{
+	signed, err := tadecree.Sign(tadecree.Decree{
 		ClusterID:   c.clusterID,
-		IntentID:    cdsdecree.NewIntentID(),
-		Kind:        cdsdecree.UpdateMeasurements,
+		IntentID:    tadecree.NewIntentID(),
+		Kind:        tadecree.UpdateMeasurements,
 		BaseVersion: 3,
 		ExpiresAt:   time.Now().Add(time.Hour).UTC().Truncate(time.Second),
 		CDSPins:     pins,
@@ -190,13 +190,13 @@ func (c operatorCluster) pinDecree(t *testing.T, digests ...string) cdsdecree.Si
 }
 
 // signed reads back the decree a command wrote, as the cluster checks it.
-func (c operatorCluster) signed(t *testing.T, out string) cdsdecree.Signed {
+func (c operatorCluster) signed(t *testing.T, out string) tadecree.Signed {
 	t.Helper()
 	body, err := os.ReadFile(out)
 	if err != nil {
 		t.Fatal(err)
 	}
-	signed, err := cdsdecree.Parse(body)
+	signed, err := tadecree.Parse(body)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +204,7 @@ func (c operatorCluster) signed(t *testing.T, out string) cdsdecree.Signed {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := cdsdecree.Verify(signed, keys, c.clusterID); err != nil {
+	if err := tadecree.Verify(signed, keys, c.clusterID); err != nil {
 		t.Fatalf("the cluster refuses the decree the operator would upload: %v", err)
 	}
 	return signed
@@ -274,7 +274,7 @@ func TestPinDecreeNamesEveryImageTheClusterAccepts(t *testing.T) {
 		t.Fatal(err)
 	}
 	decree := c.signed(t, o.out).Decree
-	if decree.Kind != cdsdecree.UpdateMeasurements || decree.BaseVersion != o.baseVersion {
+	if decree.Kind != tadecree.UpdateMeasurements || decree.BaseVersion != o.baseVersion {
 		t.Fatalf("decree = %+v", decree)
 	}
 	pins, err := decree.CDSPins.WithLaunchFile(c.config)
@@ -421,7 +421,7 @@ func TestGenesisDecreeBindsTheTargetProcess(t *testing.T) {
 		t.Fatal(err)
 	}
 	decree := c.signed(t, o.out).Decree
-	if decree.Kind != cdsdecree.Genesis || decree.TargetMember != targetMember || decree.GenesisCA != targetGenesis {
+	if decree.Kind != tadecree.Genesis || decree.TargetMember != targetMember || decree.GenesisCA != targetGenesis {
 		t.Fatalf("decree = %+v", decree)
 	}
 	if decree.TargetAddress != target.address {
@@ -435,7 +435,7 @@ func TestGenesisDecreeBindsTheTargetProcess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if nodes.Family != teetypes.FamilyTDX || len(nodes.Images) != 1 || slices.ContainsFunc(nodes.Images, cdsdecree.EntryBindsLaunch) {
+	if nodes.Family != teetypes.FamilyTDX || len(nodes.Images) != 1 || slices.ContainsFunc(nodes.Images, tadecree.EntryBindsLaunch) {
 		t.Fatalf("the decree certifies %+v, want the configuration's nodes", nodes)
 	}
 }
@@ -477,7 +477,7 @@ func TestNodeImagesDecreeCarriesTheWholeSet(t *testing.T) {
 	}
 
 	decree := c.signed(t, o.out).Decree
-	if decree.Kind != cdsdecree.SetNodeImages || decree.BaseVersion != o.baseVersion {
+	if decree.Kind != tadecree.SetNodeImages || decree.BaseVersion != o.baseVersion {
 		t.Fatalf("decree = %+v", decree)
 	}
 	if decree.CDSPins != nil {
@@ -596,7 +596,7 @@ func TestAdmitDecreeTakesItsImagesFromTheAppliedPinDecree(t *testing.T) {
 		t.Fatal(err)
 	}
 	decree := c.signed(t, o.out).Decree
-	if decree.Kind != cdsdecree.Admit || decree.TargetMember != targetMember {
+	if decree.Kind != tadecree.Admit || decree.TargetMember != targetMember {
 		t.Fatalf("decree = %+v", decree)
 	}
 	admitted, err := decree.CDSPins.WithLaunchFile(c.config)
@@ -622,7 +622,7 @@ func TestAdmitRefusesWhatTheServingReplicaCannotProve(t *testing.T) {
 	keyOnly.Decree.CDSPins = nil
 	for _, tc := range []struct {
 		name   string
-		served cdsdecree.Signed
+		served tadecree.Signed
 	}{
 		{"an unsigned decree", unsigned},
 		{"a decree pinning no image", keyOnly},
@@ -717,11 +717,11 @@ func TestVotersDecreeNamesTheSeatsOfTheCluster(t *testing.T) {
 		t.Fatal(err)
 	}
 	decree := c.signed(t, o.out).Decree
-	if decree.Kind != cdsdecree.SetVoters || decree.Voters != 5 || decree.BaseVersion != o.baseVersion {
+	if decree.Kind != tadecree.SetVoters || decree.Voters != 5 || decree.BaseVersion != o.baseVersion {
 		t.Fatalf("decree = %+v", decree)
 	}
 
-	for _, seats := range []int{0, 2, cdsdecree.MaxVoterSeats + 2} {
+	for _, seats := range []int{0, 2, tadecree.MaxVoterSeats + 2} {
 		err := signing(t, func(cmd *cobra.Command) error {
 			return votersOptions{
 				decreeOptions: c.options(t),

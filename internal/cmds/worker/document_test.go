@@ -19,9 +19,9 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsconfig"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/nodeservices"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/taconfig"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
 )
 
@@ -46,7 +46,7 @@ func cdsConfig(t *testing.T, nodeSubnets ...string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	workloads, err := cdsconfig.MergeWorkloads([]byte(`{"schema":"c8s.allowlist/v1","workloads":{}}`), nil)
+	workloads, err := taconfig.MergeWorkloads([]byte(`{"schema":"c8s.allowlist/v1","workloads":{}}`), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +57,7 @@ func cdsConfig(t *testing.T, nodeSubnets ...string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	config, err := cdsconfig.Format(cdsconfig.Document{
+	config, err := taconfig.Format(taconfig.Document{
 		ClusterID:    "acme",
 		OperatorKeys: keys,
 		Workloads:    workloads,

@@ -5,15 +5,15 @@ import (
 	"os"
 	"slices"
 
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsconfig"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/fileutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/taconfig"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
 )
 
 // write renders both outputs before it creates anything, so a refused input
 // leaves no half-built directory to launch a CDS VM from.
 func write(opts options) error {
-	family, err := cdsconfig.ParsePlatform(opts.platform)
+	family, err := taconfig.ParsePlatform(opts.platform)
 	if err != nil {
 		return fmt.Errorf("--platform: %w", err)
 	}
@@ -46,13 +46,13 @@ func write(opts options) error {
 			return fmt.Errorf("--pod-image-policy-file must contain a nonempty Pod image policy")
 		}
 	}
-	var kms *cdsconfig.KMS
+	var kms *taconfig.KMS
 	if opts.kmsURL != "" || opts.kmsTLSKey != "" {
-		if kms, err = cdsconfig.ParseKMS(opts.kmsURL, opts.kmsTLSKey); err != nil {
+		if kms, err = taconfig.ParseKMS(opts.kmsURL, opts.kmsTLSKey); err != nil {
 			return fmt.Errorf("--kms-url/--kms-tls-key-sha256: %w", err)
 		}
 	}
-	config, pin, err := cdsconfig.Build(cdsconfig.Inputs{
+	config, pin, err := taconfig.Build(taconfig.Inputs{
 		ClusterID:       opts.clusterID,
 		OperatorKeys:    operatorKeys,
 		ComponentSeed:   components,
@@ -74,8 +74,8 @@ func write(opts options) error {
 	}
 	// A configuration and the pin binding it are only usable together.
 	return fileutil.WriteNewDir(opts.dir, 0o755, []fileutil.NewFile{
-		{Name: cdsconfig.ConfigFile, Data: config, Mode: 0o644},
-		{Name: cdsconfig.PinFile, Data: pin, Mode: 0o644},
+		{Name: taconfig.ConfigFile, Data: config, Mode: 0o644},
+		{Name: taconfig.PinFile, Data: pin, Mode: 0o644},
 	})
 }
 

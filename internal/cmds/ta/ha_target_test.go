@@ -14,9 +14,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsdecree"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsha"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/readutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tadecree"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
 )
 
@@ -142,7 +142,7 @@ func TestAnOversizedAnswerMovesToTheNextReplica(t *testing.T) {
 	if address != replicas[1].address {
 		t.Fatalf("answered by %s, want the second replica %s", address, replicas[1].address)
 	}
-	if _, err := cdsdecree.Parse(body); err != nil {
+	if _, err := tadecree.Parse(body); err != nil {
 		t.Fatalf("parse the answer: %v", err)
 	}
 }

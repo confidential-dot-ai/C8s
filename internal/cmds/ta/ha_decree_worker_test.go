@@ -27,9 +27,9 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsdecree"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/worker"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tadecree"
 )
 
 // workerFiles are a worker document pinning a cluster's CDS, the worker image
@@ -285,7 +285,7 @@ func TestGenesisDecreeCertifiesAConfirmedFirstWorkerDocument(t *testing.T) {
 		t.Fatal(err)
 	}
 	digest := sha512.Sum384(files.document)
-	if decree.Kind != cdsdecree.Genesis || len(certified.Images) != 1 || !bytes.Equal(certified.Images[0].LaunchFileDigest, digest[:]) {
+	if decree.Kind != tadecree.Genesis || len(certified.Images) != 1 || !bytes.Equal(certified.Images[0].LaunchFileDigest, digest[:]) {
 		t.Fatalf("the %s decree certifies %+v, want the worker image bound to the document alone", decree.Kind, certified.Images)
 	}
 }

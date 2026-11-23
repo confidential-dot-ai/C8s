@@ -15,9 +15,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsconfig"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/httputil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/strictjson"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/taconfig"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/secretbroker"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
@@ -141,7 +141,7 @@ type kmsClient struct {
 // kmsTimeout bounds one release round trip to the KMS.
 const kmsTimeout = 15 * time.Second
 
-func newKMSClient(kms *cdsconfig.KMS) *kmsClient {
+func newKMSClient(kms *taconfig.KMS) *kmsClient {
 	return &kmsClient{url: kms.URL, client: &http.Client{
 		Timeout:   kmsTimeout,
 		Transport: &http.Transport{TLSClientConfig: pinVerifiedTLSConfig(kms.TLSKey), ForceAttemptHTTP2: true},

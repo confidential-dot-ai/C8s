@@ -22,10 +22,10 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/allowlist"
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsdecree"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/issuer"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/sandboxledger"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/secrets"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tadecree"
 )
 
 // EntryKind names what a log entry changes.
@@ -59,7 +59,7 @@ type Entry struct {
 	Secret    *secrets.Command       `json:"secret,omitempty"`
 	Binding   *sandboxledger.Command `json:"binding,omitempty"`
 	Decree    *DecreeEntry           `json:"decree,omitempty"`
-	Doubt     *cdsdecree.Signed      `json:"recover_doubt,omitempty"`
+	Doubt     *tadecree.Signed       `json:"recover_doubt,omitempty"`
 	RenewCA   *RenewCAEntry          `json:"renew_ca,omitempty"`
 }
 
@@ -238,7 +238,7 @@ func decodeStrict(document []byte, v any) error {
 func (f *FSM) applyDecree(de DecreeEntry) Result {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if de.kind() == cdsdecree.Genesis {
+	if de.kind() == tadecree.Genesis {
 		// The policy a Genesis fixes must be this replica's own, or it could
 		// not apply the commands the cluster then admits.
 		if err := f.checkPolicy(de.Policy); err != nil {
@@ -294,14 +294,14 @@ func (f *FSM) raiseAllowlistVersion(startedAtMS int64) error {
 // applyDoubt records a Recover decree a leader saw signed while the member it
 // names was not healthy here. The doubt belongs to the log: it outlives the
 // leader that saw the decree and a host that withholds it from the next one.
-func (f *FSM) applyDoubt(sd cdsdecree.Signed) Result {
+func (f *FSM) applyDoubt(sd tadecree.Signed) Result {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if err := cdsdecree.Verify(sd, f.launch.OperatorKeys, f.launch.ClusterID); err != nil {
+	if err := tadecree.Verify(sd, f.launch.OperatorKeys, f.launch.ClusterID); err != nil {
 		return f.refused(err)
 	}
 	d := sd.Decree
-	if d.Kind != cdsdecree.Recover {
+	if d.Kind != tadecree.Recover {
 		return f.refused(fmt.Errorf("a %s decree raises no doubt", d.Kind))
 	}
 	if f.core.dealtWith(d.IntentID) {
@@ -343,16 +343,16 @@ func (f *FSM) applyRenewCA(e RenewCAEntry) Result {
 // DecreeRecord is one applied decree: what the operator signed, when the
 // leader applied it, and the version it produced.
 type DecreeRecord struct {
-	Decree  cdsdecree.Signed `json:"decree"`
-	AtMS    int64            `json:"at_ms"`
-	Version uint64           `json:"version"`
+	Decree  tadecree.Signed `json:"decree"`
+	AtMS    int64           `json:"at_ms"`
+	Version uint64          `json:"version"`
 }
 
 // maxDecreeRecord bounds the record; older decrees fall off the front.
 const maxDecreeRecord = 256
 
 // record appends to the decree record (f.mu held).
-func (f *FSM) record(sd cdsdecree.Signed, atMS int64, version uint64) {
+func (f *FSM) record(sd tadecree.Signed, atMS int64, version uint64) {
 	f.decrees = append(f.decrees, DecreeRecord{
 		Decree:  sd,
 		AtMS:    atMS,

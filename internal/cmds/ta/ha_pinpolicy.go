@@ -10,8 +10,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsdecree"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/fileutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tadecree"
 )
 
 type pinPolicyOptions struct {
@@ -107,18 +107,18 @@ func (o pinPolicyOptions) filesToWrite(applied appliedPinDecree, object []byte) 
 // The decree as the operator signed it, and the pin set it makes with the
 // launch file the replicas boot filled into every entry.
 type appliedPinDecree struct {
-	decree cdsdecree.Signed
+	decree tadecree.Signed
 	pins   refvalues.ReferenceValues
 }
 
 // Checked against the configuration, so a decree of another cluster or
 // another launch file is refused here.
 func checkedPinDecree(object []byte, c decreeConfig) (appliedPinDecree, error) {
-	applied, err := cdsdecree.Parse(object)
+	applied, err := tadecree.Parse(object)
 	if err != nil {
 		return appliedPinDecree{}, err
 	}
-	if err := cdsdecree.Verify(applied, c.parsed.OperatorKeys.Keys(), c.parsed.ClusterID); err != nil {
+	if err := tadecree.Verify(applied, c.parsed.OperatorKeys.Keys(), c.parsed.ClusterID); err != nil {
 		return appliedPinDecree{}, err
 	}
 	if applied.Decree.CDSPins == nil {

@@ -7,9 +7,9 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/allowlist"
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsdecree"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/sandboxledger"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/secrets"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tadecree"
 )
 
 // A Genesis fixes the limits the cluster applies commands under. A replica
@@ -23,7 +23,7 @@ func TestGenesisFixesTheClusterPolicy(t *testing.T) {
 		secrets.NewMemoryStore(8, 4, 64),
 		sandboxledger.New(time.Hour, 8),
 	)
-	entry := r.entryFor(r.decree(cdsdecree.Genesis))
+	entry := r.entryFor(r.decree(tadecree.Genesis))
 	if res := r.applyDecreeEntry(entry); res.Refused != "" {
 		t.Fatal(res.Refused)
 	}

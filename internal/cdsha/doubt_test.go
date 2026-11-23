@@ -5,12 +5,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsdecree"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tadecree"
 )
 
 // raiseDoubt records the Recover decree a leader sighted, and answers what
 // the entry produced.
-func (r *replica) raiseDoubt(sighted cdsdecree.Signed) DecreeResult {
+func (r *replica) raiseDoubt(sighted tadecree.Signed) DecreeResult {
 	r.t.Helper()
 	res := r.apply(Entry{
 		Kind:  KindDoubt,
@@ -28,7 +28,7 @@ func (r *replica) raiseDoubt(sighted cdsdecree.Signed) DecreeResult {
 func TestASightedRecoverBecomesADoubtOnTheLog(t *testing.T) {
 	r := newReplica(t)
 	r.genesis()
-	sighted := r.sign(r.decree(cdsdecree.Recover))
+	sighted := r.sign(r.decree(tadecree.Recover))
 	if res := r.raiseDoubt(sighted); res.Refused != "" {
 		t.Fatal(res.Refused)
 	}
@@ -43,7 +43,7 @@ func TestASightedRecoverBecomesADoubtOnTheLog(t *testing.T) {
 		t.Fatal("a doubt counted as an operator command")
 	}
 
-	dismiss := r.decree(cdsdecree.DismissRecover)
+	dismiss := r.decree(tadecree.DismissRecover)
 	dismiss.RecoverIntent = sighted.Decree.IntentID
 	if res := r.applyDecreeEntry(r.entryFor(dismiss)); res.Refused != "" {
 		t.Fatal(res.Refused)
@@ -64,10 +64,10 @@ func TestASightedRecoverBecomesADoubtOnTheLog(t *testing.T) {
 func TestOnlyASignedRecoverRaisesADoubt(t *testing.T) {
 	r := newReplica(t)
 	r.genesis()
-	forged := r.sign(r.decree(cdsdecree.Recover))
+	forged := r.sign(r.decree(tadecree.Recover))
 	forged.Decree.TargetMember = "another-member"
-	notARecover := r.sign(r.decree(cdsdecree.RotateKey))
-	for name, sighted := range map[string]cdsdecree.Signed{
+	notARecover := r.sign(r.decree(tadecree.RotateKey))
+	for name, sighted := range map[string]tadecree.Signed{
 		"an edited decree": forged,
 		"another kind":     notARecover,
 	} {
@@ -88,7 +88,7 @@ func TestOnlyASignedRecoverRaisesADoubt(t *testing.T) {
 func TestAnAppliedRecoverRaisesNoDoubt(t *testing.T) {
 	r := newReplica(t)
 	r.genesis()
-	applied := r.decree(cdsdecree.Recover)
+	applied := r.decree(tadecree.Recover)
 	if res := r.applyDecreeEntry(r.entryFor(applied)); res.Refused != "" {
 		t.Fatal(res.Refused)
 	}
@@ -105,7 +105,7 @@ func TestAnAppliedRecoverRaisesNoDoubt(t *testing.T) {
 func TestApplyingADoubtedRecoverLiftsItsDoubt(t *testing.T) {
 	r := newReplica(t)
 	r.genesis()
-	sighted := r.sign(r.decree(cdsdecree.Recover))
+	sighted := r.sign(r.decree(tadecree.Recover))
 	r.raiseDoubt(sighted)
 	if len(r.ClusterState().Doubts) != 1 {
 		t.Fatal("the sighted Recover raised no doubt")
@@ -126,8 +126,8 @@ func TestApplyingADoubtedRecoverLiftsItsDoubt(t *testing.T) {
 func TestDismissRecoverNamesADoubtTheClusterHolds(t *testing.T) {
 	r := newReplica(t)
 	r.genesis()
-	dismiss := r.decree(cdsdecree.DismissRecover)
-	dismiss.RecoverIntent = cdsdecree.NewIntentID()
+	dismiss := r.decree(tadecree.DismissRecover)
+	dismiss.RecoverIntent = tadecree.NewIntentID()
 	res := r.applyDecreeEntry(r.entryFor(dismiss))
 	if !strings.Contains(res.Refused, "no doubt") {
 		t.Fatalf("refusal %q", res.Refused)

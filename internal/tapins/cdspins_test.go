@@ -1,4 +1,4 @@
-package cdspins
+package tapins
 
 import (
 	"bytes"
@@ -19,7 +19,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsdecree"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tadecree"
 )
 
 const clusterID = "lane"
@@ -74,20 +74,20 @@ func pinSet(t *testing.T, launchFile []byte, digests ...byte) refvalues.Referenc
 }
 
 // pinDecree signs the decree moving a cluster to the images digests names.
-func pinDecree(t *testing.T, key *ecdsa.PrivateKey, launchFile []byte, version uint64, digests ...byte) *cdsdecree.Signed {
+func pinDecree(t *testing.T, key *ecdsa.PrivateKey, launchFile []byte, version uint64, digests ...byte) *tadecree.Signed {
 	t.Helper()
 	document, err := refvalues.Format(pinSet(t, launchFile, digests...))
 	if err != nil {
 		t.Fatal(err)
 	}
-	pins, err := cdsdecree.NewPinDocument(document)
+	pins, err := tadecree.NewPinDocument(document)
 	if err != nil {
 		t.Fatal(err)
 	}
-	signed, err := cdsdecree.Sign(cdsdecree.Decree{
+	signed, err := tadecree.Sign(tadecree.Decree{
 		ClusterID:   clusterID,
-		IntentID:    cdsdecree.NewIntentID(),
-		Kind:        cdsdecree.UpdateMeasurements,
+		IntentID:    tadecree.NewIntentID(),
+		Kind:        tadecree.UpdateMeasurements,
 		ExpiresAt:   time.Now().Add(time.Hour),
 		BaseVersion: version,
 		CDSPins:     pins,
@@ -100,23 +100,23 @@ func pinDecree(t *testing.T, key *ecdsa.PrivateKey, launchFile []byte, version u
 
 // served is a fetcher answering with one decree, and counts the looks.
 type served struct {
-	decree *cdsdecree.Signed
+	decree *tadecree.Signed
 	err    error
 	looks  int
 }
 
-func (s *served) attested(context.Context, refvalues.ReferenceValues) (*cdsdecree.Signed, error) {
+func (s *served) attested(context.Context, refvalues.ReferenceValues) (*tadecree.Signed, error) {
 	s.looks++
 	return s.decree, s.err
 }
 
-func (s *served) unverified(context.Context) (*cdsdecree.Signed, error) {
+func (s *served) unverified(context.Context) (*tadecree.Signed, error) {
 	s.looks++
 	return s.decree, s.err
 }
 
 // refused is an attested fetcher no replica answers.
-func refused(context.Context, refvalues.ReferenceValues) (*cdsdecree.Signed, error) {
+func refused(context.Context, refvalues.ReferenceValues) (*tadecree.Signed, error) {
 	return nil, errors.New("no replica of the pinned set answered")
 }
 
@@ -128,7 +128,7 @@ func follower(t *testing.T, launchFile []byte, cfg Config) *Source {
 		cfg.Attested = refused
 	}
 	if cfg.Fetch == nil {
-		cfg.Fetch = func(context.Context) (*cdsdecree.Signed, error) { return nil, nil }
+		cfg.Fetch = func(context.Context) (*tadecree.Signed, error) { return nil, nil }
 	}
 	if cfg.StateFile == "" {
 		cfg.StateFile = filepath.Join(t.TempDir(), "cds-decree.json")
@@ -194,7 +194,7 @@ func TestADecreeOfAnotherClusterOrKeyIsRefused(t *testing.T) {
 	elsewhere := pinDecree(t, key, launchFile, 7, 0x22)
 	elsewhere.Decree.ClusterID = "another"
 
-	for name, decree := range map[string]*cdsdecree.Signed{
+	for name, decree := range map[string]*tadecree.Signed{
 		"another operator key": other,
 		"another cluster":      elsewhere,
 	} {
@@ -309,12 +309,12 @@ func TestAnAttestedDecreeReplacesAProvisionalOne(t *testing.T) {
 
 // onlyUnderLaunchPins answers an ask under the launch document's pins only.
 type onlyUnderLaunchPins struct {
-	applied *cdsdecree.Signed
+	applied *tadecree.Signed
 	serving bool
 	asked   int
 }
 
-func (o *onlyUnderLaunchPins) serve(_ context.Context, pins refvalues.ReferenceValues) (*cdsdecree.Signed, error) {
+func (o *onlyUnderLaunchPins) serve(_ context.Context, pins refvalues.ReferenceValues) (*tadecree.Signed, error) {
 	o.asked++
 	if !o.serving || digestsOf(pins)[0] != 0x11 {
 		return nil, errors.New("no replica of that set answered")
@@ -404,7 +404,7 @@ func TestAnUnreadableStateFileFails(t *testing.T) {
 			_, err := New(Config{
 				Bootstrap: pinSet(t, launchFile, 0x11),
 				Attested:  refused,
-				Fetch:     func(context.Context) (*cdsdecree.Signed, error) { return nil, nil },
+				Fetch:     func(context.Context) (*tadecree.Signed, error) { return nil, nil },
 				StateFile: stateFile,
 			})
 			if err == nil || !strings.Contains(err.Error(), "state") {
@@ -450,7 +450,7 @@ func TestACDSThatRunsAloneIsFollowedByNoOne(t *testing.T) {
 	_, err := New(Config{
 		Bootstrap: pinSet(t, []byte(singleCDS), 0x11),
 		Attested:  refused,
-		Fetch:     func(context.Context) (*cdsdecree.Signed, error) { return nil, nil },
+		Fetch:     func(context.Context) (*tadecree.Signed, error) { return nil, nil },
 		StateFile: filepath.Join(t.TempDir(), "cds-decree.json"),
 	})
 	if !errors.Is(err, ErrSingleCDS) {
@@ -466,7 +466,7 @@ func TestASourceNeedsItsFetchersAndItsStateFile(t *testing.T) {
 	complete := Config{
 		Bootstrap: pinSet(t, launchFile, 0x11),
 		Attested:  refused,
-		Fetch:     func(context.Context) (*cdsdecree.Signed, error) { return nil, nil },
+		Fetch:     func(context.Context) (*tadecree.Signed, error) { return nil, nil },
 		StateFile: filepath.Join(t.TempDir(), "cds-decree.json"),
 	}
 	short := map[string]Config{
@@ -504,7 +504,7 @@ func TestABootstrapSetThatNamesNoCDSIsRefused(t *testing.T) {
 	_, err := New(Config{
 		Bootstrap: refvalues.ReferenceValues{},
 		Attested:  refused,
-		Fetch:     func(context.Context) (*cdsdecree.Signed, error) { return nil, nil },
+		Fetch:     func(context.Context) (*tadecree.Signed, error) { return nil, nil },
 		StateFile: filepath.Join(t.TempDir(), "cds-decree.json"),
 	})
 	if err == nil {

@@ -19,8 +19,8 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/allowlist"
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsdecree"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/issuer"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tadecree"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
 )
 
@@ -43,14 +43,14 @@ func (n *Node) keepCluster(ctx context.Context) {
 
 // applyThroughTheLeader puts a decree the operator posted on the cluster's
 // log: this replica where it leads, and the leader it follows otherwise.
-func (n *Node) applyThroughTheLeader(signed cdsdecree.Signed) (Delivered, error) {
+func (n *Node) applyThroughTheLeader(signed tadecree.Signed) (Delivered, error) {
 	if !n.leading() {
 		return n.forwardDecree(signed)
 	}
 	return n.applyDecree(signed)
 }
 
-func (n *Node) applyDecree(signed cdsdecree.Signed) (Delivered, error) {
+func (n *Node) applyDecree(signed tadecree.Signed) (Delivered, error) {
 	if err := n.ClockError(); err != nil {
 		return Delivered{}, err
 	}
@@ -82,13 +82,13 @@ func (n *Node) applyDecree(signed cdsdecree.Signed) (Delivered, error) {
 // set other than a Genesis's with an entry binding no launch, or a pin set
 // that would leave the cluster without a majority of voters to lead it.
 // Everything else a decree must satisfy is the state machine's to judge.
-func (n *Node) refuses(d cdsdecree.Decree) error {
-	if d.NodePins != nil && d.Kind != cdsdecree.Genesis {
+func (n *Node) refuses(d tadecree.Decree) error {
+	if d.NodePins != nil && d.Kind != tadecree.Genesis {
 		if err := d.NodePins.RequireLaunchBindings(); err != nil {
 			return err
 		}
 	}
-	if d.Kind != cdsdecree.UpdateMeasurements {
+	if d.Kind != tadecree.UpdateMeasurements {
 		return nil
 	}
 	images, err := d.CDSPins.WithLaunchFile(n.cfg.LaunchFile)
@@ -146,9 +146,9 @@ func (n *Node) attestedVoter(member string) (verdict, bool) {
 
 // decreeEntry stamps the decree with the cluster's clock, and mints a mesh CA
 // for the kind that forks the mesh.
-func (n *Node) decreeEntry(signed cdsdecree.Signed) (*DecreeEntry, error) {
+func (n *Node) decreeEntry(signed tadecree.Signed) (*DecreeEntry, error) {
 	entry := &DecreeEntry{Decree: signed, AtMS: time.Now().UnixMilli()}
-	if signed.Decree.Kind != cdsdecree.RotateKey {
+	if signed.Decree.Kind != tadecree.RotateKey {
 		return entry, nil
 	}
 	ca, err := mintMeshCA()

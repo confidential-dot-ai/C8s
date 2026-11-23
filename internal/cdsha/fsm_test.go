@@ -10,9 +10,9 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/allowlist"
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsdecree"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/sandboxledger"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/secrets"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tadecree"
 	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
 )
@@ -138,7 +138,7 @@ func TestTheDecreeRecordKeepsTheNewestDecrees(t *testing.T) {
 	r := newReplica(t)
 	r.genesis()
 	for range maxDecreeRecord + 2 {
-		if res := r.applyDecreeEntry(r.entryFor(r.decree(cdsdecree.RotateKey))); res.Refused != "" {
+		if res := r.applyDecreeEntry(r.entryFor(r.decree(tadecree.RotateKey))); res.Refused != "" {
 			t.Fatal(res.Refused)
 		}
 	}

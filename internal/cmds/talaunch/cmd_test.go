@@ -17,7 +17,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsconfig"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/taconfig"
 )
 
 const componentSeed = `{"schema":"c8s.allowlist/v1","workloads":{"c8s-router":{"containers":[{"digest":"sha256:` +
@@ -130,7 +130,7 @@ func TestNewWritesAConfigurationItsPinBinds(t *testing.T) {
 	if !bytes.Equal(pin.Images[0].LaunchFile, config) {
 		t.Fatal("the pin does not bind the configuration that was written")
 	}
-	cfg, err := cdsconfig.Parse(config)
+	cfg, err := taconfig.Parse(config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,7 +178,7 @@ func TestNewLeafDNSPatternReplacesTheDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := cdsconfig.Parse(config)
+	cfg, err := taconfig.Parse(config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -221,18 +221,18 @@ func TestNewEmbedsPodAuthorityInTheBoundConfiguration(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			configuration, err := os.ReadFile(filepath.Join(out, cdsconfig.ConfigFile))
+			configuration, err := os.ReadFile(filepath.Join(out, taconfig.ConfigFile))
 			if err != nil {
 				t.Fatal(err)
 			}
-			cfg, err := cdsconfig.Parse(configuration)
+			cfg, err := taconfig.Parse(configuration)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if len(cfg.PodImages) != 1 || !bytes.Equal(cfg.PodImages[0].Anchor, []byte(podKey)) {
 				t.Fatal("measured Pod policy lost")
 			}
-			pinBytes, err := os.ReadFile(filepath.Join(out, cdsconfig.PinFile))
+			pinBytes, err := os.ReadFile(filepath.Join(out, taconfig.PinFile))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -325,13 +325,13 @@ func TestNewRefusesAReplicaSetItCannotRun(t *testing.T) {
 }
 
 // parseWritten is the configuration a run wrote, as a replica parses it.
-func parseWritten(t *testing.T, out string) *cdsconfig.Config {
+func parseWritten(t *testing.T, out string) *taconfig.Config {
 	t.Helper()
-	config, err := os.ReadFile(filepath.Join(out, cdsconfig.ConfigFile))
+	config, err := os.ReadFile(filepath.Join(out, taconfig.ConfigFile))
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := cdsconfig.Parse(config)
+	cfg, err := taconfig.Parse(config)
 	if err != nil {
 		t.Fatal(err)
 	}

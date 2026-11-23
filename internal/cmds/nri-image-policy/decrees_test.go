@@ -22,8 +22,8 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsdecree"
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdspins"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tadecree"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tapins"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
@@ -58,7 +58,7 @@ func decreeOperatorKey(t *testing.T) *ecdsa.PrivateKey {
 }
 
 // clusterPinDecree signs the decree moving the cluster to measurement.
-func clusterPinDecree(t *testing.T, key *ecdsa.PrivateKey, launchFile, measurement string) *cdsdecree.Signed {
+func clusterPinDecree(t *testing.T, key *ecdsa.PrivateKey, launchFile, measurement string) *tadecree.Signed {
 	t.Helper()
 	digest, err := hex.DecodeString(measurement)
 	if err != nil {
@@ -75,14 +75,14 @@ func clusterPinDecree(t *testing.T, key *ecdsa.PrivateKey, launchFile, measureme
 	if err != nil {
 		t.Fatal(err)
 	}
-	pins, err := cdsdecree.NewPinDocument(document)
+	pins, err := tadecree.NewPinDocument(document)
 	if err != nil {
 		t.Fatal(err)
 	}
-	signed, err := cdsdecree.Sign(cdsdecree.Decree{
+	signed, err := tadecree.Sign(tadecree.Decree{
 		ClusterID:   decreeClusterID,
-		IntentID:    cdsdecree.NewIntentID(),
-		Kind:        cdsdecree.UpdateMeasurements,
+		IntentID:    tadecree.NewIntentID(),
+		Kind:        tadecree.UpdateMeasurements,
 		ExpiresAt:   time.Now().Add(time.Hour),
 		BaseVersion: decreeVersion,
 		CDSPins:     pins,
@@ -94,7 +94,7 @@ func clusterPinDecree(t *testing.T, key *ecdsa.PrivateKey, launchFile, measureme
 }
 
 // followingNode is a node whose enforcer follows one decree the cluster serves.
-func followingNode(t *testing.T, launchFile string, served *cdsdecree.Signed) (*plugin, *followedPins) {
+func followingNode(t *testing.T, launchFile string, served *tadecree.Signed) (*plugin, *followedPins) {
 	t.Helper()
 	renderInTempDir(t)
 	pin := cdsPinFile(t, testutil.CDSPinDocument(testutil.TestMeasurement, launchFile))
@@ -102,10 +102,10 @@ func followingNode(t *testing.T, launchFile string, served *cdsdecree.Signed) (*
 	if err != nil {
 		t.Fatal(err)
 	}
-	source, err := cdspins.New(cdspins.Config{
+	source, err := tapins.New(tapins.Config{
 		Bootstrap:   bootstrap,
-		Attested:    func(context.Context, refvalues.ReferenceValues) (*cdsdecree.Signed, error) { return served, nil },
-		Fetch:       func(context.Context) (*cdsdecree.Signed, error) { return nil, nil },
+		Attested:    func(context.Context, refvalues.ReferenceValues) (*tadecree.Signed, error) { return served, nil },
+		Fetch:       func(context.Context) (*tadecree.Signed, error) { return nil, nil },
 		StateFile:   filepath.Join(t.TempDir(), decreeStateName),
 		MinInterval: time.Nanosecond,
 	})
@@ -285,7 +285,7 @@ func TestADecreeBelowTheNodesFloorIsRefused(t *testing.T) {
 }
 
 // servingDecree is a CDS no client can attest, serving one pin decree.
-func servingDecree(t *testing.T, decree *cdsdecree.Signed) string {
+func servingDecree(t *testing.T, decree *tadecree.Signed) string {
 	t.Helper()
 	body, err := json.Marshal(decree)
 	if err != nil {

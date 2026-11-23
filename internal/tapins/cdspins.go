@@ -18,7 +18,7 @@
 // The state file carries both decrees across a restart of the client. There
 // is no expiry: a host that withholds decrees can only delay a client, and a
 // fail-closed timer would turn that delay into an outage.
-package cdspins
+package tapins
 
 import (
 	"bytes"
@@ -33,10 +33,10 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsconfig"
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsdecree"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/fileutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/taconfig"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tadecree"
 )
 
 var ErrSingleCDS = errors.New("cdspins: the launch file names a single CDS, which issues no pin decrees")
@@ -47,10 +47,10 @@ var errBelowFloor = errors.New("cdspins: the pin decree is below this node's flo
 const lookBudget = 10 * time.Second
 
 // Fetcher reads the decree the replicas serve, and nil where they serve none.
-type Fetcher func(ctx context.Context) (*cdsdecree.Signed, error)
+type Fetcher func(ctx context.Context) (*tadecree.Signed, error)
 
 // AttestedFetcher is a Fetcher answered by a CDS that passed pins.
-type AttestedFetcher func(ctx context.Context, pins refvalues.ReferenceValues) (*cdsdecree.Signed, error)
+type AttestedFetcher func(ctx context.Context, pins refvalues.ReferenceValues) (*tadecree.Signed, error)
 
 type Config struct {
 	// Bootstrap names the launch file every decree is read against.
@@ -95,14 +95,14 @@ type Source struct {
 
 // checked is a decree past every check a client makes on its own.
 type checked struct {
-	signed  *cdsdecree.Signed
+	signed  *tadecree.Signed
 	version uint64
 	pins    refvalues.ReferenceValues
 }
 
 type state struct {
-	InForce  *cdsdecree.Signed `json:"in_force"`
-	Attested *cdsdecree.Signed `json:"attested"`
+	InForce  *tadecree.Signed `json:"in_force"`
+	Attested *tadecree.Signed `json:"attested"`
 }
 
 // New resumes from the state file, and answers [ErrSingleCDS] where the
@@ -115,7 +115,7 @@ func New(cfg Config) (*Source, error) {
 	if err != nil {
 		return nil, fmt.Errorf("cdspins: the bootstrap pin set %w", err)
 	}
-	cluster, err := cdsconfig.ReadCluster(launchFile)
+	cluster, err := taconfig.ReadCluster(launchFile)
 	if err != nil {
 		return nil, fmt.Errorf("cdspins: the launch file the bootstrap set pins: %w", err)
 	}
@@ -187,7 +187,7 @@ func (s *Source) Refresh() error {
 
 // askPinnedReplica reports the first answer, which may be that the cluster
 // applied no decree, and false where no replica of any set answered.
-func (s *Source) askPinnedReplica(ctx context.Context, ask []refvalues.ReferenceValues) (*cdsdecree.Signed, bool) {
+func (s *Source) askPinnedReplica(ctx context.Context, ask []refvalues.ReferenceValues) (*tadecree.Signed, bool) {
 	for _, pins := range ask {
 		served, err := s.cfg.Attested(ctx, pins)
 		if err == nil {
@@ -217,7 +217,7 @@ func (s *Source) dueForLook() ([]refvalues.ReferenceValues, bool) {
 
 // takeAttested takes the cluster's own answer, which replaces a provisional
 // decree at any version.
-func (s *Source) takeAttested(served *cdsdecree.Signed) error {
+func (s *Source) takeAttested(served *tadecree.Signed) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	taken, err := s.check(served)
@@ -233,7 +233,7 @@ func (s *Source) takeAttested(served *cdsdecree.Signed) error {
 
 // takeUnverified takes a decree off a channel that proved nothing, at a
 // strictly higher version only: the host chooses what it serves there.
-func (s *Source) takeUnverified(served *cdsdecree.Signed) error {
+func (s *Source) takeUnverified(served *tadecree.Signed) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	taken, err := s.check(served)
@@ -264,8 +264,8 @@ func (s *Source) newerThanHeld(taken checked) bool {
 
 // check is everything a client decides about a decree on its own. Callers
 // hold s.mu, so what is checked is what is installed.
-func (s *Source) check(served *cdsdecree.Signed) (checked, error) {
-	if err := cdsdecree.Verify(*served, s.keys, s.clusterID); err != nil {
+func (s *Source) check(served *tadecree.Signed) (checked, error) {
+	if err := tadecree.Verify(*served, s.keys, s.clusterID); err != nil {
 		return checked{}, fmt.Errorf("cdspins: %w", err)
 	}
 	decree := served.Decree
@@ -344,7 +344,7 @@ func (s *Source) resume() error {
 
 // resumeOne takes a stored decree by the rule that delivered it. One below a
 // new floor leaves the client on its launch document's pins.
-func (s *Source) resumeOne(stored *cdsdecree.Signed, take func(*cdsdecree.Signed) error) error {
+func (s *Source) resumeOne(stored *tadecree.Signed, take func(*tadecree.Signed) error) error {
 	if stored == nil {
 		return nil
 	}

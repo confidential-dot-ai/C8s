@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsdecree"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tadecree"
 )
 
 // The leader applies the decrees an operator posts to any replica of the
@@ -19,16 +19,16 @@ import (
 // run.
 
 // pinDecree is the pin decree the operator signs against version.
-func (c *liveCluster) pinDecree(r *liveReplica, version uint64, digests ...byte) cdsdecree.Decree {
+func (c *liveCluster) pinDecree(r *liveReplica, version uint64, digests ...byte) tadecree.Decree {
 	c.t.Helper()
-	decree := c.fixture(r).decree(cdsdecree.UpdateMeasurements)
+	decree := c.fixture(r).decree(tadecree.UpdateMeasurements)
 	decree.BaseVersion = version
 	decree.CDSPins = testPins(c.t, digests...)
 	return decree
 }
 
 // decreePins posts a pin decree to r against the version r holds.
-func (c *liveCluster) decreePins(r *liveReplica, digests ...byte) (cdsdecree.Decree, Delivered) {
+func (c *liveCluster) decreePins(r *liveReplica, digests ...byte) (tadecree.Decree, Delivered) {
 	c.t.Helper()
 	decree := c.pinDecree(r, r.node.fsm.ClusterState().Version, digests...)
 	return decree, c.posted(r, c.signDecree(decree))
@@ -131,7 +131,7 @@ func TestRotateKeyGivesTheClusterAMeshCAOfItsOwn(t *testing.T) {
 	leader := c.leader()
 	before := leader.node.fsm.ClusterState().MeshCACert
 
-	decree := c.fixture(leader).decree(cdsdecree.RotateKey)
+	decree := c.fixture(leader).decree(tadecree.RotateKey)
 	c.posted(leader, c.signDecree(decree))
 
 	c.applied(decree.IntentID, 15*time.Second)
@@ -187,7 +187,7 @@ func TestADecreeNoOperatorKeySignedIsNotTaken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	signed, err := cdsdecree.Sign(c.pinDecree(leader, version, testCDSDigest, rolledCDSDigest), stranger)
+	signed, err := tadecree.Sign(c.pinDecree(leader, version, testCDSDigest, rolledCDSDigest), stranger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,7 +209,7 @@ func TestAPostedNodeImageSetBindsTheLaunchOfEveryEntry(t *testing.T) {
 	leader := c.leader()
 	version := leader.node.fsm.ClusterState().Version
 	unbound := nodeImagesBoundTo(t, nil, 0x44)
-	decree := c.fixture(leader).decree(cdsdecree.SetNodeImages)
+	decree := c.fixture(leader).decree(tadecree.SetNodeImages)
 	decree.NodePins = unbound
 
 	delivered := c.posted(leader, c.signDecree(decree))
@@ -221,7 +221,7 @@ func TestAPostedNodeImageSetBindsTheLaunchOfEveryEntry(t *testing.T) {
 	}
 
 	launched := sha512.Sum384([]byte("schemaVersion: c8s-worker/v1\n"))
-	decree.IntentID = cdsdecree.NewIntentID()
+	decree.IntentID = tadecree.NewIntentID()
 	decree.NodePins = nodeImagesBoundTo(t, launched[:], 0x44)
 	if delivered := c.posted(leader, c.signDecree(decree)); delivered.Refused != "" || delivered.Version != version+1 {
 		t.Fatalf("the cluster answered %+v, want the bound set applied at version %d", delivered, version+1)

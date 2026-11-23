@@ -10,7 +10,7 @@ import (
 
 	"github.com/hashicorp/raft"
 
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsdecree"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tadecree"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
 )
 
@@ -71,7 +71,7 @@ func TestAGenesisAnotherKeySignedStartsNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	signed, err := cdsdecree.Sign(c.genesisFor(r, true), host)
+	signed, err := tadecree.Sign(c.genesisFor(r, true), host)
 	if err != nil {
 		t.Fatal(err)
 	}

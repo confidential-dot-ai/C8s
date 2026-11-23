@@ -16,7 +16,7 @@
 // target minted at its start, so a recorded decree never acts a second time,
 // and a Genesis names the mesh CA its target mints, so a replica replaying one
 // cannot install a CA of its own.
-package cdsdecree
+package tadecree
 
 import (
 	"crypto/ecdsa"

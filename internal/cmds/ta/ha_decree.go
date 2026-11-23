@@ -15,12 +15,12 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsconfig"
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsdecree"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsha"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/worker"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/fileutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/taconfig"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tadecree"
 )
 
 // defaultDecreeValidity is how long a cluster may adopt a decree for. A
@@ -109,7 +109,7 @@ func bindBaseVersionFlag(cmd *cobra.Command, o *decreeOptions) {
 // be signed with.
 type decreeConfig struct {
 	launchFile []byte
-	parsed     *cdsconfig.Config
+	parsed     *taconfig.Config
 }
 
 func readDecreeConfig(path string) (decreeConfig, error) {
@@ -117,7 +117,7 @@ func readDecreeConfig(path string) (decreeConfig, error) {
 	if err != nil {
 		return decreeConfig{}, fmt.Errorf("--config: %w", err)
 	}
-	parsed, err := cdsconfig.Parse(launchFile)
+	parsed, err := taconfig.Parse(launchFile)
 	if err != nil {
 		return decreeConfig{}, fmt.Errorf("--config: %w", err)
 	}
@@ -127,23 +127,23 @@ func readDecreeConfig(path string) (decreeConfig, error) {
 // sign fills in what every decree carries, signs it, and writes it to --out
 // where the operator named one. The signature is checked against the keys the
 // configuration pins, so a key the cluster would refuse is caught here.
-func (o decreeOptions) sign(cmd *cobra.Command, c decreeConfig, d cdsdecree.Decree) (cdsdecree.Signed, error) {
+func (o decreeOptions) sign(cmd *cobra.Command, c decreeConfig, d tadecree.Decree) (tadecree.Signed, error) {
 	if o.expiresIn <= 0 {
-		return cdsdecree.Signed{}, errors.New("--expires-in must be positive: a decree no replica may adopt does nothing")
+		return tadecree.Signed{}, errors.New("--expires-in must be positive: a decree no replica may adopt does nothing")
 	}
 	key, err := cmdsutil.LoadOperatorKey(o.operatorKey)
 	if err != nil {
-		return cdsdecree.Signed{}, fmt.Errorf("--operator-key: %w", err)
+		return tadecree.Signed{}, fmt.Errorf("--operator-key: %w", err)
 	}
 	d.ClusterID = c.parsed.ClusterID
-	d.IntentID = cdsdecree.NewIntentID()
+	d.IntentID = tadecree.NewIntentID()
 	d.ExpiresAt = time.Now().Add(o.expiresIn).UTC().Truncate(time.Second)
-	signed, err := cdsdecree.Sign(d, key)
+	signed, err := tadecree.Sign(d, key)
 	if err != nil {
-		return cdsdecree.Signed{}, err
+		return tadecree.Signed{}, err
 	}
-	if err := cdsdecree.Verify(signed, c.parsed.OperatorKeys.Keys(), d.ClusterID); err != nil {
-		return cdsdecree.Signed{}, fmt.Errorf("the decree this would hand the cluster: %w", err)
+	if err := tadecree.Verify(signed, c.parsed.OperatorKeys.Keys(), d.ClusterID); err != nil {
+		return tadecree.Signed{}, fmt.Errorf("the decree this would hand the cluster: %w", err)
 	}
 	if o.out == "" {
 		return signed, nil
@@ -151,7 +151,7 @@ func (o decreeOptions) sign(cmd *cobra.Command, c decreeConfig, d cdsdecree.Decr
 	return signed, o.write(cmd, signed)
 }
 
-func (o decreeOptions) write(cmd *cobra.Command, signed cdsdecree.Signed) error {
+func (o decreeOptions) write(cmd *cobra.Command, signed tadecree.Signed) error {
 	body, err := json.MarshalIndent(signed, "", "  ")
 	if err != nil {
 		return err
@@ -168,7 +168,7 @@ func (o decreeOptions) write(cmd *cobra.Command, signed cdsdecree.Signed) error 
 // deliver signs a decree and posts it over the attested channel to the replica
 // it names, which is the member id that replica's process minted, so no other
 // replica acts on it.
-func (o decreeOptions) deliver(cmd *cobra.Command, c decreeConfig, to replica, d cdsdecree.Decree) error {
+func (o decreeOptions) deliver(cmd *cobra.Command, c decreeConfig, to replica, d tadecree.Decree) error {
 	signed, err := o.sign(cmd, c, d)
 	if err != nil {
 		return err
@@ -183,12 +183,12 @@ func (o decreeOptions) deliver(cmd *cobra.Command, c decreeConfig, to replica, d
 // deliverIssued posts a decree that starts or carries on a cluster: it records
 // the operator's signing time, which is the earliest start time that cluster
 // takes.
-func (o decreeOptions) deliverIssued(cmd *cobra.Command, c decreeConfig, to replica, d cdsdecree.Decree) error {
+func (o decreeOptions) deliverIssued(cmd *cobra.Command, c decreeConfig, to replica, d tadecree.Decree) error {
 	d.IssuedAtMS = time.Now().UnixMilli()
 	return o.deliver(cmd, c, to, d)
 }
 
-func reportDelivered(cmd *cobra.Command, address string, d cdsdecree.Decree, delivered cdsha.Delivered) error {
+func reportDelivered(cmd *cobra.Command, address string, d tadecree.Decree, delivered cdsha.Delivered) error {
 	if delivered.Refused != "" {
 		return fmt.Errorf("%s refused the %s decree %s: %s", address, d.Kind, delivered.Intent, delivered.Refused)
 	}
@@ -230,8 +230,8 @@ func bindPinFlags(cmd *cobra.Command, p *pinFlags) {
 
 // document is the image set the decree carries: every named image bound to the
 // launch file the replicas boot, with that file elided.
-func (p pinFlags) document(launchFile []byte) (*cdsdecree.PinDocument, error) {
-	family, err := cdsconfig.ParsePlatform(p.platform)
+func (p pinFlags) document(launchFile []byte) (*tadecree.PinDocument, error) {
+	family, err := taconfig.ParsePlatform(p.platform)
 	if err != nil {
 		return nil, fmt.Errorf("--platform: %w", err)
 	}
@@ -247,13 +247,13 @@ func (p pinFlags) document(launchFile []byte) (*cdsdecree.PinDocument, error) {
 	if err != nil {
 		return nil, err
 	}
-	return cdsdecree.NewPinDocument(document)
+	return tadecree.NewPinDocument(document)
 }
 
 // imagePins names one image's entries after its launch digest, so the entries
 // of the two images an image roll accepts never collide.
 func imagePins(manifest string, family teetypes.Family, vcpus []int, launchFile []byte) ([]remote.ImagePin, error) {
-	document, err := cdsconfig.Pin(manifest, family, vcpus, launchFile)
+	document, err := taconfig.Pin(manifest, family, vcpus, launchFile)
 	if err != nil {
 		return nil, fmt.Errorf("--image-manifest %s: %w", manifest, err)
 	}
@@ -417,8 +417,8 @@ func (o genesisOptions) run(cmd *cobra.Command) error {
 	if o.alone {
 		fmt.Fprintln(cmd.ErrOrStderr(), "warning: --alone starts the cluster even if the replica finds no other, so a host that hides the others gets a cluster beside them")
 	}
-	return o.deliverIssued(cmd, c, o.target, cdsdecree.Decree{
-		Kind:          cdsdecree.Genesis,
+	return o.deliverIssued(cmd, c, o.target, tadecree.Decree{
+		Kind:          tadecree.Genesis,
 		CDSPins:       cdsPins,
 		NodePins:      nodePins,
 		TargetMember:  target.ID,
@@ -439,7 +439,7 @@ func (o genesisOptions) checkAloneNamesTheOneReplica(c decreeConfig) error {
 	return errors.New("the configuration names one replica filling one voter seat, and a replica starts a cluster only once another replica of it answers: pass --alone for a one-replica cluster")
 }
 
-func namesOneReplicaFillingOneSeat(ha *cdsconfig.HA) bool {
+func namesOneReplicaFillingOneSeat(ha *taconfig.HA) bool {
 	return ha != nil && len(ha.Replicas) == 1 && ha.Voters == 1
 }
 
@@ -448,7 +448,7 @@ func namesOneReplicaFillingOneSeat(ha *cdsconfig.HA) bool {
 // them, or the configuration's nodes. The decree carries them, so a cluster
 // started again certifies the set the operator names now rather than the one
 // the configuration was written with.
-func (o genesisOptions) confirmedNodePins(cmd *cobra.Command, c decreeConfig) (*cdsdecree.NodeImages, error) {
+func (o genesisOptions) confirmedNodePins(cmd *cobra.Command, c decreeConfig) (*tadecree.NodeImages, error) {
 	switch {
 	case o.nodes != "":
 		return readNodeImages(o.nodes)
@@ -462,12 +462,12 @@ func (o genesisOptions) confirmedNodePins(cmd *cobra.Command, c decreeConfig) (*
 
 // The whole set the cluster is to certify, as `c8s cds config new --nodes`
 // writes one.
-func readNodeImages(path string) (*cdsdecree.NodeImages, error) {
+func readNodeImages(path string) (*tadecree.NodeImages, error) {
 	measurements, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("--nodes: %w", err)
 	}
-	images, err := cdsdecree.NewNodeImages(measurements)
+	images, err := tadecree.NewNodeImages(measurements)
 	if err != nil {
 		return nil, fmt.Errorf("--nodes: %w", err)
 	}
@@ -476,7 +476,7 @@ func readNodeImages(path string) (*cdsdecree.NodeImages, error) {
 
 // firstWorkers are the workers of --worker-document alone: the first set of a
 // cluster of workers, whose configuration names no nodes.
-func (o genesisOptions) firstWorkers(cmd *cobra.Command, c decreeConfig) (*cdsdecree.NodeImages, error) {
+func (o genesisOptions) firstWorkers(cmd *cobra.Command, c decreeConfig) (*tadecree.NodeImages, error) {
 	if !c.parsed.Nodes.Empty() {
 		return nil, errors.New("--worker-document starts a cluster of workers, and the configuration names nodes: pass --nodes, or admit the worker by a node-images decree after Genesis")
 	}
@@ -484,15 +484,15 @@ func (o genesisOptions) firstWorkers(cmd *cobra.Command, c decreeConfig) (*cdsde
 	if err != nil {
 		return nil, err
 	}
-	return cdsdecree.NewNodeImages(measurements)
+	return tadecree.NewNodeImages(measurements)
 }
 
-func configuredNodeImages(c decreeConfig) (*cdsdecree.NodeImages, error) {
+func configuredNodeImages(c decreeConfig) (*tadecree.NodeImages, error) {
 	measurements, err := refvalues.Format(c.parsed.Nodes)
 	if err != nil {
 		return nil, fmt.Errorf("the configuration's nodes: %w", err)
 	}
-	return cdsdecree.NewNodeImages(measurements)
+	return tadecree.NewNodeImages(measurements)
 }
 
 type nodeImagesOptions struct {
@@ -536,15 +536,15 @@ func (o nodeImagesOptions) run(cmd *cobra.Command) error {
 			return err
 		}
 	}
-	nodePins, err := cdsdecree.NewNodeImages(measurements)
+	nodePins, err := tadecree.NewNodeImages(measurements)
 	if err != nil {
 		return fmt.Errorf("--nodes: %w", err)
 	}
 	if err := nodePins.RequireLaunchBindings(); err != nil {
 		return fmt.Errorf("--nodes: %w", err)
 	}
-	return o.deliver(cmd, c, o.to, cdsdecree.Decree{
-		Kind:        cdsdecree.SetNodeImages,
+	return o.deliver(cmd, c, o.to, tadecree.Decree{
+		Kind:        tadecree.SetNodeImages,
 		BaseVersion: o.baseVersion,
 		NodePins:    nodePins,
 	})
@@ -604,8 +604,8 @@ func (o pinsOptions) run(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	return o.deliver(cmd, c, o.to, cdsdecree.Decree{
-		Kind:        cdsdecree.UpdateMeasurements,
+	return o.deliver(cmd, c, o.to, tadecree.Decree{
+		Kind:        tadecree.UpdateMeasurements,
 		BaseVersion: o.baseVersion,
 		CDSPins:     cdsPins,
 	})
@@ -627,21 +627,21 @@ func newVotersCmd() *cobra.Command {
 		&o.decreeOptions, func(cmd *cobra.Command) error { return o.run(cmd) })
 	bindBaseVersionFlag(cmd, &o.decreeOptions)
 	bindDeliveryFlags(cmd, &o.to)
-	cmd.Flags().IntVar(&o.voters, "voters", 0, "voter seats the cluster holds, odd and up to "+strconv.Itoa(cdsdecree.MaxVoterSeats)+" (REQUIRED)")
+	cmd.Flags().IntVar(&o.voters, "voters", 0, "voter seats the cluster holds, odd and up to "+strconv.Itoa(tadecree.MaxVoterSeats)+" (REQUIRED)")
 	cmdsutil.RequireFlags(cmd, "voters")
 	return cmd
 }
 
 func (o votersOptions) run(cmd *cobra.Command) error {
-	if err := cdsdecree.CheckVoterSeats(o.voters); err != nil {
+	if err := tadecree.CheckVoterSeats(o.voters); err != nil {
 		return fmt.Errorf("--voters: %w", err)
 	}
 	c, err := readDecreeConfig(o.config)
 	if err != nil {
 		return err
 	}
-	return o.deliver(cmd, c, o.to, cdsdecree.Decree{
-		Kind:        cdsdecree.SetVoters,
+	return o.deliver(cmd, c, o.to, tadecree.Decree{
+		Kind:        tadecree.SetVoters,
 		BaseVersion: o.baseVersion,
 		Voters:      o.voters,
 	})
@@ -662,8 +662,8 @@ func newRotateKeyCmd() *cobra.Command {
 		if err != nil {
 			return err
 		}
-		return o.deliver(cmd, c, to, cdsdecree.Decree{
-			Kind:        cdsdecree.RotateKey,
+		return o.deliver(cmd, c, to, tadecree.Decree{
+			Kind:        tadecree.RotateKey,
 			BaseVersion: o.baseVersion,
 		})
 	}
@@ -720,8 +720,8 @@ func (o recoverOptions) run(cmd *cobra.Command) error {
 		return err
 	}
 	fmt.Fprintln(cmd.ErrOrStderr(), "warning: follow this Recover with a rotate-key decree, so a lost replica that comes back holds a retired key")
-	return o.deliverIssued(cmd, c, o.target, cdsdecree.Decree{
-		Kind:          cdsdecree.Recover,
+	return o.deliverIssued(cmd, c, o.target, tadecree.Decree{
+		Kind:          tadecree.Recover,
 		BaseVersion:   o.baseVersion,
 		TargetMember:  target.ID,
 		TargetAddress: address.String(),
@@ -755,8 +755,8 @@ func newDismissRecoverCmd() *cobra.Command {
 		if err != nil {
 			return err
 		}
-		return o.deliver(cmd, c, to, cdsdecree.Decree{
-			Kind:          cdsdecree.DismissRecover,
+		return o.deliver(cmd, c, to, tadecree.Decree{
+			Kind:          tadecree.DismissRecover,
 			BaseVersion:   o.baseVersion,
 			RecoverIntent: recoverIntent,
 		})
@@ -808,8 +808,8 @@ func (o admitOptions) run(cmd *cobra.Command) error {
 	if err := checkAdmitTarget(target, c.parsed.ClusterID); err != nil {
 		return err
 	}
-	return o.deliver(cmd, c, o.target, cdsdecree.Decree{
-		Kind:         cdsdecree.Admit,
+	return o.deliver(cmd, c, o.target, tadecree.Decree{
+		Kind:         tadecree.Admit,
 		CDSPins:      cdsPins,
 		TargetMember: target.ID,
 	})
@@ -818,7 +818,7 @@ func (o admitOptions) run(cmd *cobra.Command) error {
 // appliedPins are the images the cluster accepts, read from a serving replica
 // as the decree the cluster applied. An Admit names only those, so it cannot
 // widen what the cluster already runs.
-func (o admitOptions) appliedPins(ctx context.Context, c decreeConfig) (*cdsdecree.PinDocument, error) {
+func (o admitOptions) appliedPins(ctx context.Context, c decreeConfig) (*tadecree.PinDocument, error) {
 	object, _, err := o.servingReplica().answer(ctx, pinDecreePath, maxReplicaReport)
 	if err != nil {
 		return nil, err

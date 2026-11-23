@@ -20,7 +20,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsconfig"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/taconfig"
 )
 
 // nodeMRTD is the TDVF firmware measurement the node images in these tests
@@ -71,7 +71,7 @@ func (c cluster) nodePins() string {
 func measuredDocument(t *testing.T, c cluster) []byte {
 	t.Helper()
 	document, err := yaml.Marshal(map[string]any{
-		"schemaVersion":      cdsconfig.SchemaVersion,
+		"schemaVersion":      taconfig.SchemaVersion,
 		"clusterID":          "lane",
 		"operatorPublicKeys": string(c.operatorPEM),
 		"workloads":          anySeed(c.workloads),
@@ -87,9 +87,9 @@ func measuredDocument(t *testing.T, c cluster) []byte {
 }
 
 // measuredConfig parses the document, as a CDS VM does at boot.
-func measuredConfig(t *testing.T, c cluster) *cdsconfig.Config {
+func measuredConfig(t *testing.T, c cluster) *taconfig.Config {
 	t.Helper()
-	measured, err := cdsconfig.Parse(measuredDocument(t, c))
+	measured, err := taconfig.Parse(measuredDocument(t, c))
 	if err != nil {
 		t.Fatalf("parse CDS configuration: %v", err)
 	}

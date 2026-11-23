@@ -8,13 +8,13 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsconfig"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/taca"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/talaunch"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/verify"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/issuer"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/secrets"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/taconfig"
 )
 
 const (
@@ -149,6 +149,6 @@ type config struct {
 
 	// measured is the configuration document this VM was launched with, and
 	// measuredFile the bytes its launch bound and a cluster's decrees pin.
-	measured     *cdsconfig.Config
+	measured     *taconfig.Config
 	measuredFile []byte
 }

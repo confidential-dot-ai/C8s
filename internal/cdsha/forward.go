@@ -16,7 +16,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsdecree"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tadecree"
 )
 
 // forward hands an entry to the cluster's leader and returns once this
@@ -62,7 +62,7 @@ func (n *Node) leaderChannel() (reachedMember, error) {
 
 // forwardDecree hands a decree to the cluster's leader, which judges it and
 // commits it.
-func (n *Node) forwardDecree(signed cdsdecree.Signed) (Delivered, error) {
+func (n *Node) forwardDecree(signed tadecree.Signed) (Delivered, error) {
 	posted, err := json.Marshal(signed)
 	if err != nil {
 		return Delivered{}, err
@@ -94,7 +94,7 @@ func (n *Node) answerDecree(posted json.RawMessage, answer controlAnswer) contro
 	if !n.leading() {
 		return n.redirectToLeader(answer)
 	}
-	signed, err := cdsdecree.Parse(posted)
+	signed, err := tadecree.Parse(posted)
 	if err != nil {
 		answer.Err = err.Error()
 		return answer

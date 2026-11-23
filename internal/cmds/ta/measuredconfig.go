@@ -9,9 +9,9 @@ import (
 	"os"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsconfig"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/launchbinding"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/taconfig"
 )
 
 // runMeasuredConfig runs CDS on the configuration document its VM was launched
@@ -47,7 +47,7 @@ func runMeasuredConfig(ctx context.Context, cfg config) error {
 // were read from are one verified read: a replica's peers and its cluster's
 // decrees are bound to those bytes.
 func withMeasuredConfig(cfg config, document []byte, platform teetypes.Family) (config, error) {
-	measured, err := cdsconfig.Parse(document)
+	measured, err := taconfig.Parse(document)
 	if err != nil {
 		return config{}, err
 	}

@@ -16,8 +16,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/yaml"
 
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsconfig"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/fileutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/taconfig"
 	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlistclient"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
@@ -285,7 +285,7 @@ func checkPodIPsInRanges(ctx context.Context, ranges []string) error {
 // checkNodeSubnets refuses a CDS whose inventory bound reaches pod addresses:
 // inside it, a pod answering as a node's admission inventory would have CDS
 // resolve its signing key, so the bound must hold node addresses alone.
-func checkNodeSubnets(ctx context.Context, config *cdsconfig.Config, declaredPodCIDRs []string) error {
+func checkNodeSubnets(ctx context.Context, config *taconfig.Config, declaredPodCIDRs []string) error {
 	nodes, err := clusterNodes(ctx)
 	if err != nil {
 		return err
@@ -307,7 +307,7 @@ func checkNodeSubnets(ctx context.Context, config *cdsconfig.Config, declaredPod
 	for _, subnet := range config.NodeCIDRs {
 		inventoryBound = append(inventoryBound, subnet.String())
 	}
-	if err := cdsconfig.CheckNodeSubnets(inventoryBound, knownPodRanges); err != nil {
+	if err := taconfig.CheckNodeSubnets(inventoryBound, knownPodRanges); err != nil {
 		return fmt.Errorf("the CDS this install names dials sandbox inventories where this cluster's pods answer (%w): a pod there could answer as a node's inventory. Re-run `c8s cds config new` with node subnets outside the cluster's pod ranges", err)
 	}
 	return nil

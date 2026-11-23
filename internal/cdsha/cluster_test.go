@@ -21,9 +21,9 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/allowlist"
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsdecree"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/sandboxledger"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/secrets"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tadecree"
 	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
 )
@@ -273,7 +273,7 @@ func (b *addressBook) resolve(_ context.Context, entry string) ([]netip.AddrPort
 }
 
 // posted hands one decree to r, as its operator does.
-func (c *liveCluster) posted(r *liveReplica, signed cdsdecree.Signed) Delivered {
+func (c *liveCluster) posted(r *liveReplica, signed tadecree.Signed) Delivered {
 	c.t.Helper()
 	delivered, err := r.node.TakeDecree(signed)
 	if err != nil {
@@ -322,9 +322,9 @@ func (c *liveCluster) decreeGenesis(r *liveReplica, alone bool) {
 }
 
 // genesisFor is the Genesis decree the operator signs for r.
-func (c *liveCluster) genesisFor(r *liveReplica, alone bool) cdsdecree.Decree {
+func (c *liveCluster) genesisFor(r *liveReplica, alone bool) tadecree.Decree {
 	c.t.Helper()
-	decree := c.fixture(r).decree(cdsdecree.Genesis)
+	decree := c.fixture(r).decree(tadecree.Genesis)
 	decree.TargetMember = string(r.node.member)
 	decree.GenesisCA = c.genesisCAOf(r)
 	decree.Alone = alone
@@ -342,9 +342,9 @@ func (c *liveCluster) genesisCAOf(r *liveReplica) string {
 }
 
 // signDecree signs a decree with the cluster's operator key.
-func (c *liveCluster) signDecree(d cdsdecree.Decree) cdsdecree.Signed {
+func (c *liveCluster) signDecree(d tadecree.Decree) tadecree.Signed {
 	c.t.Helper()
-	signed, err := cdsdecree.Sign(d, c.operator)
+	signed, err := tadecree.Sign(d, c.operator)
 	if err != nil {
 		c.t.Fatal(err)
 	}
@@ -445,7 +445,7 @@ func membersOf(leader *liveReplica, holds func(raft.Server) bool) []raft.ServerI
 }
 
 // decreeEntry is the log entry r logs for one of the operator's decrees.
-func (c *liveCluster) decreeEntry(r *liveReplica, kind cdsdecree.Kind) *DecreeEntry {
+func (c *liveCluster) decreeEntry(r *liveReplica, kind tadecree.Kind) *DecreeEntry {
 	c.t.Helper()
 	fixture := c.fixture(r)
 	decree := fixture.decree(kind)
@@ -466,11 +466,11 @@ func (c *liveCluster) fixture(r *liveReplica) *replica {
 }
 
 // targeted names the decree kinds that name the replica they are for.
-func targeted(kind cdsdecree.Kind) bool {
+func targeted(kind tadecree.Kind) bool {
 	switch kind {
-	case cdsdecree.Genesis,
-		cdsdecree.Recover,
-		cdsdecree.Admit:
+	case tadecree.Genesis,
+		tadecree.Recover,
+		tadecree.Admit:
 		return true
 	}
 	return false

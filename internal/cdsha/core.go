@@ -9,8 +9,8 @@ import (
 	"slices"
 	"time"
 
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsdecree"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/issuer"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tadecree"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
 )
 
@@ -32,8 +32,8 @@ type ClusterState struct {
 	MeshCACert []byte `json:"mesh_ca_cert,omitempty"`
 	// PinsDecree is the applied decree naming the images a CDS of this
 	// cluster may run, which peers, nodes and clients all pin it by.
-	PinsDecree *cdsdecree.Signed     `json:"pins_decree,omitempty"`
-	NodeImages *cdsdecree.NodeImages `json:"node_images,omitempty"`
+	PinsDecree *tadecree.Signed     `json:"pins_decree,omitempty"`
+	NodeImages *tadecree.NodeImages `json:"node_images,omitempty"`
 	// NodeImagesVersion is the version of the decree that last replaced the set.
 	NodeImagesVersion uint64 `json:"node_images_version"`
 	Voters            int    `json:"voters,omitempty"`
@@ -127,8 +127,8 @@ func (c ClusterState) clone() ClusterState {
 // for the kinds that mint one, the mesh CA, so every replica reaches the same
 // state; each replica verifies the operator's signature itself.
 type DecreeEntry struct {
-	Decree cdsdecree.Signed `json:"decree"`
-	AtMS   int64            `json:"at_ms"`
+	Decree tadecree.Signed `json:"decree"`
+	AtMS   int64           `json:"at_ms"`
 	// Policy is fixed for the cluster's life by its Genesis.
 	Policy Policy `json:"policy"`
 	// MeshCACert and MeshCAKey are the minted mesh CA: DER and PKCS#8.
@@ -136,7 +136,7 @@ type DecreeEntry struct {
 	MeshCAKey  []byte `json:"mesh_ca_key,omitempty"`
 }
 
-func (de DecreeEntry) kind() cdsdecree.Kind {
+func (de DecreeEntry) kind() tadecree.Kind {
 	return de.Decree.Decree.Kind
 }
 
@@ -167,20 +167,20 @@ func nextCore(launch Launch, cur ClusterState, de DecreeEntry) (ClusterState, *i
 	d := de.Decree.Decree
 	version := next.countDecree(d)
 	switch d.Kind {
-	case cdsdecree.Genesis:
+	case tadecree.Genesis:
 		if err := startCluster(launch, &next, de, version); err != nil {
 			return ClusterState{}, nil, err
 		}
-	case cdsdecree.Recover:
+	case tadecree.Recover:
 		next.StartedAtMS = startMS(d, de.AtMS)
 		next.Doubts = withoutDoubt(next.Doubts, d.IntentID)
-	case cdsdecree.UpdateMeasurements:
+	case tadecree.UpdateMeasurements:
 		next.PinsDecree = &de.Decree
-	case cdsdecree.SetNodeImages:
+	case tadecree.SetNodeImages:
 		next.certifyNodeImages(d.NodePins, version)
-	case cdsdecree.SetVoters:
+	case tadecree.SetVoters:
 		next.Voters = d.Voters
-	case cdsdecree.DismissRecover:
+	case tadecree.DismissRecover:
 		next.Doubts = withoutDoubt(next.Doubts, d.RecoverIntent)
 		// The dismissed Recover is accounted for, so the host cannot have it
 		// doubted again.
@@ -212,13 +212,13 @@ func startCluster(launch Launch, next *ClusterState, de DecreeEntry, version uin
 }
 
 // The whole set a decree carries, at the version that decree reached.
-func (c *ClusterState) certifyNodeImages(images *cdsdecree.NodeImages, version uint64) {
+func (c *ClusterState) certifyNodeImages(images *tadecree.NodeImages, version uint64) {
 	c.NodeImages = images
 	c.NodeImagesVersion = version
 }
 
 // Answers the version the decree produced.
-func (c *ClusterState) countDecree(d cdsdecree.Decree) uint64 {
+func (c *ClusterState) countDecree(d tadecree.Decree) uint64 {
 	if d.ResumeVersion > c.Version {
 		// Genesis and Recover resume above the highest version the operator
 		// knows this cluster id reached.
@@ -231,7 +231,7 @@ func (c *ClusterState) countDecree(d cdsdecree.Decree) uint64 {
 
 // startMS is the later of the operator's signature and the leader's stamp, so
 // no replica clock moves a cluster's start outside that window.
-func startMS(d cdsdecree.Decree, atMS int64) int64 {
+func startMS(d tadecree.Decree, atMS int64) int64 {
 	return max(d.IssuedAtMS, atMS)
 }
 
@@ -240,7 +240,7 @@ func startMS(d cdsdecree.Decree, atMS int64) int64 {
 // an expiry the leader's stamp is inside, an intent the cluster has not
 // accounted for, and pins binding this replica's own launch file.
 func checkDecree(launch Launch, cur ClusterState, de DecreeEntry) error {
-	if err := cdsdecree.Verify(de.Decree, launch.OperatorKeys, launch.ClusterID); err != nil {
+	if err := tadecree.Verify(de.Decree, launch.OperatorKeys, launch.ClusterID); err != nil {
 		return err
 	}
 	d := de.Decree.Decree
@@ -259,31 +259,31 @@ func checkDecree(launch Launch, cur ClusterState, de DecreeEntry) error {
 }
 
 // expired judges a decree by the leader's stamp: one clock for the whole group.
-func expired(d cdsdecree.Decree, atMS int64) bool {
+func expired(d tadecree.Decree, atMS int64) bool {
 	return !time.UnixMilli(atMS).Before(d.ExpiresAt)
 }
 
 // checkLife requires a decree's kind to have a place in the cluster's life: a
 // Genesis starts one, every other kind carries one on from the version it
 // names, and an Admit is answered by an unjoined replica rather than applied.
-func checkLife(cur ClusterState, d cdsdecree.Decree) error {
+func checkLife(cur ClusterState, d tadecree.Decree) error {
 	switch {
-	case d.Kind == cdsdecree.Admit:
+	case d.Kind == tadecree.Admit:
 		return errors.New("an Admit decree admits an image to one unjoined replica; it never applies")
-	case d.Kind == cdsdecree.Genesis && cur.Joined():
+	case d.Kind == tadecree.Genesis && cur.Joined():
 		return errors.New("a Genesis decree starts a cluster, and this one holds a mesh CA")
-	case d.Kind != cdsdecree.Genesis && !cur.Joined():
+	case d.Kind != tadecree.Genesis && !cur.Joined():
 		return fmt.Errorf("a %s decree carries a cluster on, and this replica holds none", d.Kind)
-	case d.Kind != cdsdecree.Genesis && d.BaseVersion != cur.Version:
+	case d.Kind != tadecree.Genesis && d.BaseVersion != cur.Version:
 		return fmt.Errorf("the decree applies on version %d, and the cluster is at version %d", d.BaseVersion, cur.Version)
-	case d.Kind == cdsdecree.DismissRecover && !cur.doubted(d.RecoverIntent):
+	case d.Kind == tadecree.DismissRecover && !cur.doubted(d.RecoverIntent):
 		return fmt.Errorf("the cluster holds no doubt of Recover %s to dismiss", d.RecoverIntent)
 	}
 	return nil
 }
 
-func mintsMeshCA(kind cdsdecree.Kind) bool {
-	return kind == cdsdecree.Genesis || kind == cdsdecree.RotateKey
+func mintsMeshCA(kind tadecree.Kind) bool {
+	return kind == tadecree.Genesis || kind == tadecree.RotateKey
 }
 
 func adoptMeshCA(next *ClusterState, de DecreeEntry) (*issuer.CA, error) {

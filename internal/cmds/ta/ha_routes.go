@@ -20,9 +20,9 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsdecree"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsha"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/readutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tadecree"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 )
 
@@ -54,7 +54,7 @@ func takeDecree(node *cdsha.Node) http.HandlerFunc {
 			http.Error(w, "cds-ha: the posted decree: "+err.Error(), http.StatusBadRequest)
 			return
 		}
-		signed, err := cdsdecree.Parse(body)
+		signed, err := tadecree.Parse(body)
 		if err != nil {
 			http.Error(w, "cds-ha: the posted decree: "+err.Error(), http.StatusBadRequest)
 			return

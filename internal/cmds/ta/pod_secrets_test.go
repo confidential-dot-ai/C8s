@@ -20,8 +20,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsconfig"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/issuer"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/taconfig"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/secretbroker"
@@ -68,8 +68,8 @@ func newFakeKMS(t *testing.T, mesh *issuer.MeshCA) *fakeKMS {
 	return k
 }
 
-func (k *fakeKMS) config() *cdsconfig.KMS {
-	return &cdsconfig.KMS{URL: k.server.URL + "/release", TLSKey: sha256.Sum256(k.server.Certificate().RawSubjectPublicKeyInfo)}
+func (k *fakeKMS) config() *taconfig.KMS {
+	return &taconfig.KMS{URL: k.server.URL + "/release", TLSKey: sha256.Sum256(k.server.Certificate().RawSubjectPublicKeyInfo)}
 }
 
 // podLeaf is a CDS-issued pod CVM leaf carrying the pod instance and, unless
@@ -431,7 +431,7 @@ func TestKMSClientRelease(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			kms := httptest.NewTLSServer(tc.handler)
 			defer kms.Close()
-			client := newKMSClient(&cdsconfig.KMS{URL: kms.URL, TLSKey: sha256.Sum256(kms.Certificate().RawSubjectPublicKeyInfo)})
+			client := newKMSClient(&taconfig.KMS{URL: kms.URL, TLSKey: sha256.Sum256(kms.Certificate().RawSubjectPublicKeyInfo)})
 			_, err := client.Release(t.Context(), secretbroker.ReleaseRequest{Version: secretbroker.ReleaseVersion})
 			if tc.refusal != "" {
 				var refusal *kmsRefusal
@@ -451,7 +451,7 @@ func TestKMSClientRelease(t *testing.T) {
 }
 
 func TestKMSClientRejectsAMalformedURL(t *testing.T) {
-	client := newKMSClient(&cdsconfig.KMS{URL: "https://kms\x7f"})
+	client := newKMSClient(&taconfig.KMS{URL: "https://kms\x7f"})
 	if _, err := client.Release(t.Context(), secretbroker.ReleaseRequest{}); err == nil || !strings.Contains(err.Error(), "invalid control character") {
 		t.Fatalf("got %v", err)
 	}

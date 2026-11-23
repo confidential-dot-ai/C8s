@@ -25,10 +25,10 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/allowlist"
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsdecree"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/issuer"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/sandboxledger"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/secrets"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tadecree"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
 )
 
@@ -152,7 +152,7 @@ func (r *replica) applyDecreeEntry(de DecreeEntry) DecreeResult {
 // genesis starts the cluster, as the target of a Genesis decree does.
 func (r *replica) genesis() DecreeResult {
 	r.t.Helper()
-	res := r.applyDecreeEntry(r.entryFor(r.decree(cdsdecree.Genesis)))
+	res := r.applyDecreeEntry(r.entryFor(r.decree(tadecree.Genesis)))
 	if res.Refused != "" {
 		r.t.Fatalf("genesis: %s", res.Refused)
 	}
@@ -161,43 +161,43 @@ func (r *replica) genesis() DecreeResult {
 
 // decree is what the operator CLI signs for one kind: everything that kind
 // must carry, against the cluster's current version.
-func (r *replica) decree(kind cdsdecree.Kind) cdsdecree.Decree {
+func (r *replica) decree(kind tadecree.Kind) tadecree.Decree {
 	r.t.Helper()
 	version := r.ClusterState().Version
-	d := cdsdecree.Decree{
+	d := tadecree.Decree{
 		ClusterID: testCluster,
-		IntentID:  cdsdecree.NewIntentID(),
+		IntentID:  tadecree.NewIntentID(),
 		Kind:      kind,
 		ExpiresAt: time.Now().Add(time.Hour),
 	}
 	switch kind {
-	case cdsdecree.Genesis:
+	case tadecree.Genesis:
 		d.CDSPins = testPins(r.t, 0x11)
 		d.NodePins = testNodeImages(r.t, 0x33)
 		d.TargetMember = testMember
 		d.TargetAddress = "10.0.0.5:8444"
 		d.IssuedAtMS = time.Now().UnixMilli()
 		d.GenesisCA = certutil.CertFingerprint(r.minted.Cert.Raw)
-	case cdsdecree.UpdateMeasurements:
+	case tadecree.UpdateMeasurements:
 		d.BaseVersion = version
 		d.CDSPins = testPins(r.t, 0x22)
-	case cdsdecree.SetNodeImages:
+	case tadecree.SetNodeImages:
 		d.BaseVersion = version
 		d.NodePins = testNodeImages(r.t, 0x44)
-	case cdsdecree.RotateKey:
+	case tadecree.RotateKey:
 		d.BaseVersion = version
-	case cdsdecree.SetVoters:
+	case tadecree.SetVoters:
 		d.BaseVersion = version
 		d.Voters = 1
-	case cdsdecree.Recover:
+	case tadecree.Recover:
 		d.BaseVersion = version
 		d.TargetMember = testMember
 		d.TargetAddress = "10.0.0.5:8444"
 		d.IssuedAtMS = time.Now().UnixMilli()
 		d.ResumeVersion = version
-	case cdsdecree.DismissRecover:
+	case tadecree.DismissRecover:
 		d.BaseVersion = version
-	case cdsdecree.Admit:
+	case tadecree.Admit:
 		d.CDSPins = testPins(r.t, 0x11)
 		d.TargetMember = testMember
 	}
@@ -206,25 +206,25 @@ func (r *replica) decree(kind cdsdecree.Kind) cdsdecree.Decree {
 
 // entryFor is the entry a leader logs for a decree: its own clock, the policy
 // a Genesis fixes, and the mesh CA the kinds that mint one carry.
-func (r *replica) entryFor(d cdsdecree.Decree) DecreeEntry {
+func (r *replica) entryFor(d tadecree.Decree) DecreeEntry {
 	r.t.Helper()
 	de := DecreeEntry{
 		Decree: r.sign(d),
 		AtMS:   time.Now().UnixMilli(),
 	}
-	if d.Kind == cdsdecree.Genesis {
+	if d.Kind == tadecree.Genesis {
 		de.Policy = r.LocalPolicy()
 		de.MeshCACert, de.MeshCAKey = caBytes(r.t, r.minted)
 	}
-	if d.Kind == cdsdecree.RotateKey {
+	if d.Kind == tadecree.RotateKey {
 		de.MeshCACert, de.MeshCAKey = caBytes(r.t, mintCA(r.t))
 	}
 	return de
 }
 
-func (r *replica) sign(d cdsdecree.Decree) cdsdecree.Signed {
+func (r *replica) sign(d tadecree.Decree) tadecree.Signed {
 	r.t.Helper()
-	signed, err := cdsdecree.Sign(d, r.operator)
+	signed, err := tadecree.Sign(d, r.operator)
 	if err != nil {
 		r.t.Fatal(err)
 	}
@@ -243,7 +243,7 @@ func caBytes(t *testing.T, ca *issuer.CA) (cert, key []byte) {
 }
 
 // testPins pins CDS images to the launch file every replica boots.
-func testPins(t *testing.T, digests ...byte) *cdsdecree.PinDocument {
+func testPins(t *testing.T, digests ...byte) *tadecree.PinDocument {
 	t.Helper()
 	images := make([]remote.ImagePin, 0, len(digests))
 	for _, digest := range digests {
@@ -260,21 +260,21 @@ func testPins(t *testing.T, digests ...byte) *cdsdecree.PinDocument {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pins, err := cdsdecree.NewPinDocument(document)
+	pins, err := tadecree.NewPinDocument(document)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return pins
 }
 
-func testNodeImages(t *testing.T, digests ...byte) *cdsdecree.NodeImages {
+func testNodeImages(t *testing.T, digests ...byte) *tadecree.NodeImages {
 	t.Helper()
 	return nodeImagesBoundTo(t, nil, digests...)
 }
 
 // nodeImagesBoundTo pins one TDX node image per digest, each bound to the
 // launch file of this SHA-384, none for nil.
-func nodeImagesBoundTo(t *testing.T, launched []byte, digests ...byte) *cdsdecree.NodeImages {
+func nodeImagesBoundTo(t *testing.T, launched []byte, digests ...byte) *tadecree.NodeImages {
 	t.Helper()
 	images := make([]remote.ImagePin, 0, len(digests))
 	for _, digest := range digests {
@@ -291,7 +291,7 @@ func nodeImagesBoundTo(t *testing.T, launched []byte, digests ...byte) *cdsdecre
 	if err != nil {
 		t.Fatal(err)
 	}
-	nodes, err := cdsdecree.NewNodeImages(document)
+	nodes, err := tadecree.NewNodeImages(document)
 	if err != nil {
 		t.Fatal(err)
 	}

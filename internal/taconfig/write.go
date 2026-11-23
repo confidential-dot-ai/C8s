@@ -1,7 +1,7 @@
 // The generator side of a CDS launch file: what an operator's tooling puts
 // into one and the rules it checks before writing it.
 
-package cdsconfig
+package taconfig
 
 import (
 	"errors"

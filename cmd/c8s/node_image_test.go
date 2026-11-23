@@ -28,9 +28,9 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/confidential-kubernetes/charts"
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsconfig"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/nodeservices"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/taconfig"
 	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
 )
@@ -284,7 +284,7 @@ func bootstrapCDSPin(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, pin, err := cdsconfig.Build(cdsconfig.Inputs{
+	_, pin, err := taconfig.Build(taconfig.Inputs{
 		ClusterID:     "bootstrap",
 		OperatorKeys:  operatorKeys,
 		ComponentSeed: []byte(`{"schema":"c8s.allowlist/v1","workloads":{}}`),

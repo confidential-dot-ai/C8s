@@ -15,11 +15,11 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsdecree"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsha"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/taconn"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/readutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tadecree"
 )
 
 // A replica serves its clients and the operator on one port.
@@ -202,7 +202,7 @@ func splitReplicaAddress(address string) (string, uint16, error) {
 
 // postDecree hands one signed decree to this replica over the attested
 // channel. A decree the cluster refused is an answer, not an error.
-func (r replica) postDecree(ctx context.Context, signed cdsdecree.Signed) (cdsha.Delivered, string, error) {
+func (r replica) postDecree(ctx context.Context, signed tadecree.Signed) (cdsha.Delivered, string, error) {
 	object, err := json.Marshal(signed)
 	if err != nil {
 		return cdsha.Delivered{}, "", err

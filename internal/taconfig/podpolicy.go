@@ -1,4 +1,4 @@
-package cdsconfig
+package taconfig
 
 import (
 	"crypto/ecdsa"

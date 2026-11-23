@@ -49,9 +49,9 @@ var commandImportRules = importRules{
 		"internal/cmds/ta imports internal/cmds/verify",
 	},
 	knownDebt: []string{
-		"internal/cdsconfig imports internal/cmds/cmdsutil",
-		"internal/cdsdecree imports internal/cmds/cmdsutil",
-		"internal/cdspins imports internal/cmds/cmdsutil",
+		"internal/taconfig imports internal/cmds/cmdsutil",
+		"internal/tadecree imports internal/cmds/cmdsutil",
+		"internal/tapins imports internal/cmds/cmdsutil",
 		"internal/controller imports internal/cmds/cmdsutil",
 		"internal/podlaunch imports github.com/spf13/cobra",
 		"internal/podlaunch imports internal/cmds/cmdsutil",
