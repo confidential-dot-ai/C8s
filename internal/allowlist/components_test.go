@@ -2,6 +2,7 @@ package allowlist
 
 import (
 	"bytes"
+	"reflect"
 	"testing"
 
 	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
@@ -106,5 +107,49 @@ func TestSeedWorkloadsKeepsComponentSets(t *testing.T) {
 	}
 	if _, listed := reloaded.Workloads["cds"]; !listed {
 		t.Fatal("seeding did not add its entry")
+	}
+}
+
+// routerComponentDocument declares a set entry with host ports: the router a
+// release publishes is host privilege the operator granted.
+const routerComponentDocument = `{"schema":"c8s.allowlist/v1","workloads":{"api":{"containers":[` +
+	`{"digest":"` + digestA + `","command":{"policy":"any"},"args":{"policy":"any"}}]}},` +
+	`"components":{"0.43.0":{"entries":{"c8s-router":{` +
+	`"hostPorts":[{"protocol":"TCP","hostPort":443,"containerPort":8443}],"containers":[` +
+	`{"digest":"` + digestB + `","role":"router","command":{"policy":"exact","argv":["/app/c8s","router"]},` +
+	`"args":{"policy":"deny"},"env":{"policy":"deny"},"mounts":{"policy":"exact","rules":[` +
+	`{"destination":"/etc/nginx","kind":"host","source":"/var/lib/c8s/nginx"}]}}]}}}}}`
+
+// The latch covers both sections: a write whose component set introduces a
+// declaration is the write that granted it, and a later write serving the same
+// set grants nothing.
+func TestAComponentSetEntryGrantsHostPrivilege(t *testing.T) {
+	store, allowlist := openJournaledStore(t)
+	write := func(document string) {
+		t.Helper()
+		al, err := pkgallowlist.ParseJSON([]byte(document))
+		if err != nil {
+			t.Fatalf("parse document: %v", err)
+		}
+		if err := allowlist.ReplaceAll(al, OperatorWrite{}); err != nil {
+			t.Fatalf("write document: %v", err)
+		}
+	}
+
+	write(componentDocument)
+	if got := hostPrivilege(t, store).FirstOperatorGrant; got != nil {
+		t.Fatalf("a set declaring no host privilege granted %+v", got)
+	}
+
+	write(routerComponentDocument)
+	history := mustHistory(t, store)
+	granted := &HostPrivilegeGrant{Digest: history[len(history)-1].Digest}
+	if got := hostPrivilege(t, store).FirstOperatorGrant; !reflect.DeepEqual(got, granted) {
+		t.Fatalf("the write adding the router set recorded %+v, want %+v", got, granted)
+	}
+
+	write(routerComponentDocument)
+	if got := hostPrivilege(t, store).FirstOperatorGrant; !reflect.DeepEqual(got, granted) {
+		t.Fatalf("a write serving the same set recorded %+v, want the first grant %+v", got, granted)
 	}
 }

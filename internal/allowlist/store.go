@@ -394,7 +394,8 @@ func (s *Store) seedWorkloads(workloads map[string]pkgallowlist.Workload, at tim
 // retireReplacedTx deletes every stored entry seed replaces and returns how
 // many it deleted.
 func retireReplacedTx(tx *sql.Tx, seed map[string]pkgallowlist.Workload) (int, error) {
-	seedKeys, overrideKeys := map[string]bool{}, map[string]bool{}
+	seedKeys := map[string]bool{}
+	overrideKeys := map[string]bool{}
 	for name := range seed {
 		if key := GeneratedKey(name); key != "" {
 			seedKeys[key] = true

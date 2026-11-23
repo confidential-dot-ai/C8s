@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"slices"
 	"strings"
 	"time"
 
@@ -122,9 +121,13 @@ type Handler struct {
 	Logger *slog.Logger
 }
 
-func (h Handler) now() time.Time {
-	if h.Now != nil {
-		return h.Now()
+func (h Handler) now() time.Time { return nowOrWallClock(h.Now) }
+
+// nowOrWallClock is the instant a handler decides for: its clock seam, or the
+// wall clock when it has none.
+func nowOrWallClock(clock func() time.Time) time.Time {
+	if clock != nil {
+		return clock()
 	}
 	return time.Now()
 }
@@ -360,10 +363,10 @@ func (h Handler) authorize(ctx context.Context, r *http.Request, nonce []byte) (
 		return grant{}, deny("%v", err)
 	}
 	now := h.now()
-	if err := requireAllowlisted(al, reported, now); err != nil {
+	if err := workloadclaims.RequireAllowlisted(al, reported, now); err != nil {
 		return grant{}, deny("sandbox %s: %v", sandboxID, err)
 	}
-	if _, err := ComponentSets(al, reported, now); err != nil {
+	if _, err := workloadclaims.ComponentSets(al, reported, now); err != nil {
 		return grant{}, deny("sandbox %s: %v", sandboxID, err)
 	}
 	containers := WorkloadContainers(reported)
@@ -486,63 +489,7 @@ func WorkloadContainers(reported []workloadclaims.SandboxContainer) []pkgallowli
 		if c.Role == pkgallowlist.RoleMesh || c.Role == pkgallowlist.RoleCredentials {
 			continue
 		}
-		r := runningContainer(c)
-		out = append(out, r)
+		out = append(out, c.Running())
 	}
 	return out
-}
-
-// ComponentSets are the component sets a pod is on: the sets in force at now
-// that admit every container the reporting node bound a c8s component role to.
-// A pod whose component containers no set in force admits is on no set — an
-// older worker image, which the workloads section judges as before.
-//
-// Mixing is an error: component containers from two sets, or one from a set
-// beside one only a node's measured base admits, leave no set describing the
-// pod and release and issuance both refuse it.
-func ComponentSets(al *pkgallowlist.Allowlist, reported []workloadclaims.SandboxContainer, now time.Time) ([]pkgallowlist.SetRef, error) {
-	var admitting [][]pkgallowlist.SetRef
-	onASet := false
-	for _, c := range reported {
-		if c.Role == "" {
-			continue
-		}
-		sets := al.SetsAdmitting(runningContainer(c), now)
-		onASet = onASet || len(sets) > 0
-		admitting = append(admitting, sets)
-	}
-	if !onASet {
-		return nil, nil
-	}
-	sets := admitting[0]
-	for _, next := range admitting[1:] {
-		sets = intersectSets(sets, next)
-	}
-	if len(sets) == 0 {
-		return nil, fmt.Errorf("the component containers are on no common component set in force")
-	}
-	return sets, nil
-}
-
-// requireAllowlisted is the membership gate issuance applies: every container
-// the sandbox runs is listed by an entry in force at now, so a pod whose
-// component set has ended gets nothing new.
-func requireAllowlisted(al *pkgallowlist.Allowlist, reported []workloadclaims.SandboxContainer, now time.Time) error {
-	index := al.BuildIndexAt(now)
-	for _, c := range reported {
-		if !index.AdmitsDigest(c.Digest) {
-			return fmt.Errorf("container image %s is not allowlisted", c.Digest)
-		}
-	}
-	return nil
-}
-
-func intersectSets(sets, keep []pkgallowlist.SetRef) []pkgallowlist.SetRef {
-	return slices.DeleteFunc(slices.Clone(sets), func(ref pkgallowlist.SetRef) bool {
-		return !slices.Contains(keep, ref)
-	})
-}
-
-func runningContainer(c workloadclaims.SandboxContainer) pkgallowlist.RunningContainer {
-	return pkgallowlist.RunningContainer{Digest: c.Digest, Argv: c.Argv, Env: c.Env, Mounts: c.Mounts}
 }

@@ -150,7 +150,9 @@ waiting until the node applies the policy version, or recreating the pod — and
 
 `c8s secrets explain --sandbox <SANDBOX_ID>` reports the decision as the TA makes
 it: what the inventory says is running, what was dropped, how each entry
-measures against the rest, and why a container was rejected. It answers to the
+measures against the rest, and why a container was rejected. Release decides
+membership and component sets before it matches an entry, so a pod refused
+there is reported with that refusal and no entry verdicts. It answers to the
 operator key — the operator's signing key whose public half the TA pins for policy
 writes — and never carries a value. The sandbox ID is on the pod's certificate,
 and `c8s verify` prints it.

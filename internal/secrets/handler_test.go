@@ -271,7 +271,8 @@ func newHarness(t *testing.T) *harness {
 // setStore swaps in a store bounded for the test at hand.
 func (hn *harness) setStore(t *testing.T, s *Handle) {
 	t.Helper()
-	hn.store, hn.h.Store = s, s
+	hn.store = s
+	hn.h.Store = s
 }
 
 // declareBulkEntry adds a second granted entry, running in testBulkSandbox, and
@@ -830,7 +831,8 @@ func TestFloodingWorkloadDoesNotRefuseAnother(t *testing.T) {
 	hn.setStore(t, NewMemoryStore(16, 2, 64).Local())
 	bulkLeaf := hn.declareBulkEntry(t)
 
-	created, refused := 0, 0
+	created := 0
+	refused := 0
 	for i := range 10 {
 		p := fmt.Sprintf("/bulk/%d", i)
 		switch w := do(hn.h, hn.requestWith(t, http.MethodPost, p, bulkLeaf, testBulkSandbox, []byte("bulk"+p))); w.Code {

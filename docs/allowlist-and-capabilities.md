@@ -465,8 +465,9 @@ declares it with `hostPorts`, a container `capabilities`, or a `host` mount
 rule — a `nodeRootFile` rule names a measured node-image file and declares
 none. `declaredBySeed` is whether the measured seed this TA booted on
 declares any. `firstOperatorGrant` names, as `{"digest"}`, the document of the
-first operator write that served a declaration the document it replaced did
-not serve, and is `null` until one does; a write that moves a declaration to
+first operator write that served a declaration — in the `workloads` section or
+in a component set — the document it replaced did not serve, and is `null`
+until one does; a write that moves a declaration to
 another entry name grants nothing, and no later write clears the record. Both
 last as long as the store: a TA restart that starts from an empty database
 reports its seed again and no grant.

@@ -651,7 +651,8 @@ func TestAllowlistListAnswers304ToTheServedTag(t *testing.T) {
 // store's at the same version (a cluster cut over to), an earlier document of
 // the same store, and the weak version tag earlier releases served.
 func TestAllowlistListServesTheDocumentToAnyOtherTag(t *testing.T) {
-	previous, current := openInMemory(t), openInMemory(t)
+	previous := openInMemory(t)
+	current := openInMemory(t)
 	seedEntry(t, previous, "inference-worker-1", digestA)
 	seedEntry(t, current, "web", digestMissing)
 	_, previousVersion, _ := previous.LoadAll()

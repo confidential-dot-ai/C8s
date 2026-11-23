@@ -1,12 +1,12 @@
 package ta
 
 import (
+	"net/http"
 	"strings"
 	"testing"
 	"time"
 
 	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
-	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
@@ -181,13 +181,14 @@ func TestAttest_ComponentSets_LeafExpiresWithTheLastSet(t *testing.T) {
 // rather than signing one that is already expired.
 func TestLeafTTL_RefusesAnEndedSet(t *testing.T) {
 	h := AttestHandler{Now: func() time.Time { return componentDeadline }}
-	if _, err := h.leafTTL(workloadDecision{setsEnd: componentDeadline}); err == nil {
+	if _, err := h.leafTTL(workloadDecision{admissionEnd: componentDeadline}); err == nil {
 		t.Fatal("a leaf was issued after every set admitting the pod had ended")
 	}
 }
 
-// A digest is admitted while the set declaring it is in force, and not after.
-func TestPolicySnapshot_ContainsCoversTheSetsInForce(t *testing.T) {
+// A digest is admitted while the set declaring it is in force, and not after;
+// the admission of one only a retiring set lists ends with that set.
+func TestPolicySnapshot_AdmitDigestsCoversTheSetsInForce(t *testing.T) {
 	store := componentDoc(t,
 		[]string{anyArgvEntry("api", wlDigestA)},
 		[]string{retiringSet("0.42.1", wlDigestB, pkgallowlist.RoleMesh)},
@@ -196,24 +197,136 @@ func TestPolicySnapshot_ContainsCoversTheSetsInForce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	before, after := componentDeadline.Add(-time.Second), componentDeadline
+	before := componentDeadline.Add(-time.Second)
+	after := componentDeadline
 	for _, tc := range []struct {
-		name   string
-		digest string
-		now    time.Time
-		admits bool
+		name    string
+		digests []string
+		now     time.Time
+		admits  bool
+		end     time.Time
 	}{
-		{"a workload digest, always", wlDigestA, after, true},
-		{"the set's digest in force", wlDigestB, before, true},
-		{"the set's digest past the deadline", wlDigestB, after, false},
-		{"a digest nothing declares", wlDigestC, before, false},
+		{name: "a workload digest, always", digests: []string{wlDigestA}, now: after, admits: true},
+		{name: "the set's digest in force", digests: []string{wlDigestB}, now: before, admits: true, end: componentDeadline},
+		{name: "the set's digest past the deadline", digests: []string{wlDigestB}, now: after},
+		{name: "a digest nothing declares", digests: []string{wlDigestC}, now: before},
+		{
+			name:    "a workload digest beside one only the retiring set lists",
+			digests: []string{wlDigestA, wlDigestB},
+			now:     before,
+			admits:  true,
+			end:     componentDeadline,
+		},
 	} {
-		digest, err := types.ParseDigest(tc.digest)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := snapshot.Contains(digest.String(), tc.now); got != tc.admits {
-			t.Errorf("%s: Contains = %v, want %v", tc.name, got, tc.admits)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			admitted, err := snapshot.admitDigests(tc.digests, tc.now)
+			if (err == nil) != tc.admits {
+				t.Fatalf("admitDigests error = %v, want admitted %v", err, tc.admits)
+			}
+			if err != nil {
+				return
+			}
+			if !admitted.end.Equal(tc.end) {
+				t.Errorf("admission ends %v, want %v", admitted.end, tc.end)
+			}
+		})
 	}
+}
+
+// The deadline cap follows the admission the gate relied on, not the roles: a
+// workload container only a retiring set lists ends the leaf with that set.
+func TestAttest_ComponentSets_RolelessDigestFromARetiringSetCapsTheLeaf(t *testing.T) {
+	store := componentDoc(t,
+		[]string{anyArgvEntry("api", wlDigestA)},
+		[]string{
+			currentSet("0.43.0", wlDigestC, pkgallowlist.RoleMesh),
+			retiringSet("0.42.1", wlDigestB, pkgallowlist.RoleMesh),
+		},
+	)
+	// The sidecar is on the current set; the extra tenant image is listed by
+	// the retiring set alone, which no role container names.
+	reported := []workloadclaims.SandboxContainer{
+		workloadLaunch(wlDigestA),
+		sidecarLaunch(wlDigestC, pkgallowlist.RoleMesh),
+		sidecarLaunch(wlDigestB, ""),
+	}
+	digests := []string{wlDigestA, wlDigestB, wlDigestC}
+	leaf := leafFromInventory(t, store, digests, reported, atTime(componentDeadline.Add(-30*time.Minute)))
+	if got := leaf.NotAfter.Sub(leaf.NotBefore); got > 30*time.Minute || got < 29*time.Minute {
+		t.Fatalf("leaf lifetime = %s, want the 30 minutes left of the set listing the image", got)
+	}
+}
+
+// A Pod CVM is judged by the sets in force as a node sandbox is: its claims
+// carry the roles its measured base bound, so mixing two sets refuses the leaf
+// and a set's deadline bounds it.
+func TestPodAttest_ComponentSets_MixingTwoSetsRefused(t *testing.T) {
+	p := podClaimsWith(t,
+		workloadLaunch(wlDigestA),
+		sidecarLaunch(wlDigestB, pkgallowlist.RoleMesh),
+		sidecarLaunch(wlDigestC, pkgallowlist.RoleCredentials),
+	)
+	h, _ := podTestHandler(t, p)
+	h.AllowlistStore = componentDoc(t,
+		[]string{anyArgvEntry("api", wlDigestA)},
+		[]string{
+			currentSet("0.43.0", wlDigestB, pkgallowlist.RoleMesh),
+			currentSet("0.44.0", wlDigestC, pkgallowlist.RoleCredentials),
+		},
+	)
+	if w := postPodRequest(t, h, podRequest(t, h, p)); w.Code == http.StatusOK {
+		t.Fatal("a Pod CVM mixing two component sets was issued a leaf")
+	}
+}
+
+func TestPodAttest_ComponentSets_LeafExpiresWithTheLastSet(t *testing.T) {
+	p := podClaimsWith(t,
+		workloadLaunch(wlDigestA),
+		sidecarLaunch(wlDigestB, pkgallowlist.RoleMesh),
+	)
+	h, _ := podTestHandler(t, p)
+	h.AllowlistStore = componentDoc(t,
+		[]string{anyArgvEntry("api", wlDigestA)},
+		[]string{retiringSet("0.42.1", wlDigestB, pkgallowlist.RoleMesh)},
+	)
+	atTime(componentDeadline.Add(-30 * time.Minute))(&h)
+
+	w := postPodRequest(t, h, podRequest(t, h, p))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	leaf := leafFromAttestResponse(t, w)
+	if got := leaf.NotAfter.Sub(leaf.NotBefore); got > 30*time.Minute || got < 29*time.Minute {
+		t.Fatalf("leaf lifetime = %s, want the 30 minutes left of the set", got)
+	}
+}
+
+// podClaimsWith builds Pod CVM claims whose measurement journal is the given
+// containers' digests, in order. A container reported without an argv or
+// environment gets the ones claims validation requires.
+func podClaimsWith(t *testing.T, containers ...workloadclaims.SandboxContainer) workloadclaims.PodClaims {
+	t.Helper()
+	env, err := pkgallowlist.ObserveEnv(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := workloadclaims.PodClaims{
+		Version:        1,
+		BootID:         strings.Repeat("b", 64),
+		AssignedPodUID: "assigned",
+		RuntimePodUID:  "runtime",
+		SandboxID:      "sandbox",
+		Revision:       1,
+	}
+	for _, c := range containers {
+		if c.Env == nil {
+			c.Env = env
+		}
+		if len(c.Argv) == 0 {
+			c.Argv = []string{"/app"}
+		}
+		p.Containers = append(p.Containers, c)
+		p.RuntimeExtensions = append(p.RuntimeExtensions, c.Digest)
+	}
+	return p
 }

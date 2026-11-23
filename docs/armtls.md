@@ -195,9 +195,12 @@ SHA384("c8s-pod-attestation/v1\0" || SHA384(SPKI DER) || challenge || SHA384(cla
 ```
 
 the TA verifies that binding and replays the whole measurement list against its
-separate Pod image policy. Every measured digest must be in the current workload
-policy. When the Pod's whole observation set, without the platform's mesh
-endpoint, matches exactly one allowlist entry of the same policy snapshot,
+separate Pod image policy. Every measured digest must be admitted by an entry in
+force, and the roles the guest's measured base bound decide the Pod's component
+sets, exactly as a node sandbox's inventory answer is judged above — mixing
+refused, the leaf bounded by the admission. When the Pod's whole observation
+set, without the platform's mesh endpoint, matches exactly one allowlist entry
+of the same policy snapshot,
 the leaf carries the matched-workload stamp, as a node workload's does, under
 the named-leaf lifetime cap. Otherwise it is the unnamed membership leaf: no
 match, more than one match, or an image no single entry lists. Neither a
@@ -286,9 +289,12 @@ sets the pod is on: the sets in force that admit every one of them. A pod whose
 component containers share no such set — two sets, or one set beside a
 container only a node's measured base admits — is refused a certificate, a
 secret and a volume key. A pod no set admits a component container of is judged
-by the workloads section alone, as a pod from before sets is. A leaf for a pod
-only retiring sets admit expires with the last of their deadlines, so it renews
-under the set that replaces them or loses its identity.
+by the workloads section alone, as a pod from before sets is.
+
+A leaf expires with the admission its images passed the gate on. For an image
+the workloads section does not list, that is the last in-force set listing it,
+and the earliest of those ends bounds the leaf: the pod renews under the set
+that replaces them or loses its identity.
 
 Issuance gates on membership, not on a whole workload entry
 ([allowlist-and-capabilities.md](allowlist-and-capabilities.md) owns that rule),
