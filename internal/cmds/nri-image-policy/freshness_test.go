@@ -48,42 +48,36 @@ func TestFreshnessLimitFollowsTheReportedCertificateLifetime(t *testing.T) {
 	}
 }
 
-// A node is behind until its first fresh poll, falls back once the limit has
-// passed without one, and falls back once per lapse.
-func TestFreshnessFallsBackOncePerLapse(t *testing.T) {
+// A node is behind until its first fresh poll, within its limit after one,
+// and behind again once the limit passes without another.
+func TestFreshnessIsBehindBeforeTheFirstPollAndPastTheLimit(t *testing.T) {
 	clock := newMovingClock(time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC))
 	fresh := newFreshness(clock.now)
 
-	if !fresh.pendingFallback() {
+	if !fresh.behind() {
 		t.Fatal("a node with no fresh poll of its own is not behind")
 	}
 	fresh.replied(time.Hour, true)
-	if behind, _ := fresh.report(); !behind {
+	if atLastPoll, _ := fresh.report(); !atLastPoll {
 		t.Fatal("the last poll was fresh, but the node does not report it")
+	}
+	if fresh.behind() {
+		t.Fatal("a node whose fresh poll just landed is behind")
 	}
 
 	clock.advance(time.Hour)
 	fresh.unanswered()
-	if fresh.pendingFallback() {
-		t.Fatal("a node within its limit fell back")
+	if fresh.behind() {
+		t.Fatal("a node within its limit is behind")
 	}
 	clock.advance(time.Second)
-	if !fresh.pendingFallback() {
-		t.Fatal("a node past its limit did not fall back")
-	}
-
-	fresh.noteFallback()
-	if fresh.pendingFallback() || !fresh.fellBackToBase() {
-		t.Fatal("the fallback runs again before a fresh poll")
+	if !fresh.behind() {
+		t.Fatal("a node past its limit is not behind")
 	}
 
 	fresh.replied(time.Hour, true)
-	if fresh.fellBackToBase() {
-		t.Fatal("a fresh poll left the node on its base allowlist")
-	}
-	clock.advance(2 * time.Hour)
-	if !fresh.pendingFallback() {
-		t.Fatal("the node did not fall back again after a later lapse")
+	if fresh.behind() {
+		t.Fatal("a fresh poll left the node behind")
 	}
 }
 
@@ -99,7 +93,7 @@ func TestFreshnessStaleReplyDoesNotMoveTheFreshReading(t *testing.T) {
 	if behind, _ := fresh.report(); behind {
 		t.Fatal("a reply naming another document reports the node fresh")
 	}
-	if !fresh.pendingFallback() {
-		t.Fatal("replies naming another document kept the node from falling back")
+	if !fresh.behind() {
+		t.Fatal("replies naming another document left the node within its limit")
 	}
 }

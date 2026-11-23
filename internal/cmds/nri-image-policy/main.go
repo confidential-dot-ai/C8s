@@ -485,7 +485,8 @@ func startHealthServer(ctx context.Context, cfg healthServerConfig) error {
 		}
 		if cfg.pull != nil {
 			fresh, limit := cfg.plugin.policy.freshness.report()
-			body.Fresh, body.FreshnessLimitSeconds = fresh, int64(limit.Seconds())
+			body.Fresh = fresh
+			body.FreshnessLimitSeconds = int64(limit.Seconds())
 		}
 		if cfg.plugin.cfg.podRole() {
 			body.PodUID = cfg.plugin.cfg.Pod.UID
