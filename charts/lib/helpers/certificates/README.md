@@ -5,7 +5,7 @@ Source: [templates/_certificates.tpl](../../templates/_certificates.tpl).
 
 `c8s.getCertContainers` renders the `c8s-cert` native sidecar and the
 `c8s-cert-wait` init container for chart-owned components. The sidecar obtains
-and renews a CDS-issued mesh certificate over armTLS.
+and renews a mesh certificate from the Trust Authority (TA) over armTLS.
 A valid stored generation remains available across sidecar restarts until its
 replacement is published. Every certificate request generates a fresh key.
 
@@ -26,7 +26,7 @@ The helper takes a dict with these fields:
 | Field | Purpose |
 | --- | --- |
 | `root` | Chart root for image and endpoint helpers |
-| `attestationApiURL` | The attestation-api the sidecar verifies CDS through |
+| `attestationApiURL` | The attestation-api the sidecar verifies the TA through |
 | `san` | Certificate workload identity or Service DNS name |
 | `sanFile` | Optional verified SAN file; replaces `san` on a worker |
 | `renewInterval` | Go duration, such as `6h` or `30m` |
@@ -37,7 +37,7 @@ The helper takes a dict with these fields:
 requires a read-only root filesystem, and selects the RuntimeDefault seccomp
 profile. Both containers share it so they can access the consumer's cert volume.
 
-A leaf's DNS SANs are matched against the rules the CDS configuration carries:
+A leaf's DNS SANs are matched against the rules the TA configuration carries:
 the in-cluster `<service>.<namespace>.svc` pattern
 (`cmdsutil.ServiceDNSSANPattern`) and any further name or pattern a leaf may
 carry, including public hostnames.

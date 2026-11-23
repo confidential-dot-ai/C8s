@@ -6,7 +6,7 @@ Source: [templates/nri-image-policy-helpers.tpl](../../templates/nri-image-polic
 
 The first file holds the installer DaemonSet's names and labels, the host
 paths it writes — the plugin binary, its configuration, the health socket and
-the CDS address and pin it stages — and the host volumes and mounts that reach
+the Trust Authority address and pin it stages — and the host volumes and mounts that reach
 them, plus the containerd layout it edits and the command that restarts it.
 `nri-image-policy.pluginReadyScript` is the readiness endpoint the allowlist
 pins as argv. `nri-image-policy.hostSweepScript` puts the shared

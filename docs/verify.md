@@ -59,7 +59,7 @@ refuses `--mesh-ca`, `--sandbox-id`, `--workload`, `--client-document` and
 bundle from the TA:
 
 ```sh
-c8s ta ca --url https://<TA_ADDRESS> --image-policy-file cds-pin.json --out mesh-ca.pem
+c8s ta ca --ta-url https://<TA_ADDRESS> --ta-image-policy-file cds-pin.json --out mesh-ca.pem
 ```
 
 `<TA_ADDRESS>` is the `<host>:<port>` the install named with `--ta-address`,

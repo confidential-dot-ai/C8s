@@ -6,12 +6,12 @@ live in [the c8s-lib chart](../../lib/helpers/README.md).
 
 | Template file | Responsibility |
 | --- | --- |
-| [_allowlist.tpl](../templates/_allowlist.tpl) | The component workloads this chart runs and the seed its CDS serves |
+| [_allowlist.tpl](../templates/_allowlist.tpl) | The component workloads this chart runs and the seed its Trust Authority (TA) serves |
 | [_node.tpl](../templates/_node.tpl) | The node directories, the attestation-api URL and the inventory socket group |
 | [cluster/_router.tpl](../templates/cluster/_router.tpl) | The worker front door's pod spec, its ACME sidecar, argv and mounts |
 
 The router requires `confidential.ai/router-eligible=true`. Each worker publishes
-this label after matching fresh evidence against the CDS node policy. An explicit
+this label after matching fresh evidence against the TA node policy. An explicit
 mismatch removes eligibility and releases an unready router whose certificate
 wait gate is running. Transient check failures retain the last known decision.
 

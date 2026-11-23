@@ -69,7 +69,7 @@ under `/run/c8s/scratch-provenance.json` for NRI mount classification.
 Every boot also requires an ISO labelled `opkeydata` with these two files at
 its root:
 
-- the worker document, the strict `c8s-worker/v1` launch file naming the CDS
+- the worker document, the strict `c8s-worker/v1` launch file naming the Trust Authority (TA)
   this cluster's clients trust, the router's TLS SAN, and the API server, CA,
   ranges and cluster DNS of the control plane the worker joins. The measured
   initrd stages its exact bytes in read-only `/run/confai` and binds their
@@ -78,8 +78,8 @@ its root:
 - `bootstrap-token`: the Kubernetes bootstrap token the kubelet requests its
   client certificate with, outside the measurement.
 
-`c8s worker new` drafts a document, and `c8s cds ha decree node-images` admits
-it under the worker image's measurements, which is what lets CDS certify a
+`c8s worker new` drafts a document, and `c8s ta ha decree node-images` admits
+it under the worker image's measurements, which is what lets the TA certify a
 worker booted on it. There is no diskless boot: a missing or unbound document
 fails staging, and `worker-stage.service` powers the VM off.
 
@@ -87,7 +87,7 @@ Every field, the admission decree and the boot-time staging order are
 [docs/launch-configuration.md](../../docs/launch-configuration.md). Each boot
 registers the worker under a node name derived from its primary IPv4 address.
 
-The worker checks its router eligibility against CDS every 30–36 seconds after
+The worker checks its router eligibility against the TA every 30–36 seconds after
 each attempt. It clears stale eligibility at startup, then publishes
 `confidential.ai/router-eligible=true` after a successful check. A policy mismatch
 removes the label and deletes an unready router waiting for its certificate;
@@ -124,7 +124,7 @@ waits for. Kubernetes owns the core application services:
 `worker-stage.service` verifies and stages launch settings before containerd
 starts. The local attester must precede this gate because launch
 verification uses it. The host attester listens on `127.0.0.1:8400`;
-pods access its Unix socket in the admission-inventory directory. Every CDS
+pods access its Unix socket in the admission-inventory directory. Every TA
 client dials the address the worker document names; the router exposes port
 `443`. Cilium's VXLAN runs on UDP `8473`, not the kernel default `8472`: a
 nested guest's outer host often runs its own VXLAN on `8472` and drops the
@@ -136,26 +136,26 @@ group.
 build-time Helm binary and the baked Kubernetes version, and `c8s worker floor`
 over that render, which carries the c8s-worker chart's static pod templates,
 and this profile's floor template.
-The CDS those components trust runs on a confidential VM of its own, which
-`c8s cds config new` writes the configuration and the pin for, so the image
-neither renders a CDS nor preloads its image.
+The TA those components trust runs on a confidential VM of its own, which
+`c8s ta config new` writes the configuration and the pin for, so the image
+neither renders a TA nor preloads its image.
 
 The sync also installs the router's nginx configuration in
 `/usr/lib/c8s/router-nginx`, and the router mounts it from there instead of
 from a ConfigMap the control plane could edit. The static pods pull their
 images by digest at boot, and every other platform pod is the control plane's
 to schedule. Before containerd starts, staging writes the measured floor to
-`/etc/nri`, so the components start while CDS is unavailable.
+`/etc/nri`, so the components start while the TA is unavailable.
 
-Staging publishes only public identity inputs under `/run/c8s-node`: the CDS
-pin the document carries, the operator keys of the CDS configuration that pin
+Staging publishes only public identity inputs under `/run/c8s-node`: the TA
+pin the document carries, the operator keys of the TA configuration that pin
 binds, the TLS hostname and the router's settings. Core pods mount these
 root-owned files read-only. They never mount the kubelet's inputs under
-`/run/kubernetes`, which carry the bootstrap token. Every CDS client holds the
-CDS to the document's pin.
+`/run/kubernetes`, which carry the bootstrap token. Every TA client holds the
+TA to the document's pin.
 
 The router's get-cert helper runs alongside nginx. It reads the hostname from
-`tls-san`, which the CDS configuration carries as a leaf DNS name, so CDS
+`tls-san`, which the TA configuration carries as a leaf DNS name, so the TA
 permits that exact hostname in addition to its in-cluster Service DNS pattern.
 nginx uses one default virtual host; TLS clients validate the signed
 certificate hostname. Certificate and discovery files live in the router Pod's
@@ -169,7 +169,7 @@ API objects. The NRI floor pins platform image digests, not every possible
 argument or mount for those images.
 
 Core version upgrades rebuild the image and relaunch with updated measurement
-pins. Restarting a Pod uses the same baked image. CDS has an ephemeral
+pins. Restarting a Pod uses the same baked image. The TA has an ephemeral
 database and an in-memory CA; rebooting its VM requires certificate
 re-bootstrap.
 
@@ -199,7 +199,7 @@ and changes what stages and starts them:
   reports the pod registered, publishes the manifest and starts
   `podcvm-kubelet`.
 - The pod's runtime policy is rendered from the worker floor: the mesh
-  endpoint entry and role only, the assigned entries, the CDS from the launch
+  endpoint entry and role only, the assigned entries, the TA from the launch
   document, and RTMR[3] image measurement. The endpoint is the worker's:
   the worker sync pins armtls-mesh by digest in the floor, the pod's endpoint
   container names that `repo@digest`, and containerd pulls it at pod start.
@@ -419,8 +419,8 @@ derived, not chosen: `.github/scripts/confos-mkosi-pin.sh` reads it from the
 pinned confos commit's own `base.yml`, pin-watch writes what it reads, and
 pin-hygiene fails a PR whose `mkosi_ref` or `mkosi_version` no longer matches,
 so a hand-moved `confos_ref` has to carry mkosi along. `attestation_api_digest`
-is the published attestation-api image of that release: the CDS image fetches
-it by that digest (`images/cds-guest/cds/mkosi.sync`) and the host DaemonSet
+is the published attestation-api image of that release: the TA image fetches
+it by that digest (`images/ta-guest/ta/mkosi.sync`) and the host DaemonSet
 runs it as the chart's `attestationApi` `pinnedDigest`
 (`charts/lib/files/components.yaml`), a copy that
 `.github/scripts/chart-attestation-api-digest.sh` reads and writes and that

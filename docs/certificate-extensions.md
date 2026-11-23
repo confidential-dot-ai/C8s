@@ -19,23 +19,22 @@ C8s assigns them under its own Private Enterprise Number:
 1.3.6.1.4.1.66378.1.5  matched workload
 1.3.6.1.4.1.66378.1.8  reserved (an earlier build's assigned workload ID)
 1.3.6.1.4.1.66378.1.9  client document digest
-1.3.6.1.4.1.66378.1.10 CDS broker (an extended key usage, not an extension)
+1.3.6.1.4.1.66378.1.10 Trust Authority (TA) broker (an extended key usage, not an extension)
 ```
 
-`.6` and `.7` are used on CDS replica peer certificates.
+`.6` and `.7` are used on TA replica peer certificates.
 
 ## Three kinds of certificate
 
 - **Self-issued armTLS certificate**: a component signs it with the key its own
   evidence binds. Issuer equals subject, so a verifier authenticates the body by
   checking that self-signature, then the evidence inside it.
-- **CDS-issued leaf**: the certificate CDS — the Certificate Distribution
-  Service, the separate confidential VM that verifies evidence and signs workload
-  certificates — signs with the mesh CA. It names one pod run when the request
+- **TA-issued leaf**: the certificate the TA signs with the mesh CA after
+  verifying the workload's evidence. It names one pod run when the request
   proved a sandbox. Its signature under the mesh CA is what vouches for
-  everything CDS stamped. A member pod's mesh endpoint presents the leaf
+  everything the TA stamped. A member pod's mesh endpoint presents the leaf
   get-cert published for that pod; it issues no certificate of its own.
-- **Mesh CA**: `CN=c8s Mesh CA`, P-384, generated in CDS memory, valid for a
+- **Mesh CA**: `CN=c8s Mesh CA`, P-384, generated in the TA's memory, valid for a
   year by default, `keyUsage` certificate and CRL signing. It carries none of
   these extensions.
 
@@ -44,13 +43,13 @@ C8s assigns them under its own Private Enterprise Number:
 | OID | On | Carries | Checked by |
 |---|---|---|---|
 | `…1.1` | Self-issued certificates, and leaves whose CSR carried one | The peer's TEE evidence, bound to this certificate's public key | Every verifier that authenticates a peer by this evidence, through its own attestation-api — the node-local service that checks hardware evidence — and `c8s verify`. A verifier that admitted the peer on a mesh CA chain ignores it |
-| `…1.2` | Every leaf CDS signs | SHA-256 of the evidence bytes that authorized the issuance | Nothing reads it; it records which issuance signed this leaf |
-| `…1.4` | A leaf whose request proved a sandbox | The pod sandbox ID the container runtime gave the pod this leaf was issued to | CDS, when it serves secrets and volume keys to that pod; the pod's own injected sidecars, get-cert and the mesh endpoint (`c8s-mesh`), reading their own leaf; `c8s verify --sandbox-id` |
+| `…1.2` | Every leaf the TA signs | SHA-256 of the evidence bytes that authorized the issuance | Nothing reads it; it records which issuance signed this leaf |
+| `…1.4` | A leaf whose request proved a sandbox | The pod sandbox ID the container runtime gave the pod this leaf was issued to | the TA, when it serves secrets and volume keys to that pod; the pod's own injected sidecars, get-cert and the mesh endpoint (`c8s-mesh`), reading their own leaf; `c8s verify --sandbox-id` |
 | `…1.5` | A leaf whose attested container set matched exactly one allowlist entry, a Pod CVM's included ([armtls.md](armtls.md#pod-cvm-issuance)) | The matched entry name, and the allowlist snapshot the match was decided under | The router, before it writes a request to a workload backend; `c8s verify --workload` and `--allowlist` |
 | `…1.9` | A Pod CVM leaf whose verified Pod claims name a client document | SHA-256 of the client document the Pod's signed assignment carried | Mesh peers, through `armtls.Peer`; `c8s verify --client-document` |
 
 A leaf is signed by the mesh CA, so `…1.2`, `…1.4`, `…1.5` and `…1.9` are statements by
-CDS: they are worth nothing on a certificate whose chain the reader has not
+the TA: they are worth nothing on a certificate whose chain the reader has not
 verified against the mesh CA. `…1.1` is the one extension the hardware vouches
 for, and it covers the public key alone.
 
@@ -80,7 +79,7 @@ TEEAttestation ::= SEQUENCE {
   AMD's key distribution service (`kdsintf.amd.com`) when the evidence carries
   none. This field is not the certificate chain a peer presents in the
   handshake: that chain is the TLS one, a self-issued certificate alone or a
-  CDS-issued leaf under the mesh CA.
+  TA-issued leaf under the mesh CA.
 - **`runtimeExtensions`**: TDX only, at most 256 entries, each a canonical
   `sha256:<hex>`: the allowlist policies a node extended into RTMR[3], or the
   image digests a Pod CVM admitted, in extend order, for a verifier to replay
@@ -90,27 +89,27 @@ TEEAttestation ::= SEQUENCE {
 
 The evidence commits to `SHA-384(PKIX-DER(pubkey) ‖ challenge)`. A challenge
 appears only in the evidence an issuance request carries, and no certificate
-embeds that evidence: what CDS copies onto a leaf is the challenge-free
+embeds that evidence: what the TA copies onto a leaf is the challenge-free
 extension the CSR carried, so possession of the key in the handshake and the
 validity window are the freshness bound on a certificate.
 
 ## Attestation-evidence audit digest (`…1.2`)
 
-A DER `OCTET STRING` holding SHA-256 of the exact evidence bytes CDS verified
-before signing. It ties a leaf to one issuance in the CDS log.
+A DER `OCTET STRING` holding SHA-256 of the exact evidence bytes the TA verified
+before signing. It ties a leaf to one issuance in the TA log.
 
 ## Pod sandbox ID (`…1.4`)
 
 A DER `UTF8String`, 1 to 128 characters of `[A-Za-z0-9._-]`, in the one
 canonical encoding: a value that re-encodes to different bytes is refused, so
-two extensions cannot parse to the same ID. CDS stamps it after verifying the
+two extensions cannot parse to the same ID. The TA stamps it after verifying the
 sandbox token signed by the node's admission inventory, the node service that
 records which containers ran in which pod sandbox
 ([armtls.md](armtls.md#sandbox-identity)). The
 [Pod CVM issuance profile](armtls.md#pod-cvm-issuance) instead derives a
 separate Pod identity from verified guest claims; that identity confers no
 node-inventory or secret-release authority. A Pod identity begins with `pcvm-`,
-and CDS refuses a node's sandbox token whose ID begins with it. A certificate
+and the TA refuses a node's sandbox token whose ID begins with it. A certificate
 carrying two of them, or one that does not parse, is an error and never read as
 absence.
 
@@ -132,7 +131,7 @@ Canonical DER, like the sandbox ID: trailing bytes, a non-minimal encoding or
 an unknown `formatVersion` all fail closed. `allowlistVersion` and
 `allowlistDigest` say which policy document the match was decided under, so a
 relying party holding the same canonical bytes can detect skew between the
-policy it pinned and the one CDS enforced
+policy it pinned and the one the TA enforced
 ([armtls.md](armtls.md#matched-workload)).
 
 The mesh CA's signature is what vouches for this stamp, never the hardware
@@ -145,7 +144,7 @@ chose.
 A DER `OCTET STRING` of exactly 32 bytes: SHA-256 of the opaque client
 document a Pod CVM was assigned ([pod-cvm-provider.md](pod-cvm-provider.md#client-document)).
 The guest reports it in its Pod claims as `client_document_digest`, and the
-quote CDS verifies before signing binds those claims, so CDS stamps it only
+quote the TA verifies before signing binds those claims, so the TA stamps it only
 from claims the evidence covers. A Pod with no client document gets none.
 Canonical DER only: trailing bytes, another length or a non-minimal encoding
 fail closed, and a certificate carrying two of them is an error, never read
@@ -154,10 +153,10 @@ as absence.
 The DNS label an agent is reached under is the lowercase, unpadded RFC 4648
 base32 of the digest's first 16 bytes, 26 characters (`armtls.AgentLabel`).
 
-## CDS broker certificate (`…1.10`)
+## TA broker certificate (`…1.10`)
 
 Not an extension: the sole extended key usage of the certificate the mesh CA
-issues each CDS replica's broker key. That key signs pod secret release
+issues each TA replica's broker key. That key signs pod secret release
 statements to a KMS ([pod-secrets.md](pod-secrets.md)). Without server or
 client authentication usage, the certificate authenticates no TLS peer. Its
 subject is `CN=c8s CDS broker`, its lifetime one hour, and it carries none of
@@ -165,7 +164,7 @@ the extensions above.
 
 ## Subject, key usage and lifetime
 
-| | Self-issued certificate | CDS-issued leaf |
+| | Self-issued certificate | TA-issued leaf |
 |---|---|---|
 | Subject | `CN=armTLS Workload, O=Confidential` unless the component sets its own | The CSR's common name, or the sandbox-ID digest for a `get-cert --no-san` request |
 | Key | ECDSA P-256, generated in process memory | The CSR's key, generated in pod memory |

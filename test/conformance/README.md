@@ -32,23 +32,23 @@ Where a scenario needs the cluster to see a request no well-behaved client
 sends, the steps exec a probe built into the `c8s` binary that is already in
 the pod. `c8s secret-probe` (`internal/cmds/secretprobe`) is hidden from
 `c8s --help` because it is a test instrument, not a client for applications:
-run with `kubectl exec -c c8s-cert <pod> -- /c8s secret-probe --cds-url URL
+run with `kubectl exec -c c8s-cert <pod> -- /c8s secret-probe --ta-url URL
 --attestation-api-url URL --cert FILE --key FILE <action>` inside the injected
 certificate sidecar, it performs one workload secret request with every input
-under the caller's control. It verifies the CDS as the sidecars do, through
-armTLS against the node's CDS pins where the enforcer mounts them, otherwise
+under the caller's control. It verifies the Trust Authority (TA) as the sidecars do, through
+armTLS against the node's TA pins where the enforcer mounts them, otherwise
 the pins it is given; the steps give it the attestation API and any pins the
-webhook gave that container. `challenge` fetches a fresh CDS challenge and prints it base64;
+webhook gave that container. `challenge` fetches a fresh TA challenge and prints it base64;
 `token` redeems a sandbox token for the pod's sandbox from the node's
 inventory socket, bound to the leaf's key and to a given challenge, and prints
 the JSON the Authorization header carries; `request <GET|POST> <path>` sends the
 request with `<path>` verbatim, a fresh or given challenge or none, and a fresh
 or given token or none, then prints one line with the HTTP status (`000`
-when nothing answered, a CDS that issued no challenge included) and the
+when nothing answered, a TA that issued no challenge included) and the
 challenge and token it sent, base64 or `-` for a header it omitted, and the
 body after it, exactly as received. It exits 0 whenever an answer was printed
 and 2 when it could not ask, so a scenario about a missing or replayed
-challenge, another pod's token, or a non-canonical path reads the CDS's
+challenge, another pod's token, or a non-canonical path reads the TA's
 verdict rather than a sidecar's refusal to send it, and "that request's"
 challenge is known without a separate fetch. `c8s secret-probe --help` has
 the flags.
@@ -99,14 +99,14 @@ deleted before the cluster's logs are collected.
 A backend answers a fixed set of questions about one running environment so
 the steps need not know how it was built: which Kubernetes node stands behind
 a scenario's "node one", which pullable reference and digest a scenario's
-"nginx" means, what the CDS serves, whether the admission plugin on a node is
+"nginx" means, what the TA serves, whether the admission plugin on a node is
 registered and ready and how often it pulls, whether the node's base allowlist
 names a digest, which containers a node's runtime holds for a digest, and a
 Restricted-compatible pod manifest to deploy. It also acts for the operator:
 when a scenario says the plugin has applied the served allowlist, the entries
 it described are written through the backend's signed path, and they are
-undone after the scenario. A write takes effect on nodes the CDS's node delay
-after it is written, so the steps then wait for the CDS to serve nodes the
+undone after the scenario. A write takes effect on nodes the TA's node delay
+after it is written, so the steps then wait for the TA to serve nodes the
 document the write left, and poll the allowlist version the plugin reports on
 its health endpoint until it reaches the version nodes are served it at,
 within the node delay and three pull intervals of the write; where the
@@ -114,19 +114,19 @@ backend cannot reach the plugin, or the plugin is meant to ignore what is
 served, they wait the node delay and two intervals out instead. A step that
 starts a plugin first waits for the write to take effect on nodes.
 
-A backend also acts on the node and the CDS where a scenario asks: it stops
-and starts a node's plugin, makes the CDS unreachable for the plugins' pulls
-and undoes that, and restarts the CDS. Each is undone after the scenario, and
-a plugin is started again wherever the CDS was restarted, since a plugin only
-accepts the versions a restarted CDS serves after a start of its own. The
+A backend also acts on the node and the TA where a scenario asks: it stops
+and starts a node's plugin, makes the TA unreachable for the plugins' pulls
+and undoes that, and restarts the TA. Each is undone after the scenario, and
+a plugin is started again wherever the TA was restarted, since a plugin only
+accepts the versions a restarted TA serves after a start of its own. The
 mesh members a controller owns, such as the router, are recreated too, since
 a member stays bound to the CA key of its first leaf.
 
-Where a scenario is about the CDS's own API, the backend sends the request as
+Where a scenario is about the TA's own API, the backend sends the request as
 the scenario says rather than through its signed path: a write with the
 Authorization a caller holds, or none; a read naming a version; the write
 token minted with the operator's key or with a key that is not an operator
-key, and for a chosen lifetime. It also answers whether the CDS holds an
+key, and for a chosen lifetime. It also answers whether the TA holds an
 operator key, whether its seed names a digest, and what argv an image starts
 with.
 
@@ -134,7 +134,7 @@ For scenarios about issuance, the backend renders two more pods: one carrying
 a workload ID, whose requester the webhook injects and which the steps watch
 through the files of its certificate volume and its requester's log, and a
 requester the steps drive themselves, a pod that relays HTTP from inside the
-cluster to the one address an injected client dials: the CDS is outside the
+cluster to the one address an injected client dials: the TA is outside the
 cluster, so every client of it has the same one. The
 requester can also reach the
 node's sandbox inventory and local attestation service over the socket
@@ -143,27 +143,27 @@ mesh exempts where the backend has one (`exempt_namespace`), outside the
 mesh, where the inventory signs no token for it; where the backend has none,
 or once a scenario asks the inventory for a token, it runs in the scenario's
 namespace as a mesh member, the inventory signs for its sandbox, and the
-backend sends its CDS requests from outside the pod (`cds_pod_request`),
-since the node drops a member pod's own TCP to the CDS. The backend also fetches
-evidence over chosen report data, and says whether the CDS checks its
+backend sends its TA requests from outside the pod (`ta_pod_request`),
+since the node drops a member pod's own TCP to the TA. The backend also fetches
+evidence over chosen report data, and says whether the TA checks its
 signature: the steps edit its launch measurement into evidence that does not
 verify, or, where the attestation is mocked, into evidence for another
-launch digest. It reads the CDS's flags, restarts it with IP SAN binding
+launch digest. It reads the TA's flags, restarts it with IP SAN binding
 changed, names a pod's runtime sandbox, and runs the operator's verifier as a
 relying party on a saved leaf.
 
-For scenarios about the CDS itself, the backend reads its documents and its
+For scenarios about the TA itself, the backend reads its documents and its
 serving certificate as any client would, says what it was started with,
 restarts it with one parameter changed and restores it, stops the local
 attestation service of its node, searches the cluster for private keys and
-performs one issuance against it; `common.sh` lists each function. The CDS
+performs one issuance against it; `common.sh` lists each function. The TA
 runs outside the cluster, pinned to the configuration its launch binds it to,
 so a parameter that configuration carries — the node pins it serves, its
 operator key, the subnets it dials an inventory in — answers unsupported: a
-CDS restarted with one of those changed is a CDS every client refuses.
+TA restarted with one of those changed is a TA every client refuses.
 
-For scenarios about secret release, the backend sends one request to the CDS
-as the scenario shaped it (`cds_request`: a method, a route, a body, an
+For scenarios about secret release, the backend sends one request to the TA
+as the scenario shaped it (`ta_request`: a method, a route, a body, an
 Authorization and a client certificate, each only when given), which carries
 the operator's secret writes under the write tokens `write_token` mints and a
 self-signed requester's read. The workload requester is `c8s secret-probe`,
@@ -175,13 +175,13 @@ ID that a secrets scenario (one tagged `@area:secrets`) deploys renews its
 leaf every two hours rather than the ten seconds an issuance scenario's pod
 does, so the leaf it obtained stays the one it holds.
 
-Route manifest scenarios write `PUT /routes` through `cds_request`, with an
+Route manifest scenarios write `PUT /routes` through `ta_request`, with an
 `If-Match` header where the scenario names a route digest, and reach the
 router through `router_request` with a `Host` header. Their hosts are logical:
 `app` is a name under the scenario's namespace. A manifest the router is to
 apply also routes a probe host named for its revision to a closed address
 backend, and the steps wait until the probe answers 502, which no earlier
-manifest gives it. The CDS removes no manifest, so after the scenario the
+manifest gives it. The TA removes no manifest, so after the scenario the
 steps write the one stored before it again, or an empty one, under a later
 revision. A workload backend is a pod of `tenant-app` running
 [`c8s-echo-api`](images/tenant-app/c8s-echo-api) in plaintext behind its mesh endpoint,
@@ -208,7 +208,7 @@ rejects unknown names.
 
 | Backend | Environment | Requires |
 |---|---|---|
-| [`kind.sh`](backends/kind.sh) | the kept kind cluster of [`test/integration/cluster/run.sh`](../integration/cluster/run.sh) (`C8S_IT_KEEP=1 C8S_IT_SETUP_ONLY=1`); its CDS is two containers on the kind network, so the backend starts and stops it with `docker`; mocked attestation, node shell via `docker exec`; the mock signs nothing and verifies only at the mock, so `evidence_signed` answers no and `relying_party` unsupported; the Pod CVM provider runs against the harness's mock Cloud | `C8S_IT_WORKDIR` |
+| [`kind.sh`](backends/kind.sh) | the kept kind cluster of [`test/integration/cluster/run.sh`](../integration/cluster/run.sh) (`C8S_IT_KEEP=1 C8S_IT_SETUP_ONLY=1`); its TA is two containers on the kind network, so the backend starts and stops it with `docker`; mocked attestation, node shell via `docker exec`; the mock signs nothing and verifies only at the mock, so `evidence_signed` answers no and `relying_party` unsupported; the Pod CVM provider runs against the harness's mock Cloud | `C8S_IT_WORKDIR` |
 
 The backends source the kind harness's `lib.sh`, render pods with
 `pod-fixture.py`, and name components (the NRI DaemonSet, its socket) that

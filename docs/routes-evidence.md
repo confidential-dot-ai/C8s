@@ -102,7 +102,7 @@ handshake and tunnel endpoints return the JSON error envelope.
 
 ## The route digest
 
-The route digest is the SHA-256 of the manifest bytes as stored on CDS.
+The route digest is the SHA-256 of the manifest bytes as stored on the Trust Authority.
 `c8s routes show` and `c8s routes digest FILE` print it as 64 lowercase hex
 characters, the form `c8s verify --route-digest` takes.
 
@@ -151,7 +151,7 @@ contract an independent implementation is checked against.
 
 With `router.routePublication.enabled: true` (default `false`, and set by
 `c8s node-image render` for baked nodes) the router serves the applied signed
-manifest at `GET /.well-known/c8s/routes`, byte for byte the CDS `GET /routes`
+manifest at `GET /.well-known/c8s/routes`, byte for byte the TA `GET /routes`
 envelope and with `Cache-Control: no-store`:
 
 ```json
@@ -171,7 +171,7 @@ whose algorithm matches the operator key's curve; it carries `iat` and `exp`
 with a lifetime inside five minutes; `htm` is `PUT` and `htu` is `/routes`; its
 payload body hash claim `pbh` is the unpadded base64url SHA-256 of the decoded
 manifest bytes; and the bytes satisfy the manifest schema. The token authorized
-a write, and CDS checked its time claims then, so do not reject a publication on
+a write, and the TA checked its time claims then, so do not reject a publication on
 `exp`, `nbf`, or `iat` when reading the token back. Do not check time on the
 manifest either: `notBefore` gates when the router applies it, and freshness is
 the router's own state since its last successful fetch, which a client cannot

@@ -20,7 +20,7 @@ safe. Certificate formats and verification rules live in
   container. It serves the token route on a node-local Unix socket, which
   cannot enumerate sandboxes, and the identity and digests routes on port 1019
   over mutually attested armTLS, which cannot mint identity.
-- **CDS** — verifies the evidence and the token, asks the inventory what the
+- **Trust Authority (TA)** — verifies the evidence and the token, asks the inventory what the
   sandbox runs, checks those images against the allowlist (the operator policy
   of workload entries every node enforces), signs the leaf.
 - **The relying party** — `c8s verify --sandbox-id … --mesh-ca …`, or a mesh
@@ -28,7 +28,7 @@ safe. Certificate formats and verification rules live in
 
 ## Step by step
 
-1. get-cert fetches the CDS challenge first, so one single-use nonce binds both
+1. get-cert fetches the TA challenge first, so one single-use nonce binds both
    the token and the evidence REPORTDATA. The token needs no clock of its own.
 2. get-cert posts its CSR public key and that challenge to the socket, naming no
    PID, pod, or container (Corner 1).
@@ -38,13 +38,13 @@ safe. Certificate formats and verification rules live in
    signs the token with an in-process key.
 4. get-cert forwards token and signature — no credential for the key — in its
    `/attest` body. It forwards no image digests; it has none.
-5. CDS reads the inventory host from the unverified token to pick a dial target
+5. The TA reads the inventory host from the unverified token to pick a dial target
    inside the operator's node bound, fetches the signing key from `/identity`
    there, verifies the token and the evidence, then asks `/digests/{sandboxID}`
    and requires every image reported to be allowlisted before it signs and
    stamps.
 6. The relying party pins. `--mesh-ca` is mandatory with `--sandbox-id`: the ID
-   sits in the leaf's signed area, not in REPORTDATA, so CDS's signature is what
+   sits in the leaf's signed area, not in REPORTDATA, so the TA's signature is what
    authenticates it.
 
 ## Corner 1 — get-cert sends no PID; the kernel reports it
@@ -84,7 +84,7 @@ image runs is the per-container argv policy the plugin enforces at every launch
 role, in the other view, binds to a whole launch — digest, argv, environment and
 mounts — so no pod spec can claim one. And the answer is **all or nothing**: an
 unresolved digest fails the whole request, and a known sandbox with no
-containers answers empty, which CDS refuses.
+containers answers empty, which the TA refuses.
 
 ## Corner 4 — the sandbox ID binds at first issuance; the gate is membership only
 
@@ -115,7 +115,7 @@ Y* ([armtls.md](armtls.md#matched-workload)).
 - **A plugin restart empties the inventory, and the startup check refills it.**
   NRI replays the full container list whenever the plugin connects, whatever the
   kill knob says. Until it completes, a callback gets a 404 or an empty set,
-  which CDS refuses; a partial set still issues a membership-only leaf. The same
+  which the TA refuses; a partial set still issues a membership-only leaf. The same
   replay takes each running member pod back under the mesh gate: the gate proves
   the namespace the runtime reports is the sandbox's own, verifies the ruleset
   live in it, and re-checks each listed container; a pod any of that fails for is
@@ -133,7 +133,7 @@ across a same-kernel socket, which is what proves co-location: an HTTP call to a
 genuinely attested peer would pass a measurement check and still answer for the
 wrong pod.
 
-**CDS's callback target is bounded by the operator, and the port is the
+**The TA's callback target is bounded by the operator, and the port is the
 identity.** The token carries no credential for its signing key, so the host it
 names is read unverified and used for one thing, picking a dial target; a wrong
 value yields a key the signature fails under. The parse accepts only routable
@@ -142,11 +142,11 @@ inventory's identity is where the key comes from: `/identity` on port 1019, a
 privileged port in the node's own network namespace, over mutually pinned
 armTLS.
 
-## Corner 6 — what CDS actually trusts (it can't inspect the running container)
+## Corner 6 — what the TA actually trusts (it can't inspect the running container)
 
 No component outside a pod can see its running images — and the evidence, which
 proves the requester is a measured TEE holding the CSR key, says nothing about
-them. So CDS trusts a chain, weakest link last:
+them. So the TA trusts a chain, weakest link last:
 
 - The **sandbox ID** comes from the kernel, through a key only a node can serve.
   get-cert cannot choose it and cannot forge the token; all it can do is present
@@ -154,7 +154,7 @@ them. So CDS trusts a chain, weakest link last:
 - The **ground truth for what runs** is the inventory, asked directly, at
   issuance, over a mutually attested channel. The requester supplies no list, so
   there is none to cross-check.
-- CDS's **backstop is the allowlist**: every reported digest is re-checked, so a
+- The TA's **backstop is the allowlist**: every reported digest is re-checked, so a
   compromised inventory cannot smuggle a non-allowlisted image past issuance. It
   can report a combination no entry authorizes, which the stamp catches.
 - The **remaining assumption is an honest inventory on an honest node**: the key
@@ -180,7 +180,7 @@ directory read-write could swap the file first. The directory is root-owned,
 get-cert's mount is read-only, and the chart's
 `<release>-deny-host-namespaces` policy denies tenant `hostPath` volumes
 outright. Even
-then a token CDS accepts must verify under a key fetched from port 1019 inside
+then a token the TA accepts must verify under a key fetched from port 1019 inside
 the node bound, so the worst a swap achieves is denying the pod its sandbox ID.
 
 ## Corner 8 — exempt namespaces admit on the image's repository, not the name
@@ -227,7 +227,7 @@ chart's `values-<platform>.yaml`, so every start of the plugin reads the same
 ones, a reboot included — when containerd gates every container on the plugin
 and an image the set does not cover has nothing to fall back on. Reading
 nothing from the cluster, the config is the same document whoever renders it,
-which is what lets the CDS seed a release publishes match the config its
+which is what lets the TA seed a release publishes match the config its
 install writes. The exemption claims nothing a measured node claims: the
 measured node image leaves the list empty. An install prints the prefixes and
 the images running under them for review.

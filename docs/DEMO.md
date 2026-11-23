@@ -13,7 +13,7 @@ what the admission webhook injected into the pod.
 
 Nodes admit containers by image digest and deny everything else, so the sample
 needs a workload entry: an allowlist entry naming the containers a pod may run.
-Open a path to CDS and set `$PIN` and `$KEY` as the first step of
+Open a path to the Trust Authority and set `$PIN` and `$KEY` as the first step of
 [workloads.md](workloads.md) shows, then write it. `--env-file` names every
 variable the container launches with, `--mounts deny` admits platform mounts
 alone, and `apply` lints and diffs before signing:
@@ -51,7 +51,7 @@ kubectl -n demo rollout status deploy/demo-nginx
 
 `rollout status` is the confirmation: it returns once the pod is ready. A
 rollout that does not progress usually means no entry matches the containers the
-pod runs, which only CDS can tell you — see the confirm step of
+pod runs, which only the TA can tell you — see the confirm step of
 [workloads.md](workloads.md).
 
 Injection covers every pod of a namespace the webhook is configured for; the
