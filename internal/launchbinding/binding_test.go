@@ -26,7 +26,7 @@ import (
 var operatorPub = []byte("operator public key bytes")
 
 // launchFile stands in for a whole configuration document a VM is launched
-// with, the anchor shape a CDS VM binds.
+// with, the anchor shape a Trust Authority VM binds.
 var launchFile = []byte("schemaVersion: c8s-cds/v1\n")
 
 // TestMain shortens the attestation-api readiness wait so the unreachable-URL

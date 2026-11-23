@@ -25,9 +25,9 @@ import (
 	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
-// fakeCDS serves PUT /secrets/* with the create-safe semantics the real handler
+// fakeTA serves PUT /secrets/* with the create-safe semantics the real handler
 // has, recording each request so a test can assert on what the CLI sent.
-type fakeCDS struct {
+type fakeTA struct {
 	mu      sync.Mutex
 	values  map[string]intsecrets.Origin
 	seen    []intsecrets.PutRequest
@@ -36,15 +36,15 @@ type fakeCDS struct {
 	failAll bool
 }
 
-func newFakeCDS(t *testing.T) (*fakeCDS, string) {
+func newFakeTA(t *testing.T) (*fakeTA, string) {
 	t.Helper()
-	f := &fakeCDS{values: map[string]intsecrets.Origin{}}
+	f := &fakeTA{values: map[string]intsecrets.Origin{}}
 	srv := httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(srv.Close)
 	return f, srv.URL
 }
 
-func (f *fakeCDS) serve(w http.ResponseWriter, r *http.Request) {
+func (f *fakeTA) serve(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.failAll {
@@ -81,7 +81,7 @@ func (f *fakeCDS) serve(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
-func (f *fakeCDS) seed(path string, by intsecrets.Origin) {
+func (f *fakeTA) seed(path string, by intsecrets.Origin) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.values[path] = by
@@ -120,7 +120,7 @@ func run(t *testing.T, stdin string, args ...string) (stdout, stderr string, err
 }
 
 func TestPutCreates(t *testing.T) {
-	f, url := newFakeCDS(t)
+	f, url := newFakeTA(t)
 	key := writeOperatorKey(t)
 
 	out, _, err := run(t, "hunter2", "put", "/tenant-a/db", "--url", url, "--insecure", "--operator-key", key)
@@ -150,7 +150,7 @@ func TestPutCreates(t *testing.T) {
 // The refusal names what is there and leaves it alone, which is the whole point
 // of asking to create before asking to replace.
 func TestPutRefusesOccupiedPathWithoutOverwrite(t *testing.T) {
-	f, url := newFakeCDS(t)
+	f, url := newFakeTA(t)
 	f.seed("/tenant-a/db", intsecrets.OriginWorkload)
 	key := writeOperatorKey(t)
 
@@ -180,14 +180,14 @@ func TestPutReportsSpentToken(t *testing.T) {
 
 	_, _, err := run(t, "hunter2", "put", "/tenant-a/db", "--url", srv.URL, "--insecure", "--operator-key", key)
 	if err == nil || !strings.Contains(err.Error(), "operator token already used") {
-		t.Fatalf("put against a spent-token 409 = %v, want the CDS error", err)
+		t.Fatalf("put against a spent-token 409 = %v, want the Trust Authority error", err)
 	}
 }
 
 // --overwrite still asks to create first, so the line naming what is destroyed
 // is printed before the write that destroys it.
 func TestPutOverwriteNamesWhatItReplaces(t *testing.T) {
-	f, url := newFakeCDS(t)
+	f, url := newFakeTA(t)
 	f.seed("/tenant-a/db", intsecrets.OriginWorkload)
 	key := writeOperatorKey(t)
 
@@ -212,7 +212,7 @@ func TestPutOverwriteNamesWhatItReplaces(t *testing.T) {
 // Replacing an operator value is routine rotation, so it says so rather than
 // warning about pods that generated it.
 func TestPutOverwriteOfOperatorValue(t *testing.T) {
-	f, url := newFakeCDS(t)
+	f, url := newFakeTA(t)
 	f.seed("/tenant-a/db", intsecrets.OriginOperator)
 	key := writeOperatorKey(t)
 
@@ -230,7 +230,7 @@ func TestPutOverwriteOfOperatorValue(t *testing.T) {
 
 // --overwrite onto an empty path is a creation and reports as one.
 func TestPutOverwriteOnEmptyPath(t *testing.T) {
-	f, url := newFakeCDS(t)
+	f, url := newFakeTA(t)
 	key := writeOperatorKey(t)
 
 	out, _, err := run(t, "v", "put", "/a", "--url", url, "--insecure", "--operator-key", key, "--overwrite")
@@ -246,7 +246,7 @@ func TestPutOverwriteOnEmptyPath(t *testing.T) {
 }
 
 func TestPutFromFile(t *testing.T) {
-	f, url := newFakeCDS(t)
+	f, url := newFakeTA(t)
 	key := writeOperatorKey(t)
 	path := filepath.Join(t.TempDir(), "token")
 	if err := os.WriteFile(path, []byte("hf_abc\n"), 0o600); err != nil {
@@ -262,8 +262,8 @@ func TestPutFromFile(t *testing.T) {
 	}
 }
 
-func TestPutDryRunDoesNotCallCDS(t *testing.T) {
-	f, url := newFakeCDS(t)
+func TestPutDryRunDoesNotCallTA(t *testing.T) {
+	f, url := newFakeTA(t)
 	key := writeOperatorKey(t)
 
 	out, _, err := run(t, "hunter2", "put", "/a", "--url", url, "--insecure", "--operator-key", key, "--dry-run")
@@ -274,12 +274,12 @@ func TestPutDryRunDoesNotCallCDS(t *testing.T) {
 		t.Fatalf("output = %q", out)
 	}
 	if len(f.seen) != 0 {
-		t.Fatal("--dry-run reached CDS")
+		t.Fatal("--dry-run reached Trust Authority")
 	}
 }
 
 func TestPutRejectsBadInput(t *testing.T) {
-	_, url := newFakeCDS(t)
+	_, url := newFakeTA(t)
 	key := writeOperatorKey(t)
 	base := []string{"--url", url, "--insecure", "--operator-key", key}
 
@@ -306,7 +306,7 @@ func TestPutRejectsBadInput(t *testing.T) {
 
 // A URL with no attestation must be refused unless the operator asked for it.
 func TestPutRefusesPlaintextWithoutInsecure(t *testing.T) {
-	_, url := newFakeCDS(t)
+	_, url := newFakeTA(t)
 	key := writeOperatorKey(t)
 	_, _, err := run(t, "v", "put", "/a", "--url", url, "--operator-key", key)
 	if err == nil || !strings.Contains(err.Error(), "refusing plaintext") {
@@ -316,10 +316,10 @@ func TestPutRefusesPlaintextWithoutInsecure(t *testing.T) {
 
 func TestPutRequiresURLAndKey(t *testing.T) {
 	t.Setenv("C8S_OPERATOR_KEY", "")
-	if _, _, err := run(t, "v", "put", "/a"); err == nil || !strings.Contains(err.Error(), "--url is required") {
-		t.Fatalf("err = %v, want a --url error", err)
+	if _, _, err := run(t, "v", "put", "/a"); err == nil || !strings.Contains(err.Error(), "--ta-url is required") {
+		t.Fatalf("err = %v, want a --ta-url error", err)
 	}
-	_, url := newFakeCDS(t)
+	_, url := newFakeTA(t)
 	if _, _, err := run(t, "v", "put", "/a", "--url", url, "--insecure"); err == nil ||
 		!strings.Contains(err.Error(), "operator key required") {
 		t.Fatalf("err = %v, want an operator-key error", err)
@@ -327,7 +327,7 @@ func TestPutRequiresURLAndKey(t *testing.T) {
 }
 
 func TestPutSurfacesServerErrors(t *testing.T) {
-	f, url := newFakeCDS(t)
+	f, url := newFakeTA(t)
 	f.failAll = true
 	key := writeOperatorKey(t)
 	_, _, err := run(t, "v", "put", "/a", "--url", url, "--insecure", "--operator-key", key)
@@ -482,7 +482,7 @@ func TestExplainSurfacesServerErrors(t *testing.T) {
 	}
 }
 
-// A CDS answer past maxResponseBytes is refused where it is read, so neither
+// A Trust Authority answer past maxResponseBytes is refused where it is read, so neither
 // command acts on the part of it that arrived.
 func TestAnAnswerOverTheCapIsRefused(t *testing.T) {
 	oversized := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

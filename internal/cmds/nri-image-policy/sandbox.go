@@ -355,8 +355,8 @@ func grantsBind(source, destination string, mounts []allowlist.ObservedMount, gr
 // enforcerMounts names the sources this enforcer binds into a container itself.
 type enforcerMounts struct {
 	socketDir      string
-	cdsPins        string
-	cdsAddress     string
+	taPins         string
+	taAddress      string
 	clientDocument string
 }
 
@@ -384,9 +384,9 @@ func takesNodeMount(pod *api.PodSandbox, ctr *api.Container, destination string)
 func isInjectedNodeMount(pod *api.PodSandbox, ctr *api.Container, m *api.Mount, own enforcerMounts) bool {
 	source := map[string]string{
 		workloadclaims.SidecarSocketDir:   own.socketDir,
-		workloadclaims.CDSPinsPath:        own.cdsPins,
-		workloadclaims.RouterCDSPinsPath:  own.cdsPins,
-		workloadclaims.CDSAddressPath:     own.cdsAddress,
+		workloadclaims.CDSPinsPath:        own.taPins,
+		workloadclaims.RouterCDSPinsPath:  own.taPins,
+		workloadclaims.CDSAddressPath:     own.taAddress,
 		workloadclaims.ClientDocumentPath: own.clientDocument,
 	}[m.GetDestination()]
 	return source != "" && m.GetSource() == source && endsReadOnly(m) && takesNodeMount(pod, ctr, m.GetDestination())

@@ -133,7 +133,7 @@ func evidenceFromAttestLBJSON(data, nonce, servingLeaf []byte, fresh bool, route
 	if err != nil {
 		return nil, err
 	}
-	leaf, ca, err := committedMeshChain(r.CDSCertPEM, r.IdentityProof)
+	leaf, ca, err := committedMeshChain(r.TACertPEM, r.IdentityProof)
 	if err != nil {
 		return nil, err
 	}

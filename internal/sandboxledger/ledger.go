@@ -2,7 +2,7 @@
 // pod sandbox, so a later decision about that sandbox asks the same inventory
 // rather than one the requester names.
 //
-// A sandbox token carries the host that signed it, and CDS reads that host to
+// A sandbox token carries the host that signed it, and Trust Authority reads that host to
 // find the key that verifies the signature. That is sound for issuance — a wrong
 // host simply yields a key the signature fails under — but it makes the
 // requester the one choosing which inventory is asked. Anything able to answer
@@ -33,7 +33,7 @@ type binding struct {
 //
 // Entries expire so a ledger cannot outlive the certificates it describes, and
 // the total is capped so sandbox churn — or an inventory minting tokens for
-// fabricated IDs — cannot grow it without bound. CDS is a single in-memory
+// fabricated IDs — cannot grow it without bound. Trust Authority is a single in-memory
 // process whose OOM costs the cluster its mesh CA, so an unbounded map here
 // would be a denial primitive.
 type Ledger struct {
@@ -57,7 +57,7 @@ func New(ttl time.Duration, max int) *Ledger {
 	}
 }
 
-// Policy is a binding's lifetime and the ledger's capacity. A CDS HA cluster
+// Policy is a binding's lifetime and the ledger's capacity. A Trust Authority HA cluster
 // fixes them at its Genesis, and a replica built with others cannot apply its
 // log.
 func (l *Ledger) Policy() (ttl time.Duration, max int) {

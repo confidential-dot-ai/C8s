@@ -118,7 +118,7 @@ func TestWorkerClusterHoldsTheWorkerChartsClusterObjects(t *testing.T) {
 			}
 		}
 		if !maps.Equal(pod.NodeSelector, map[string]string{"confidential.ai/router-eligible": "true"}) {
-			t.Fatalf("router nodeSelector = %v, want current CDS eligibility", pod.NodeSelector)
+			t.Fatalf("router nodeSelector = %v, want current Trust Authority eligibility", pod.NodeSelector)
 		}
 	}
 }

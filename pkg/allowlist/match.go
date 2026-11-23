@@ -107,7 +107,7 @@ func (d EntryDiff) Describes() bool { return len(d.Foreign) == 0 && len(d.Missin
 //
 // This is the release decision itself, not a reconstruction of it: describes is
 // Diff().Describes(), so a diagnostic built on this cannot disagree with what
-// CDS actually did.
+// Trust Authority actually did.
 func (w Workload) Diff(running []RunningContainer) EntryDiff {
 	declared := make([]Container, 0, len(w.Containers)+len(w.InitContainers))
 	declared = append(declared, w.Containers...)

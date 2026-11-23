@@ -1,6 +1,6 @@
 ---
 name: confidential-kubernetes
-description: Use when working in the C8s (confidential Kubernetes) codebase, or on anything that crosses its trust boundary - attestation, armTLS and the per-pod mesh, the Certificate Distribution Service (CDS), SEV-SNP or TDX confidential VMs, the measured worker, Pod CVM or CDS guest images, launch configuration, the admission plugin and allowlist, c8s-runc and exec denial, the router and its attested handshakes, secrets, or encrypted volumes.
+description: Use when working in the C8s (confidential Kubernetes) codebase, or on anything that crosses its trust boundary - attestation, armTLS and the per-pod mesh, the Trust Authority (TA), SEV-SNP or TDX confidential VMs, the measured worker, Pod CVM or TA guest images, launch configuration, the admission plugin and allowlist, c8s-runc and exec denial, the router and its attested handshakes, secrets, or encrypted volumes.
 ---
 
 # Confidential Kubernetes (C8s)
@@ -27,7 +27,7 @@ stale.**
 | `docs/README.md` | Index of every page, by subject and by reader |
 
 Then read the README beside the code you change: `images/node-guest/`,
-`images/cds-guest/`, `charts/*/helpers/`, `cmd/get-cert/`, `cmd/armtls-mesh/`,
+`images/ta-guest/`, `charts/*/helpers/`, `cmd/get-cert/`, `cmd/armtls-mesh/`,
 `test/conformance/`.
 
 The terms used below (leaf, member pod, sandbox token, admission inventory, base
@@ -38,7 +38,7 @@ allowlist, workload entry, platform role, route manifest) are defined in
 ## Mental model
 
 - **The trust boundary is the TEE.** Inside: the measured node software, the pods
-  it admits, and the CDS. Outside, and adversarial: the host and hypervisor, the
+  it admits, and the TA. Outside, and adversarial: the host and hypervisor, the
   Kubernetes control plane in every CVM mode, the pod network and the internet.
 - **The host can launch genuine TEEs of its own.** "A TEE answered" proves
   nothing, so a verifier names the measurements it accepts: its pins.
@@ -69,16 +69,16 @@ egress. Out of scope: availability, side channels, physical attacks.
 The docs call the node shape the CVM mode: `bare-metal` (the measured worker
 image), `gke` or `aks`.
 
-- **CDS.** A measured VM outside the cluster (`images/cds-guest`), booted on the
-  configuration `c8s cds config new` writes and pinned by the `cds-pin.json`
+- **TA.** A measured VM outside the cluster (`images/ta-guest`), booted on the
+  configuration `c8s ta config new` writes and pinned by the `cds-pin.json`
   written with it. No chart deploys it, and only test harnesses run it as a
   container. It runs as one VM, or as replicas that share
   state over a replicated log and take operator-signed decrees
-  (`docs/cds-ha.md`). It calls back to each node's admission inventory on TCP
+  (`docs/ta-ha.md`). It calls back to each node's admission inventory on TCP
   1019.
 - **Cloud.** `c8s install --platform aks-snp|aks-tdx|gke-snp` deploys
   `charts/cloud` onto the provider's confidential VMs (`docs/operator.md`;
-  `docs/cloud-cds.md` for where that cluster's CDS runs).
+  `docs/cloud-ta.md` for where that cluster's TA runs).
 - **Cluster of workers.** Every node boots the measured worker image
   (`images/node-guest/worker`) on a `worker.yaml` that `c8s worker new` writes and
   the node's evidence binds by digest. The control plane and `c8s operator` run
@@ -99,15 +99,15 @@ and the commands defined in `cmd/c8s` itself: `install`, `uninstall`, `operator`
 
 | Role | Runs in | Code |
 |---|---|---|
-| `cds` | the CDS VM | `internal/cmds/cds`, `internal/cdsha`, `internal/issuer`, `internal/secrets`, `internal/allowlist` |
+| `ta` | the TA VM | `internal/cmds/ta`, `internal/taha`, `internal/issuer`, `internal/secrets`, `internal/allowlist` |
 | `operator`: controllers, `pod-injector`, `pod-validator`, Pod CVM provider | a cluster pod on cloud; a host process beside the control plane in a cluster of workers | `cmd/c8s/operator.go`, `internal/controller`, `internal/webhook`, `internal/podprovider` |
 | `nri-image-policy`: admission plugin, admission inventory, packet rules | the node host | `internal/cmds/nri-image-policy`, `internal/podmesh` |
 | `c8s-runc`: privilege floor, exec denial | measured images | `internal/cmds/c8srunc` |
 | Sidecars: `get-cert` (`c8s-cert`), `armtls-mesh` (`c8s-mesh`), `probe-file` (`c8s-cert-wait`), and when a pod asks for them `get-secret` (`c8s-secret`) and `get-volume` (`c8s-volume`) | every member pod | `internal/cmds/{getcert,armtlsmesh,probefile,getsecret,getvolume,sidecar}` |
-| `cds-attest`, `allowlist-proxy`, `acme` | the router pod | `internal/cmds/{cdsattest,allowlistproxy,acme}`, `pkg/overenc`, `pkg/routes` |
+| `ta-attest`, `allowlist-proxy`, `acme` | the router pod (the attestation container is named `cds-attest`) | `internal/cmds/{taattest,allowlistproxy,acme}`, `pkg/overenc`, `pkg/routes` |
 | `volumed`, `attest-proxy`, `volume attach\|detach` | the node | `internal/cmds/{volumed,attestproxy,volume}` |
 | `worker stage`, `launch-config stage`, `node-services`, `pod-status` | guest boot | `internal/cmds/{worker,nodeservices,podstatus}`, `internal/podlaunch` |
-| Operator CLIs: `keys`, `measurements`, `allowlist`, `routes`, `secrets`, `volume create`, `verify`, `cds verify\|ca\|config\|ha` | the operator's machine | `internal/cmds/{keys,measurements,allowlist,routes,secrets,volume,verify,cdsca,cdslaunch,cds}`, with `internal/cmds/cdsconn` for the CDS connection |
+| Operator CLIs: `keys`, `measurements`, `allowlist`, `routes`, `secrets`, `volume create`, `verify`, `ta verify\|ca\|config\|ha` | the operator's machine | `internal/cmds/{keys,measurements,allowlist,routes,secrets,volume,verify,taca,talaunch,ta}`, with `internal/cmds/taconn` for the TA connection |
 
 Shared libraries: `pkg/armtls` (TLS configs, pins, certificate extensions),
 `pkg/workloadclaims` (inventory socket and sandbox token), `pkg/allowlist`
@@ -116,8 +116,8 @@ Shared libraries: `pkg/armtls` (TLS configs, pins, certificate extensions),
 `charts/embed.go`. Guest images are under `images/`, harnesses under `test/`.
 
 Hardware evidence is produced by the node-local `attestation-api`, which is built
-outside this repository. armTLS peers and CDS verify evidence through it. `c8s
-verify`, the operator CLIs (through `cdsconn`) and the operator's Pod CVM
+outside this repository. armTLS peers and the TA verify evidence through it. `c8s
+verify`, the operator CLIs (through `taconn`) and the operator's Pod CVM
 provider verify in-process with the attestation-go library
 (`internal/localverify`, `internal/guestverify`).
 
@@ -136,16 +136,16 @@ Kubernetes mislead.
    uncaptured.
 3. **armTLS has two paths and never mixes them.** Evidence path: a peer presents
    a self-issued certificate carrying evidence, which the other side checks
-   against its pins on every handshake: the server's for CDS, both sides' for the
+   against its pins on every handshake: the server's for the TA, both sides' for the
    admission inventory. Chain path: both sides present a leaf the mesh CA signed,
    as pod to pod. A leaf that does not chain is rejected, never retried against the
    evidence it embeds.
 4. **Stamped certificate fields are the CA's word, not the hardware's.** Sandbox
    ID and matched workload mean something only on a leaf verified against the
    mesh CA. A handler that reads them sets `ServerConfig.ClientCA`, not
-   `ClientPolicy`. CDS does both jobs: clients check its evidence against pins,
+   `ClientPolicy`. The TA does both jobs: clients check its evidence against pins,
    and it checks a client's leaf against its own mesh CA.
-5. **A leaf is named only on a unique match.** CDS stamps the entry name when
+5. **A leaf is named only on a unique match.** The TA stamps the entry name when
    exactly one entry matches every container the pod has run. A pod that also ran
    a container from another entry renews unnamed, and a container the node
    refused costs the sandbox its identity (`docs/getcert-workload-binding.md`).
@@ -156,11 +156,11 @@ Kubernetes mislead.
    versioned document under a single-use operator signature over the method,
    path and body. Nodes apply it after a delay, then stop any running container
    it no longer admits.
-8. **A one-VM CDS keeps nothing across a restart.** Its state is in memory and on
+8. **A one-VM TA keeps nothing across a restart.** Its state is in memory and on
    a tmpfs: a restart loses the mesh CA, the secrets, operator-written entries
    and the route manifest, and voids every leaf. A replica set keeps them while a
    majority stays up; past that, only a `recover` decree on a surviving voter
-   does (`docs/operator.md`, `docs/cds-ha.md`).
+   does (`docs/operator.md`, `docs/ta-ha.md`).
 9. **The router routes application requests only by the operator-signed route
    manifest** (`docs/operator.md`, `docs/routes-evidence.md`).
 10. **A worker document is unsigned and holds no secret.** Its digest in the
@@ -179,10 +179,10 @@ What a change must preserve. The page or code named owns the detail.
 
 1. Verify evidence before trusting any claim in it. The `attestation-api` verdict
    is unsigned, so it is reached only on the node itself, through the node's Unix
-   socket or guest loopback. `c8s cds` refuses a non-loopback URL and
+   socket or guest loopback. `c8s ta` refuses a non-loopback URL and
    `cmdsutil.RequireNodeVerifier` holds the pod-side clients to the node socket;
    keep a new caller behind the same checks (`docs/armtls.md`).
-2. A verifier names a guest. Inside the cluster, and in the CLIs that dial CDS,
+2. A verifier names a guest. Inside the cluster, and in the CLIs that dial the TA,
    an empty pin set is refused rather than read as "any TEE"
    (`docs/armtls.md`). On TDX, guest identity needs RTMR[1] and RTMR[2]; SEV-SNP
    has one launch digest per vCPU count (`docs/measurements.md`). Take pins
@@ -230,7 +230,7 @@ exempt namespaces), which is one reason it is not the production shape.
 - Builds: `c8s-runc` linked in debug mode; the `c8s_dev` build tag; a guest image
   built from an unpublished binary (`C8S_BINARY`, `C8S_IMAGES_DIR`) or with an
   added profile such as `ssh`.
-- TDX node pins without RTMRs, which CDS accepts with a warning.
+- TDX node pins without RTMRs, which the TA accepts with a warning.
 - The mock services under `test/`.
 
 ## Working in the repo
@@ -253,7 +253,7 @@ covers what they leave to discovery.
 - `make manifests` needs controller-gen v0.20.1: the CRD records the generator
   version.
 - Many tests skip without root, `KUBEBUILDER_ASSETS` or particular capabilities,
-  and the CDS replication tests need `-tags integration`. Read what skipped
+  and the TA replication tests need `-tags integration`. Read what skipped
   before trusting a green run.
 
 **Add a command.** Create package `internal/cmds/<name>` exporting
@@ -261,14 +261,14 @@ covers what they leave to discovery.
 `cmd/c8s/<name>.go`. `test/workflows/command_imports_test.go` refuses a new import
 of cobra or of a command package from outside `cmd/` and `internal/cmds/`. Tag the
 registration file and its tests `!c8s_node` when the slim node binary must not
-carry the command, as `install`, `operator` and `cds` are;
+carry the command, as `install`, `operator` and `ta` are;
 `scripts/shipped-deps-guard.sh` checks what that binary links. Require flags with
 `cmdsutil.RequireFlags`, and reuse `cmdsutil.BindImagePolicyFlags`,
-`cdsconn.BindFlags` and `sidecar.BindFlags`. Return `*cmdsutil.ExitStatusError`
+`taconn.BindFlags` and `sidecar.BindFlags`. Return `*cmdsutil.ExitStatusError`
 for an exit status other than 1.
 
 **Add a server or sidecar.** Copy `internal/cmds/allowlistproxy`: `NewCmd`, then
-`run`, then `runContext` with an injected listener. CDS is the full-size case.
+`run`, then `runContext` with an injected listener. The TA is the full-size case.
 Use `http.ServeMux`, `log/slog`, `cmdsutil.ShutdownOnDone` and the
 `internal/httputil` error helpers.
 
@@ -316,7 +316,7 @@ error strings. Do not reintroduce them.
 | Gone | Today |
 |---|---|
 | RA-TLS, `pkg/ratls`, the `ratls-mesh` node DaemonSet | armTLS, `pkg/armtls`, the per-pod `c8s-mesh` (`cmd/armtls-mesh`) |
-| A CDS Deployment in the chart | The CDS VM and `c8s cds --config`; a cloud install names it with `--cds-address` and `--cds-pin` |
+| A TA Deployment in the chart | The TA VM and `c8s ta --config`; a cloud install names it with `--ta-address` and `--ta-pin` |
 | `c8s install --cvm-mode` | `c8s install --platform`; bare metal is the worker image and `c8s worker` |
 | Server CVMs, a control plane in the guest, a signed `launch.yaml` for a node, `launch-config new\|add-agent` | A control plane outside every TEE and `worker.yaml`; `launch-config` and a signed `launch.yaml` serve the Pod CVM only |
 | `c8s get-kubeconfig`, `c8s render-values` | Nothing |

@@ -12,7 +12,7 @@ import (
 // A configuration-only upgrade (one more namespace the webhooks leave alone)
 // keeps every image digest but changes the operator's argv and so the
 // installer's boot config. The store starts with
-// the previous release's policies only, which admit neither new launch. CDS
+// the previous release's policies only, which admit neither new launch. Trust Authority
 // keeps its shape, so the old boot base still admits it and it is not
 // recreated. Once the new seed is published (c8s allowlist apply), the old
 // and the new launches are all admitted.

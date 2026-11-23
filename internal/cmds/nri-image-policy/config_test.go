@@ -579,7 +579,7 @@ func TestValidate_LabelRuleRejectsInvalidKubernetesLabelValue(t *testing.T) {
 // The chart's rendered boot config points attestation_api_url at the
 // attest-proxy's node-local socket; pin that exact string loading through
 // validation and driving the evidence client over a real socket (the
-// construction path main.go uses for the CDS pull handshake).
+// construction path main.go uses for the Trust Authority pull handshake).
 func TestLoadConfig_UnixAttestationAPIURL(t *testing.T) {
 	sock := filepath.Join(t.TempDir(), "attestation-api.sock")
 	ln, err := net.Listen("unix", sock)
@@ -699,7 +699,7 @@ func TestLabelOperator(t *testing.T) {
 }
 
 // The sandbox-digests endpoint types its armTLS identity with this platform and
-// CDS refuses a peer whose type disagrees with the evidence envelope the
+// Trust Authority refuses a peer whose type disagrees with the evidence envelope the
 // attestation-api returns. Hardcoding it to snp denied every sandbox token on a
 // TDX node, and the resulting error names the evidence platform rather than this
 // setting, so the cause sits several hops from the symptom.
@@ -722,7 +722,7 @@ func TestConfigPlatform(t *testing.T) {
 		}
 	})
 
-	t.Run("az-tdx normalizes onto tdx, matching CDS", func(t *testing.T) {
+	t.Run("az-tdx normalizes onto tdx, matching Trust Authority", func(t *testing.T) {
 		cfg := writeAndLoad(t, "platform: az-tdx\n"+base)
 		if got := cfg.NormalizedPlatform(); got != "tdx" {
 			t.Errorf("NormalizedPlatform() = %q, want tdx", got)
@@ -758,12 +758,12 @@ func writeAndLoad(t *testing.T, body string) *config {
 }
 
 // An unreadable pin document fails the node's pin source rather than
-// silently unpinning CDS.
+// silently unpinning Trust Authority.
 func TestTheNodePinSourceRejectsAnUnreadablePin(t *testing.T) {
 	cfg := validConfig()
-	cfg.Allowlist.Pull.CDSMeasurementsConfig = "missing-file"
-	if _, _, err := cfg.Allowlist.Pull.cdsPinSource(discardLogger()); err == nil {
-		t.Fatal("an unreadable CDS pin was accepted")
+	cfg.Allowlist.Pull.TAMeasurementsConfig = "missing-file"
+	if _, _, err := cfg.Allowlist.Pull.taPinSource(discardLogger()); err == nil {
+		t.Fatal("an unreadable Trust Authority pin was accepted")
 	}
 }
 
@@ -775,7 +775,7 @@ func podRoleConfig(t *testing.T) config {
 	cfg.WorkloadClaims.SocketDir = "/run/nri-image-policy"
 	cfg.Measure.RTMR3 = true
 	cfg.Platform = "tdx"
-	cfg.Allowlist.Pull.CDSMeasurementsConfig = "/run/c8s-launch/cds.json"
+	cfg.Allowlist.Pull.TAMeasurementsConfig = "/run/c8s-launch/cds.json"
 	cfg.Allowlist.Base = roleBase(t, pushDigestB, meshRole, []string{"/mesh"})
 	cfg.Mesh.Pod = &podMeshPolicy{}
 	cfg.Mesh.Roles = cfg.Mesh.Roles[:1]
@@ -865,7 +865,7 @@ func TestValidate_PullSourceRefusals(t *testing.T) {
 		change func(*config)
 		want   string
 	}{
-		{"URL and address file", func(c *config) { c.Allowlist.Pull.CDSAddressFile = "/run/cds-address" }, "cannot be combined"},
+		{"URL and address file", func(c *config) { c.Allowlist.Pull.TAAddressFile = "/run/cds-address" }, "cannot be combined"},
 		{"zero interval", func(c *config) { c.Allowlist.Pull.Interval = 0 }, "allowlist.pull.interval"},
 		{"node IP without socket dir", func(c *config) {
 			c.WorkloadClaims.PublishNodeIP = true

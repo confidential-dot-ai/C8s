@@ -37,7 +37,7 @@ func TestUploadDeploymentMode(t *testing.T) {
 			}
 			dir := t.TempDir()
 			file := writeAllowlistFile(t, dir, images)
-			url, methods := recordingCDS(t)
+			url, methods := recordingTA(t)
 			args := []string{"upload", file, "--url", url, "--insecure", "--operator-key", writeOperatorKey(t, dir)}
 			_, _, err := runCmd(append(args, tt.flags...)...)
 			if tt.wantErr != "" {
@@ -45,7 +45,7 @@ func TestUploadDeploymentMode(t *testing.T) {
 					t.Fatalf("error = %v, want %q", err, tt.wantErr)
 				}
 				if len(*methods) != 0 {
-					t.Fatalf("rejected upload contacted CDS: %v", *methods)
+					t.Fatalf("rejected upload contacted Trust Authority: %v", *methods)
 				}
 				return
 			}
@@ -53,7 +53,7 @@ func TestUploadDeploymentMode(t *testing.T) {
 				t.Fatalf("upload: %v", err)
 			}
 			if !slices.Contains(*methods, http.MethodPut) {
-				t.Fatalf("upload did not write to CDS: %v", *methods)
+				t.Fatalf("upload did not write to the Trust Authority: %v", *methods)
 			}
 		})
 	}

@@ -62,7 +62,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fs.PrintDefaults()
 	}
 	var (
-		certFile       = fs.String("cert", "", "PEM certificate chain to present (a CDS-issued leaf written by get-cert)")
+		certFile       = fs.String("cert", "", "PEM certificate chain to present (a Trust Authority-issued leaf written by get-cert)")
 		keyFile        = fs.String("key", "", "PEM private key of --cert")
 		selfSigned     = fs.Bool("self-signed", false, "mint a P-256 key and a self-signed certificate, attested with --attestation-url and --platform")
 		foreignCA      = fs.Bool("foreign-ca", false, "present a leaf signed by a throwaway CA, sent along with it: a mesh leaf from another cluster")

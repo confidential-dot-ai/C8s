@@ -6,11 +6,11 @@ here proves a confidential property. Four harnesses:
 - **docker-compose**: the armTLS certificate flow, where armTLS is C8s's mutual
   TLS whose certificates carry TEE evidence.
 - **kind**: a whole cluster.
-- **CDS HA**: three `c8s cds` replicas of one cluster as real processes on
+- **Trust Authority (TA) high availability**: three `c8s ta` replicas of one cluster as real processes on
   loopback addresses, each with its own attestation-api
-  (`make test-integration-cdsha`, Linux only).
+  (`make test-integration-taha`, Linux only).
 
-CI runs them as the Integration, Integration (cluster) and CDS HA jobs. For
+CI runs them as the Integration, Integration (cluster) and the TA HA jobs. For
 main, the first two run in its merge queue rather than on pull requests. Terms
 are defined in [glossary.md](glossary.md).
 
@@ -19,7 +19,7 @@ Prerequisites:
 - Every harness: make, go, OpenSSL (macOS LibreSSL lacks `x509 -ext`) and
   curl.
 - The docker-compose harness also: docker, with Compose v2
-  (`docker compose`). The CDS HA harness needs none: its replicas are
+  (`docker compose`). The TA HA harness needs none: its replicas are
   processes on this host.
 - The kind harness also: docker, kind, kubectl, helm and python3 with PyYAML.
   Podman works as kind's provider with `KIND_EXPERIMENTAL_PROVIDER=podman`, but
@@ -32,12 +32,12 @@ Run them from the repository root:
 ```sh
 make test-integration
 make test-integration-cluster
-make test-integration-cdsha
+make test-integration-taha
 ```
 
-The first starts a mock CDS — the service that verifies evidence and signs
+The first starts a mock TA — the service that verifies evidence and signs
 workload certificates — and a mock attestation-api, the node-local service that
-produces hardware evidence for CDS and every other component. It runs get-cert,
+produces hardware evidence for the TA and every other component. It runs get-cert,
 the sidecar that obtains a pod's certificate, through the real armTLS flow, and
 checks that nginx serves HTTPS with the issued certificate. The second boots a
 kind cluster, builds the component images, and runs `c8s install --chart
@@ -49,7 +49,7 @@ count:
 === All <N> cluster integration checks passed ===
 ```
 
-The CDS HA harness runs a cluster of three `c8s cds` processes behind one
+The TA HA harness runs a cluster of three `c8s ta` processes behind one
 attestation-api each, and an operator that signs the decrees they act on and
 posts them to the replicas over the attested channel. `run.sh -short` is the
 subset a pull request runs.
@@ -61,15 +61,15 @@ attestation-api DaemonSet runs `test/mock-attestation`, which serves synthetic
 SNP reports with an all-zero launch measurement behind the chart's own
 attest-proxy socket. It answers verification requests too, so no hop
 proves a hardware property; what matches production is the pinning — that
-measurement is the one this cluster's CDS pin and node pins carry, compared
+measurement is the one this cluster's TA pin and node pins carry, compared
 exactly as in production — and every component delegating verification to the
 attestation-api works unchanged.
 
-The CDS runs outside the cluster, as a container of the kind network with an
+The TA runs outside the cluster, as a container of the kind network with an
 attestation-api of its own reporting the launch binding of the configuration it
 boots on (`HOST_DATA` = SHA-256 of that file). That is what the pin the install
 carries names, so every client holds it to the configuration it serves, exactly
-as it holds a CDS VM to its launch file.
+as it holds a TA VM to its launch file.
 
 The operator runs the optional [Pod CVM provider](pod-cvm-provider.md) against
 `test/mock-cloud`, a fake of the Cloud instance API in a third container of
@@ -78,13 +78,13 @@ an instance for a pod bound to that node, and destroys the instance when the
 pod ends; the mock starts no VM, so no pod is ever verified, assigned or
 running. `/control` on the mock sets how the API answers and lists the calls
 it received. The provider's configuration is generated per run, with a
-placeholder image manifest and CDS launch file that nothing verifies.
+placeholder image manifest and the TA launch file that nothing verifies.
 
 The rest is real: the admission webhook and validating admission policies in a
 real API server, the admission plugin registered against the node's containerd,
 certificate issuance with sandbox identity, the armTLS mesh, workload adoption,
 and uninstall. Allowlist and route writes are signed with the production
-operator-token signer and verified by CDS; only the client-side evidence check
+operator-token signer and verified by the TA; only the client-side evidence check
 is skipped, so they travel plain `curl`.
 
 The kind node image is pinned by digest in `test/integration/cluster/lib.sh`;
@@ -115,11 +115,11 @@ C8S_IT_KEEP=1 C8S_IT_SETUP_ONLY=1 C8S_IT_WORKDIR=/tmp/c8s-it ./test/integration/
 The run writes `$C8S_IT_WORKDIR/env`, which exports a `KUBECONFIG` for the kept
 cluster whatever kubectl's current context is. Source
 `test/integration/cluster/lib.sh` and then that file to drive the cluster with
-the harness's own helpers (`cds_write`, `cds_get`, `node_exec`, `run_pod`, and
-the rest). They address the CDS at `$C8S_IT_WORKDIR/cds-address`, which the run
+the harness's own helpers (`ta_write`, `ta_get`, `node_exec`, `run_pod`, and
+the rest). They address the TA at `$C8S_IT_WORKDIR/ta-address`, which the run
 wrote, and the mock Cloud at `$C8S_IT_WORKDIR/cloud-address`. Delete the
-cluster with `kind delete cluster --name c8s-it`, and the CDS and the mock
-Cloud with `docker rm -f c8s-it-cds c8s-it-cds-attestation c8s-it-cloud`.
+cluster with `kind delete cluster --name c8s-it`, and the TA and the mock
+Cloud with `docker rm -f c8s-it-ta c8s-it-ta-attestation c8s-it-cloud`.
 
 ## When a run fails
 

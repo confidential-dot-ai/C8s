@@ -56,7 +56,7 @@ func TestNoSecretsRequestedInjectsNothing(t *testing.T) {
 	}
 }
 
-// The fetcher must run alongside the workload, not before it: CDS releases only
+// The fetcher must run alongside the workload, not before it: Trust Authority releases only
 // once every main container is running, so an ordinary init container would
 // deadlock the pod it gates.
 func TestFetcherIsANativeSidecarOrderedAfterCertWait(t *testing.T) {

@@ -71,10 +71,10 @@ entries, in the seed and the base alike, and the argv-pinned entries. It cuts
 the image segment to 41 characters and appends the first 8 hex digits of the
 SHA-256 over the entry's seed-form containers (`c8s.seedContainers`), so the
 name stays within 63 characters. A configuration change that alters a shape
-without changing a digest names a new entry, which CDS's additive seeding adds
+without changing a digest names a new entry, which the Trust Authority (TA) adds during seeding
 beside the old one; the old entry keeps admitting running pods and rollbacks
 until an operator deletes it. `c8s allowlist lint --seed` names such stale
-entries. CDS deletes a replaced generated entry itself, the pre-shape
+entries. The TA deletes a replaced generated entry itself, the pre-shape
 `<image>-<12hex>` form included, when it leaves a component's args or mounts
 open, and every generated entry for a digest the seed carries an operator
 override for (`internal/allowlist` `retiredBySeed`). The node image merges the seed into its measured base, so it carries
@@ -245,12 +245,12 @@ them.
 the render in `c8s.kubeletExpand`, so the pinned argv is the one the runtime
 starts. The chart does not emulate `MatchWorkload`: a
 `bootstrapAllowlist.workloads` entry that also matches the router pod beside the
-seeded one makes the match ambiguous, and CDS issues the router's leaf
+seeded one makes the match ambiguous, and the TA issues the router's leaf
 unnamed.
 
 `c8s.routerWorkloadName` is `c8s-router-` followed by the first 12 hex digits of
 the SHA-256 of the rendered entry, so a changed digest, argv or mount yields a
-new name. CDS seeds additively by name, so the new entry lands beside the old
+new name. The TA seeds additively by name, so the new entry lands beside the old
 one, as with the digest-named entries. The entry's own name sits inside its
 argv, as `c8s-cert`'s `--expected-workload`. The hash therefore renders the pod
 with `routerNamePlaceholder` set in the context, under which

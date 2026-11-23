@@ -6,10 +6,9 @@ entry whose grant covers that secret's path.
 Guarantee: [Data stays in the TEE](guarantees.md#data-stays-in-the-tee),
 [Only allowlisted code runs](guarantees.md#only-allowlisted-code-runs).
 
-A secret is a value CDS keeps in its own memory, addressed by a store path. CDS
-— the Certificate Distribution Service, the VM outside the cluster that verifies
-TEE evidence, signs the certificate each pod run gets, and holds C8s policy —
-releases it only to such a pod. A workload entry is one named set of container
+The Trust Authority (TA) holds each secret in memory under a store path. It
+verifies TEE evidence, signs each pod's certificate, and enforces the policy
+that grants the pod access to that path. A workload entry is one named set of container
 images with the command, mounts, and environment each may run; its grant lists
 the store paths that entry may read or write. Both are allowlist policy: fields
 in [allowlist-entries.md](allowlist-entries.md), steps in
@@ -18,11 +17,11 @@ not a Kubernetes Secret: nothing is written to the API server.
 
 ## When it is served
 
-CDS serves the secrets endpoint only when it can establish what a pod runs. It
+The TA serves the secrets endpoint only when it can establish what a pod runs. It
 needs the TEE family its own launch proved, its node pins, and node addresses
 bounding its callback to a node's admission inventory — the node service that
 records which containers each pod has run (the configuration's `nodeCIDRs`).
-Miss one and CDS logs a warning naming it and serves nothing, so a pod asking
+Miss one and the TA logs a warning naming it and serves nothing, so a pod asking
 for a secret retries until that is fixed. Where the operator has no node
 inventory at all, such a pod is refused at admission.
 
@@ -40,20 +39,20 @@ evicts nothing — a path holds the only copy of its value — and names the bou
 that stopped it. Raising one needs a restart, which empties the store — see
 [Restarts](#restarts).
 
-## What CDS checks
+## What the TA checks
 
 Every request carries three things: the pod's leaf, the short-lived certificate
-CDS issued for this pod run with its sandbox ID — the identifier of that one run
-— stamped in; a single-use challenge CDS issued for this request; and a fresh
+the TA issued for this pod run with its sandbox ID — the identifier of that one run
+— stamped in; a single-use challenge the TA issued for this request; and a fresh
 sandbox token, the admission inventory's signed statement binding the pod's key
 and that challenge to that sandbox ([armtls.md](armtls.md#sandbox-identity)). A
-release therefore binds to one caller. CDS then checks, in order:
+release therefore binds to one caller. The TA then checks, in order:
 
 1. The TLS stack verifies that the client certificate chains to the mesh CA, the
-   CA CDS generates in its own memory and signs pod certificates with. A
+   CA the TA generates in its own memory and signs pod certificates with. A
    self-issued certificate is not enough here: its sandbox ID is peer-chosen.
 2. The sandbox ID comes from that verified certificate.
-3. The sandbox token verifies against the inventory CDS bound to that sandbox at
+3. The sandbox token verifies against the inventory TA bound to that sandbox at
    certificate issuance — so nothing else answering on the inventory port can
    vouch for it — carries this request's challenge, and names the same sandbox.
 4. That inventory reports what the sandbox has run.
@@ -64,14 +63,14 @@ release therefore binds to one caller. CDS then checks, in order:
 
 Any failure refuses: an unreachable inventory, an unknown sandbox, an empty
 container set, an ambiguous match, an entry with no grant. The client learns
-only that it was refused; the reason goes to the CDS log. An ungranted path
+only that it was refused; the reason goes to the TA log. An ungranted path
 answers `404`, as one holding nothing does, so the API cannot enumerate it.
 
 The containers C8s injects are the sidecars the pod-injector webhook adds to
 every confidential pod ([Fixed sidecar mounts](#fixed-sidecar-mounts)). They are
 dropped before matching, so an entry never enumerates them. One is dropped only
 when the node that admitted it reports a platform role, and only the node's base
-allowlist — the entries it holds itself, not any CDS serves — binds one: to an
+allowlist — the entries it holds itself, not any TA serves — binds one: to an
 injected invocation together with the exact mount table the webhook gives it,
 and to the mesh endpoint together with the webhook's arguments and credential
 volume. A pod's own container running an injected invocation with mounts of its
@@ -87,7 +86,7 @@ file lands inside the pod is not policy; only the store path is.
 
 ## The file appears after your container starts
 
-CDS releases only once every main container is running, because that is when the
+The TA releases only once every main container is running, because that is when the
 sandbox matches a whole workload entry. The fetcher is therefore a sidecar: it
 starts alongside the workload, is refused while the set is incomplete, and
 writes when it completes. An init container would be asking before its siblings
@@ -100,12 +99,12 @@ until [ -f /run/c8s/secrets/DB ]; do sleep 1; done
 Retries back off from 5 to 30 seconds and never stop by default: a large image
 pull can delay the main containers for many minutes.
 
-The first pod to ask for a store path that holds no value has CDS generate one
+The first pod to ask for a store path that holds no value has the TA generate one
 there and then, provided the entry's grant covers that path for write, so no
 caller ever chooses what another will later read. Under a read-only grant the
-request answers `404` until an operator writes the value. Values CDS cannot
+request answers `404` until an operator writes the value. Values the TA cannot
 invent — an API token, a database password, a wrapped key — an operator writes
-with `c8s secrets put`. The pin names the configuration that CDS runs on, and
+with `c8s secrets put`. The pin names the configuration that the TA runs on, and
 such a write also pins the mesh CA you hold out of band, which is what ties the
 peer to the instance you read it from — [workloads.md](workloads.md).
 
@@ -149,10 +148,10 @@ missing or evicted fails an `env: match` policy; recovery depends on the cause �
 waiting until the node applies the policy version, or recreating the pod — and
 `c8s secrets explain` names which applies.
 
-`c8s secrets explain --sandbox <SANDBOX_ID>` reports the decision as CDS makes
+`c8s secrets explain --sandbox <SANDBOX_ID>` reports the decision as the TA makes
 it: what the inventory says is running, what was dropped, how each entry
 measures against the rest, and why a container was rejected. It answers to the
-operator key — the operator's signing key whose public half CDS pins for policy
+operator key — the operator's signing key whose public half the TA pins for policy
 writes — and never carries a value. The sandbox ID is on the pod's certificate,
 and `c8s verify` prints it.
 
@@ -168,14 +167,14 @@ a secret, which is the correct direction for a release decision.
 
 ## Restarts
 
-A CDS restart destroys every secret, and you must roll every workload that holds
+A TA restart destroys every secret, and you must roll every workload that holds
 one: the store is process memory and there is no persistence. For an entry with
 a write grant the failure mode is worse than losing the values — a pod recreated
 after the restart finds its path empty and is given a new value while its
 siblings hold the old one, and nothing reports the split. A read-only consumer
 instead stays refused until the value is written back.
 
-Treat a released value as ephemeral for the life of the CDS process. The
+Treat a released value as ephemeral for the life of the TA process. The
 sandbox-to-inventory bindings go with it, so a certificate that outlives a
 restart has none until its next renewal and is refused meanwhile.
 [operator.md](operator.md) lists everything else a restart drops.

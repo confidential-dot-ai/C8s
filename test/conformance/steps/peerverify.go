@@ -18,7 +18,7 @@ import (
 // chose, and the verdict of the member's mesh endpoint. The peer runs
 // armtls-dial (tools/armtls-dial) in the mesh-dialer image.
 func registerPeerVerify(sc *godog.ScenarioContext) {
-	sc.Step(`^"([^"]*)" holds a copy of the CDS-issued leaf and key of "([^"]*)"$`, holdsCopiedLeaf)
+	sc.Step(`^"([^"]*)" holds a copy of the (?:Trust Authority|CDS)-issued leaf and key of "([^"]*)"$`, holdsCopiedLeaf)
 	sc.Step(`^"([^"]*)" holds a leaf issued by a CA other than the cluster's mesh CA$`, holdsForeignLeaf)
 	sc.Step(`^"([^"]*)" holds a self-signed certificate$`, holdsSelfSigned)
 	sc.Step(`^"([^"]*)" connects to the application port of "([^"]*)" as a mesh peer$`, connectsAsMeshPeer)
@@ -101,7 +101,7 @@ func holdsCopiedLeaf(ctx context.Context, name, owner string) error {
 		return err
 	}
 	if crt == nil {
-		return fmt.Errorf("%q holds no leaf the CDS issued", owner)
+		return fmt.Errorf("%q holds no leaf the Trust Authority issued", owner)
 	}
 	key, err := w.certFile(o, "tls.key")
 	if err != nil {

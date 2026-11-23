@@ -35,8 +35,8 @@ const (
 // publishes, 10.42.0.0/24.
 const testPinNodeCIDR = "192.0.2.0/24"
 
-// pinnedCDSPinFile is cdsPinDocument with the operator key fixed.
-func pinnedCDSPinFile(t *testing.T) string {
+// pinnedTAPinFile is taPinDocument with the operator key fixed.
+func pinnedTAPinFile(t *testing.T) string {
 	t.Helper()
 	config := strings.Join([]string{
 		"schemaVersion: c8s-cds/v1",
@@ -106,7 +106,7 @@ func pinnedInstallStubs(t *testing.T) *installStubs {
 "get deployment vllm -n ws -o json") /bin/cat '`+vllm+`' ;;
 "get deployment edge -n ws -o json") /bin/cat '`+edge+`' ;;
 `))
-	// One digest per adopted image: two entries at one digest would leave CDS
+	// One digest per adopted image: two entries at one digest would leave Trust Authority
 	// unable to tell which names the pod.
 	s.f.tool(t, "crane", `case "$2" in
 *vllm*) echo `+testPinVLLMDigest+` ;;
@@ -116,7 +116,7 @@ esac`)
 }
 
 // pinnedInstallBuilderFlags are the flags of every value builder the install
-// has beyond the image pins and the CDS, which it always computes.
+// has beyond the image pins and the Trust Authority, which it always computes.
 func pinnedInstallBuilderFlags(t *testing.T) map[string][]string {
 	t.Helper()
 	return map[string][]string{
@@ -135,11 +135,11 @@ func pinnedInstallBuilderFlags(t *testing.T) map[string][]string {
 func installComputedValues(t *testing.T, extra ...string) (computed []byte, stderr string) {
 	t.Helper()
 	s := pinnedInstallStubs(t)
-	pin := pinnedCDSPinFile(t)
+	pin := pinnedTAPinFile(t)
 	args := append([]string{
 		"install", "--platform=aks-snp", "--force",
-		flagArg(flagCDSAddress), installCDSAddressUnreachable,
-		flagArg(flagCDSPin), pin,
+		flagArg(flagTAAddress), installTAAddressUnreachable,
+		flagArg(flagTAPin), pin,
 	}, extra...)
 	var err error
 	stderr = captureStderr(t, func() { err = runC8s(t, args...) })
@@ -221,7 +221,7 @@ func installValueLeaves(t *testing.T, document []byte) map[string]string {
 }
 
 // wantPinnedComputedValues is the whole document, as helm and the operator
-// read it: the image pins, the CDS address and pin content, volumed, the pull
+// read it: the image pins, the Trust Authority address and pin content, volumed, the pull
 // secret, the operator keys' content and one entry per adopted workload.
 const wantPinnedComputedValues = `armtlsMesh:
     image:
@@ -231,14 +231,6 @@ attestationApi:
     image:
         digest: sha256:abababababababababababababababababababababababababababababababab
         repository: ghcr.io/confidential-dot-ai/attestation-api
-cds:
-    address: 127.0.0.1:1
-    measurementsConfig: '{"schema_version":"2","tee":"sev-snp","measurements":[{"name":"cds","measurement":"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd","launch_file":"schemaVersion: c8s-cds/v1\nclusterID: test\noperatorPublicKeys: |\n  -----BEGIN PUBLIC KEY-----\n  MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE+ozuS8lfikNld52SnfWYj1/SlUGr\n  mG5PZp8/jAWmARD163wkoiQC2tlHUNJ6nqkN79y37EBKHGFV3B3CW+Ah6A==\n  -----END PUBLIC KEY-----\nworkloads: ''{\"schema\":\"c8s.allowlist/v1\",\"workloads\":{\"app\":{\"label\":\"registry/app@sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"containers\":[{\"digest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"image\":\"registry/app@sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"command\":{\"policy\":\"any\"},\"args\":{\"policy\":\"any\"},\"mounts\":{\"policy\":\"any\"}}]}}}''\nnodes: ''{\"schema_version\":\"1\",\"tee\":\"sev-snp\",\"measurements\":[{\"name\":\"node\",\"measurement\":\"abababababababababababababababababababababababababababababababababababababababababababababababab\"}]}''\nnodeCIDRs:\n  - 192.0.2.0/24\nleafDNSNames:\n  - router.example.com\n"}]}'
-    operatorKeys: |
-        -----BEGIN PUBLIC KEY-----
-        MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE+ozuS8lfikNld52SnfWYj1/SlUGr
-        mG5PZp8/jAWmARD163wkoiQC2tlHUNJ6nqkN79y37EBKHGFV3B3CW+Ah6A==
-        -----END PUBLIC KEY-----
 image:
     digest: sha256:abababababababababababababababababababababababababababababababab
     repository: ghcr.io/confidential-dot-ai/c8s-operator
@@ -278,6 +270,14 @@ nriImagePolicy:
     image:
         digest: sha256:abababababababababababababababababababababababababababababababab
         repository: ghcr.io/confidential-dot-ai/nri-image-policy
+ta:
+    address: 127.0.0.1:1
+    measurementsConfig: '{"schema_version":"2","tee":"sev-snp","measurements":[{"name":"cds","measurement":"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd","launch_file":"schemaVersion: c8s-cds/v1\nclusterID: test\noperatorPublicKeys: |\n  -----BEGIN PUBLIC KEY-----\n  MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE+ozuS8lfikNld52SnfWYj1/SlUGr\n  mG5PZp8/jAWmARD163wkoiQC2tlHUNJ6nqkN79y37EBKHGFV3B3CW+Ah6A==\n  -----END PUBLIC KEY-----\nworkloads: ''{\"schema\":\"c8s.allowlist/v1\",\"workloads\":{\"app\":{\"label\":\"registry/app@sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"containers\":[{\"digest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"image\":\"registry/app@sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"command\":{\"policy\":\"any\"},\"args\":{\"policy\":\"any\"},\"mounts\":{\"policy\":\"any\"}}]}}}''\nnodes: ''{\"schema_version\":\"1\",\"tee\":\"sev-snp\",\"measurements\":[{\"name\":\"node\",\"measurement\":\"abababababababababababababababababababababababababababababababababababababababababababababababab\"}]}''\nnodeCIDRs:\n  - 192.0.2.0/24\nleafDNSNames:\n  - router.example.com\n"}]}'
+    operatorKeys: |
+        -----BEGIN PUBLIC KEY-----
+        MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE+ozuS8lfikNld52SnfWYj1/SlUGr
+        mG5PZp8/jAWmARD163wkoiQC2tlHUNJ6nqkN79y37EBKHGFV3B3CW+Ah6A==
+        -----END PUBLIC KEY-----
 volumed:
     enabled: true
     image:

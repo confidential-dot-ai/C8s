@@ -36,19 +36,19 @@ own version; any other build renders a chart directory it is given with
 | One ingress NetworkPolicy per installed component | See [Network policies](#network-policies) |
 | `c8s-volumed` DaemonSet, the `ConfidentialWorkload` CRD | Volumes with `--volumes` ([volumes.md](volumes.md)); the CRD backs `kubectl get cwl` |
 
-Two inputs are policy rather than plumbing. `--cds-address` and `--cds-pin`
-name the CDS this cluster trusts and the guest it runs in, and the chart
+Two inputs are policy rather than plumbing. `--ta-address` and `--ta-pin`
+name the Trust Authority (TA) this cluster trusts and the guest it runs in, and the chart
 refuses to render without them. The address is `<host>:<port>`: a DNS name
 this cluster's components resolve, or an IPv4 address. `--operator-keys` pins the operator public keys
 the router verifies route manifests under; without it the router uses the keys
-the pinned CDS serves. CDS takes its own write keys from
-`c8s cds config new --operator-keys`. With a fail-closed policy, `--force`
+the pinned TA serves. The TA takes its own write keys from
+`c8s ta config new --operator-keys`. With a fail-closed policy, `--force`
 overrides the guard for resolved platform images outside the available image policy.
 
 Image preflight checks pod spec repositories, component and bootstrap digests,
-and the authenticated allowlist fetched from CDS. It reports containers without
+and the authenticated allowlist fetched from the TA. It reports containers without
 a current digest as unknown, including containers that have not started. An
-unreachable CDS leaves served coverage unknown. Image coverage is advisory:
+unreachable TA leaves served coverage unknown. Image coverage is advisory:
 runtime admission checks the full workload, and tags can change on the next pull.
 
 Two more inputs describe this cluster's own network, which no
@@ -60,15 +60,15 @@ read it with
 `nriImagePolicy.mesh.clusterRanges` is every pod and Service range this
 cluster uses: the router's packet rules send a dial into these ranges over the
 mesh and everything else out in the clear, so a pod in a range left out of them
-gets a plaintext connection. They are the ranges `c8s cds config new
+gets a plaintext connection. They are the ranges `c8s ta config new
 --pod-cidr` and `--service-cidr` name, the pod ones being what `--pod-cidr`
 below declares to this install as well. The chart refuses to render without
 both, `c8s install --allowlist-seed-out` included
 ([allowlist-and-capabilities.md](allowlist-and-capabilities.md#bootstrap)).
 
 `--pod-cidr` is a range this cluster assigns pod addresses from, the one
-`c8s cds config new --pod-cidr` names; repeat it per range. CDS dials a node
-address for a sandbox's admission inventory, so install refuses a CDS whose
+`c8s ta config new --pod-cidr` names; repeat it per range. The TA dials a node
+address for a sandbox's admission inventory, so install refuses a TA whose
 node subnets reach a pod address: a pod inside that bound could answer as a
 node's inventory. The ranges it checks are the ones the nodes publish in
 `spec.podCIDR` plus the ones this flag declares, and every pod in the cluster
@@ -116,7 +116,7 @@ registry login instead.
 `c8s uninstall` deletes the release, then sweeps host state the chart cannot:
 the admission plugin's containerd registration, the `ARMTLS-MESH` chains and
 ipsets, and idle `c8s volume attach` backstores. Each is one set per node, shared by every release, so uninstalling one takes them from
-another. A bare `helm uninstall` leaves every node enforcing with no CDS to
+another. A bare `helm uninstall` leaves every node enforcing with no TA to
 ask; `c8s uninstall --host-sweep-only` is what cleans those nodes.
 
 ## The `c8s operator` controller
@@ -136,7 +136,7 @@ mirror into `ConfidentialWorkload` status how many of its pods are Ready, read
 as holding a certificate: the `c8s-cert-wait` gate exits only once one exists.
 The CRD (`cwl`) is that status view and nothing else: injection reads pod
 annotations and looks up no CR, and whether a pod's containers may run is the
-node's and CDS's decision
+node's and the TA's decision
 ([allowlist-and-capabilities.md](allowlist-and-capabilities.md)).
 
 ## Injection contract
@@ -170,7 +170,7 @@ the node's, bind-mounted read-only into the pod's socket consumers by the
 admission plugin as an NRI mount. `confidential.ai/cw` names the workload a pod
 belongs to and selects the SAN get-cert requests, `c8s-<ENTRY>.<namespace>.svc`.
 One string does all of it: `<ENTRY>` is the annotation's value, the workload
-entry CDS matches, an adoption's id, and the Service suffix. A pod without
+entry the TA matches, an adoption's id, and the Service suffix. A pod without
 `confidential.ai/cw` is injected too but requests no SAN; the annotation becomes
 mandatory as soon as the pod asks for secrets, volumes, discovery output, or a
 renewal interval. `confidential.ai/c8s-san` only refines the SAN of a pod that
@@ -206,15 +206,15 @@ kubectl -n "$namespace" delete pod POD_NAME
 kubectl -n "$namespace" get pods -w
 ```
 
-## CDS runs as one VM
+## The TA runs as one VM
 
-CDS runs as one VM outside the cluster, which `c8s cds config new` writes the
+The TA runs as one VM outside the cluster, which `c8s ta config new` writes the
 configuration and the pin for. On an AKS or GKE cluster that VM runs on
 hardware you hold rather than on the cloud, and
-[cloud-cds.md](cloud-cds.md) covers its placement, its flows and its node
-pins. A cluster may also run its CDS as several VMs
+[cloud-ta.md](cloud-ta.md) covers its placement, its flows and its node
+pins. A cluster may also run its TA as several VMs
 that share one mesh CA and one store, where a replica that restarts takes the
-cluster's state back from the others ([cds-ha.md](cds-ha.md)). Everything
+cluster's state back from the others ([ta-ha.md](ta-ha.md)). Everything
 below is the one-VM deployment. Its state is in that VM: the mesh CA key is
 generated inside the process and written nowhere, released secrets live in
 process memory, and the allowlist and route manifest live in a store on a
@@ -243,13 +243,14 @@ volume opens once its consumer's entry and its key are both back
 
 The router is the cluster's only public entry point, in its own `c8s-router`
 namespace. Its pod holds nginx, `cds-attest`, the allowlist-route proxy and the
-member shape the chart renders rather than injects. Its front-door mode
+member shape the chart renders rather than injects. The `cds-attest` container
+provides the `c8s ta-attest` command's router services. Its front-door mode
 selects what terminates public TLS: `cds` on an installed cluster, and on a
 baked node whichever its signed launch file names:
 
 | Mode | Credential | Attested handshakes |
 |---|---|---|
-| `cds` (default) | A CDS-issued mesh leaf; the key stays in the pod's TEE | attest-pq and attest-lb |
+| `cds` (default) | A TA-issued mesh leaf; the key stays in the pod's TEE | attest-pq and attest-lb |
 | `acme` | A multi-SAN WebPKI leaf the in-pod `c8s acme` sidecar obtains over HTTP-01; TEE-held, `bare-metal` only | attest-pq and attest-lb |
 
 The two attested handshakes, attest-pq and attest-lb, are
@@ -257,7 +258,7 @@ The two attested handshakes, attest-pq and attest-lb, are
 `cds-attest` commits it into both transcripts and refuses attest-lb unless the
 serving key is TEE-held, since a host holding the key could terminate a client's
 TLS with the same leaf. For the same reason `c8s allowlist` and `c8s routes`
-refuse a front door outside mode `cds`, wanting a direct CDS URL.
+refuse a front door outside mode `cds`, wanting a direct TA URL.
 In mode `cds` attest-lb binds the mesh identity leaf, which is the leaf nginx
 serves; a mesh leaf or CA outside its validity window is a credential failure,
 503 `binding_unavailable`. In mode `acme` it binds the leaf
@@ -281,12 +282,12 @@ the old one.
 
 ### Route manifest
 
-CDS stores one operator-signed `c8s.routes/v1` manifest at `/routes`, in the
+The TA stores one operator-signed `c8s.routes/v1` manifest at `/routes`, in the
 same store as the served allowlist, so it shares its lifetime; there is no route
 seed. `cds-attest` polls `GET /routes` every `router.routing.pollInterval` (30s)
-over armTLS against the same CDS pins, verifies the manifest's write token under
+over armTLS against the same TA pins, verifies the manifest's write token under
 the operator keys, and routes by nothing else. A baked node takes those keys
-from the CDS configuration its document pins; elsewhere they are Kubernetes
+from the TA configuration its document pins; elsewhere they are Kubernetes
 configuration, so whoever controls that can sign routes of their own —
 detectable only by pinning the route digest or the operator keys.
 
@@ -300,7 +301,7 @@ detectable only by pinning the route digest or the operator keys.
   chaining to the mesh CA, carrying that route's workload name, and that entry
   must be the same in the allowlist its leaf is stamped under as in the one
   the router's own leaf is stamped under. When the two digests differ the
-  router fetches both documents from CDS's allowlist history
+  router fetches both documents from the TA's allowlist history
   (`/allowlist/objects/sha256/<hex>`, cached by digest) and compares the
   entry. A failed check is 502 `backend_digest_mismatch`: the entry was
   redefined, is missing from either document, or a document cannot be
@@ -316,15 +317,15 @@ detectable only by pinning the route digest or the operator keys.
   pinned requests: bound sessions and requests carrying `X-C8s-Expect-Allowlist`
   get 503 `router_digest_changed`. Other requests are forwarded under the renewed
   digest, subject to the per-backend entry check.
-- An allowlist write takes effect on nodes `--allowlist-node-delay` (CDS flag,
-  30s) after it is written. CDS issues certificates under it at once, and
+- An allowlist write takes effect on nodes `--allowlist-node-delay` (TA flag,
+  30s) after it is written. The TA issues certificates under it at once, and
   router certificates (`--router-cert-ttl`, 20s) last less than that, so any
   router still serving advertises it before it takes effect. A write replaced
   before it takes effect never does. When its certificate expires the router
   retires every backend pool and dials nothing until it renews.
   After withdrawing expired credentials, get-cert retries issuance with jittered
   exponential backoff from `--initial-retry-interval` (2s by default). A successful
-  issuance resets that backoff; CDS refusals use their separate backoff.
+  issuance resets that backoff; TA refusals use their separate backoff.
   Its nginx supervisor checks credentials every five seconds, stops nginx on
   withdrawal, and starts it again when all served credentials are readable.
   Readiness fails while nginx is stopped. An unexpected nginx exit terminates
@@ -337,7 +338,7 @@ detectable only by pinning the route digest or the operator keys.
   ([routes-evidence.md](routes-evidence.md#session-binding)).
 - A router refuses, until it restarts, any revision below the highest it has
   accepted — one waiting for its `notBefore` included — and the same revision
-  with different bytes. A CDS reset lets a lower revision be stored, so write
+  with different bytes. A TA reset lets a lower revision be stored, so write
   above the highest any router accepted.
 
 ### Pattern rules
@@ -354,7 +355,7 @@ identity instead of by a fixed host:
 A request for `<label>.agents.example.com` goes to a pod CVM whose leaf
 carries the workload `opencode` and a client document digest H with
 `<label>` as its agent label: the lowercase RFC 4648 base32, without
-padding, of the first 16 bytes of H (26 characters). CDS stamps H only on
+padding, of the first 16 bytes of H (26 characters). The TA stamps H only on
 the leaf of a pod whose claims it verified
 ([certificate extensions](certificate-extensions.md)). Adding an agent
 needs no manifest write. Write the rule with
@@ -384,15 +385,15 @@ and remove it with `c8s routes rm-pattern --host-suffix <suffix>`.
 
 ### Built-in allowlist route
 
-The chart publishes CDS's `/allowlist` API through the router, as an exact
+The chart publishes the TA's `/allowlist` API through the router, as an exact
 `/allowlist` location and an `/allowlist/` prefix, so a lookalike path is not
 exposed. An in-pod proxy holds
-CDS to the endpoint and pins the admission plugin bind-mounts for a container
+the TA to the endpoint and pins the admission plugin bind-mounts for a container
 holding the credentials platform role, refusing a flag naming another; on an
-install they come from `--cds-pin`. Reads stay unauthenticated at CDS; a
+install they come from `--ta-pin`. Reads stay unauthenticated at the TA; a
 write still needs the body-bound operator token, and the operator private key
 never enters the cluster. nginx rate-limits the route per client and in
-aggregate. Both bounds are nginx's: CDS limits per source IP and sees the whole
+aggregate. Both bounds are nginx's: the TA limits per source IP and sees the whole
 front door as one pod IP, so only nginx's aggregate bound stops front-door
 clients draining the bucket operator writes share.
 
@@ -414,15 +415,15 @@ below use the same guest contract.
 ```sh
 c8s launch-config new-pod --out pod1 --cluster-id demo --name pod-1 \
   --image-manifest manifest.json \
-  --cds-address cds.example.com:8443 --cds-image-policy-file cds-pin.json
+  --ta-address ta.example.com:8443 --ta-image-policy-file cds-pin.json
 ```
 
 This writes a generic `role: pod` document, naming no pod, signed by a separate pod launch key
 (`pod1/pod.key`, or an existing key passed with `--launch-key`), recorded in
 `podOperatorPublicKey`; the initrd binds its exact bytes, and workload
-measurements extend that key's seed. CDS is reached at `--cds-address` and
+measurements extend that key's seed. The TA is reached at `--ta-address` and
 authenticated with the exact image/launch-file policy in
-`--cds-image-policy-file`. The signed document carries both CDS values and no
+`--ta-image-policy-file`. The signed document carries both TA values and no
 pod, allowlist entries or mesh peers: the guest refuses a document that
 carries any of them. Re-signing it after an edit
 requires the Pod launch key.
@@ -435,10 +436,10 @@ The launcher first verifies fresh guest evidence and an empty measured list,
 then fetches `GET /v1/assign/nonce` and signs one `POST /v1/assign` with the Pod
 launch key. The signature binds the verified serving key, nonce, manifest,
 allowlist entries and mesh peers. The entries are a `c8s.allowlist/v1`
-document, which may be empty. They are the base allowlist, in force before CDS
-responds; the plugin also admits entries fetched from the authenticated CDS. A
+document, which may be empty. They are the base allowlist, in force before TA
+responds; the plugin also admits entries fetched from the authenticated TA. A
 failed initial pull leaves the base in force while polling continues, and a
-failed refresh keeps the last applied CDS policy. Neither source gets a
+failed refresh keeps the last applied TA policy. Neither source gets a
 node-TCB exemption. The pod role measures started images only and refuses a
 baked configuration that also sets `allowlist.pull.measure_policies`. The launcher must persist those exact signed
 bytes before sending them. A lost reply requires recovery of the same intent;
@@ -466,7 +467,7 @@ whatever the kubelet's own phase; the provider persists that as `Failed` with
 reason `PodIdentityEnded` and stops the Pod. While the plugin cannot be
 reached, the status service answers 503 rather than the kubelet's cached
 status. Allocate a new Pod CVM. While it runs, the plugin keeps the last
-authenticated CDS policy during an outage and refuses older policy versions.
+authenticated TA policy during an outage and refuses older policy versions.
 
 Assignment nonces have no time expiry and are forgotten on service restart.
 A guest that holds a Pod issues none: `GET /v1/assign/nonce` answers 409 naming the
@@ -503,26 +504,26 @@ starts. The guest keeps the
 baked mesh policy with the endpoint role alone and no exempt namespace, so the
 privilege floor covers every container, and admission requires that policy and
 verified packet capture. A guest-owned broker obtains the endpoint's TLS
-credentials from CDS with fresh evidence over the complete admission history;
+credentials from the TA with fresh evidence over the complete admission history;
 only the endpoint mounts the broker's credential volume, read-only, and
 applications get neither those keys nor the guest's evidence services. The
 endpoint becomes ready only once it holds valid credentials, so base-policy
-applications can start while CDS is down but cannot open mesh connections.
+applications can start while the TA is down but cannot open mesh connections.
 
-CDS must explicitly authorize the Pod image and launch key. Pass
-`--pod-image-policy-file pods.json` to `c8s cds config new`; the file names
+The TA must explicitly authorize the Pod image and launch key. Pass
+`--pod-image-policy-file pods.json` to `c8s ta config new`; the file names
 TDX MRTD, RTMR1, RTMR2 and the exact Pod public-key PEM bytes. Its contents
-become the optional `podImagePolicy` in the measured CDS configuration.
-Changing that policy requires generating a new CDS launch file and pin, then
-relaunching CDS and updating clients' trusted pin. Node launch documents and
+become the optional `podImagePolicy` in the measured TA configuration.
+Changing that policy requires generating a new TA launch file and pin, then
+relaunching the TA and updating clients' trusted pin. Node launch documents and
 Helm values cannot grant Pod issuance authority. Omitting `podImagePolicy`
 disables Pod issuance; an explicitly supplied policy file must be nonempty
 and valid. Pod keys must differ from node and operator authorities.
-The CDS workload policy must also list every measured digest, including the
+The TA workload policy must also list every measured digest, including the
 mesh endpoint. A mesh-only bootstrap snapshot can get an unnamed membership
 certificate; a workload name requires a unique match of the complete retained
 history, including exited init containers. This profile does not authorize
-secret release from the CDS store ([Pod CVM issuance](armtls.md#pod-cvm-issuance)).
+secret release from the TA store ([Pod CVM issuance](armtls.md#pod-cvm-issuance)).
 To serve Pod CVM secrets from your own KMS, pass `--kms-url` and
 `--kms-tls-key-sha256` as well ([pod-secrets.md](pod-secrets.md)).
 
@@ -571,15 +572,15 @@ through the webhook, and the operator pod creates the `c8s-<ENTRY>` headless
 Service. `--upstream <ENTRY>` builds the first route manifest, routing `/` on
 every `router.san` name to that workload's Service and port. With
 `--operator-key` (the signing key, not the pinned `--operator-keys` bundle)
-install stores it on CDS; without one it goes to `--routes-out`, and the router
+install stores it on the TA; without one it goes to `--routes-out`, and the router
 answers 503 until stored.
 
 Install also writes one workload entry
 per adopted workload, named `<ENTRY>`, declaring every container of its pod
-template with exact mounts. CDS stamps that name on the pod's leaf, which is
+template with exact mounts. The TA stamps that name on the pod's leaf, which is
 what the router requires of a workload backend, with the same entry as in the
 allowlist its own leaf is stamped under ([Route manifest](#route-manifest)). When two entries describe
-one pod, CDS stamps neither name, and the router answers 502 for that backend
+one pod, the TA stamps neither name, and the router answers 502 for that backend
 at runtime. A template with other mounts, a `subPath`, or secrets and volumes
 gets an any-mounts entry and a warning; for the `--upstream` workload install
 refuses, so write that entry yourself
@@ -605,7 +606,7 @@ image digests from a `-f` file, beside the mesh file every install takes:
 ```sh
 c8s install --platform aks-snp --chart charts/cloud \
   -f images.yaml -f values.yaml \
-  --cds-address 10.0.0.9:8443 --cds-pin cds-pin.json \
+  --ta-address 10.0.0.9:8443 --ta-pin cds-pin.json \
   --operator-keys operator.pub
 ```
 
@@ -648,8 +649,8 @@ placeholder, and the mesh policy the cluster's DNS resolver and CIDRs.
 helm template c8s charts/cloud \
   --namespace c8s-system --kube-version 1.31.0 \
   -f charts/cloud/values-aks-snp.yaml \
-  --set cds.address=10.0.0.9:8443 \
-  --set-file cds.measurementsConfig=cds-pin.json \
+  --set ta.address=10.0.0.9:8443 \
+  --set-file ta.measurementsConfig=cds-pin.json \
   --set image.tag=main \
   --set attestationApi.image.tag=main \
   --set armtlsMesh.image.tag=main \
@@ -658,5 +659,5 @@ helm template c8s charts/cloud \
   --set 'nriImagePolicy.mesh.clusterRanges={10.244.0.0/16,10.96.0.0/12}'
 ```
 
-The address is this cluster's CDS and `cds-pin.json` the document
-`c8s cds config new` wrote beside its configuration.
+The address is this cluster's TA and `cds-pin.json` the document
+`c8s ta config new` wrote beside its configuration.

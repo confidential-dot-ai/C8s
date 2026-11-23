@@ -116,7 +116,7 @@ func AuthenticateLeafBody(cert *x509.Certificate, now time.Time) (BodyAuthentica
 
 // OIDAttestationDigest marks issued certificates with a SHA-256 of the
 // attestation evidence that authorized issuance — an audit-trail extension
-// shared between the CDS HTTP signer and the in-process issuer.
+// shared between the Trust Authority HTTP signer and the in-process issuer.
 var OIDAttestationDigest = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 66378, 1, 2}
 
 // GenerateSerial returns a cryptographically random 128-bit serial number
@@ -137,7 +137,7 @@ func EncodeCertPEM(certDER []byte) []byte {
 }
 
 // MarshalECKeyPEM marshals an EC private key to PKCS#8 PEM format.
-// PKCS#8 ("PRIVATE KEY" header) is what CDS and the rest of the stack
+// PKCS#8 ("PRIVATE KEY" header) is what Trust Authority and the rest of the stack
 // expect; SEC 1 ("EC PRIVATE KEY") fails to parse with x509.ParsePKCS8PrivateKey.
 func MarshalECKeyPEM(key *ecdsa.PrivateKey) ([]byte, error) {
 	keyDER, err := x509.MarshalPKCS8PrivateKey(key)

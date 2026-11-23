@@ -37,7 +37,7 @@ spec:
   validations:
     - expression: >-
         !has(object.spec.hostNetwork) || object.spec.hostNetwork == false
-      message: "hostNetwork is reserved for c8s node components: a pod sharing the node network namespace could bind the privileged port CDS uses to identify the admission inventory, and impersonate it."
+      message: "hostNetwork is reserved for c8s node components: a pod sharing the node network namespace could bind the privileged port the Trust Authority uses to identify the admission inventory, and impersonate it."
     - expression: >-
         !has(object.spec.hostPID) || object.spec.hostPID == false
       message: "hostPID is denied: sharing the node PID namespace defeats the kernel peer-credential binding the admission inventory uses to identify its caller."
@@ -51,7 +51,7 @@ spec:
           !has(c.ports) || c.ports.all(p, !has(p.hostPort) || p.hostPort == 0))) &&
         (!has(object.spec.ephemeralContainers) || object.spec.ephemeralContainers.all(c,
           !has(c.ports) || c.ports.all(p, !has(p.hostPort) || p.hostPort == 0)))
-      message: "hostPort is reserved for c8s node components: workloadclaims.DigestsPort (1019) is the admission inventory's identity, and a hostPort publishes a pod on the node's address without hostNetwork — so a tenant pod could answer as the inventory and have CDS resolve its signing key."
+      message: "hostPort is reserved for c8s node components: workloadclaims.DigestsPort (1019) is the admission inventory's identity, and a hostPort publishes a pod on the node's address without hostNetwork — so a tenant pod could answer as the inventory and have the Trust Authority resolve its signing key."
     - expression: >-
         (!has(object.spec.containers) || object.spec.containers.all(c,
           (!has(c.livenessProbe) ||
@@ -369,7 +369,7 @@ spec:
   validations:
     - expression: >-
         !has(object.spec.hostNetwork) || object.spec.hostNetwork == false
-      message: "hostNetwork is reserved for c8s node components: a pod sharing the node network namespace could bind the privileged port CDS uses to identify the admission inventory, and impersonate it."
+      message: "hostNetwork is reserved for c8s node components: a pod sharing the node network namespace could bind the privileged port the Trust Authority uses to identify the admission inventory, and impersonate it."
     - expression: >-
         !has(object.spec.hostPID) || object.spec.hostPID == false
       message: "hostPID is denied: sharing the node PID namespace defeats the kernel peer-credential binding the admission inventory uses to identify its caller."
@@ -383,7 +383,7 @@ spec:
           !has(c.ports) || c.ports.all(p, !has(p.hostPort) || p.hostPort == 0))) &&
         (!has(object.spec.ephemeralContainers) || object.spec.ephemeralContainers.all(c,
           !has(c.ports) || c.ports.all(p, !has(p.hostPort) || p.hostPort == 0)))
-      message: "hostPort is reserved for c8s node components: workloadclaims.DigestsPort (1019) is the admission inventory's identity, and a hostPort publishes a pod on the node's address without hostNetwork — so a tenant pod could answer as the inventory and have CDS resolve its signing key."
+      message: "hostPort is reserved for c8s node components: workloadclaims.DigestsPort (1019) is the admission inventory's identity, and a hostPort publishes a pod on the node's address without hostNetwork — so a tenant pod could answer as the inventory and have the Trust Authority resolve its signing key."
     # Keep the blanket denial for full-Pod ephemeral updates too, including
     # Pods admitted before this policy that still contain a hostPath.
     - expression: >-

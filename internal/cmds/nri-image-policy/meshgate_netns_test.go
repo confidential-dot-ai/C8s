@@ -207,7 +207,7 @@ func TestProtectAndGateAPodInTheNamespace(t *testing.T) {
 }
 
 // verifierGate protects pods on a node whose ruleset admits the attestation-api
-// its credential clients verify their CDS's evidence through: the one part of a
+// its credential clients verify their Trust Authority's evidence through: the one part of a
 // pod's ruleset that comes from the node, not the measured document.
 func verifierGate() *meshGate {
 	policy := meshRoles()

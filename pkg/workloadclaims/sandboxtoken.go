@@ -1,11 +1,11 @@
 // Signed sandbox tokens: the inventory's verifiable answer to "which pod sandbox
 // is the calling process in". The inventory signs (sandbox ID, requester-key
-// digest, CDS challenge nonce, its own node's IP) with an in-process key, so the
+// digest, Trust Authority challenge nonce, its own node's IP) with an in-process key, so the
 // binding is to one requester and fresh for exactly the issuance whose challenge
 // it carries (docs/armtls.md, "Sandbox identity"). Freshness rides the same
-// single-use CDS challenge as the evidence — no clock.
+// single-use Trust Authority challenge as the evidence — no clock.
 //
-// The signature is only worth as much as CDS's confidence that the key is the
+// The signature is only worth as much as Trust Authority's confidence that the key is the
 // inventory's, which is established out of band — see digests.go.
 
 package workloadclaims
@@ -22,7 +22,7 @@ import (
 	"fmt"
 )
 
-// maxNonceLen bounds the challenge a token may carry; the CDS challenge is a
+// maxNonceLen bounds the challenge a token may carry; the Trust Authority challenge is a
 // 32-byte nonce, so this rejects a hostile POST /sandbox body stuffing a large
 // OCTET STRING into the signed token.
 const maxNonceLen = 128
@@ -33,7 +33,7 @@ const maxNonceLen = 128
 // sandboxTokenVersion versions that, inside the signed bytes.
 var sandboxTokenDomainSep = []byte("c8s/sandbox-token/v1\x00")
 
-// sandboxTokenVersion is 2: v1 carried no inventory host, so CDS had no way to
+// sandboxTokenVersion is 2: v1 carried no inventory host, so the Trust Authority had no way to
 // reach the inventory back for the sandbox's digests.
 const sandboxTokenVersion = 2
 
@@ -43,11 +43,11 @@ const sandboxTokenVersion = 2
 //	    version        INTEGER,
 //	    sandboxId      IA5String,
 //	    keyDigest      OCTET STRING (32),  -- SHA-256(requester PKIX pubkey DER)
-//	    nonce          OCTET STRING,       -- the CDS challenge for this issuance
+//	    nonce          OCTET STRING,       -- the Trust Authority challenge for this issuance
 //	    inventoryHost  IA5String           -- IP of the node serving the digests endpoint
 //	}
 //
-// The host is an IP only; the port is not carried. CDS dials DigestsPort, which
+// The host is an IP only; the port is not carried. Trust Authority dials DigestsPort, which
 // it holds itself — see digests.go for why that is the whole basis of the
 // inventory's identity.
 type sandboxTokenASN1 struct {
@@ -60,7 +60,7 @@ type sandboxTokenASN1 struct {
 
 // SignedSandboxToken is the inventory's SandboxPath answer.
 //
-// It carries no credential for the signing key. CDS resolves that key by
+// It carries no credential for the signing key. Trust Authority resolves that key by
 // dialing the signer's own digests endpoint on a privileged port
 // (DigestsClient.InventoryKey), which is what distinguishes the inventory from
 // any other TEE sharing the node's launch measurement.
@@ -94,7 +94,7 @@ func RequesterKeyDigest(pub crypto.PublicKey) ([]byte, error) {
 // UnverifiedSandboxIDFromToken reads the sandbox ID a token states. The caller must have
 // obtained the token from its own node's inventory over the baked socket, whose
 // peer credentials bind the statement to the calling sandbox; the signature is
-// there for CDS, which has no such channel.
+// there for Trust Authority, which has no such channel.
 func UnverifiedSandboxIDFromToken(tokenDER []byte) (string, error) {
 	var tok sandboxTokenASN1
 	rest, err := asn1.Unmarshal(tokenDER, &tok)
@@ -137,10 +137,10 @@ func UnverifiedInventoryHost(tokenDER []byte) (string, error) {
 
 // Verify checks the envelope against the inventory key (which the caller must
 // have resolved from the inventory's own endpoint and trusts), the requester
-// key, and the CDS
+// key, and the Trust Authority
 // challenge for this request. It fails closed on a bad signature, a malformed
 // or wrong-version token, a nonce that is not this request's challenge, or a
-// requester-key mismatch. nonce is the single-use challenge CDS is consuming
+// requester-key mismatch. nonce is the single-use challenge Trust Authority is consuming
 // for the issuance, so a token cannot be replayed against a later request or
 // pre-signed against a future one.
 func (s *SignedSandboxToken) Verify(inventoryPub *ecdsa.PublicKey, requesterPub crypto.PublicKey, nonce []byte) (VerifiedSandbox, error) {
@@ -182,7 +182,7 @@ func (s *SignedSandboxToken) Verify(inventoryPub *ecdsa.PublicKey, requesterPub 
 
 // SandboxTokenSigner signs sandbox tokens with an in-process P-256 key. The key
 // never leaves the process and is not persisted; an inventory restart mints a
-// new one, which CDS picks up because it reads the key from the inventory's own
+// new one, which Trust Authority picks up because it reads the key from the inventory's own
 // endpoint on every issuance rather than caching a credential.
 type SandboxTokenSigner struct {
 	key    *ecdsa.PrivateKey
@@ -191,7 +191,7 @@ type SandboxTokenSigner struct {
 }
 
 // NewSandboxTokenSigner generates the signing key. host is the IP of the node
-// serving this inventory's digests endpoint, signed into every token so CDS
+// serving this inventory's digests endpoint, signed into every token so the Trust Authority
 // knows which endpoint holds the key that verifies it.
 func NewSandboxTokenSigner(host string) (*SandboxTokenSigner, error) {
 	if err := ValidateInventoryHost(host); err != nil {
@@ -221,14 +221,14 @@ func (s *SandboxTokenSigner) WithHost(host string) (*SandboxTokenSigner, error) 
 	return &SandboxTokenSigner{key: s.key, pubDER: s.pubDER, host: host}, nil
 }
 
-// PublicKey is the signing key CDS fetches from the digests endpoint.
+// PublicKey is the signing key Trust Authority fetches from the digests endpoint.
 func (s *SandboxTokenSigner) PublicKey() *ecdsa.PublicKey { return &s.key.PublicKey }
 
 // PublicKeyDER is PublicKey in PKIX DER, as IdentityPath serves it.
 func (s *SandboxTokenSigner) PublicKeyDER() []byte { return s.pubDER }
 
 // Sign issues a signed sandbox token binding sandboxID to the requester-key
-// digest and the CDS challenge nonce for this issuance.
+// digest and the Trust Authority challenge nonce for this issuance.
 func (s *SandboxTokenSigner) Sign(sandboxID string, requesterKeyDigest, nonce []byte) (*SignedSandboxToken, error) {
 	if len(nonce) == 0 || len(nonce) > maxNonceLen {
 		return nil, fmt.Errorf("workloadclaims: sandbox token nonce must be 1..%d bytes", maxNonceLen)

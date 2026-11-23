@@ -78,9 +78,9 @@ func (nodeCVM) imageOf(_ *api.PodSandbox, ctr *api.Container) (string, error) {
 
 func (c nodeCVM) enforcerMounts() enforcerMounts {
 	return enforcerMounts{
-		socketDir:  c.p.cfg.WorkloadClaims.SocketDir,
-		cdsPins:    c.p.cdsPins,
-		cdsAddress: c.p.cdsAddress,
+		socketDir: c.p.cfg.WorkloadClaims.SocketDir,
+		taPins:    c.p.taPins,
+		taAddress: c.p.taAddress,
 	}
 }
 

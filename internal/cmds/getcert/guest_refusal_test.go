@@ -19,8 +19,8 @@ func TestGuestRenewalKeepsFatalWithdrawalSeparateFromRefusalBackoff(t *testing.T
 		fatal   bool
 	}{
 		{"cannot withdraw credentials", fmt.Errorf("withdrawal failed: %w", errFailClosed), true},
-		{"CDS refusal", &attestclient.StatusError{Status: http.StatusForbidden}, false},
-		{"CDS rate limit", &attestclient.StatusError{Status: http.StatusTooManyRequests}, false},
+		{"Trust Authority refusal", &attestclient.StatusError{Status: http.StatusForbidden}, false},
+		{"Trust Authority rate limit", &attestclient.StatusError{Status: http.StatusTooManyRequests}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), time.Second)

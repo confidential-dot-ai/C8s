@@ -65,7 +65,7 @@ type leafSpec struct {
 	purposes       []x509.ExtKeyUsage
 	omitInstanceID bool
 	// armtlsExt is an armTLS attestation extension the leaf also carries, as
-	// CDS copies the requester's onto it.
+	// Trust Authority copies the requester's onto it.
 	armtlsExt *pkix.Extension
 }
 

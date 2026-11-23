@@ -574,7 +574,7 @@ func (g *meshGate) bindEntry(pod *api.PodSandbox, decision exitDecision) error {
 // requireOffLimits refuses an exit into this cluster, onto this node or onto
 // a port a platform role dials: a connection to a member leaves the pod
 // through the mesh or not at all, and the node's own services and this
-// cluster's CDS are reached under their own rules, by the identity those
+// cluster's Trust Authority are reached under their own rules, by the identity those
 // rules name, or not at all.
 func (g *meshGate) requireOffLimits(exits []exit) error {
 	if err := g.policy.requireOutsideCluster(exits); err != nil {

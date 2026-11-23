@@ -19,7 +19,7 @@ import (
 // injection captures everything the mutator decides from pod annotations.
 type injection struct {
 	WorkloadID string
-	// SAN is the DNS SAN get-cert requests from CDS. The c8s-san annotation
+	// SAN is the DNS SAN get-cert requests from the Trust Authority. The c8s-san annotation
 	// sets it directly; otherwise Handle derives it from the workload id and
 	// pod namespace (see workloadSAN), falling back to the id verbatim.
 	SAN       string
@@ -52,7 +52,7 @@ type discoverySpec struct {
 	Volume        string
 	MountPath     string
 	Out           string
-	CDSCertURL    string
+	TACertURL     string
 	MeshCAURL     string
 	PublicTLSMode string
 }
@@ -94,7 +94,7 @@ func parseAnnotations(pod *corev1.Pod, namespace string) (*injection, error) {
 		Discovery: discoverySpec{
 			Volume:        annotations[AnnotationDiscoveryVolume],
 			Out:           annotations[AnnotationDiscoveryOut],
-			CDSCertURL:    annotations[AnnotationDiscoveryCDSCertURL],
+			TACertURL:     annotations[AnnotationDiscoveryTACertURL],
 			MeshCAURL:     annotations[AnnotationDiscoveryMeshCAURL],
 			PublicTLSMode: annotations[AnnotationDiscoveryPublicTLSMode],
 		},
@@ -157,7 +157,7 @@ func hasInjectionDetailAnnotations(annotations map[string]string) bool {
 		AnnotationDiscoveryVolume,
 		AnnotationDiscoveryMountPath,
 		AnnotationDiscoveryOut,
-		AnnotationDiscoveryCDSCertURL,
+		AnnotationDiscoveryTACertURL,
 		AnnotationDiscoveryMeshCAURL,
 		AnnotationDiscoveryPublicTLSMode,
 		AnnotationGetCertVerbose,
@@ -280,8 +280,8 @@ func (d discoverySpec) validate() error {
 	if d.Out == "" {
 		missing = append(missing, AnnotationDiscoveryOut)
 	}
-	if d.CDSCertURL == "" {
-		missing = append(missing, AnnotationDiscoveryCDSCertURL)
+	if d.TACertURL == "" {
+		missing = append(missing, AnnotationDiscoveryTACertURL)
 	}
 	if d.PublicTLSMode == "" {
 		missing = append(missing, AnnotationDiscoveryPublicTLSMode)
@@ -324,7 +324,7 @@ func (inj *injection) validateDiscoveryVolume() error {
 func (d discoverySpec) configured() bool {
 	return d.Volume != "" ||
 		d.Out != "" ||
-		d.CDSCertURL != "" ||
+		d.TACertURL != "" ||
 		d.MeshCAURL != "" ||
 		d.PublicTLSMode != ""
 }

@@ -1,4 +1,4 @@
-// Package routesclient is the HTTP client for the CDS route API: GET and PUT
+// Package routesclient is the HTTP client for the Trust Authority route API: GET and PUT
 // /routes (route policy §8).
 //
 // Get returns the envelope as served and verifies nothing; a caller that
@@ -20,29 +20,29 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/routes"
 )
 
-// maxEnvelopeBytes bounds a GET /routes response: base64 of the CDS's 1 MiB
+// maxEnvelopeBytes bounds a GET /routes response: base64 of the Trust Authority's 1 MiB
 // write cap plus the token, with room to spare.
 const maxEnvelopeBytes = 4 << 20
 
-// ErrNotFound reports that the CDS stores no route manifest.
-var ErrNotFound = errors.New("no route manifest stored on CDS")
+// ErrNotFound reports that the Trust Authority stores no route manifest.
+var ErrNotFound = errors.New("no route manifest stored on the Trust Authority")
 
-// Client talks to one CDS. The zero value is unusable; construct with New.
+// Client talks to one Trust Authority. The zero value is unusable; construct with New.
 type Client struct {
 	baseURL    string
 	httpClient *http.Client
 }
 
-// New returns a client for the CDS at baseURL, sending through httpClient,
+// New returns a client for the Trust Authority at baseURL, sending through httpClient,
 // which carries the attestation check and timeout. baseURL must have no path,
 // query or fragment: W2 requires a write token's htu to be exactly /routes.
 func New(baseURL string, httpClient *http.Client) (Client, error) {
 	u, err := url.Parse(baseURL)
 	if err != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") {
-		return Client{}, fmt.Errorf("invalid CDS URL %q: want http(s)://host[:port]", baseURL)
+		return Client{}, fmt.Errorf("invalid Trust Authority URL %q: want http(s)://host[:port]", baseURL)
 	}
 	if (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
-		return Client{}, fmt.Errorf("CDS URL %q must have no path, query or fragment: a route write token is bound to %s exactly", baseURL, routes.Path)
+		return Client{}, fmt.Errorf("the Trust Authority URL %q must have no path, query or fragment: a route write token is bound to %s exactly", baseURL, routes.Path)
 	}
 	if httpClient == nil {
 		return Client{}, errors.New("routesclient: nil HTTP client")
@@ -83,8 +83,8 @@ func (c Client) Get(ctx context.Context) (routes.Envelope, error) {
 
 // Put sends manifest verbatim, authorized by auth for PUT /routes. A non-empty
 // ifMatch is the lower-case hex route digest of the manifest the caller read;
-// CDS then refuses the write with 412 if another one landed since. An
-// *operatorauth.StatusError carries the CDS's refusal: 400, 401, 409, 412 or
+// Trust Authority then refuses the write with 412 if another one landed since. An
+// *operatorauth.StatusError carries the Trust Authority's refusal: 400, 401, 409, 412 or
 // 422 (C3).
 func (c Client) Put(ctx context.Context, manifest []byte, auth operatorauth.Authorizer, ifMatch string) error {
 	req, err := operatorauth.NewRequest(ctx, http.MethodPut, c.baseURL+routes.Path, manifest, auth)

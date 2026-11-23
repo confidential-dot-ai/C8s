@@ -1,9 +1,9 @@
-// The sandbox-digests callback: CDS asks the inventory that admitted a pod
+// The sandbox-digests callback: Trust Authority asks the inventory that admitted a pod
 // what that pod is actually running, at issuance time, over mutually-attested
 // armTLS (docs/armtls.md, "Sandbox identity").
 //
 // Direction matters. The requester never reports its own images — it only
-// proves, via the inventory-signed sandbox token, which sandbox it is in. CDS
+// proves, via the inventory-signed sandbox token, which sandbox it is in. Trust Authority
 // then asks the inventory directly, so the answer is live at issuance and
 // comes from the component that made the admission decision.
 
@@ -33,7 +33,7 @@ import (
 )
 
 // DigestsPort is the port every inventory serves its digests endpoint on, and
-// the only port CDS will dial for one. It is fixed rather than carried in the
+// the only port Trust Authority will dial for one. It is fixed rather than carried in the
 // token, and it is privileged (<1024, IANA-unassigned), because that is what
 // makes it an identity: answering on it at the node's address requires
 // hostNetwork or a hostPort, and the chart's deny-host-namespaces policy
@@ -43,7 +43,7 @@ import (
 //
 // Both halves are load-bearing. A hostPort needs no host namespace: the CNI
 // publishes the pod on the node's address, which is enough to be dialled here
-// and have CDS accept the responder's key as the inventory's.
+// and have Trust Authority accept the responder's key as the inventory's.
 const DigestsPort = 1019
 
 // dialPort and listenPort are the ports the client connects to and the endpoint
@@ -66,8 +66,8 @@ func ValidateInventoryHost(host string) error {
 // from the caller's bytes.
 //
 // SECURITY: this bounds a request-forgery primitive. The host rides a sandbox
-// token, and a token is signable by anything that can reach CDS — the signature
-// is only meaningful once CDS has resolved the key, which requires dialing this
+// token, and a token is signable by anything that can reach Trust Authority — the signature
+// is only meaningful once the Trust Authority has resolved the key, which requires dialing this
 // host first. Hence: an IP literal, never a name (a resolvable name lets DNS
 // decide the destination after the check), and global unicast only (no
 // loopback, link-local/IMDS, multicast, or unspecified). Callers additionally
@@ -84,7 +84,7 @@ func ParseInventoryHost(host string) (string, error) {
 }
 
 // CIDRHosts bounds which addresses an inventory may live at — the operator's
-// node subnets. CDS refuses to dial anything outside the set, which is what
+// node subnets. Trust Authority refuses to dial anything outside the set, which is what
 // keeps a pod (whose IP is in the pod CIDR) from standing in for a node. An
 // empty set contains nothing, so a caller holding one fails closed.
 type CIDRHosts []*net.IPNet
@@ -117,25 +117,25 @@ func (h CIDRHosts) Contains(host string) bool {
 
 // ResolveAdvertiseHost returns the node IP an inventory signs into its sandbox
 // tokens. An explicit host always wins; the plugin passes the node-ip file's
-// address (see the nri-image-policy publish_node_ip setting). cdsEndpoint is the
+// address (see the nri-image-policy publish_node_ip setting). taEndpoint is the
 // enforcer's pull config verbatim — a URL or a bare host[:port]; a URL's host
 // is used when it parses as one, so every enforcer derives the callback host
 // the same way.
 //
 // Inference is the fallback and is deliberately weak: it asks the routing table
-// which local address would reach the CDS host. That answer is wrong whenever
-// CDS is reached over loopback — which the chart's own default does, since the
-// plugin dials the CDS NodePort on 127.0.0.1 — so it fails loudly rather than
-// advertising something CDS could never dial back.
+// which local address would reach the Trust Authority host. That answer is wrong whenever
+// Trust Authority is reached over loopback — which the chart's own default does, since the
+// plugin dials the Trust Authority NodePort on 127.0.0.1 — so it fails loudly rather than
+// advertising something Trust Authority could never dial back.
 // ctx bounds the lookup's name resolution, which net.Dial would otherwise
 // block on without limit.
-func ResolveAdvertiseHost(ctx context.Context, host, cdsEndpoint string) (string, error) {
-	if u, err := url.Parse(cdsEndpoint); err == nil && u.Host != "" {
-		cdsEndpoint = u.Host
+func ResolveAdvertiseHost(ctx context.Context, host, taEndpoint string) (string, error) {
+	if u, err := url.Parse(taEndpoint); err == nil && u.Host != "" {
+		taEndpoint = u.Host
 	}
 	if host == "" {
 		var err error
-		if host, err = outboundHost(ctx, cdsEndpoint); err != nil {
+		if host, err = outboundHost(ctx, taEndpoint); err != nil {
 			return "", fmt.Errorf("workloadclaims: infer the inventory advertise host (set it explicitly): %w", err)
 		}
 	}
@@ -164,15 +164,15 @@ func outboundHost(ctx context.Context, target string) (string, error) {
 // DigestsServerTLSConfig builds the inventory's listener config for
 // ServeDigests: it presents an armTLS certificate proving the inventory runs in
 // a TEE, and requires the caller to present a hardware-attested one too. The
-// caller must satisfy cdsPins (launch measurement, and TDX RTMRs when pinned),
-// so the endpoint discloses what a node runs only to a CDS on an expected
+// caller must satisfy taPins (launch measurement, and TDX RTMRs when pinned),
+// so the endpoint discloses what a node runs only to a Trust Authority on an expected
 // measurement; pins that name no guest are refused ([armtls.ErrUnpinned]). A
 // TDX certificate lists the policies in the measuredPolicies journal; empty
 // lists none.
 //
-// cdsPins follows the node's own pins, so a replica relaunched on a newly
-// decreed CDS image reaches the endpoint.
-func DigestsServerTLSConfig(platform string, attestFunc func(ctx context.Context, customData string) (string, error), attestationApiURL string, cdsPins armtls.PinSource, certTTL time.Duration, measuredPolicies string) (*tls.Config, *armtls.CertManager, error) {
+// taPins follows the node's own pins, so a replica relaunched on a newly
+// decreed Trust Authority image reaches the endpoint.
+func DigestsServerTLSConfig(platform string, attestFunc func(ctx context.Context, customData string) (string, error), attestationApiURL string, taPins armtls.PinSource, certTTL time.Duration, measuredPolicies string) (*tls.Config, *armtls.CertManager, error) {
 	if err := requireAttestationApi(attestationApiURL); err != nil {
 		return nil, nil, err
 	}
@@ -180,13 +180,13 @@ func DigestsServerTLSConfig(platform string, attestFunc func(ctx context.Context
 		Platform:             platform,
 		AttestFunc:           attestFunc,
 		CertTTL:              certTTL,
-		ClientPolicy:         armtls.Pins(cdsPins.Current().Policy()).VerifyPolicy(attestationApiURL),
+		ClientPolicy:         armtls.Pins(taPins.Current().Policy()).VerifyPolicy(attestationApiURL),
 		MeasuredPoliciesFile: measuredPolicies,
 	})
 	if err != nil {
 		return nil, nil, err
 	}
-	armtls.FollowClientPins(tlsCfg, cdsPins, attestationApiURL)
+	armtls.FollowClientPins(tlsCfg, taPins, attestationApiURL)
 	return tlsCfg, certMgr, nil
 }
 
@@ -209,8 +209,8 @@ func requireAttestationApi(url string) error {
 // rather than after the warm-up window. Warm-up failure is logged, not fatal:
 // the endpoint provisions on the first handshake instead, and taking the
 // inventory down would cost far more than a slow first callback.
-func StartDigestsEndpoint(ctx context.Context, logger *slog.Logger, resolver SandboxResolver, identity []byte, platform string, attestFunc func(ctx context.Context, customData string) (string, error), attestationApiURL string, cdsPins armtls.PinSource, measuredPolicies string) error {
-	tlsCfg, certMgr, err := DigestsServerTLSConfig(platform, attestFunc, attestationApiURL, cdsPins, 0, measuredPolicies)
+func StartDigestsEndpoint(ctx context.Context, logger *slog.Logger, resolver SandboxResolver, identity []byte, platform string, attestFunc func(ctx context.Context, customData string) (string, error), attestationApiURL string, taPins armtls.PinSource, measuredPolicies string) error {
+	tlsCfg, certMgr, err := DigestsServerTLSConfig(platform, attestFunc, attestationApiURL, taPins, 0, measuredPolicies)
 	if err != nil {
 		return err
 	}
@@ -235,10 +235,10 @@ func StartDigestsEndpoint(ctx context.Context, logger *slog.Logger, resolver San
 	return nil
 }
 
-// DigestsClient is CDS's side of the callback: an armTLS client that verifies
+// DigestsClient is Trust Authority's side of the callback: an armTLS client that verifies
 // the inventory's attestation — pinning its launch measurement when one is
-// configured — and presents CDS's own armTLS certificate, so the inventory can
-// pin CDS in turn.
+// configured — and presents Trust Authority's own armTLS certificate, so the inventory can
+// pin Trust Authority in turn.
 type DigestsClient struct {
 	http *http.Client
 }
@@ -248,7 +248,7 @@ type DigestsClientConfig struct {
 	Platform          string
 	AttestFunc        func(ctx context.Context, customData string) (string, error)
 	AttestationAPIURL string
-	// NodeImages are the node images an inventory may run — the set CDS
+	// NodeImages are the node images an inventory may run — the set Trust Authority
 	// certifies its nodes by. A set that names no guest is refused
 	// ([armtls.ErrUnpinned]).
 	NodeImages armtls.PinSource
@@ -279,7 +279,7 @@ func NewDigestsClient(ctx context.Context, cfg DigestsClientConfig) (*DigestsCli
 		return nil, err
 	}
 	if cfg.NodeImages == nil {
-		return nil, fmt.Errorf("workloadclaims: the sandbox-digests client holds an inventory to the node images CDS certifies, and was given no source for them")
+		return nil, fmt.Errorf("workloadclaims: the sandbox-digests client holds an inventory to the node images Trust Authority certifies, and was given no source for them")
 	}
 	tlsCfg, certMgr, err := armtls.NewClientTLSConfig(cfg.tlsConfig())
 	if err != nil {
@@ -346,10 +346,10 @@ func peerNotUpYet(err error) bool {
 // the last failure once ctx's budget is spent.
 //
 // A single attempt is not enough: the attestation API lives on a DaemonSet
-// socket that may not exist yet when CDS starts, and lstat on a missing socket
+// socket that may not exist yet when the Trust Authority starts, and lstat on a missing socket
 // fails instantly. One attempt therefore leaves the whole budget unspent and
 // aborts startup for a peer that is usually seconds away. That is expensive
-// because the allowlist is not persistent, so CDS exiting here drops every
+// because the allowlist is not persistent, so the Trust Authority exiting here drops every
 // operator-added digest on restart.
 //
 // Anything else returns immediately, so a peer that answers and refuses still
@@ -380,7 +380,7 @@ var ErrSandboxUnknown = fmt.Errorf("workloadclaims: inventory does not know this
 
 // InventoryKey fetches the sandbox-token signing key of the inventory on host.
 //
-// This is what gives an inventory an identity CDS can check. The key arrives
+// This is what gives an inventory an identity Trust Authority can check. The key arrives
 // over armTLS from DigestsPort — a privileged port in the node's own network
 // namespace — so answering here requires a privilege the chart's
 // deny-host-namespaces policy withholds from tenant pods. Sharing the node's

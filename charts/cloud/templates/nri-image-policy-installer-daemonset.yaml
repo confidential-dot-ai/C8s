@@ -1,6 +1,6 @@
 {{/*
 One pull-mode installer DaemonSet on every eligible host node. Each plugin polls
-the CDS the cluster trusts (cds.address), so operator `c8s allowlist add` writes
+the Trust Authority the cluster trusts (ta.address), so operator `c8s allowlist add` writes
 reach admission. The `-worker` suffix keeps the DaemonSet's identity across upgrades.
 */}}
 ---

@@ -28,7 +28,7 @@ func (f failingStore) Put(context.Context, string, []byte) (Held, error) {
 func (f failingStore) TopHolders(int) []HolderPaths { return nil }
 
 // A store failure is not a policy denial: the caller is told the secret is
-// unavailable, and the reason stays in the CDS log.
+// unavailable, and the reason stays in the Trust Authority log.
 func TestStoreFailureIsFiveHundred(t *testing.T) {
 	for _, tc := range []struct{ name, method string }{
 		{"read", http.MethodGet},
@@ -128,7 +128,7 @@ func TestInventoryMisconfigurationRefuses(t *testing.T) {
 	}
 }
 
-// An unreachable inventory is fail-closed: CDS cannot establish what the
+// An unreachable inventory is fail-closed: Trust Authority cannot establish what the
 // sandbox runs, so it releases nothing.
 func TestInventoryFetchFailureRefuses(t *testing.T) {
 	hn := newHarness(t)

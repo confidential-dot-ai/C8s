@@ -48,7 +48,7 @@ func newExportCmd(o *options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			// Export the exact canonical bytes served by CDS. Workload stamps
+			// Export the exact canonical bytes served by the Trust Authority. Workload stamps
 			// hash these bytes, so even a trailing newline changes a client pin.
 			data, _, err := client.CanonicalBytes(ctx(cmd))
 			if err != nil {
@@ -107,7 +107,7 @@ var errDifferences = fmt.Errorf("allowlist differs")
 
 // --- shared helpers ---
 
-// fetch builds the CDS client and returns the live allowlist and its version.
+// fetch builds the Trust Authority client and returns the live allowlist and its version.
 func (o *options) fetch(ctx context.Context) (*pkgallowlist.Allowlist, string, error) {
 	if err := o.validate(); err != nil {
 		return nil, "", err
@@ -120,7 +120,7 @@ func (o *options) fetch(ctx context.Context) (*pkgallowlist.Allowlist, string, e
 }
 
 // loadAllowlistFile reads and validates a full allowlist JSON file — the format
-// `export` writes and 'c8s cds config new --allowlist-seed' reads.
+// `export` writes and 'c8s ta config new --allowlist-seed' reads.
 func loadAllowlistFile(path string) (*pkgallowlist.Allowlist, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {

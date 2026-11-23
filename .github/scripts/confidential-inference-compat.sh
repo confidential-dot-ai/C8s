@@ -112,10 +112,10 @@ What makes confidential-inference change, as the quoted files show:
 - a c8s file they read moved or changed shape: the chart component inventory and values, .github/build-pins.json, the worker image's mkosi.sync; a changed body of a hashed source file does not count, the bump re-hashes it;
 - a c8s CLI subcommand, flag, output or lint message they run or parse changed: c8s node-image render, c8s allowlist derive, c8s allowlist lint --strict;
 - the Go API of pkg/allowlist that tools/c8s-allowlist-canonical imports changed;
-- the worker or CDS guest image names, tags, manifest artifact layout or measurement fields changed;
+- the worker or Trust Authority (TA) guest image names, tags, manifest artifact layout or measurement fields changed;
 - the signed release statement, its asset names, its CLI asset map or the signer identity (.github/workflows/semver-tag.yml) changed;
 - the allowlist document schema, rule shapes, the injected sidecar names and entrypoints, platform mounts or the seed render changed;
-- the CDS port, the attestation protocol or bundle fields, the required verifier flags, or the front-door labels and namespaces changed.
+- the TA port, the attestation protocol or bundle fields, the required verifier flags, or the front-door labels and namespaces changed.
 
 A change to c8s internals that none of the quoted files observe is COMPATIBLE, however large. A refactor that keeps the observed behaviour is COMPATIBLE. The quoted files describe the pinned release $(jq -r .tag "$work/lock"); the change may build on later commits, so judge only what this change alters.
 

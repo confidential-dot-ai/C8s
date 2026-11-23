@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cdsconn"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/taconn"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
 )
 
@@ -23,7 +23,7 @@ func writeBundle(t *testing.T, der []byte) string {
 	return path
 }
 
-// keyStore counts the secret writes a fake CDS receives.
+// keyStore counts the secret writes a fake Trust Authority receives.
 type keyStore struct {
 	mu     sync.Mutex
 	writes int
@@ -42,9 +42,9 @@ func (k *keyStore) count() int {
 	return k.writes
 }
 
-// newAttestedCDS serves GET /ca with one mesh CA, and the secret store, over
+// newAttestedTA serves GET /ca with one mesh CA, and the secret store, over
 // armTLS.
-func newAttestedCDS(t *testing.T, caDER []byte) (*keyStore, *httptest.Server) {
+func newAttestedTA(t *testing.T, caDER []byte) (*keyStore, *httptest.Server) {
 	t.Helper()
 	k := &keyStore{}
 	mux := http.NewServeMux()
@@ -57,13 +57,13 @@ func newAttestedCDS(t *testing.T, caDER []byte) (*keyStore, *httptest.Server) {
 // only thing under test is the mesh-CA gate.
 func attestedOptions(t *testing.T, url, dir string) *options {
 	t.Helper()
-	return &options{Options: cdsconn.Options{
+	return &options{Options: taconn.Options{
 		URL:                url,
-		MeasurementsConfig: testutil.CDSPinFile(t),
+		MeasurementsConfig: testutil.TAPinFile(t),
 		Timeout:            5 * time.Second,
 		OperatorKey:        operatorKeyFile(t, dir),
 		Verifier:           testutil.ApproveAll(),
-		DirectCDS:          true,
+		DirectTA:           true,
 	}}
 }
 
@@ -76,11 +76,11 @@ func assertNothingWritten(t *testing.T, f flowFixture) {
 	}
 }
 
-// A measurement pin does not identify a CDS, so a volume key is refused with
+// A measurement pin does not identify a Trust Authority, so a volume key is refused with
 // no --mesh-ca — and refused before the build, so nothing is left on disk.
 func TestRunCreateRefusesWithoutMeshCA(t *testing.T) {
 	f := newFlowFixture(t)
-	keys, srv := newAttestedCDS(t, testutil.MeshCA(t, "cds-m"))
+	keys, srv := newAttestedTA(t, testutil.MeshCA(t, "cds-m"))
 
 	cmd, _ := captureCmd()
 	err := runCreate(cmd, attestedOptions(t, srv.URL, f.dir), f.config(newFake()))
@@ -88,7 +88,7 @@ func TestRunCreateRefusesWithoutMeshCA(t *testing.T) {
 		t.Fatalf("got %v, want a refusal naming --mesh-ca", err)
 	}
 	if keys.count() != 0 {
-		t.Fatal("the refused key still reached CDS")
+		t.Fatal("the refused key still reached Trust Authority")
 	}
 	assertNothingWritten(t, f)
 }
@@ -102,13 +102,13 @@ func TestRunCreateRefusesBeforeBuilding(t *testing.T) {
 		"unpinned endpoint":          func(o *options) { o.MeasurementsConfig = "" },
 	} {
 		t.Run(name, func(t *testing.T) {
-			t.Setenv(cdsconn.EnvOperatorKey, "")
+			t.Setenv(taconn.EnvOperatorKey, "")
 			f := newFlowFixture(t)
-			_, srv := newAttestedCDS(t, ca)
+			_, srv := newAttestedTA(t, ca)
 			o := attestedOptions(t, srv.URL, f.dir)
 			mutate(o)
 			cfg := f.config(newFake())
-			cfg.gate = cdsconn.MeshCAGate{What: "volume key", Bundle: writeBundle(t, ca)}
+			cfg.gate = taconn.MeshCAGate{What: "volume key", Bundle: writeBundle(t, ca)}
 
 			cmd, _ := captureCmd()
 			if err := runCreate(cmd, o, cfg); err == nil {
@@ -125,7 +125,7 @@ func TestRunCreateRefusesARouterBeforeBuilding(t *testing.T) {
 	f := newFlowFixture(t)
 	ca := testutil.MeshCA(t, "cds-m")
 	cfg := f.config(newFake())
-	cfg.gate = cdsconn.MeshCAGate{What: "volume key", Bundle: writeBundle(t, ca)}
+	cfg.gate = taconn.MeshCAGate{What: "volume key", Bundle: writeBundle(t, ca)}
 	router := testutil.NewRouterServer(t)
 
 	cmd, _ := captureCmd()
@@ -136,13 +136,13 @@ func TestRunCreateRefusesARouterBeforeBuilding(t *testing.T) {
 	assertNothingWritten(t, f)
 }
 
-// An attested CDS serving a CA the operator never pinned is not their CDS: the
+// An attested Trust Authority serving a CA the operator never pinned is not their Trust Authority: the
 // key is withheld, and the error says how to store the escrowed key later.
-func TestRunCreateRefusesAnotherCDSsMeshCA(t *testing.T) {
+func TestRunCreateRefusesAnotherTAsMeshCA(t *testing.T) {
 	f := newFlowFixture(t)
-	keys, srv := newAttestedCDS(t, testutil.MeshCA(t, "cds-n"))
+	keys, srv := newAttestedTA(t, testutil.MeshCA(t, "cds-n"))
 	cfg := f.config(newFake())
-	cfg.gate = cdsconn.MeshCAGate{What: "volume key", Bundle: writeBundle(t, testutil.MeshCA(t, "cds-m"))}
+	cfg.gate = taconn.MeshCAGate{What: "volume key", Bundle: writeBundle(t, testutil.MeshCA(t, "cds-m"))}
 
 	cmd, _ := captureCmd()
 	err := runCreate(cmd, attestedOptions(t, srv.URL, f.dir), cfg)
@@ -151,7 +151,7 @@ func TestRunCreateRefusesAnotherCDSsMeshCA(t *testing.T) {
 	}
 	for _, want := range []string{
 		"the key was not stored",
-		"once you reach the CDS your bundle names",
+		"once you reach the Trust Authority your bundle names",
 		"c8s secrets put /tenant-a/volumes/weights --from-file " + f.escrow,
 	} {
 		if !strings.Contains(err.Error(), want) {
@@ -159,7 +159,7 @@ func TestRunCreateRefusesAnotherCDSsMeshCA(t *testing.T) {
 		}
 	}
 	if keys.count() != 0 {
-		t.Fatal("the key reached a CDS serving an unpinned mesh CA")
+		t.Fatal("the key reached a Trust Authority serving an unpinned mesh CA")
 	}
 }
 
@@ -169,7 +169,7 @@ func TestRunCreateUnreadableCAHintsARetry(t *testing.T) {
 	ca := testutil.MeshCA(t, "cds-m")
 	srv := testutil.NewARMTLSServer(t, http.NotFoundHandler())
 	cfg := f.config(newFake())
-	cfg.gate = cdsconn.MeshCAGate{What: "volume key", Bundle: writeBundle(t, ca)}
+	cfg.gate = taconn.MeshCAGate{What: "volume key", Bundle: writeBundle(t, ca)}
 
 	cmd, _ := captureCmd()
 	err := runCreate(cmd, attestedOptions(t, srv.URL, f.dir), cfg)
@@ -181,13 +181,13 @@ func TestRunCreateUnreadableCAHintsARetry(t *testing.T) {
 func TestRunCreateAcceptsThePinnedMeshCA(t *testing.T) {
 	f := newFlowFixture(t)
 	ca := testutil.MeshCA(t, "cds-m")
-	keys, srv := newAttestedCDS(t, ca)
+	keys, srv := newAttestedTA(t, ca)
 	cfg := f.config(newFake())
-	cfg.gate = cdsconn.MeshCAGate{What: "volume key", Bundle: writeBundle(t, ca)}
+	cfg.gate = taconn.MeshCAGate{What: "volume key", Bundle: writeBundle(t, ca)}
 
 	cmd, out := captureCmd()
 	if err := runCreate(cmd, attestedOptions(t, srv.URL, f.dir), cfg); err != nil {
-		t.Fatalf("create against the pinned CDS: %v", err)
+		t.Fatalf("create against the pinned Trust Authority: %v", err)
 	}
 	if keys.count() != 1 {
 		t.Fatalf("sent %d writes, want 1", keys.count())
@@ -203,7 +203,7 @@ func TestRunCreateAcceptsThePinnedMeshCA(t *testing.T) {
 func TestRunCreateRefusesAWriteThatRedialsToAnotherPeer(t *testing.T) {
 	f := newFlowFixture(t)
 	ca := testutil.MeshCA(t, "cds-m")
-	impostor, impostorSrv := newAttestedCDS(t, ca)
+	impostor, impostorSrv := newAttestedTA(t, ca)
 
 	var proxy *testutil.ReroutingProxy
 	mux := http.NewServeMux()
@@ -214,7 +214,7 @@ func TestRunCreateRefusesAWriteThatRedialsToAnotherPeer(t *testing.T) {
 	})
 	proxy = testutil.NewReroutingProxy(t, testutil.NewARMTLSServer(t, mux))
 	cfg := f.config(newFake())
-	cfg.gate = cdsconn.MeshCAGate{What: "volume key", Bundle: writeBundle(t, ca)}
+	cfg.gate = taconn.MeshCAGate{What: "volume key", Bundle: writeBundle(t, ca)}
 
 	cmd, _ := captureCmd()
 	err := runCreate(cmd, attestedOptions(t, proxy.URL, f.dir), cfg)
@@ -229,15 +229,15 @@ func TestRunCreateRefusesAWriteThatRedialsToAnotherPeer(t *testing.T) {
 // --force writes, and says on stderr that it skipped the check.
 func TestRunCreateForceSkipsTheCheckLoudly(t *testing.T) {
 	f := newFlowFixture(t)
-	keys, srv := newAttestedCDS(t, testutil.MeshCA(t, "cds-n"))
+	keys, srv := newAttestedTA(t, testutil.MeshCA(t, "cds-n"))
 	cfg := f.config(newFake())
-	cfg.gate = cdsconn.MeshCAGate{What: "volume key", Force: true}
+	cfg.gate = taconn.MeshCAGate{What: "volume key", Force: true}
 
 	cmd, out := captureCmd()
 	if err := runCreate(cmd, attestedOptions(t, srv.URL, f.dir), cfg); err != nil {
 		t.Fatalf("--force did not write: %v", err)
 	}
-	if !strings.Contains(out.String(), "--force: writing this volume key without checking the CDS mesh CA") {
+	if !strings.Contains(out.String(), "--force: writing this volume key without checking the Trust Authority mesh CA") {
 		t.Fatalf("--force wrote without announcing the skipped check: %s", out.String())
 	}
 	if keys.count() != 1 {
@@ -248,9 +248,9 @@ func TestRunCreateForceSkipsTheCheckLoudly(t *testing.T) {
 // A bundle that names no certificate is caught before the build too.
 func TestRunCreateRefusesAnUnusableBundleBeforeBuilding(t *testing.T) {
 	f := newFlowFixture(t)
-	_, srv := newAttestedCDS(t, testutil.MeshCA(t, "cds-m"))
+	_, srv := newAttestedTA(t, testutil.MeshCA(t, "cds-m"))
 	cfg := f.config(newFake())
-	cfg.gate = cdsconn.MeshCAGate{What: "volume key", Bundle: filepath.Join(f.dir, "nope.pem")}
+	cfg.gate = taconn.MeshCAGate{What: "volume key", Bundle: filepath.Join(f.dir, "nope.pem")}
 
 	cmd, _ := captureCmd()
 	if err := runCreate(cmd, attestedOptions(t, srv.URL, f.dir), cfg); err == nil {
@@ -259,7 +259,7 @@ func TestRunCreateRefusesAnUnusableBundleBeforeBuilding(t *testing.T) {
 	assertNothingWritten(t, f)
 }
 
-// --dry-run never reaches CDS, so it needs no --mesh-ca; the plaintext dev path
+// --dry-run never reaches Trust Authority, so it needs no --mesh-ca; the plaintext dev path
 // is exempt as it is for `secrets put` (TestRunCreateStoresBlobAndPrintsGuidance
 // covers it, with --insecure and no bundle).
 func TestCreateBindsTheGateFlags(t *testing.T) {

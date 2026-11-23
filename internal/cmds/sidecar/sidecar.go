@@ -1,4 +1,4 @@
-// Package sidecar holds the CDS-release plumbing shared by the get-secret and
+// Package sidecar holds the Trust Authority-release plumbing shared by the get-secret and
 // get-volume sidecars: the config they render from the webhook, the mTLS
 // client bound to the pod's leaf, the challenge/sandbox-token dance around
 // each store request, and the retry loop that waits out "not released yet".
@@ -27,7 +27,7 @@ import (
 // of it; each command adds its own fields for what it fetches and where it
 // puts the result.
 type Config struct {
-	CDSURL                 string
+	TAURL                  string
 	AttestationApiURL      string
 	MeasurementsConfig     string
 	MeasurementsConfigJSON string
@@ -55,46 +55,47 @@ func (c Config) Endpoint() string {
 // shape also moves the volume daemon onto guest loopback) overrides the
 // affected flag's Usage via f.Lookup after this call.
 func BindFlags(f *pflag.FlagSet, cfg *Config) {
-	cmdsutil.BindImagePolicyFlags(f, &cfg.MeasurementsConfig, &cfg.MeasurementsConfigJSON, "pins the CDS endpoint, every entry bound to the launch file that CDS runs on; required unless the node pins CDS")
-	f.StringVar(&cfg.CDSURL, "cds-url", "", "https base URL of CDS; refused in an injected sidecar, which dials the endpoint the node mounts")
-	f.StringVar(&cfg.AttestationApiURL, "attestation-api-url", "", "local attestation-api used to verify CDS's armTLS certificate")
-	f.StringVar(&cfg.CertPath, "cert", "/run/c8s/certs/tls.crt", "the pod's CDS-issued certificate, presented to CDS")
+	cmdsutil.BindTAImagePolicyFlags(f, &cfg.MeasurementsConfig, &cfg.MeasurementsConfigJSON, "pins the Trust Authority endpoint, every entry bound to the launch file that Trust Authority runs on; required unless the node pins Trust Authority")
+	f.StringVar(&cfg.TAURL, "ta-url", "", "HTTPS Trust Authority base URL; refused in an injected sidecar, which dials the endpoint the node mounts")
+	cmdsutil.AliasFlag(f, "ta-url", "cds-url")
+	f.StringVar(&cfg.AttestationApiURL, "attestation-api-url", "", "local attestation-api used to verify Trust Authority's armTLS certificate")
+	f.StringVar(&cfg.CertPath, "cert", "/run/c8s/certs/tls.crt", "the pod's Trust Authority-issued certificate, presented to the Trust Authority")
 	f.StringVar(&cfg.KeyPath, "key", "/run/c8s/certs/tls.key", "private key for --cert")
 	f.IntVar(&cfg.Attempts, "attempts", 0, "how many times to try before failing; 0 (the default) means no limit. The waits between attempts back off (see --retry-interval), so N attempts last longer than N x --retry-interval. Release is refused until every main container is running, which a slow image pull can delay for many minutes")
 	f.DurationVar(&cfg.RetryInterval, "retry-interval", 5*time.Second, "wait after the first refused attempt; it doubles on each further one up to "+maxRetryInterval.String()+" (an interval above that stays constant)")
-	f.DurationVar(&cfg.RequestTimeout, "request-timeout", 10*time.Second, "per-request timeout against CDS")
+	f.DurationVar(&cfg.RequestTimeout, "request-timeout", 10*time.Second, "per-request timeout against the Trust Authority")
 	f.DurationVar(&cfg.InventoryTimeout, "inventory-timeout", 5*time.Second, "timeout for redeeming a sandbox token from the node's admission inventory")
 }
 
-// nodeAddressPath is where the enforcer mounts the CDS endpoint an injected
+// nodeAddressPath is where the enforcer mounts the Trust Authority endpoint an injected
 // client dials; a var so tests can mount their own.
 var nodeAddressPath = workloadclaims.CDSAddressPath
 
-// ResolveCDSEndpoint fixes the CDS this sidecar dials: the endpoint its node
-// hands an injected client, otherwise --cds-url. Each command calls it while
+// ResolveTAEndpoint fixes the Trust Authority this sidecar dials: the endpoint its node
+// hands an injected client, otherwise --ta-url. Each command calls it while
 // it wires its flags, before validating what it ended up with.
-func (c *Config) ResolveCDSEndpoint() error {
-	cdsURL, fromNode, err := cmdsutil.ResolveCDSURL(nodeAddressPath, c.CDSURL)
+func (c *Config) ResolveTAEndpoint() error {
+	taURL, fromNode, err := cmdsutil.ResolveTAURL(nodeAddressPath, c.TAURL)
 	if err != nil {
 		return err
 	}
-	c.CDSURL = cdsURL
-	slog.Info("CDS endpoint resolved", "cds_url", c.CDSURL, "from_node", fromNode)
+	c.TAURL = taURL
+	slog.Info("Trust Authority endpoint resolved", "cds_url", c.TAURL, "from_node", fromNode)
 	return nil
 }
 
-// Validate checks the shared half of a config and canonicalises the CDS URL.
+// Validate checks the shared half of a config and canonicalises the Trust Authority URL.
 // Each command's own validate covers the fields only it knows about.
 func (c *Config) Validate() error {
-	if c.CDSURL == "" {
-		return fmt.Errorf("--cds-url is required")
+	if c.TAURL == "" {
+		return fmt.Errorf("--ta-url is required")
 	}
-	c.CDSURL = strings.TrimRight(c.CDSURL, "/")
-	if !strings.HasPrefix(c.CDSURL, "https://") {
-		return fmt.Errorf("--cds-url must be https (armTLS)")
+	c.TAURL = strings.TrimRight(c.TAURL, "/")
+	if !strings.HasPrefix(c.TAURL, "https://") {
+		return fmt.Errorf("--ta-url must be https (armTLS)")
 	}
 	if c.AttestationApiURL == "" {
-		return fmt.Errorf("--attestation-api-url is required to verify CDS")
+		return fmt.Errorf("--attestation-api-url is required to verify Trust Authority")
 	}
 	if err := cmdsutil.ValidateAttestationAPIURL("--attestation-api-url", c.AttestationApiURL); err != nil {
 		return err
@@ -111,10 +112,10 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-// ParsePins resolves the pins this sidecar holds its CDS to: the node's policy
-// where the enforcer mounts it, otherwise --image-policy-file.
+// ParsePins resolves the pins this sidecar holds its Trust Authority to: the node's policy
+// where the enforcer mounts it, otherwise --ta-image-policy-file.
 func (c *Config) ParsePins(ctx context.Context) (armtls.PinSource, error) {
-	return cmdsutil.ClientCDSPins(ctx, workloadclaims.CDSPinsPath,
+	return cmdsutil.ClientTAPins(ctx, workloadclaims.CDSPinsPath,
 		cmdsutil.ImagePolicySource{
 			File: c.MeasurementsConfig,
 			JSON: c.MeasurementsConfigJSON,
@@ -194,22 +195,22 @@ func Retry(ctx context.Context, cfg Config, what string, attempt func(context.Co
 	}
 }
 
-// refusalReason says what a failed attempt most likely means. CDS answers
+// refusalReason says what a failed attempt most likely means. Trust Authority answers
 // every authorization failure with the same opaque 403, and the expected one
-// is a pod whose main containers are not all running yet. CDS answers a read
+// is a pod whose main containers are not all running yet. Trust Authority answers a read
 // outside the entry's grant and a read of an empty path with the same 404.
 func refusalReason(err error) string {
 	se, ok := errors.AsType[*StatusError](err)
 	switch {
 	case ok && se.Status == http.StatusForbidden:
-		return "CDS releases only once every main container of this pod is running; " +
+		return "Trust Authority releases only once every main container of this pod is running; " +
 			"a main image still pulling delays it. If they are running, the pod's allowlist entry " +
 			"does not match or has no grant for this path (`c8s secrets explain` names the denial)"
 	case ok && se.Status == http.StatusNotFound:
 		return "either the pod's allowlist entry does not grant reading this path — " +
 			"`c8s secrets explain` prints the grant it has; " +
-			"or the store holds no value at it (CDS keeps the store in memory, so every restart empties it), " +
+			"or the store holds no value at it (Trust Authority keeps the store in memory, so every restart empties it), " +
 			"and an operator writes it with `c8s secrets put`, for a volume from its escrow file"
 	}
-	return "CDS or the node could not complete the request"
+	return "Trust Authority or the node could not complete the request"
 }

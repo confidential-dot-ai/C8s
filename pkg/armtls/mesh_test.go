@@ -22,7 +22,7 @@ import (
 // testMeshSandboxID is the workload instance a mesh leaf names.
 const testMeshSandboxID = "8d9f6c2b1a0e8d9f6c2b1a0e8d9f6c2b1a0e8d9f6c2b1a0e8d9f6c2b1a0e8d9f"
 
-// meshLeafSpec builds the CDS-shaped leaves a mesh verifier is handed. Its
+// meshLeafSpec builds the Trust Authority-shaped leaves a mesh verifier is handed. Its
 // zero value is a valid leaf: both TLS purposes, a P-256 key, a one-hour
 // window around now and the sandbox-ID extension for testMeshSandboxID.
 type meshLeafSpec struct {
@@ -33,7 +33,7 @@ type meshLeafSpec struct {
 	omitSandboxID bool            // the leaf carries no sandbox-ID extension
 	sandboxExt    *pkix.Extension // replaces the well-formed sandbox-ID extension
 	armtlsExt     *pkix.Extension // an armTLS attestation extension the leaf also carries
-	workload      string          // the matched workload CDS stamped, none when empty
+	workload      string          // the matched workload Trust Authority stamped, none when empty
 }
 
 func signMeshLeaf(t *testing.T, caKey *ecdsa.PrivateKey, ca *x509.Certificate, spec meshLeafSpec) *tls.Certificate {
@@ -179,7 +179,7 @@ func TestChainVerifyPeerCallback(t *testing.T) {
 			caCert, true,
 		},
 		{
-			// CDS copies the requester's armTLS extension onto the leaf, and
+			// Trust Authority copies the requester's armTLS extension onto the leaf, and
 			// the chain path reads neither it nor its contents:
 			// the CA signature is what authenticates this leaf. The "mesh
 			// leaf" row above carries none at all.
@@ -497,7 +497,7 @@ func TestSelfSignedProviderDerivesTEETypeFromEvidence(t *testing.T) {
 	}
 }
 
-// mustWorkloadExt is the matched-workload stamp CDS places on a named leaf.
+// mustWorkloadExt is the matched-workload stamp Trust Authority places on a named leaf.
 func mustWorkloadExt(t *testing.T, name string) pkix.Extension {
 	t.Helper()
 	ext, err := MarshalMatchedWorkloadExtension(&MatchedWorkload{
@@ -546,7 +546,7 @@ func acceptingMeshPair(t *testing.T, server, client meshLeafSpec, acceptClient, 
 
 // Each role hands its AcceptPeer the identity the chain path read off the
 // peer it just verified: the instance the leaf names, the workload and
-// allowlist snapshot CDS stamped on it, and the purpose that role required.
+// allowlist snapshot Trust Authority stamped on it, and the purpose that role required.
 func TestMeshAcceptPeerReadsTheVerifiedIdentity(t *testing.T) {
 	accepted := make(chan Peer, 1)
 	var reachedServer Peer

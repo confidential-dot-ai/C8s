@@ -10,7 +10,7 @@ import (
 )
 
 // AttestedCertFromDiscovery validates the attestation carrier fields of a
-// router discovery document and returns the attested CDS serving certificate
+// router discovery document and returns the attested Trust Authority serving certificate
 // together with the expected REPORTDATA: SHA-384(cert pubkey ‖ challenge),
 // get-cert's issuance binding (ReportDataForKey).
 //

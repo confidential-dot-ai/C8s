@@ -19,7 +19,7 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
 )
 
-// Store provides persistent storage for the CDS allowlist using SQLite.
+// Store provides persistent storage for the Trust Authority allowlist using SQLite.
 //
 // `workload_entry` holds one canonical allowlist.Workload JSON per named entry,
 // `workload_entry_digest` indexes each container digest for membership, and
@@ -35,7 +35,7 @@ type Store struct {
 	uri string
 	// gen counts committed mutations in this process. It is the invalidation
 	// signal for a reader that memoizes a whole-document snapshot
-	// (internal/cmds/cds).
+	// (internal/cmds/ta).
 	gen uint64
 	// Kept current by every write (digest.go).
 	dig *contentDigest

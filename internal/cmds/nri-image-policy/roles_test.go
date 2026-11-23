@@ -382,7 +382,7 @@ func TestRoleOfBindsOnlyTheMeasuredIdentity(t *testing.T) {
 
 }
 
-// The role field never travels on the wire, so nothing a CDS serves can claim
+// The role field never travels on the wire, so nothing a Trust Authority serves can claim
 // one.
 func TestRoleIsNotServed(t *testing.T) {
 	base := roleBase(t, pushDigestB, testCertRole, []string{"/usr/local/bin/c8s"})

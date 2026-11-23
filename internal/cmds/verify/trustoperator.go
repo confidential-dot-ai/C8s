@@ -130,7 +130,7 @@ func applyUncheckedHistoryPolicy(oc *Outcome, cfg config) {
 	demoteToPartial(oc, fmt.Sprintf("the node's policy history: RTMR[3] replayed %d measured policies, but no policy over them was checked (pass --pin-policy or --trust-operator)", len(oc.MeasuredPolicies)))
 }
 
-// errLeafUnstamped reports a leaf without a matched-workload stamp: CDS
+// errLeafUnstamped reports a leaf without a matched-workload stamp: Trust Authority
 // issues one whenever the pod matches no single allowlist entry.
 var errLeafUnstamped = errors.New("the leaf carries no matched-workload stamp")
 
@@ -159,7 +159,7 @@ func demoteUnstamped(oc *Outcome, judged string) {
 }
 
 // demoteUnvouchedStamp leaves a verdict partial at best when the leaf's stamp
-// was judged without --mesh-ca: the stamp says CDS issued the leaf under that
+// was judged without --mesh-ca: the stamp says Trust Authority issued the leaf under that
 // policy, which only a chain to the pinned CA proves (applySandboxPolicy has
 // already failed the verdict when that chain does not verify).
 func demoteUnvouchedStamp(oc *Outcome, cfg config, judged string) {

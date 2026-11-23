@@ -37,7 +37,7 @@ func randomChallenge() ([challengeBytes]byte, error) {
 	return challenge, nil
 }
 
-// LocalChallenges is the challenge store of a single CDS: a nonce it mints is
+// LocalChallenges is the challenge store of a single Trust Authority: a nonce it mints is
 // redeemable here alone, and nowhere after a restart.
 //
 // One TTL governs every challenge, so insertion order is expiry order: issued

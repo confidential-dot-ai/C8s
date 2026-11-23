@@ -114,8 +114,8 @@ type Role struct {
 	UID          uint32
 	Destinations []Destination
 	// OutsidePort is one TCP port this role reaches on any address outside
-	// Policy.ClusterRanges: where this cluster's CDS serves. Trusted policy
-	// names that CDS by <host>:<port>, and the name is resolved by whatever
+	// Policy.ClusterRanges: where this cluster's Trust Authority serves. Trusted policy
+	// names that Trust Authority by <host>:<port>, and the name is resolved by whatever
 	// dials it, so no rule can name its address. 0 names none.
 	OutsidePort uint16
 }

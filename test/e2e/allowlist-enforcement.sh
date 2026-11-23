@@ -5,15 +5,15 @@
 #
 # Needs kubectl pointed at a cluster with C8s installed, `c8s` and `crane` on
 # PATH, and:
-#   C8S_ALLOWLIST_URL  armTLS router or direct CDS base URL
+#   C8S_ALLOWLIST_URL  armTLS router or direct TA base URL
 #   C8S_MEASUREMENTS_CONFIG complete endpoint image/operator policy (preferred)
 #   C8S_MEASUREMENTS   legacy launch-only pin, when no policy file is supplied
-#   C8S_OPERATOR_KEY   path to the operator EC key PEM pinned on CDS
+#   C8S_OPERATOR_KEY   path to the operator EC key PEM pinned on TA
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 
-: "${C8S_ALLOWLIST_URL:?names the armTLS CDS or router endpoint}"
-cds_measurement_args
+: "${C8S_ALLOWLIST_URL:?names the armTLS TA or router endpoint}"
+ta_measurement_args
 : "${C8S_OPERATOR_KEY:?path to the operator EC key PEM}"
 
 # The node image enforces the restricted PodSecurity standard in `default`,
@@ -61,7 +61,7 @@ if [ -z "$denied" ]; then
 fi
 echo "ok: $image denied at container creation"
 
-cds_write al add "$digest" "$image" >/dev/null || fail "signed floor write rejected for $digest"
+ta_write al add "$digest" "$image" >/dev/null || fail "signed floor write rejected for $digest"
 echo "ok: signed floor write accepted"
 
 # Recreated rather than waited out: the plugin re-pulls every 5s, while

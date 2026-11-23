@@ -14,14 +14,13 @@ A tenant's weights, prompts, responses, and secrets are in the memory of a
 confidential VM — one whose memory the CPU encrypts and whose launch state the
 hardware measures — and nowhere the host can read them in the clear.
 
-It covers what C8s itself holds: the secret store and the mesh CA of CDS — the
-Certificate Distribution Service, the VM outside the cluster holding C8s policy
-and signing pod certificates — plus each pod's private key and volume plaintext,
+It covers what C8s itself holds: the secret store and the mesh CA of the Trust Authority (TA), the VM outside the cluster that holds C8s policy
+and signs pod certificates, plus each pod's private key and volume plaintext,
 none of them a Kubernetes object. A volume's ciphertext does sit on host
 storage, so a key that leaks opens every copy of it the host kept, and a
 `--mutable` volume carries no integrity tree.
 
-- **Secret store**: values CDS holds in its own memory and releases only to a
+- **Secret store**: values the TA holds in its own memory and releases only to a
   pod whose containers match a granting entry — [secrets.md](secrets.md).
 - **Encrypted volumes**: host-stored dm-crypt images opened inside the CVM for
   a pod the allowlist names — [volumes.md](volumes.md).
@@ -57,7 +56,7 @@ policy keeps host namespaces away from tenant pods
   `aks` from boot once an install has staged the node, and on `gke` once the
   installer has run on that boot.
 - **Base allowlist**: the entries the plugin holds in its own boot config, so a
-  node admits the platform before CDS is reachable.
+  node admits the platform before the TA is reachable.
 - **Host privilege**: the measured node image refuses host namespaces, binds,
   devices, hooks, sysctls, and capabilities beyond its default set outside its
   own measured components.
@@ -111,10 +110,10 @@ comes from the Azure vTPM
 ([overview.md](overview.md#cvm-modes-and-hardware-platforms)).
 
 - **armTLS**: mutual TLS whose certificates carry evidence in an X.509
-  extension; the CDS routes a pod uses before it has a certificate are
+  extension; the TA endpoints a pod uses before it has a certificate are
   server-authenticated only — [armtls.md](armtls.md).
 - **Sandbox identity**: a token the node's admission inventory — which records
-  the containers each pod sandbox ran — signs over a pod's key and CDS's
+  the containers each pod sandbox ran — signs over a pod's key and the TA's
   challenge, stamped on the pod's certificate with the matched workload when the
   pod matches one entry — [armtls.md](armtls.md#sandbox-identity).
 - **Launch binding**: on `bare-metal`, the digest of the document a worker
@@ -158,10 +157,10 @@ manifest is applied, refuses one whose write token does not verify, and binds
 the digest of the manifest it applied into the attested handshakes its front
 door offers, so a session routes by the two digests that handshake bound — the
 manifest's and the router's own allowlist digest — and nothing else.
-CDS's own API is reachable separately, at the address the install named with
-`--cds-address`.
+The TA's own API is reachable separately, at the address the install named with
+`--ta-address`.
 
-- **Route manifest**: the operator-signed hosts, paths, and backends CDS
+- **Route manifest**: the operator-signed hosts, paths, and backends the TA
   stores — [operator.md](operator.md#route-manifest).
 - **Workload backends**: a backend must present a certificate stamped with the
   name the manifest asks for, and with the allowlist digest on the router's own
@@ -172,7 +171,7 @@ CDS's own API is reachable separately, at the address the install named with
   session's requests get 503 and the client attests again —
   [routes-evidence.md](routes-evidence.md#session-binding).
 
-A baked node takes the operator keys from the CDS configuration its document
+A baked node takes the operator keys from the TA configuration its document
 pins ([launch-configuration.md](launch-configuration.md)); elsewhere they are
 Kubernetes configuration, so a client that cares pins the route digest or the
 keys — `c8s verify --route-digest`, `--operator-keys` ([verify.md](verify.md)).
@@ -182,7 +181,7 @@ keys — `c8s verify --route-digest`, `--operator-keys` ([verify.md](verify.md))
 A relying party outside the cluster can check, on the connection it is about to
 use, that it is talking to a genuine TEE running code it pinned.
 
-`c8s verify` fetches evidence from the router, CDS, or a workload pod — or
+`c8s verify` fetches evidence from the router, the TA, or a workload pod — or
 reads evidence you saved earlier — checks it against the AMD or Intel signature
 chain and the pins you pass, and prints what it proved and what it did not.
 Measurement covers boot state, so a verdict is about the code that booted, not
@@ -198,7 +197,7 @@ allowlist policies it applies ([measurements.md](measurements.md)).
   [verify.md](verify.md#require-a-current-intel-tcb-on-tdx).
 - **Mesh CA**: the anchor that turns a stamped sandbox ID, workload name, or
   allowlist digest into a claim a verifier can hold —
-  [armtls.md](armtls.md#cds-issuance).
+  [armtls.md](armtls.md#ta-issuance).
 - **Certificate extensions**: every OID a C8s certificate carries, what it
   holds, and who checks it —
   [certificate-extensions.md](certificate-extensions.md).

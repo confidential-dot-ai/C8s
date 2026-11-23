@@ -1,5 +1,5 @@
 {{/* The measured worker image's front door: nginx files from its /usr, their
-     settings and the CDS pin from the node's verified launch staging under
+     settings and the Trust Authority pin from the node's verified launch staging under
      /run/c8s-node, and the acme sidecar for the launch file's hostnames. */}}
 
 {{- define "router.configDir" -}}{{ include "c8s.routerWorkerConfigDir" . }}{{- end -}}
@@ -43,8 +43,8 @@ containers:
     "attestationApiMounts" (include "router.attestationApiMount" .)
     "attestationApiURL" $inventoryURL
     "certificateMounts" (include "router.acmeCertificateMounts" . | fromYamlArray)
-    "cdsAttestArgs" (include "router.cdsAttestArgs" . | fromJsonArray)
-    "cdsAttestMounts" (include "router.cdsAttestMounts" . | fromYamlArray)
+    "cdsAttestArgs" (include "router.taAttestArgs" . | fromJsonArray)
+    "cdsAttestMounts" (include "router.taAttestMounts" . | fromYamlArray)
     "config" (include "router.configDir" .)
     "ports" (include "router.publicPorts" . | fromJsonArray)
     "settingsMounts" (include "router.nodeConfigMount" . | fromYamlArray)
@@ -148,7 +148,7 @@ securityContext:
 {{- $settings := include "c8s.routerWorkerSettingsDir" . -}}
 {{- list
   (printf "--discovery-out=%s" (include "router.discoveryFilePath" .))
-  (printf "--discovery-cds-cert-url=%s" (include "router.cdsCertPath" .))
+  (printf "--discovery-cds-cert-url=%s" (include "router.taCertPath" .))
   (printf "--discovery-public-tls-mode-file=%s/front-door-mode" $settings)
   (printf "--discovery-public-tls-hostnames-file=%s/hostnames" $settings)
   (printf "--discovery-mesh-ca-url=%s" (include "router.meshCAPath" .))
@@ -157,9 +157,9 @@ securityContext:
   | toJson -}}
 {{- end -}}
 
-{{/* cds-attest takes the front-door mode, the CDS pin and the operator keys
+{{/* cds-attest takes the front-door mode, the Trust Authority pin and the operator keys
      from the launch staging, naming each so a missing file is fatal. */}}
-{{- define "router.cdsAttestArgs" -}}
+{{- define "router.taAttestArgs" -}}
 {{- $node := include "c8s.nodeConfigDir" . -}}
 {{- $runtimeDir := include "worker.runtimeDir" . -}}
 {{- list
@@ -184,7 +184,7 @@ securityContext:
   | toJson -}}
 {{- end -}}
 
-{{- define "router.cdsAttestMounts" -}}
+{{- define "router.taAttestMounts" -}}
 {{ include "router.nodeConfigMount" . }}
 - name: acme-tls
   mountPath: {{ include "router.acmeCertDir" . }}

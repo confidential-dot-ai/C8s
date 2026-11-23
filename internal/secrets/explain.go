@@ -74,8 +74,8 @@ type ExplainResponse struct {
 // ExplainHandler serves ExplainRoute.
 //
 // Release denials are opaque to the workload by design and the input that
-// decides them — what the sandbox is running — is visible only to CDS, so
-// without this a wedged pod is diagnosable only from CDS logs.
+// decides them — what the sandbox is running — is visible only to the Trust Authority, so
+// without this a wedged pod is diagnosable only from the Trust Authority logs.
 //
 // It answers to the operator key, not to a sandbox token: the caller is asking
 // about someone else's pod, which no workload may do.
@@ -134,7 +134,7 @@ func (h ExplainHandler) explain(ctx context.Context, sandboxID string) ExplainRe
 	}
 	host, ok := h.Bindings.Lookup(sandboxID)
 	if !ok {
-		resp.Refusal = "no inventory is bound to this sandbox: it has not attested since CDS started, or a second inventory claimed the ID"
+		resp.Refusal = "no inventory is bound to this sandbox: it has not attested since the Trust Authority started, or a second inventory claimed the ID"
 		return resp
 	}
 	if !h.InventoryHosts.Contains(host) {

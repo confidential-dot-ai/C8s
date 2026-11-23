@@ -36,28 +36,28 @@ const (
 
 // PodBundleOptions describes one pod CVM's signed generic launch document.
 type PodBundleOptions struct {
-	Dir                string
-	ClusterID          string
-	ManifestPath       string
-	NodeName           string
-	LaunchKeyPath      string
-	CDSAddress         string
-	CDSImagePolicyPath string
+	Dir               string
+	ClusterID         string
+	ManifestPath      string
+	NodeName          string
+	LaunchKeyPath     string
+	TAAddress         string
+	TAImagePolicyPath string
 }
 
 // NewPodBundle writes a signed role-pod document. It names no pod: the guest
 // boots generic and waits for an assignment. Dir must not exist; a failed run
 // removes it.
 func NewPodBundle(opts PodBundleOptions) (err error) {
-	if opts.Dir == "" || opts.ClusterID == "" || opts.ManifestPath == "" || opts.NodeName == "" || opts.CDSAddress == "" || opts.CDSImagePolicyPath == "" {
-		return errors.New("--out, --cluster-id, --image-manifest, --name, --cds-address and --cds-image-policy-file are required")
+	if opts.Dir == "" || opts.ClusterID == "" || opts.ManifestPath == "" || opts.NodeName == "" || opts.TAAddress == "" || opts.TAImagePolicyPath == "" {
+		return errors.New("--out, --cluster-id, --image-manifest, --name, --ta-address and --ta-image-policy-file are required")
 	}
-	cdsPolicy, err := readBounded(opts.CDSImagePolicyPath, MaxDocumentSize)
+	taPolicy, err := readBounded(opts.TAImagePolicyPath, MaxDocumentSize)
 	if err != nil {
 		return fmt.Errorf("--cds-image-policy-file: %w", err)
 	}
-	cds := cmdsutil.CDS{Address: opts.CDSAddress, Measurements: string(cdsPolicy)}
-	if _, err := cds.Parse(); err != nil {
+	ta := cmdsutil.TA{Address: opts.TAAddress, Measurements: string(taPolicy)}
+	if _, err := ta.Parse(); err != nil {
 		return err
 	}
 	identity, err := runtimemeasure.LoadImageManifest(opts.ManifestPath)
@@ -90,7 +90,7 @@ func NewPodBundle(opts PodBundleOptions) (err error) {
 		Image:                image,
 		Node:                 Node{Name: opts.NodeName},
 		PodOperatorPublicKey: pub,
-		CDS:                  cds,
+		TA:                   ta,
 	}
 	return writeSignedDocument(filepath.Join(opts.Dir, podDir), doc, key, pub)
 }

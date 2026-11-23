@@ -135,8 +135,8 @@ jobs:
               # charts/ is embedded into the binary (see charts/embed.go), so
               # a chart-only change must rebuild it too.
               - '{charts/**,cmd/c8s/**,internal/cmds/**,internal/helmchart/**}'
-            cds:
-              - '{cmd/cds/**,internal/cmds/cds/**}'
+            ta:
+              - '{cmd/ta/**,internal/cmds/ta/**}'
             get-cert:
               - '{cmd/get-cert/**,internal/cmds/getcert/**}'
             armtls-mesh:
@@ -153,7 +153,7 @@ jobs:
           # multi-command build/c8s binary, so a change to it rebuilds them all.
           SHARED: ${{ github.ref == 'refs/heads/beta' || steps.filter.outputs['shared-core'] == 'true' || steps.filter.outputs['shared-cmdsutil'] == 'true' || steps.filter.outputs['shared-root'] == 'true' || steps.filter.outputs.c8s == 'true' }}
           C8S: ${{ steps.filter.outputs.c8s }}
-          CDS: ${{ steps.filter.outputs.cds }}
+          TA: ${{ steps.filter.outputs.ta }}
           GET_CERT: ${{ steps.filter.outputs['get-cert'] }}
           ARMTLS_MESH: ${{ steps.filter.outputs['armtls-mesh'] }}
           NRI_IMAGE_POLICY: ${{ steps.filter.outputs['nri-image-policy'] }}
@@ -255,7 +255,7 @@ jobs:
 
   # For each component image NOT in this run's build matrix, copy the
   # `:main` tag's manifest under `:<short-sha>`. Without this job, a push that
-  # only touched one component (say cmd/c8s/**) leaves cds, get-cert,
+  # only touched one component (say cmd/c8s/**) leaves ta, get-cert,
   # armtls-mesh, nri-image-policy with no `:<short-sha>` tag at all.
   #
   # Source = `:main` always: the manifest just (or previously) published

@@ -51,7 +51,7 @@ func testHeldAllowlist(t *testing.T) ([]byte, []byte) {
 }
 
 // caSignedWorkloadLeaf mints a leaf carrying the matched-workload stamp and
-// signed by a fresh CA, returning the leaf and CA bundle path — the shape CDS
+// signed by a fresh CA, returning the leaf and CA bundle path — the shape Trust Authority
 // produces.
 func caSignedWorkloadLeaf(t *testing.T, matched *armtls.MatchedWorkload) (*x509.Certificate, string) {
 	t.Helper()

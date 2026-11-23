@@ -32,7 +32,7 @@ var (
 
 // nodeIPPublisher keeps NodeIPFile current: a DHCP node may have no default
 // route when containerd starts, and its address may change later. Components
-// restart when the file names another address, and a restarted CDS that
+// restart when the file names another address, and a restarted Trust Authority that
 // reads it regenerates the mesh CA, so a transient failure never touches the
 // file and a change is published only once it held for two rechecks. A
 // resolver that alternates between two addresses therefore never publishes.

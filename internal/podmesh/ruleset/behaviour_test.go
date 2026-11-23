@@ -94,7 +94,7 @@ func TestTheRulesetCarriesOnlyPermittedTrafficInTheNamespace(t *testing.T) {
 			{"a workload connection is captured", workloadUID, "tcp", address(unapproved, 8080), captured},
 			{"the mesh endpoint is not captured", meshUID, "tcp", address(unapproved, 8080), admitted},
 			{"the mesh endpoint sends nothing outside TCP", meshUID, "udp", address(unapproved, 8080), denied},
-			{"a credential role reaches its CDS port outside the cluster", credentialUID, "tcp", address(unapproved, servicePort), admitted},
+			{"a credential role reaches its Trust Authority port outside the cluster", credentialUID, "tcp", address(unapproved, servicePort), admitted},
 			{"a credential role reaches that port inside the cluster not at all", credentialUID, "tcp", address(service, servicePort), denied},
 			{"a credential role reaches nothing else", credentialUID, "tcp", address(unapproved, 8080), denied},
 			{"a workload connection to a role's service is captured", workloadUID, "tcp", address(service, servicePort), captured},

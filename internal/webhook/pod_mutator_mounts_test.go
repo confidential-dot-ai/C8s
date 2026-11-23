@@ -189,7 +189,7 @@ func TestChartSeedAdmitsInjectedSidecars(t *testing.T) {
 				pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{Name: "discovery", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{Medium: corev1.StorageMediumMemory}}})
 				pod.Annotations[AnnotationDiscoveryVolume] = "discovery"
 				pod.Annotations[AnnotationDiscoveryOut] = discoveryMountPath + "/discovery.json"
-				pod.Annotations[AnnotationDiscoveryCDSCertURL] = "/.well-known/cds-cert.pem"
+				pod.Annotations[AnnotationDiscoveryTACertURL] = "/.well-known/cds-cert.pem"
 				pod.Annotations[AnnotationDiscoveryPublicTLSMode] = "cds"
 			}
 			inj, err := parseAnnotations(pod, "default")
@@ -304,7 +304,7 @@ func TestRejectUnpinnableSidecarVolumes(t *testing.T) {
 			{
 				pod.Annotations[AnnotationDiscoveryVolume] = "discovery"
 				pod.Annotations[AnnotationDiscoveryOut] = discoveryMountPath + "/discovery.json"
-				pod.Annotations[AnnotationDiscoveryCDSCertURL] = "/.well-known/cds-cert.pem"
+				pod.Annotations[AnnotationDiscoveryTACertURL] = "/.well-known/cds-cert.pem"
 				pod.Annotations[AnnotationDiscoveryPublicTLSMode] = "cds"
 			}
 			if tc.discovery != nil {

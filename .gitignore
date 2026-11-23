@@ -29,7 +29,7 @@ Thumbs.db
 coverage.txt
 # Mock binaries from `go build .` in the test/mock-* modules.
 /test/mock-attestation/mock-attestation
-/test/mock-cds/mock-cds
+/test/mock-ta/mock-ta
 /test/mock-cloud/mock-cloud
 
 # Secrets

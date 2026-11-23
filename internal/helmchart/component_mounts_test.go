@@ -186,7 +186,7 @@ type componentPin struct {
 }
 
 // componentPins maps each component digest a render sets to its
-// componentPin, from the render's own --set arguments, the CDS digest
+// componentPin, from the render's own --set arguments, the Trust Authority digest
 // helmTemplate pins and the nginx digest the router renders.
 // renderedLaunch is the launch a node observes for a rendered component
 // container: its argv, its classified mount table and the environment it

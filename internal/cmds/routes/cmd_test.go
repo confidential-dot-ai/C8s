@@ -29,9 +29,9 @@ import (
 	pkgroutes "github.com/confidential-dot-ai/confidential-kubernetes/pkg/routes"
 )
 
-// fakeCDS mimics the CDS route API: token check (W1), Parse (D9), the
+// fakeTA mimics the Trust Authority route API: token check (W1), Parse (D9), the
 // revision rule and If-Match (C3).
-type fakeCDS struct {
+type fakeTA struct {
 	mu      sync.Mutex
 	env     *pkgroutes.Envelope
 	rev     uint64
@@ -39,12 +39,12 @@ type fakeCDS struct {
 	puts    int
 	ifMatch []string // If-Match of each PUT, "" when absent
 	// beforePut, when set, runs at the start of each PUT, as another writer.
-	beforePut func(*fakeCDS)
-	// refuse, when set, answers each verified PUT as CDS refusing its token.
+	beforePut func(*fakeTA)
+	// refuse, when set, answers each verified PUT as Trust Authority refusing its token.
 	refuse error
 }
 
-func (f *fakeCDS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (f *fakeTA) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	switch r.Method {
@@ -90,7 +90,7 @@ func (f *fakeCDS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (f *fakeCDS) stored(t *testing.T) *pkgroutes.Manifest {
+func (f *fakeTA) stored(t *testing.T) *pkgroutes.Manifest {
 	t.Helper()
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -105,7 +105,7 @@ func (f *fakeCDS) stored(t *testing.T) *pkgroutes.Manifest {
 }
 
 type harness struct {
-	cds     *fakeCDS
+	ta      *fakeTA
 	url     string
 	keyFile string
 	pubFile string
@@ -140,13 +140,13 @@ func writeKey(t *testing.T, dir, name string) (keyFile, pubFile string, pub *ecd
 func newHarness(t *testing.T) *harness {
 	t.Helper()
 	keyFile, pubFile, pub := writeKey(t, t.TempDir(), "operator")
-	cds := &fakeCDS{keys: []*ecdsa.PublicKey{pub}}
-	srv := httptest.NewServer(cds)
+	ta := &fakeTA{keys: []*ecdsa.PublicKey{pub}}
+	srv := httptest.NewServer(ta)
 	t.Cleanup(srv.Close)
-	return &harness{cds: cds, url: srv.URL, keyFile: keyFile, pubFile: pubFile}
+	return &harness{ta: ta, url: srv.URL, keyFile: keyFile, pubFile: pubFile}
 }
 
-// run runs c8s routes against the fake CDS, trusting the harness operator
+// run runs c8s routes against the fake Trust Authority, trusting the harness operator
 // key unless args name --operator-keys.
 func (h *harness) run(t *testing.T, args ...string) (string, error) {
 	t.Helper()
@@ -178,11 +178,11 @@ func (h *harness) mustRun(t *testing.T, args ...string) string {
 }
 
 // storeManifest stores a first manifest the harness key signed and forgets the
-// write, so a later writes-reached-CDS count is the test's own.
+// write, so a later writes-reached-Trust Authority count is the test's own.
 func (h *harness) storeManifest(t *testing.T) {
 	t.Helper()
 	h.mustRun(t, "add", "--new", "--host", "app.example", "--path", "/", "--address", "a:1", "--workload", "a")
-	h.cds.puts = 0
+	h.ta.puts = 0
 }
 
 // C6: a new manifest starts at the Unix time.
@@ -193,7 +193,7 @@ func TestAddStartsAtUnixTime(t *testing.T) {
 	h.mustRun(t, "add", "--new", "--host", "app.example", "--path", "/", "--address", "vllm.ai.svc:8443", "--workload", "vllm", "--max-age", "1h")
 	end := time.Now()
 
-	m := h.cds.stored(t)
+	m := h.ta.stored(t)
 	if m.Revision < uint64(start.Unix()) || m.Revision > uint64(end.Unix()) || m.MaxAge != time.Hour || m.NotBefore.Before(before) {
 		t.Fatalf("stored revision %d, maxAge %s, notBefore %s; want the Unix time %d, 1h, >= %s", m.Revision, m.MaxAge, m.NotBefore, start.Unix(), before)
 	}
@@ -209,9 +209,9 @@ func TestAddRmEditOneRoute(t *testing.T) {
 	h := newHarness(t)
 	h.mustRun(t, "add", "--new", "--host", "app.example", "--path", "/", "--address", "a:1", "--workload", "a", "--max-age", "2h")
 	h.mustRun(t, "add", "--new", "--host", "app.example", "--path", "/admin", "--match", "exact", "--address", "b:1", "--workload", "b", "--max-age", "5m")
-	prev := h.cds.stored(t).Revision
+	prev := h.ta.stored(t).Revision
 	out := h.mustRun(t, "add", "--new", "--host", "app.example", "--path", "/", "--address", "c:1", "--workload", "c")
-	m := h.cds.stored(t)
+	m := h.ta.stored(t)
 	if !strings.Contains(out, "replaced prefix route app.example /") || !strings.Contains(out, fmt.Sprintf("revision %d", m.Revision)) {
 		t.Fatalf("add output = %q", out)
 	}
@@ -225,14 +225,14 @@ func TestAddRmEditOneRoute(t *testing.T) {
 	}
 
 	h.mustRun(t, "rm", "--host", "app.example", "--path", "/admin")
-	m = h.cds.stored(t)
+	m = h.ta.stored(t)
 	if m.Revision <= prev || len(m.Hosts["app.example"].Routes) != 1 {
 		t.Fatalf("after rm: revision %d, routes %+v; want above %d, one route", m.Revision, m.Hosts["app.example"].Routes, prev)
 	}
 	prev = m.Revision
 	// D5: the host's last route takes the host with it.
 	h.mustRun(t, "rm", "--host", "app.example", "--path", "/")
-	if m := h.cds.stored(t); m.Revision <= prev || len(m.Hosts) != 0 {
+	if m := h.ta.stored(t); m.Revision <= prev || len(m.Hosts) != 0 {
 		t.Fatalf("after last rm: revision %d, hosts %+v; want above %d, none", m.Revision, m.Hosts, prev)
 	}
 }
@@ -271,8 +271,8 @@ func TestAddBackendFlags(t *testing.T) {
 			t.Errorf("add %v: want a backend-flag error", args)
 		}
 	}
-	if h.cds.puts != 0 {
-		t.Fatalf("CDS saw %d writes, want none", h.cds.puts)
+	if h.ta.puts != 0 {
+		t.Fatalf("Trust Authority saw %d writes, want none", h.ta.puts)
 	}
 }
 
@@ -306,7 +306,7 @@ func TestPutRefusedTokenGuidance(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
-			h.cds.refuse = tc.refuse
+			h.ta.refuse = tc.refuse
 			_, err := h.run(t, "put", file)
 			if err == nil || !strings.Contains(err.Error(), tc.want) || strings.Contains(err.Error(), "raise the file's revision") {
 				t.Fatalf("put with refused token: error = %v, want %q and no rebase hint", err, tc.want)
@@ -328,8 +328,8 @@ func TestPutShowDigest(t *testing.T) {
 	want := hex.EncodeToString(sum[:])
 
 	h.mustRun(t, "put", file)
-	if !bytes.Equal(h.cds.env.Manifest, manifest) {
-		t.Fatalf("stored bytes = %q, want the file verbatim", h.cds.env.Manifest)
+	if !bytes.Equal(h.ta.env.Manifest, manifest) {
+		t.Fatalf("stored bytes = %q, want the file verbatim", h.ta.env.Manifest)
 	}
 	if out := h.mustRun(t, "digest", file); strings.TrimSpace(out) != want {
 		t.Fatalf("digest = %q, want %s", out, want)
@@ -372,8 +372,8 @@ func TestPutRejectsInvalidFileLocally(t *testing.T) {
 	if _, err := h.run(t, "put", file); err == nil {
 		t.Fatal("put of an invalid manifest: want an error")
 	}
-	if h.cds.puts != 0 {
-		t.Fatalf("CDS saw %d writes, want none", h.cds.puts)
+	if h.ta.puts != 0 {
+		t.Fatalf("Trust Authority saw %d writes, want none", h.ta.puts)
 	}
 }
 
@@ -403,13 +403,13 @@ func TestEditRequiresVerifiedManifest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h.cds.env = &pkgroutes.Envelope{Manifest: planted, Token: strings.TrimPrefix(authz, "Bearer ")}
-	h.cds.rev = 3
+	h.ta.env = &pkgroutes.Envelope{Manifest: planted, Token: strings.TrimPrefix(authz, "Bearer ")}
+	h.ta.rev = 3
 	if _, err := h.run(t, add...); err == nil || !strings.Contains(err.Error(), "fails verification") {
 		t.Fatalf("add over a rogue-signed manifest: error = %v", err)
 	}
-	if h.cds.puts != 0 {
-		t.Fatalf("CDS saw %d writes, want none", h.cds.puts)
+	if h.ta.puts != 0 {
+		t.Fatalf("Trust Authority saw %d writes, want none", h.ta.puts)
 	}
 }
 
@@ -421,7 +421,7 @@ func TestAddNewRunsUnverifiedOnAnEmptyStore(t *testing.T) {
 	if _, err := h.runUnverified(t, add...); err != nil {
 		t.Fatalf("add --new on an empty store without --operator-keys: %v", err)
 	}
-	m := h.cds.stored(t)
+	m := h.ta.stored(t)
 	if len(m.Hosts) != 1 {
 		t.Fatalf("stored hosts = %+v, want app.example alone", m.Hosts)
 	}
@@ -448,9 +448,9 @@ func TestEditKeepsFutureNotBefore(t *testing.T) {
 		{"add", "--new", "--host", "app.example", "--path", "/", "--address", "a:1", "--workload", "a"},
 		{"rm", "--host", "app.example", "--path", "/"},
 	} {
-		prev := h.cds.stored(t).Revision
+		prev := h.ta.stored(t).Revision
 		h.mustRun(t, args...)
-		if m := h.cds.stored(t); m.Revision <= prev || !m.NotBefore.Equal(want) {
+		if m := h.ta.stored(t); m.Revision <= prev || !m.NotBefore.Equal(want) {
 			t.Fatalf("after %s: revision %d, notBefore %s; want above %d, %s", args[0], m.Revision, m.NotBefore, prev, want)
 		}
 	}
@@ -479,7 +479,7 @@ func TestEditRevisionAboveClock(t *testing.T) {
 	h.mustRun(t, "put", file)
 
 	h.mustRun(t, "add", "--new", "--host", "app.example", "--path", "/", "--address", "a:1", "--workload", "a")
-	if m := h.cds.stored(t); m.Revision != ahead+1 {
+	if m := h.ta.stored(t); m.Revision != ahead+1 {
 		t.Fatalf("add over stored revision %d: revision %d, want %d", ahead, m.Revision, ahead+1)
 	}
 	for _, want := range []string{fmt.Sprintf("stored revision %d", ahead), "app.example /old exact -> b:1, workload b", "app.example / prefix -> a:1, workload a"} {
@@ -488,16 +488,16 @@ func TestEditRevisionAboveClock(t *testing.T) {
 		}
 	}
 
-	puts := h.cds.puts
+	puts := h.ta.puts
 	_, err := h.run(t, "rm", "--host", "app.example", "--path", "/old", "--revision", strconv.FormatUint(ahead, 10))
 	if want := fmt.Sprintf("not above the stored revision %d", ahead+1); err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("rm --revision below stored: error = %v, want %q", err, want)
 	}
-	if h.cds.puts != puts {
-		t.Fatalf("CDS saw %d writes, want none", h.cds.puts-puts)
+	if h.ta.puts != puts {
+		t.Fatalf("Trust Authority saw %d writes, want none", h.ta.puts-puts)
 	}
 	h.mustRun(t, "rm", "--host", "app.example", "--path", "/old", "--revision", strconv.FormatUint(ahead+10, 10))
-	if m := h.cds.stored(t); m.Revision != ahead+10 {
+	if m := h.ta.stored(t); m.Revision != ahead+10 {
 		t.Fatalf("rm --revision %d: revision %d", ahead+10, m.Revision)
 	}
 }
@@ -510,7 +510,7 @@ func TestRmRejectsUnknownMatch(t *testing.T) {
 	}
 }
 
-// add, rm and put load the operator key before dialing CDS, so a missing key
+// add, rm and put load the operator key before dialing Trust Authority, so a missing key
 // fails before the attestation probe.
 func TestWritesLoadKeyBeforeConnecting(t *testing.T) {
 	t.Setenv("C8S_OPERATOR_KEY", "")
@@ -554,7 +554,7 @@ func TestWritesLoadKeyBeforeConnecting(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	if dials != 0 {
-		t.Fatalf("CDS saw %d connections, want none", dials)
+		t.Fatalf("Trust Authority saw %d connections, want none", dials)
 	}
 }
 
@@ -571,16 +571,16 @@ func TestEditSendsIfMatch(t *testing.T) {
 	h := newHarness(t)
 	add := []string{"add", "--new", "--host", "app.example", "--path", "/", "--address", "a:1", "--workload", "a"}
 	h.mustRun(t, add...)
-	first := digestHex(h.cds.env.Manifest)
+	first := digestHex(h.ta.env.Manifest)
 	h.mustRun(t, "rm", "--host", "app.example", "--path", "/")
 	file := filepath.Join(t.TempDir(), "routes.json")
-	writeFile(t, file, `{"schema":"c8s.routes/v1","revision":`+strconv.FormatUint(h.cds.rev+1, 10)+`,"notBefore":"2026-09-01T00:00:00Z","maxAgeSeconds":60,"hosts":{}}`)
+	writeFile(t, file, `{"schema":"c8s.routes/v1","revision":`+strconv.FormatUint(h.ta.rev+1, 10)+`,"notBefore":"2026-09-01T00:00:00Z","maxAgeSeconds":60,"hosts":{}}`)
 	h.mustRun(t, "put", file)
-	if want := []string{"", first, ""}; !slices.Equal(h.cds.ifMatch, want) {
-		t.Fatalf("If-Match per PUT = %q, want %q", h.cds.ifMatch, want)
+	if want := []string{"", first, ""}; !slices.Equal(h.ta.ifMatch, want) {
+		t.Fatalf("If-Match per PUT = %q, want %q", h.ta.ifMatch, want)
 	}
 
-	h.cds.beforePut = func(f *fakeCDS) {
+	h.ta.beforePut = func(f *fakeTA) {
 		f.env = &pkgroutes.Envelope{Manifest: append(bytes.Clone(f.env.Manifest), ' '), Token: f.env.Token}
 	}
 	_, err := h.run(t, add...)
@@ -589,14 +589,14 @@ func TestEditSendsIfMatch(t *testing.T) {
 	}
 }
 
-// An empty store is also what a CDS reset leaves: add starts a new manifest
+// An empty store is also what a Trust Authority reset leaves: add starts a new manifest
 // only when asked to, since one would drop every route routers hold.
 func TestAddRefusesAnEmptyStoreWithoutNew(t *testing.T) {
 	h := newHarness(t)
 	if _, err := h.run(t, "add", "--host", "app.example", "--path", "/", "--address", "a:1", "--workload", "a"); err == nil {
 		t.Fatal("add on an empty store without --new succeeded")
 	}
-	if h.cds.env != nil {
+	if h.ta.env != nil {
 		t.Fatal("add without --new stored a manifest")
 	}
 }
@@ -609,7 +609,7 @@ func TestAddMaxAge(t *testing.T) {
 	}
 	h.mustRun(t, append(add, "--max-age", "1h")...)
 	h.mustRun(t, append(add, "--max-age", "2h")...)
-	if m := h.cds.stored(t); m.MaxAge != time.Hour || !strings.Contains(h.stderr.String(), "--max-age ignored") {
+	if m := h.ta.stored(t); m.MaxAge != time.Hour || !strings.Contains(h.stderr.String(), "--max-age ignored") {
 		t.Fatalf("add --max-age 2h over a stored manifest: maxAge %s, stderr %q; want 1h and a warning", m.MaxAge, h.stderr.String())
 	}
 }

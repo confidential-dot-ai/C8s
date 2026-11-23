@@ -90,18 +90,18 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{/*
-The CDS this cluster trusts, as the installer mounts it: its address and its
+The Trust Authority this cluster trusts, as the installer mounts it: its address and its
 pin, which it copies to the node beside the boot config that names both paths.
 */}}
-{{- define "nri-image-policy.cdsPolicyMount" -}}
+{{- define "nri-image-policy.taPolicyMount" -}}
 /mnt/c8s-data/measurements
 {{- end }}
 
-{{- define "nri-image-policy.hostCDSAddressPath" -}}
+{{- define "nri-image-policy.hostTAAddressPath" -}}
 {{ printf "%s/cds-address" .Values.nriImagePolicy.hostPaths.configDir }}
 {{- end }}
 
-{{- define "nri-image-policy.hostCDSPinPath" -}}
+{{- define "nri-image-policy.hostTAPinPath" -}}
 {{ printf "%s/cds.json" .Values.nriImagePolicy.hostPaths.configDir }}
 {{- end }}
 
@@ -140,7 +140,7 @@ limits:
 - name: host-runtime-dir
   mountPath: /host{{ include "nri-image-policy.runtimeDir" . }}
 - name: cds-policy
-  mountPath: {{ include "nri-image-policy.cdsPolicyMount" . }}
+  mountPath: {{ include "nri-image-policy.taPolicyMount" . }}
   readOnly: true
 {{- end }}
 

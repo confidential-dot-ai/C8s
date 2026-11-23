@@ -29,7 +29,7 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
-// The callback is otherwise only ever driven through a fake at the CDS
+// The callback is otherwise only ever driven through a fake at the Trust Authority
 // interface boundary, so nothing exercises the wire: the identity decode, the
 // 404 to ErrSandboxUnknown mapping, the response caps, or that the client dials
 // DigestsPort rather than anything the caller supplied. This drives a real
@@ -128,7 +128,7 @@ func TestDigestsCallbackOverTLS(t *testing.T) {
 	c, host := serveDigestsTLS(t, resolver, signer.PublicKeyDER())
 	ctx := context.Background()
 
-	// The key CDS verifies a token against is the one the inventory serves.
+	// The key Trust Authority verifies a token against is the one the inventory serves.
 	pub, err := c.InventoryKey(ctx, host)
 	if err != nil {
 		t.Fatalf("InventoryKey: %v", err)
@@ -145,7 +145,7 @@ func TestDigestsCallbackOverTLS(t *testing.T) {
 		t.Fatalf("digests = %v", digests)
 	}
 
-	// A known sandbox with nothing recorded answers [], which CDS treats as
+	// A known sandbox with nothing recorded answers [], which Trust Authority treats as
 	// fail-closed rather than an empty pass.
 	empty, err := c.Fetch(ctx, host, "sandbox-2")
 	if err != nil {
@@ -299,7 +299,7 @@ func TestNewDigestsClientConstruction(t *testing.T) {
 		t.Fatal("built with an unsupported TEE platform")
 	}
 	// A warm-up that cannot succeed is a construction failure here, unlike the
-	// server side: CDS has no work to do until it can present a client cert.
+	// server side: Trust Authority has no work to do until it can present a client cert.
 	if _, err := NewDigestsClient(ctx, DigestsClientConfig{
 		Platform:          "sev-snp",
 		AttestFunc:        attest,
@@ -311,7 +311,7 @@ func TestNewDigestsClientConstruction(t *testing.T) {
 }
 
 // InventoryKey fails closed on every shape of bad answer rather than returning
-// a key CDS would then verify a token against.
+// a key Trust Authority would then verify a token against.
 func TestInventoryKeyRejectsBadAnswers(t *testing.T) {
 	ip := routableLocalIP(t)
 	for _, tc := range []struct {
@@ -342,7 +342,7 @@ func TestInventoryKeyRejectsForgedHost(t *testing.T) {
 }
 
 // An inventory that is unreachable, or answers with something other than the
-// digests contract, must surface as an error — CDS refuses issuance on any of
+// digests contract, must surface as an error — Trust Authority refuses issuance on any of
 // them rather than proceeding with an unverified sandbox.
 func TestDigestsClientTransportAndProtocolFailures(t *testing.T) {
 	ip := routableLocalIP(t)
@@ -423,7 +423,7 @@ func clientAgainst(t *testing.T, h http.Handler) (*DigestsClient, string) {
 	return &DigestsClient{http: client}, ip.String()
 }
 
-// A misbehaving or impersonating inventory must not be able to feed CDS
+// A misbehaving or impersonating inventory must not be able to feed Trust Authority
 // something it treats as an answer: every malformed shape is an error, and an
 // error means issuance is refused.
 func TestDigestsClientRejectsMalformedAnswers(t *testing.T) {

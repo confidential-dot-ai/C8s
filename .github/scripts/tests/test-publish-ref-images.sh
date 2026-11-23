@@ -62,7 +62,7 @@ case "$1 $2" in
     # workflow publishes both formats of both platforms, unless the fixture
     # says it published nothing.
     if [ "$workflow" = docker.yml ]; then
-      for c in c8s-operator nri-image-policy cds armtls-mesh; do echo "$c:c7cf2f3" >>"$FAKE_STATE/present-tags"; done
+      for c in c8s-operator nri-image-policy ta armtls-mesh; do echo "$c:c7cf2f3" >>"$FAKE_STATE/present-tags"; done
     fi
     if [ "$workflow" = c8s-image-manual.yml ] && [ ! -e "$FAKE_STATE/image-publishes-nothing" ]; then
       for tee in tdx sev-snp; do
@@ -164,7 +164,7 @@ pass
 reset
 touch "$state/commit-known" "$state/image-publishes-nothing"
 printf '%s' "$sha" >"$state/branch-sha"
-for c in c8s-operator nri-image-policy cds armtls-mesh; do echo "$c:c7cf2f3" >>"$state/present-tags"; done
+for c in c8s-operator nri-image-policy ta armtls-mesh; do echo "$c:c7cf2f3" >>"$state/present-tags"; done
 expect_failure bash "$script" --sha "$sha" | grep -q 'guests/worker has 0 :sha-c7cf2f3-[*] tags, expected 4' \
   || fail "a repository without the commit's tags was reported as published"
 pass
@@ -174,7 +174,7 @@ pass
 reset
 touch "$state/commit-known" "$state/image-publishes-nothing"
 printf '%s' "$sha" >"$state/branch-sha"
-for c in c8s-operator nri-image-policy cds armtls-mesh; do echo "$c:c7cf2f3" >>"$state/present-tags"; done
+for c in c8s-operator nri-image-policy ta armtls-mesh; do echo "$c:c7cf2f3" >>"$state/present-tags"; done
 echo 'guests/worker:sha-c7cf2f3-tdx' >>"$state/present-tags"
 expect_failure bash "$script" --sha "$sha" | grep -q 'has 1 :sha-c7cf2f3-[*] tags, expected 4' \
   || fail "a partial tag set was accepted"
@@ -185,7 +185,7 @@ pass
 reset
 touch "$state/commit-known" "$state/listing-fails"
 printf '%s' "$sha" >"$state/branch-sha"
-for c in c8s-operator nri-image-policy cds armtls-mesh; do echo "$c:c7cf2f3" >>"$state/present-tags"; done
+for c in c8s-operator nri-image-policy ta armtls-mesh; do echo "$c:c7cf2f3" >>"$state/present-tags"; done
 expect_failure bash "$script" --sha "$sha" | grep -q 'cannot list confidential-dot-ai/guests/worker' \
   || fail "an unreadable package was not reported as a listing failure"
 pass
@@ -195,7 +195,7 @@ pass
 reset
 touch "$state/commit-known"
 printf '%s' "$sha" >"$state/branch-sha"
-for c in c8s-operator nri-image-policy cds armtls-mesh; do echo "$c:c7cf2f3" >>"$state/present-tags"; done
+for c in c8s-operator nri-image-policy ta armtls-mesh; do echo "$c:c7cf2f3" >>"$state/present-tags"; done
 out=$(bash "$script" --sha "$sha")
 grep -q 'branch build/c7cf2f3 already at c7cf2f3' <<<"$out" || fail "existing branch not reused"
 ! grep -q 'workflow run docker.yml' "$calls" || fail "docker dispatched although every tag exists"
@@ -208,7 +208,7 @@ pass
 reset
 touch "$state/commit-known"
 printf '%s' "$sha" >"$state/branch-sha"
-for c in c8s-operator nri-image-policy cds armtls-mesh; do echo "$c:c7cf2f3" >>"$state/present-tags"; done
+for c in c8s-operator nri-image-policy ta armtls-mesh; do echo "$c:c7cf2f3" >>"$state/present-tags"; done
 echo failure >"$state/run-conclusion"
 expect_failure bash "$script" --sha "$sha" | grep -q 'c8s-image-manual.yml run failed' || fail "failed run not reported"
 pass

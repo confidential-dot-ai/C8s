@@ -24,7 +24,7 @@ var update = flag.Bool("update", false, "regenerate testdata/ruleset.golden")
 
 // testPolicy exercises every kind of permission a node's trusted policy can
 // name: the resolver, this cluster's own ranges, and a credential role that
-// reaches one destination on this node and the CDS port outside the cluster.
+// reaches one destination on this node and the Trust Authority port outside the cluster.
 func testPolicy() Policy {
 	return Policy{
 		Resolver: netip.MustParseAddr("10.53.0.10"),
@@ -48,7 +48,7 @@ func testPolicy() Policy {
 
 // serverPolicy is the same policy for a pod that serves a platform role's own
 // ports: the router answers external listeners, its upstream identity dials
-// its backends and its CDS itself, and a third identity of that pod reaches
+// its backends and its Trust Authority itself, and a third identity of that pod reaches
 // the egress port outside the cluster.
 func serverPolicy() Policy {
 	policy := testPolicy()
@@ -176,7 +176,7 @@ func TestServerRoleAddsOnlyItsOwnRules(t *testing.T) {
 	}
 }
 
-// The upstream identity dials every backend and its CDS itself, a pod CVM's
+// The upstream identity dials every backend and its Trust Authority itself, a pod CVM's
 // endpoint outside the cluster on any port included, so its TCP is returned
 // before the capture and accepted on the way out. No other rule of either
 // chain names its identity.

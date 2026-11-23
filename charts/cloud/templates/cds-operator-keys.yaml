@@ -3,7 +3,8 @@ The keys the route manifest is signed under, in the router's own namespace,
 which a projected volume cannot leave. Public key material — not a secret, and
 checked for content in validations.yaml.
 */ -}}
-{{- if .Values.cds.operatorKeys }}
+{{- $ta := include "c8s.trustAuthority" . | fromJson }}
+{{- if $ta.operatorKeys }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -13,5 +14,5 @@ metadata:
 {{ include "c8s.commonLabels" . | indent 4 }}
     app.kubernetes.io/component: cds
 data:
-  keys.pem: {{ .Values.cds.operatorKeys | quote }}
+  keys.pem: {{ $ta.operatorKeys | quote }}
 {{- end }}

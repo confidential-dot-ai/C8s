@@ -90,86 +90,86 @@ router_url() {
     [ -n "$ip" ] || { echo "backend: node $NODE has no InternalIP" >&2; return 1; }
     echo "https://$ip:443"
 }
-# The CDS outside the cluster is lib.sh's (cds_url), and so are the harness's
+# The TA outside the cluster is lib.sh's (ta_url), and so are the harness's
 # operator key and token minter.
 operator_key() { echo "$WORKDIR/operator.key"; }
 optoken_bin() { echo "$WORKDIR/optoken"; }
 scratch() { echo "$WORKDIR"; }
 
 # The same address dialled without TLS; the listener is TLS-only.
-cds_plain_url() { local url; url="$(cds_url)" || return; echo "${url/https:/http:}"; }
-cds_pins() { echo "$MOCK_MEASUREMENT"; }
-# Every client of this cluster dials the one CDS, pods included.
-cds_pod_url() { cds_url; }
+ta_plain_url() { local url; url="$(ta_url)" || return; echo "${url/https:/http:}"; }
+ta_pins() { echo "$MOCK_MEASUREMENT"; }
+# Every client of this cluster dials the one TA, pods included.
+ta_pod_url() { ta_url; }
 
-# Whether the CDS observes a requester pod's own address as the request
-# source. Unsupported here: the CDS runs outside the cluster (lib.sh,
-# cds_serve), and the node masquerades a pod's egress to it behind the node
+# Whether the TA observes a requester pod's own address as the request
+# source. Unsupported here: the TA runs outside the cluster (lib.sh,
+# ta_serve), and the node masquerades a pod's egress to it behind the node
 # address, so a CSR carrying the pod's own IP SAN cannot match the source.
 requester_source_is_own_address() { return "$UNSUPPORTED"; }
 
-# The flags the harness runs the CDS with (lib.sh, cds_serve); empty for one it
-# leaves at the CDS's own default.
-cds_arg() {
-    docker inspect -f '{{json .Args}}' "$CDS_CONTAINER" |
+# The flags the harness runs the TA with (lib.sh, ta_serve); empty for one it
+# leaves at the TA's own default.
+ta_arg() {
+    docker inspect -f '{{json .Args}}' "$TA_CONTAINER" |
         jq -r --arg p "--$1=" '.[] | select(startswith($p)) | ltrimstr($p)' | tail -1
 }
 
 allowlist_node_delay() {
     local delay
-    delay="$(cds_arg allowlist-node-delay)" || return
-    [ -n "$delay" ] || { echo "backend: the harness CDS runs without --allowlist-node-delay (lib.sh, cds_serve)" >&2; return 1; }
+    delay="$(ta_arg allowlist-node-delay)" || return
+    [ -n "$delay" ] || { echo "backend: the harness TA runs without --allowlist-node-delay (lib.sh, ta_serve)" >&2; return 1; }
     echo "$delay"
 }
 
-# The CDS runs from the configuration its launch binds it to, so only a
+# The TA runs from the configuration its launch binds it to, so only a
 # parameter outside that file can be changed here: the harness replaces the
-# container with one that carries it (lib.sh, cds_serve), and default brings
+# container with one that carries it (lib.sh, ta_serve), and default brings
 # the installed command line back. Node pins, the operator key and the
 # inventory range are the configuration's, which a restart cannot change
 # without breaking the binding every client checks.
-cds_restart_with() {
+ta_restart_with() {
     case "$1" in
-        default) cds_serve ;;
-        san-validation) cds_serve "--san-validation=$2" ;;
+        default) ta_serve ;;
+        san-validation) ta_serve "--san-validation=$2" ;;
         pins | operator-keys | inventory-cidr) return "$UNSUPPORTED" ;;
-        *) echo "backend: cds_restart_with: no parameter '$1'" >&2; return 2 ;;
+        *) echo "backend: ta_restart_with: no parameter '$1'" >&2; return 2 ;;
     esac
-    cds_wait
+    ta_wait
 }
 
-# The CDS reads its attestation-api over loopback in CDS_ATTESTATION_CONTAINER's
-# network namespace (lib.sh, cds_serve: --network container, --attestation-api-url
+# The TA reads its attestation-api over loopback in TA_ATTESTATION_CONTAINER's
+# network namespace (lib.sh, ta_serve: --network container, --attestation-api-url
 # http://127.0.0.1:8400); the cluster's kube-system mock serves the node-baked
-# api that the node's mesh members and the host plugin use, not the CDS. So the
-# scenario that takes the CDS's own attestation away pauses that container: the
-# process stops answering while the namespace and the CDS's network stay up, so
-# the CDS stays reachable and its background readiness probe (bounded per
+# api that the node's mesh members and the host plugin use, not the TA. So the
+# scenario that takes the TA's own attestation away pauses that container: the
+# process stops answering while the namespace and the TA's network stay up, so
+# the TA stays reachable and its background readiness probe (bounded per
 # interval) flips /readyz to 503. docker rm/stop would instead drop the shared
-# namespace and the CDS with it.
+# namespace and the TA with it.
 attestation_service_stop() {
-    docker pause "$CDS_ATTESTATION_CONTAINER" >/dev/null
+    docker pause "$TA_ATTESTATION_CONTAINER" >/dev/null
 }
 
-# Unpause, then wait for the CDS to report ready again before returning, so the
+# Unpause, then wait for the TA to report ready again before returning, so the
 # next scenario does not inherit a 503. /readyz, not /healthz: readiness is what
 # the probe drives and what the scenario read.
 attestation_service_start() {
-    docker unpause "$CDS_ATTESTATION_CONTAINER" >/dev/null
+    docker unpause "$TA_ATTESTATION_CONTAINER" >/dev/null
     local deadline=$(($(date +%s) + 60))
-    until [ "$(curl -sk -o /dev/null -w '%{http_code}' "$(cds_url)/readyz")" = 200 ]; do
-        [ "$(date +%s)" -lt "$deadline" ] || { echo "backend: the CDS did not report ready 60s after its attestation returned" >&2; return 1; }
+    until [ "$(curl -sk -o /dev/null -w '%{http_code}' "$(ta_url)/readyz")" = 200 ]; do
+        [ "$(date +%s)" -lt "$deadline" ] || { echo "backend: the TA did not report ready 60s after its attestation returned" >&2; return 1; }
         sleep 1
     done
 }
 
-# PEM private keys outside CDS process memory: in the Secrets and ConfigMaps
+# PEM private keys outside TA process memory: in the Secrets and ConfigMaps
 # of every namespace, and in the files of the node. The files are emitted
 # as they are, binary ones included, and the reader picks the PEM blocks
 # out of them. "Every file on the node" is the directories where
 # configuration and state live, which a scan of the whole overlay would only
-# add time to; /proc, /sys and /dev are not files. The CDS runs outside the
-# cluster, so its own filesystem is as out of reach here as a CDS VM's.
+# add time to; /proc, /sys and /dev are not files. The TA runs outside the
+# cluster, so its own filesystem is as out of reach here as a TA VM's.
 private_keys() {
     kubectl get secrets,configmaps -A -o json |
         jq -r '.items[] | (.data // {})[] as $v | if .kind == "Secret" then ($v | @base64d) else $v end'
@@ -183,24 +183,24 @@ private_keys() {
 }
 
 # One issuance from this host, with the CLI the harness built: the mock
-# admits it like any requester, the CDS is pinned by the document the cluster
-# trusts it under, and the CSR carries a DNS SAN the CDS's Service pattern
-# admits and no IP SAN (the source address the CDS sees is this host's).
+# admits it like any requester, the TA is pinned by the document the cluster
+# trusts it under, and the CSR carries a DNS SAN the TA's Service pattern
+# admits and no IP SAN (the source address the TA sees is this host's).
 attest_direct() {
     local bin="$C8S_ROOT/build/c8s"
     [ -x "$bin" ] || make -C "$C8S_ROOT" build-c8s >&2 || return 1
-    "$bin" get-cert --cds-url "$(cds_url)" --attestation-api-url "$(cds_mock_attestation_url)" \
-        --image-policy-file "$WORKDIR/cds/cds-pin.json" --san "requester.$NS.svc" 2>/dev/null
+    "$bin" get-cert --ta-url "$(ta_url)" --attestation-api-url "$(ta_mock_attestation_url)" \
+        --ta-image-policy-file "$WORKDIR/ta/cds-pin.json" --san "requester.$NS.svc" 2>/dev/null
 }
 
 # The mock issues a version-2 SNP report over any report data, with an
-# all-zero launch measurement (the pin the CDS was installed with), and
+# all-zero launch measurement (the pin the TA was installed with), and
 # reports every signature valid; its verifier reads the launch digest from
 # the report it is shown. Its evidence verifies nowhere but at the mock, so no
 # verifier on this host can act as a relying party.
 evidence() {
     jq -n --arg rd "$3" '{report_data: $rd}' |
-        curl -sf --max-time 20 -H 'Content-Type: application/json' --data-binary @- "$(cds_mock_attestation_url)/attest"
+        curl -sf --max-time 20 -H 'Content-Type: application/json' --data-binary @- "$(ta_mock_attestation_url)/attest"
 }
 evidence_signed() { echo no; }
 relying_party() { return "$UNSUPPORTED"; }
@@ -252,29 +252,29 @@ base_declares() {
 PLUGIN_BIN=/opt/nri/plugins/10-nri-image-policy
 PLUGIN_HEALTH=/run/nri-image-policy/health.sock
 
-# The plugin pulls from the CDS the install mounted on the node, out of the
+# The plugin pulls from the TA the install mounted on the node, out of the
 # node's own network namespace; every pod's get-cert dials that same address
 # from its own. A reject rule on the connections the node itself opens
 # refuses each pull at once and leaves issuance, and so every pod's start,
 # alone: a pod's packets are forwarded, never the node's own output.
-cds_block_rule() {
-    echo OUTPUT -p tcp -d "$(cds_host)" --dport "$CDS_PORT" \
-        -m comment --comment c8s-conformance-cds-block -j REJECT --reject-with tcp-reset
+ta_block_rule() {
+    echo OUTPUT -p tcp -d "$(ta_host)" --dport "$TA_PORT" \
+        -m comment --comment c8s-conformance-ta-block -j REJECT --reject-with tcp-reset
 }
-cds_block() {
+ta_block() {
     local rule
-    rule="$(cds_block_rule)" || return
+    rule="$(ta_block_rule)" || return
     # shellcheck disable=SC2086  # the rule's words
     node_exec iptables -C $rule 2>/dev/null || node_exec iptables -I $rule || return
     local deadline=$(($(date +%s) + 60))
     until [ "$(node_refuses)" = yes ]; do
-        [ "$(date +%s)" -lt "$deadline" ] || { echo "backend: the node still accepts pulls on $CDS_PORT after 60s" >&2; return 1; }
+        [ "$(date +%s)" -lt "$deadline" ] || { echo "backend: the node still accepts pulls on $TA_PORT after 60s" >&2; return 1; }
         sleep 1
     done
 }
-cds_unblock() {
+ta_unblock() {
     local rule
-    rule="$(cds_block_rule)" || return
+    rule="$(ta_block_rule)" || return
     # shellcheck disable=SC2086  # the rule's words
     while node_exec iptables -C $rule 2>/dev/null; do node_exec iptables -D $rule || return; done
 }
@@ -282,31 +282,31 @@ cds_unblock() {
 # A connect that fails or hangs is refused: a reset may never reach the
 # socket, so the dial times out instead.
 node_refuses() {
-    if node_exec timeout 2 bash -c "</dev/tcp/$(cds_host)/$CDS_PORT" 2>/dev/null; then echo no; else echo yes; fi
+    if node_exec timeout 2 bash -c "</dev/tcp/$(ta_host)/$TA_PORT" 2>/dev/null; then echo no; else echo yes; fi
 }
 
 # The same reject, on the router pod's packets alone: they are forwarded by
-# the node, so the relay loses the CDS while the plugin's pulls and every
+# the node, so the relay loses the TA while the plugin's pulls and every
 # other pod's issuance keep it. A rule left behind for a router pod that has
 # since been replaced names an address nothing holds.
-cds_relay_rule() {
+ta_relay_rule() {
     local selector pod
     selector="$(kubectl -n "$ROUTER_NS" get deploy "$ROUTER_DEPLOY" -o json |
         jq -r '.spec.selector.matchLabels | to_entries | map("\(.key)=\(.value)") | join(",")')" || return
     pod="$(kubectl -n "$ROUTER_NS" get pods -l "$selector" -o jsonpath='{.items[*].status.podIP}')" || return
     [ "$(wc -w <<<"$pod")" = 1 ] || { echo "backend: want one router pod address in $ROUTER_NS, got '$pod'" >&2; return 1; }
-    echo FORWARD -p tcp -s "$pod" -d "$(cds_host)" --dport "$CDS_PORT" \
+    echo FORWARD -p tcp -s "$pod" -d "$(ta_host)" --dport "$TA_PORT" \
         -m comment --comment c8s-conformance-relay-block -j REJECT --reject-with tcp-reset
 }
-cds_relay_block() {
+ta_relay_block() {
     local rule
-    rule="$(cds_relay_rule)" || return
+    rule="$(ta_relay_rule)" || return
     # shellcheck disable=SC2086  # the rule's words
     node_exec iptables -C $rule 2>/dev/null || node_exec iptables -I $rule
 }
-cds_relay_unblock() {
+ta_relay_unblock() {
     local rule
-    rule="$(cds_relay_rule)" || return
+    rule="$(ta_relay_rule)" || return
     # shellcheck disable=SC2086  # the rule's words
     while node_exec iptables -C $rule 2>/dev/null; do node_exec iptables -D $rule || return; done
 }
@@ -326,7 +326,7 @@ applied_version() {
 }
 
 # Ready within the installer's budget: a containerd restart, then the first
-# pull's bounded retries (2+4+8+16s between attempts) when the CDS is away.
+# pull's bounded retries (2+4+8+16s between attempts) when the TA is away.
 plugin_ready() {
     local deadline=$(($(date +%s) + 300))
     until plugin_healthy; do
@@ -364,13 +364,13 @@ plugin_start() {
     return 1
 }
 
-# cds_serve runs the CDS with --allowlist-persistent=false and its database in
+# ta_serve runs the TA with --allowlist-persistent=false and its database in
 # the container, which a restart replaces: the new one serves the
 # configuration's entries at version 1.
-cds_volatile() { echo yes; }
-cds_restart() {
-    cds_serve
-    cds_wait
+ta_volatile() { echo yes; }
+ta_restart() {
+    ta_serve
+    ta_wait
 }
 
 node_containers() { node_exec crictl ps -a -q --image "$2"; }

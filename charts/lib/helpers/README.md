@@ -7,7 +7,7 @@ one template file and links back to it.
 
 | Reference | Template file | Responsibility |
 | --- | --- | --- |
-| [Allowlist](allowlist/README.md) | [_allowlist.tpl](../templates/_allowlist.tpl) | Component inventory, local admission list, CDS seed |
+| [Allowlist](allowlist/README.md) | [_allowlist.tpl](../templates/_allowlist.tpl) | Component inventory, local admission list, Trust Authority seed |
 | [Certificates](certificates/README.md) | [_certificates.tpl](../templates/_certificates.tpl) | Certificate sidecars, security context, DNS SAN pattern |
 | [Common](common/README.md) | [_names.tpl](../templates/_names.tpl), [_identities.tpl](../templates/_identities.tpl), [_podcvm.tpl](../templates/_podcvm.tpl) | Resource names, labels, reserved identities, the Pod CVM provider's grants |
 | [Component table](components/README.md) | [_components.tpl](../templates/_components.tpl) | The component images and the router's nginx pin |

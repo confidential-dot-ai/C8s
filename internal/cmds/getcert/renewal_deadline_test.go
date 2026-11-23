@@ -120,10 +120,10 @@ func TestRenewalWithdrawsAtExpiryDuringBlockedOperations(t *testing.T) {
 				if tt.startupRetry {
 					cfg.InitialRetryTimeout = time.Minute
 					cfg.InitialRetryInterval = 5 * time.Second
-					done <- obtainCertWithRetry(ctx, cfg, plaintextCDSClient(srv.URL), creds)
+					done <- obtainCertWithRetry(ctx, cfg, plaintextTAClient(srv.URL), creds)
 					return
 				}
-				done <- renewLoop(ctx, cfg, plaintextCDSClient(srv.URL), plaintextPolicyClient(srv.URL), creds)
+				done <- renewLoop(ctx, cfg, plaintextTAClient(srv.URL), plaintextPolicyClient(srv.URL), creds)
 			}()
 			defer func() {
 				cancel()
@@ -169,7 +169,7 @@ func TestForeignCAWatchPreservesRenewalBackoff(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() {
-		done <- renewLoop(ctx, cfg, plaintextCDSClient(url), plaintextPolicyClient(url), creds)
+		done <- renewLoop(ctx, cfg, plaintextTAClient(url), plaintextPolicyClient(url), creds)
 	}()
 	defer func() {
 		cancel()
@@ -205,7 +205,7 @@ func TestRenewalRefreshesGenerationDeadline(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() {
-		done <- renewLoop(ctx, cfg, plaintextCDSClient(url), plaintextPolicyClient(url), creds)
+		done <- renewLoop(ctx, cfg, plaintextTAClient(url), plaintextPolicyClient(url), creds)
 	}()
 	defer func() {
 		cancel()

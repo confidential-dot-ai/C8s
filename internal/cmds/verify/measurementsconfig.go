@@ -95,8 +95,8 @@ func gatherMeasurements(ctx context.Context, cfg config, plan *verifyPlan, ev *e
 	if plan.served == nil {
 		return measurementsReport{}
 	}
-	if cfg.kind != "cds" {
-		return measurementsReport{note: "target kind is not cds (use --kind cds to enable)"}
+	if cfg.kind != "ta" {
+		return measurementsReport{note: "target kind is not ta (use --kind ta to enable)"}
 	}
 	if cfg.url == "" {
 		return measurementsReport{note: "not fetched (no target URL)"}

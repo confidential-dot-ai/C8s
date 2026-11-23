@@ -12,7 +12,7 @@ import (
 )
 
 // The plugin must report the assigned UID registered; registration before the
-// first CDS pull (503) suffices.
+// first Trust Authority pull (503) suffices.
 func TestAssignmentPluginReportsTheExpectedFloor(t *testing.T) {
 	dir, err := os.MkdirTemp("/tmp", "assignment-health-")
 	if err != nil {
@@ -45,7 +45,7 @@ func TestAssignmentPluginReportsTheExpectedFloor(t *testing.T) {
 		status          int
 		ready           bool
 	}{
-		{"assigned before CDS pull", "pod-a", `{"pod_registered":true,"pod_uid":"pod-a"}`, http.StatusServiceUnavailable, true},
+		{"assigned before Trust Authority pull", "pod-a", `{"pod_registered":true,"pod_uid":"pod-a"}`, http.StatusServiceUnavailable, true},
 		{"assigned and ready", "pod-a", `{"pod_registered":true,"pod_uid":"pod-a"}`, http.StatusOK, true},
 		{"unregistered", "pod-a", `{"pod_registered":false,"pod_uid":"pod-a"}`, http.StatusOK, false},
 		{"wrong assignment", "pod-a", `{"pod_registered":true,"pod_uid":"pod-b"}`, http.StatusOK, false},

@@ -9,8 +9,8 @@ func NewCmd() *cobra.Command {
 		Use:   "keys",
 		Short: "Manage operator keys",
 		Long: `Manage the operator EC keypair that authorizes platform writes. The private
-key signs allowlist, secrets and volume writes; the public key is what CDS
-pins in its configuration (c8s cds config new --operator-keys).`,
+key signs allowlist, secrets and volume writes; the public key is what Trust Authority
+pins in its configuration (c8s ta config new --operator-keys).`,
 	}
 	cmd.AddCommand(newKeygenCmd())
 	return cmd

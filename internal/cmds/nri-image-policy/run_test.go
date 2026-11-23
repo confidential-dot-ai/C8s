@@ -391,7 +391,7 @@ workload_claims:
   socket_dir: %s
 logging:
   level: error
-`+meshYAML, dir, dir, pushDigestA, dir, testCDSPinFile(t), dir)
+`+meshYAML, dir, dir, pushDigestA, dir, testTAPinFile(t), dir)
 	err := runWithDeadline(t, 10*time.Second, []string{"-config", writeConfigYAML(t, cfgYAML)})
 	if err == nil || !strings.Contains(err.Error(), "start admission inventory") || !errors.Is(err, syscall.EADDRINUSE) {
 		t.Fatalf("err = %v, want an admission-inventory listen failure", err)
@@ -452,21 +452,21 @@ policy:
   enforce_existing: false
 logging:
   level: error
-`+meshYAML, dir, dir, pushDigestA, testCDSPinFile(t))
+`+meshYAML, dir, dir, pushDigestA, testTAPinFile(t))
 	err := runWithDeadline(t, 20*time.Second, []string{"-config", writeConfigYAML(t, cfgYAML)})
 	if !errors.Is(err, errPluginDied) {
 		t.Fatalf("err = %v, want errPluginDied", err)
 	}
 }
 
-// A CDS that is merely slow must not be read as a shutdown request. Every
+// A Trust Authority that is merely slow must not be read as a shutdown request. Every
 // initial-pull attempt carries its own deadline, so exhausting the retries
 // against an unresponsive endpoint returns an error wrapping
 // context.DeadlineExceeded while the process context is still live. Treating
 // that as SIGTERM parked the process on the plugin error channel: never ready,
 // never pulling again, and only a containerd restart cleared it. Run must take
 // the fail-soft path instead and surface the plugin's own failure.
-func TestRun_SlowCDSDuringInitialPullIsNotShutdown(t *testing.T) {
+func TestRun_SlowTADuringInitialPullIsNotShutdown(t *testing.T) {
 	t.Setenv("NRI_PLUGIN_NAME", "")
 	origDelay, origRetries := allowlistApiInitialDelay, allowlistApiMaxRetries
 	allowlistApiInitialDelay = 5 * time.Millisecond
@@ -487,7 +487,7 @@ func TestRun_SlowCDSDuringInitialPullIsNotShutdown(t *testing.T) {
 		}
 	}))
 	defer stalledAttestation.Close()
-	stalledCDS := stalledListener(t, blocked)
+	stalledTA := stalledListener(t, blocked)
 
 	dir := t.TempDir()
 	cfgYAML := fmt.Sprintf(`
@@ -517,7 +517,7 @@ policy:
   enforce_existing: false
 logging:
   level: error
-`+meshYAML, dir, dir, pushDigestA, stalledCDS, stalledAttestation.URL, testCDSPinFile(t))
+`+meshYAML, dir, dir, pushDigestA, stalledTA, stalledAttestation.URL, testTAPinFile(t))
 
 	// Hand the stub a connected socket so the plugin cannot die while the pull
 	// is running: without it the NRI dial fails instantly, pullInitial's first
@@ -563,9 +563,9 @@ func holdNRISocket(t *testing.T) {
 func TestAllowlistPullHTTPClient_ValidPin(t *testing.T) {
 	timeout := 7 * time.Second
 	pulled := pullConfig{
-		CDSMeasurementsConfig: testCDSPinFile(t),
-		AttestationApiURL:     "http://127.0.0.1:30840",
-		Timeout:               timeout,
+		TAMeasurementsConfig: testTAPinFile(t),
+		AttestationApiURL:    "http://127.0.0.1:30840",
+		Timeout:              timeout,
 	}
 	set, err := pulled.policySet()
 	if err != nil {
@@ -580,14 +580,14 @@ func TestAllowlistPullHTTPClient_ValidPin(t *testing.T) {
 	}
 }
 
-// The plugin pulls its allowlist from a pinned CDS: with no pin document the
+// The plugin pulls its allowlist from a pinned Trust Authority: with no pin document the
 // node has no pin source, so no client is built against any attested peer.
 func TestTheNodePinSourceRefusesWithoutPins(t *testing.T) {
 	_, _, err := pullConfig{
 		AttestationApiURL: "http://127.0.0.1:30840",
 		Timeout:           time.Second,
-	}.cdsPinSource(discardLogger())
-	if !errors.Is(err, cmdsutil.ErrCDSPinUnbound) {
+	}.taPinSource(discardLogger())
+	if !errors.Is(err, cmdsutil.ErrTAPinUnbound) {
 		t.Fatalf("err = %v, want errors.Is cmdsutil.ErrCDSPinUnbound", err)
 	}
 }
@@ -595,7 +595,7 @@ func TestTheNodePinSourceRefusesWithoutPins(t *testing.T) {
 // --- pullInitial backoff ----------------------------------------------------
 
 // Failed attempts must be separated by the configured startup backoff; a zero
-// gap would hammer CDS on every cold boot across the fleet.
+// gap would hammer Trust Authority on every cold boot across the fleet.
 func TestPullInitial_BacksOffBetweenAttempts(t *testing.T) {
 	origRetries := allowlistApiMaxRetries
 	allowlistApiMaxRetries = 2
@@ -619,7 +619,7 @@ func TestPullInitial_BacksOffBetweenAttempts(t *testing.T) {
 		logger:      discardLogger(),
 	})
 	if err == nil {
-		t.Fatal("expected failure from a 5xx CDS")
+		t.Fatal("expected failure from a 5xx Trust Authority")
 	}
 	// One inter-attempt gap at the default 2s backoff (with slack).
 	if elapsed := time.Since(start); elapsed < 1500*time.Millisecond {
@@ -870,12 +870,12 @@ func TestStartHealthServer_InvalidAddr(t *testing.T) {
 
 func TestTheNodePinSourceRefusesAnInvalidPin(t *testing.T) {
 	_, _, err := pullConfig{
-		CDSMeasurementsConfig: cdsPinFile(t, `{"schema_version":"1","tee":"sev-snp"}`),
-		AttestationApiURL:     "http://localhost:30840",
-		Timeout:               time.Second,
-	}.cdsPinSource(discardLogger())
+		TAMeasurementsConfig: taPinFile(t, `{"schema_version":"1","tee":"sev-snp"}`),
+		AttestationApiURL:    "http://localhost:30840",
+		Timeout:              time.Second,
+	}.taPinSource(discardLogger())
 	if err == nil {
-		t.Fatal("expected error for an unparseable CDS pin")
+		t.Fatal("expected error for an unparseable Trust Authority pin")
 	}
 }
 

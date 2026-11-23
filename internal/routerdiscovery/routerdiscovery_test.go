@@ -218,7 +218,7 @@ func TestNewVerifiedHTTPClient_PassesRuntimeExtensions(t *testing.T) {
 }
 
 // TestNewVerifiedHTTPClient_NoDiscovery proves a target without a discovery
-// document (a direct CDS endpoint) signals ErrNoDiscovery so the caller falls
+// document (a direct Trust Authority endpoint) signals ErrNoDiscovery so the caller falls
 // back to armTLS serving-cert verification.
 func TestNewVerifiedHTTPClient_NoDiscovery(t *testing.T) {
 	srv := httptest.NewTLSServer(http.NotFoundHandler())

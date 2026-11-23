@@ -72,7 +72,7 @@ func injectedPod(p *api.PodSandbox) {
 	p.Annotations = map[string]string{workloadclaims.AnnotationInjected: "true"}
 }
 
-// injectedPinsMount turns the container into a sidecar carrying the CDS policy
+// injectedPinsMount turns the container into a sidecar carrying the Trust Authority policy
 // mount sidecarAdjustment adds.
 func injectedPinsMount(c *api.Container) {
 	c.Name = workloadclaims.CertContainerName
@@ -84,7 +84,7 @@ func injectedPinsMount(c *api.Container) {
 	})
 }
 
-// injectedAddressMount turns the container into a sidecar carrying the CDS
+// injectedAddressMount turns the container into a sidecar carrying the Trust Authority
 // address mount sidecarAdjustment adds.
 func injectedAddressMount(c *api.Container) {
 	c.Name = workloadclaims.CertContainerName
@@ -128,21 +128,21 @@ func TestSandboxViolations(t *testing.T) {
 			ownSocket: "/run/nri-image-policy",
 		},
 		{
-			name:      "the node's own CDS policy mount",
+			name:      "the node's own Trust Authority policy mount",
 			pod:       injectedPod,
 			ctr:       injectedPinsMount,
 			ownSocket: "/var/run/nri-image-policy",
 			ownPins:   "/run/c8s-node/cds.json",
 		},
 		{
-			name:       "the node's own CDS address mount",
+			name:       "the node's own Trust Authority address mount",
 			pod:        injectedPod,
 			ctr:        injectedAddressMount,
 			ownSocket:  "/var/run/nri-image-policy",
 			ownAddress: "/var/run/nri-image-policy/cds-address",
 		},
 		{
-			name: "a CDS address mount from a source the plugin does not own",
+			name: "a Trust Authority address mount from a source the plugin does not own",
 			pod:  injectedPod,
 			ctr: func(c *api.Container) {
 				injectedAddressMount(c)
@@ -153,7 +153,7 @@ func TestSandboxViolations(t *testing.T) {
 			want:       "host path bind mount",
 		},
 		{
-			name: "a CDS policy mount from a source the plugin does not own",
+			name: "a Trust Authority policy mount from a source the plugin does not own",
 			pod:  injectedPod,
 			ctr: func(c *api.Container) {
 				injectedPinsMount(c)
@@ -164,7 +164,7 @@ func TestSandboxViolations(t *testing.T) {
 			want:      "host path bind mount",
 		},
 		{
-			name: "a writable mount of the node's CDS policy",
+			name: "a writable mount of the node's Trust Authority policy",
 			pod:  injectedPod,
 			ctr: func(c *api.Container) {
 				injectedPinsMount(c)
@@ -175,7 +175,7 @@ func TestSandboxViolations(t *testing.T) {
 			want:      "host path bind mount",
 		},
 		{
-			name: "the CDS policy mount in a container the webhook did not inject",
+			name: "the Trust Authority policy mount in a container the webhook did not inject",
 			pod:  injectedPod,
 			ctr: func(c *api.Container) {
 				injectedPinsMount(c)
@@ -426,9 +426,9 @@ func TestSandboxViolations(t *testing.T) {
 				tt.ctr(ctr)
 			}
 			own := enforcerMounts{
-				socketDir:  tt.ownSocket,
-				cdsPins:    tt.ownPins,
-				cdsAddress: tt.ownAddress,
+				socketDir: tt.ownSocket,
+				taPins:    tt.ownPins,
+				taAddress: tt.ownAddress,
 			}
 			got := observeSandbox(pod, ctr, own, nil, noBindGrant{}, cdiExpansion{}).violations(false)
 			if tt.want == "" {

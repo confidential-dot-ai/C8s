@@ -67,7 +67,7 @@ func TestExistingIntentFreezesAllTrustInputs(t *testing.T) {
 	other.Image = "c8s-pod@different-version"
 	other.workloads = `{"invalid":"new policy must not alter an existing intent"}`
 	other.manifest = []byte("different manifest")
-	other.CDSAddress = "cds2.example.test:8443"
+	other.TAAddress = "cds2.example.test:8443"
 	other.MeshPeers = []string{"203.0.113.22:9443"}
 	other.MemoryMiB = 16384
 	r.cfg = other

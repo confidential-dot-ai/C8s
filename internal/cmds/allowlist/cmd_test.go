@@ -24,7 +24,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cdsconn"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/taconn"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/crane/cranetest"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/localverify"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
@@ -112,9 +112,9 @@ func writeOperatorKey(t *testing.T, dir string) (keyPath string) {
 	return keyPath
 }
 
-// recordingCDS is an httptest server that records the HTTP methods it saw and
+// recordingTA is an httptest server that records the HTTP methods it saw and
 // serves an empty (but valid) canonical allowlist on GET.
-func recordingCDS(t *testing.T) (url string, methods *[]string) {
+func recordingTA(t *testing.T) (url string, methods *[]string) {
 	t.Helper()
 	empty := pkgallowlist.Allowlist{
 		Schema:    pkgallowlist.Schema,
@@ -245,7 +245,7 @@ func TestUploadForceProceedsInDryRun(t *testing.T) {
 	dir := t.TempDir()
 	// Missing core components, but --force + --dry-run: should not error and not write.
 	file := writeAllowlistFile(t, dir, map[string]string{digA: "registry/app/only@" + digA})
-	url, methods := recordingCDS(t)
+	url, methods := recordingTA(t)
 
 	_, _, err := runCmd("upload", file, "--url", url, "--insecure", "--force", "--dry-run")
 	if err != nil {
@@ -260,7 +260,7 @@ func TestUploadReplacesWhenCoreComplete(t *testing.T) {
 	dir := t.TempDir()
 	file := writeAllowlistFile(t, dir, coreImages())
 	keyPath := writeOperatorKey(t, dir)
-	url, methods := recordingCDS(t)
+	url, methods := recordingTA(t)
 
 	_, _, err := runCmd("upload", file, "--url", url, "--insecure", "--operator-key", keyPath)
 	if err != nil {
@@ -272,13 +272,13 @@ func TestUploadReplacesWhenCoreComplete(t *testing.T) {
 }
 
 func TestHTTPRefusedWithoutInsecure(t *testing.T) {
-	url, methods := recordingCDS(t) // http:// httptest endpoint
+	url, methods := recordingTA(t) // http:// httptest endpoint
 	dir := t.TempDir()
 	keyPath := writeOperatorKey(t, dir)
 
 	_, _, err := runCmd("delete", "app", "--url", url, "--operator-key", keyPath)
 	if err == nil {
-		t.Fatal("expected a plaintext http:// CDS URL to be refused without --insecure")
+		t.Fatal("expected a plaintext http:// Trust Authority URL to be refused without --insecure")
 	}
 	if contains(*methods, http.MethodDelete) {
 		t.Fatal("must not connect to a plaintext endpoint when --insecure is absent")
@@ -288,7 +288,7 @@ func TestHTTPRefusedWithoutInsecure(t *testing.T) {
 func TestDiffExitCodeNonZeroOnDifference(t *testing.T) {
 	dir := t.TempDir()
 	file := writeAllowlistFile(t, dir, coreImages())
-	url, _ := recordingCDS(t) // serves an empty live allowlist
+	url, _ := recordingTA(t) // serves an empty live allowlist
 
 	_, _, err := runCmd("diff", file, "--url", url, "--insecure", "--exit-code")
 	if err == nil {
@@ -299,7 +299,7 @@ func TestDiffExitCodeNonZeroOnDifference(t *testing.T) {
 func TestDiffNoChanges(t *testing.T) {
 	dir := t.TempDir()
 	file := writeAllowlistFile(t, dir, map[string]string{}) // empty, matches empty live
-	url, _ := recordingCDS(t)
+	url, _ := recordingTA(t)
 
 	out, _, err := runCmd("diff", file, "--url", url, "--insecure", "--exit-code")
 	if err != nil {
@@ -311,9 +311,9 @@ func TestDiffNoChanges(t *testing.T) {
 }
 
 func TestWriteRequiresOperatorCredential(t *testing.T) {
-	url, _ := recordingCDS(t)
-	// No key and no env: a write must fail before reaching CDS.
-	t.Setenv(cdsconn.EnvOperatorKey, "")
+	url, _ := recordingTA(t)
+	// No key and no env: a write must fail before reaching Trust Authority.
+	t.Setenv(taconn.EnvOperatorKey, "")
 	_, _, err := runCmd("delete", "app", "--url", url, "--insecure")
 	if err == nil {
 		t.Fatal("expected a write without an operator key to fail")
@@ -323,9 +323,9 @@ func TestWriteRequiresOperatorCredential(t *testing.T) {
 func TestSignerPrefersFlagOverEnv(t *testing.T) {
 	dir := t.TempDir()
 	keyPath := writeOperatorKey(t, dir)
-	t.Setenv(cdsconn.EnvOperatorKey, filepath.Join(dir, "nonexistent.key"))
+	t.Setenv(taconn.EnvOperatorKey, filepath.Join(dir, "nonexistent.key"))
 
-	o := &options{Options: cdsconn.Options{OperatorKey: keyPath, Measurements: []string{"abababababababababababababababababababababababababababababababababababababababababababababababab"}}}
+	o := &options{Options: taconn.Options{OperatorKey: keyPath, Measurements: []string{"abababababababababababababababababababababababababababababababababababababababababababababababab"}}}
 	if _, err := o.signer(); err != nil {
 		t.Fatalf("flag should take precedence over (broken) env, got %v", err)
 	}
@@ -334,9 +334,9 @@ func TestSignerPrefersFlagOverEnv(t *testing.T) {
 func TestSignerFallsBackToEnv(t *testing.T) {
 	dir := t.TempDir()
 	keyPath := writeOperatorKey(t, dir)
-	t.Setenv(cdsconn.EnvOperatorKey, keyPath)
+	t.Setenv(taconn.EnvOperatorKey, keyPath)
 
-	o := &options{Options: cdsconn.Options{Measurements: []string{"abababababababababababababababababababababababababababababababababababababababababababababababab"}}} // no key flag
+	o := &options{Options: taconn.Options{Measurements: []string{"abababababababababababababababababababababababababababababababababababababababababababababababab"}}} // no key flag
 	if _, err := o.signer(); err != nil {
 		t.Fatalf("env fallback should work, got %v", err)
 	}
@@ -348,7 +348,7 @@ func stubVerify(context.Context, string, json.RawMessage, localverify.Params) (*
 }
 
 func TestClientRefusesAnUnpinnedEndpoint(t *testing.T) {
-	base := options{Options: cdsconn.Options{URL: "https://127.0.0.1:1", Timeout: 2 * time.Second, Verifier: testutil.VerifierStub(stubVerify)}, output: "text"}
+	base := options{Options: taconn.Options{URL: "https://127.0.0.1:1", Timeout: 2 * time.Second, Verifier: testutil.VerifierStub(stubVerify)}, output: "text"}
 
 	t.Run("unpinned refused", func(t *testing.T) {
 		o := base
@@ -357,9 +357,9 @@ func TestClientRefusesAnUnpinnedEndpoint(t *testing.T) {
 		}
 	})
 
-	t.Run("pinned by the CDS document", func(t *testing.T) {
+	t.Run("pinned by the Trust Authority document", func(t *testing.T) {
 		o := base
-		o.MeasurementsConfig = testutil.CDSPinFile(t)
+		o.MeasurementsConfig = testutil.TAPinFile(t)
 		if _, err := o.client(context.Background()); err != nil {
 			t.Fatalf("client: %v", err)
 		}
@@ -414,9 +414,9 @@ func TestNewCmdWiring(t *testing.T) {
 	_ = fmt.Sprint(cmd.Use)
 }
 
-func TestHelpDistinguishesCDSIssuedAndWebPKIRouter(t *testing.T) {
+func TestHelpDistinguishesTAIssuedAndWebPKIRouter(t *testing.T) {
 	cmd := NewCmd()
-	wantLong := `Read and mutate the image allowlist that CDS serves and nri-image-policy
+	wantLong := `Read and mutate the image allowlist that Trust Authority serves and nri-image-policy
 enforces on every node: named workload entries, each pinning an init/main
 container set with per-container argv and path policy. An image that may run
 with any command line is an entry whose command and args policy are both "any";
@@ -426,16 +426,16 @@ Reads (list, get, export, diff, lint, inspect-image) are unauthenticated. Writes
 (add, apply, edit, delete, upload) are signed with an operator EC private key
 you supply to THIS CLI via --operator-key
 (or C8S_OPERATOR_KEY). The private key never leaves the CLI — it signs a
-short-lived token that CDS verifies against the operator public keys it
-pins in its measured launch configuration ('c8s cds config new
+short-lived token that Trust Authority verifies against the operator public keys it
+pins in its measured launch configuration ('c8s ta config new
 --operator-keys').
 
 The default chart publishes /allowlist through router. Point --url at that
-front door only when it uses CDS-issued public TLS (discovery reports
+front door only when it uses Trust Authority-issued public TLS (discovery reports
 public_tls.mode=cds), and use the router launch digest with --measurements. A
 WebPKI front door cannot yet bind its public certificate to the attestation
-evidence, so this CLI refuses it; use a direct CDS armTLS URL instead (for
-example through a port-forward) and pin the CDS launch digest. To generate an
+evidence, so this CLI refuses it; use a direct Trust Authority armTLS URL instead (for
+example through a port-forward) and pin the Trust Authority launch digest. To generate an
 operator key and pin its public half, see the c8s README ("Managing the image
 allowlist").`
 	if cmd.Long != wantLong {
@@ -443,8 +443,8 @@ allowlist").`
 	}
 
 	wantFlags := map[string]string{
-		"url":          "CDS-issued-TLS router or direct CDS base URL (required); WebPKI router URLs are not attestation-bound",
-		"measurements": "trusted router launch digest(s) (repeatable/comma-separated) for a CDS-issued public TLS front door; an https --url requires a pin, and a TDX endpoint needs --image-policy-file with RTMR[1] and RTMR[2]",
+		"url":          "Base URL of the Trust Authority or a router with Trust Authority-issued public TLS (required). WebPKI router URLs lack an attestation binding",
+		"measurements": "trusted router launch digest(s) (repeatable/comma-separated) for a Trust Authority-issued public TLS front door; an https --url requires a pin, and a TDX endpoint needs --image-policy-file with RTMR[1] and RTMR[2]",
 	}
 	for name, want := range wantFlags {
 		flag := cmd.PersistentFlags().Lookup(name)

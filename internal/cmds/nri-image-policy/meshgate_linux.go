@@ -130,7 +130,7 @@ func (p meshPolicy) guestRuleset() ruleset.GuestPolicy {
 // nginx relays is captured wherever its name resolves. The upstream role
 // dials every backend itself and authenticates each peer: a member pod or a
 // pod CVM's endpoint as the mesh client of the workload and agent its route
-// names, its CDS over armTLS, and the verifier that weighs that CDS's
+// names, its Trust Authority over armTLS, and the verifier that weighs that Trust Authority's
 // evidence only at an address cds-attest admits (checkNodeVerifier).
 func (p meshPolicy) servedPorts(kubeNamespace string) ruleset.ServerRole {
 	if kubeNamespace != routerNamespace {
@@ -146,7 +146,7 @@ func (p meshPolicy) servedPorts(kubeNamespace string) ruleset.ServerRole {
 	}
 }
 
-// credentialVerifier is the attestation-api that weighs a CDS's evidence for
+// credentialVerifier is the attestation-api that weighs a Trust Authority's evidence for
 // the pods on this node: this node's own address, on the port policy names.
 func (p meshPolicy) credentialVerifier() (ruleset.Destination, bool) {
 	if p.CredentialAttestationPort == 0 || !p.nodeAddr.IsValid() {
@@ -161,7 +161,7 @@ func (p meshPolicy) credentialVerifier() (ruleset.Destination, bool) {
 // dialingRoles are the roles the ruleset permits by port: every bound role
 // but the mesh endpoint, whose sockets it exempts by UID instead. Each
 // reaches its port outside this cluster, and the credential clients also
-// reach the verifier that weighs their CDS's evidence, where policy names a
+// reach the verifier that weighs their Trust Authority's evidence, where policy names a
 // port for it.
 func (p meshPolicy) dialingRoles() []ruleset.Role {
 	var roles []ruleset.Role

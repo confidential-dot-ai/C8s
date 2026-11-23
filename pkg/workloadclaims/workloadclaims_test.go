@@ -129,8 +129,8 @@ func inventoryGetRaw(t *testing.T, sock, route string) (int, string) {
 	return resp.StatusCode, string(body)
 }
 
-// testNonce stands in for the single-use CDS challenge get-cert would pass to
-// the inventory and CDS would re-check.
+// testNonce stands in for the single-use Trust Authority challenge get-cert would pass to
+// the inventory and Trust Authority would re-check.
 var testNonce = []byte("c8s-test-challenge-nonce")
 
 // TestSandboxTokenRoute: POST /sandbox binds the kernel-reported caller to a
@@ -157,7 +157,7 @@ func TestSandboxTokenRoute(t *testing.T) {
 	if sandbox.SandboxID != "sandbox-1" {
 		t.Fatalf("sandbox = %q, want sandbox-1", sandbox.SandboxID)
 	}
-	// CDS reaches the inventory back at the address inside the signature, so a
+	// Trust Authority reaches the inventory back at the address inside the signature, so a
 	// hostile host cannot redirect the callback.
 	if sandbox.InventoryHost != testHost {
 		t.Fatalf("inventory addr = %q, want %q", sandbox.InventoryHost, testHost)
@@ -277,7 +277,7 @@ func TestSandboxTokenVerifyFailsClosed(t *testing.T) {
 		t.Fatal("token carrying a stale nonce verified against the current challenge")
 	}
 
-	// A signed token naming an unusable callback address is rejected: CDS would
+	// A signed token naming an unusable callback address is rejected: Trust Authority would
 	// have nowhere to resolve the sandbox's digests.
 	bad, err := asn1.Marshal(sandboxTokenASN1{
 		Version:       sandboxTokenVersion,
@@ -312,7 +312,7 @@ func TestSignRejectsBadNonce(t *testing.T) {
 	}
 }
 
-// NewSandboxTokenSigner refuses a host CDS could not dial, so the failure
+// NewSandboxTokenSigner refuses a host Trust Authority could not dial, so the failure
 // surfaces at startup rather than as an unreachable callback at issuance.
 func TestNewSandboxTokenSignerValidatesHost(t *testing.T) {
 	for _, host := range []string{"", "nohost", "127.0.0.1", "10.0.0.1:9443"} {
@@ -322,7 +322,7 @@ func TestNewSandboxTokenSignerValidatesHost(t *testing.T) {
 	}
 }
 
-// The identity route serves the signing key CDS resolves the token against.
+// The identity route serves the signing key Trust Authority resolves the token against.
 // Serving it on the same privileged-port listener as the digests is what makes
 // it an identity: a workload cannot bind the node's netns to answer here.
 func TestServeDigestsServesIdentity(t *testing.T) {
@@ -461,13 +461,13 @@ func TestValidateInventoryHost(t *testing.T) {
 
 // A sandbox token is mintable by anything holding an attested armTLS key, so the
 // address it carries is attacker-chosen. These are the request-forgery targets
-// that must never be dialable: the cloud metadata service, CDS's own loopback,
+// that must never be dialable: the cloud metadata service, Trust Authority's own loopback,
 // and names that let DNS pick the destination after the check.
 func TestInventoryAddrRejectsRequestForgeryTargets(t *testing.T) {
 	for _, bad := range []string{
 		"169.254.169.254", // cloud metadata (IMDS)
 		"fe80::1",         // IPv6 link-local
-		"127.0.0.1",       // CDS's own loopback
+		"127.0.0.1",       // Trust Authority's own loopback
 		"::1",             // IPv6 loopback
 		"0.0.0.0",         // unspecified
 		"::",              // IPv6 unspecified
@@ -495,7 +495,7 @@ func TestParseInventoryHostNormalizes(t *testing.T) {
 }
 
 // The node CIDRs are the boundary that stops a workload answering as its own
-// node's inventory: a pod IP is outside them, so CDS never dials it.
+// node's inventory: a pod IP is outside them, so the Trust Authority never dials it.
 func TestInventoryHostsBoundsTheCallback(t *testing.T) {
 	hosts, err := ParseInventoryHosts([]string{"10.0.0.0/24", "192.168.1.0/24"})
 	if err != nil {
@@ -509,7 +509,7 @@ func TestInventoryHostsBoundsTheCallback(t *testing.T) {
 			t.Fatalf("address %q outside the node CIDRs was accepted", outside)
 		}
 	}
-	// Empty contains nothing, so an unconfigured CDS dials nowhere.
+	// Empty contains nothing, so an unconfigured Trust Authority dials nowhere.
 	if (CIDRHosts{}).Contains("10.0.0.7") {
 		t.Fatal("empty CIDR set accepted an address")
 	}
@@ -539,8 +539,8 @@ func TestResolveAdvertiseHostPrefersExplicitHost(t *testing.T) {
 	}
 }
 
-// An address CDS could never dial back is rejected where it is configured, so
-// the inventory fails at startup instead of minting tokens that steer CDS
+// An address Trust Authority could never dial back is rejected where it is configured, so
+// the inventory fails at startup instead of minting tokens that steer Trust Authority
 // somewhere useless.
 func TestResolveAdvertiseHostRejectsUnreachableHost(t *testing.T) {
 	for _, host := range []string{"127.0.0.1", "::1", "169.254.169.254", "inventory.example"} {
@@ -739,7 +739,7 @@ func testPins() armtls.PinSource {
 	}}})
 }
 
-// The node image the inventory CDS calls back must be running.
+// The node image the inventory Trust Authority calls back must be running.
 func testNodeImages() armtls.PinSource {
 	return armtls.FixedPins(refvalues.ReferenceValues{Images: []remote.ImagePin{{
 		Name:   "node",
@@ -847,7 +847,7 @@ func TestServeTokensRejectsMalformedRequests(t *testing.T) {
 
 // A nonce the token cannot carry yields no assertion: the signer bounds what
 // it binds, so an oversized challenge is refused rather than truncated into a
-// token CDS would read as fresh.
+// token Trust Authority would read as fresh.
 func TestServeTokensRefusesANonceItCannotBind(t *testing.T) {
 	sock := serveTokens(t, &fakeResolver{sandboxID: "sandbox-1"}, testSigner(t))
 	key, err := x509.MarshalPKIXPublicKey(&testRequesterKey(t).PublicKey)
@@ -882,7 +882,7 @@ func TestServeTokensRefusesANonceItCannotBind(t *testing.T) {
 // The high-water mark deduplicates on SandboxContainer.Key, so the key must be
 // injective over (digest, argv): two distinct admissions that collide onto one
 // key erase each other from the sandbox's record, and the erasure is invisible
-// to CDS because it removes the container from both the digests and the
+// to the Trust Authority because it removes the container from both the digests and the
 // containers view at once.
 func TestSandboxContainerKeyIsInjective(t *testing.T) {
 	const digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -1042,7 +1042,7 @@ func TestSandboxTokenAnswerMustBeOneDocument(t *testing.T) {
 	}
 }
 
-// CDS's client certificate lists the node's measured policies, or the
+// Trust Authority's client certificate lists the node's measured policies, or the
 // inventory's TDX pins reject it once the node measures one.
 func TestDigestsClientCertificateListsMeasuredPolicies(t *testing.T) {
 	const journal = "/run/custom-nri/measured-policies"

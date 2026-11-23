@@ -24,7 +24,7 @@ import (
 )
 
 // Sentences about secret release: the grant an entry carries, the values the
-// operator supplies through the write-token path, and what the CDS answers a
+// operator supplies through the write-token path, and what the Trust Authority answers a
 // workload requester. The requester is `c8s secret-probe`, exec'd in the
 // pod's injected certificate container, which holds the leaf, the key and the
 // node's inventory socket; each of the request's inputs (challenge, token,
@@ -53,27 +53,27 @@ func registerSecrets(sc *godog.ScenarioContext) {
 	sc.Step(`^the write is refused (as unauthorized|because the secret path already holds a value)$`, writeRefused)
 	sc.Step(`^the write result names the existing value as a workload's$`, writeNamesWorkload)
 	sc.Step(`^the write result carries no secret value$`, writeCarriesNoValue)
-	sc.Step(`^a caller holding an operator key the CDS does not hold supplies a secret value at the secret path "([^"]*)"$`, foreignSupplies)
+	sc.Step(`^a caller holding an operator key the (?:Trust Authority|CDS) does not hold supplies a secret value at the secret path "([^"]*)"$`, foreignSupplies)
 	sc.Step(`^the operator has signed a write token for a write of a secret value to the secret path "([^"]*)"$`, operatorSignsSecretWrite)
 	sc.Step(`^the operator has signed a write token, now past its validity, for a write of a secret value to the secret path "([^"]*)"$`, operatorSignsExpiredSecretWrite)
 	sc.Step(`^the operator sends that write token with the same write to the secret path "([^"]*)"$`, sendsTokenToOtherPath)
 	sc.Step(`^the operator sends that write token with a different secret value$`, sendsTokenWithOtherValue)
 	sc.Step(`^the operator sends that write token with the write it signed$`, sendsTokenAsSigned)
 	sc.Step(`^the operator sends a delete for the secret path "([^"]*)"$`, operatorDeletes)
-	sc.Step(`^the CDS refuses the delete$`, cdsRefusesDelete)
+	sc.Step(`^the (?:Trust Authority|CDS) refuses the delete$`, taRefusesDelete)
 
 	sc.Step(`^the secret client of "([^"]*)" is configured with the secret path "([^"]*)"$`, secretClientConfigured)
 	sc.Step(`^"([^"]*)" has an init container running image "([^"]*)"$`, hasInitContainer)
 	sc.Step(`^the argv of that container begins with a helper mode c8s injects$`, argvHelperMode)
 	sc.Step(`^that container mounts a volume on disk-backed storage$`, mountsDiskVolume)
 	sc.Step(`^the init container of "([^"]*)" (is running|has stopped)$`, initContainerState)
-	sc.Step(`^"([^"]*)" has obtained a sandbox-bound leaf from the CDS$`, obtainedSandboxLeaf)
+	sc.Step(`^"([^"]*)" has obtained a sandbox-bound leaf from the (?:Trust Authority|CDS)$`, obtainedSandboxLeaf)
 	sc.Step(`^"([^"]*)" still holds the leaf it obtained before the restart$`, stillHoldsLeaf)
 
 	sc.Step(`^"([^"]*)" holds a release challenge$`, holdsChallenge)
 	sc.Step(`^"([^"]*)" holds no release challenge$`, holdsNoChallenge)
 	sc.Step(`^"([^"]*)" holds no sandbox token$`, holdsNoToken)
-	sc.Step(`^"([^"]*)" holds a release challenge (the CDS never issued|that has passed the release challenge lifetime|the CDS issued for certificate issuance|already spent by an authorized secret request|already spent by a secret request that failed authorization)$`, holdsFlawedChallenge)
+	sc.Step(`^"([^"]*)" holds a release challenge (the (?:Trust Authority|CDS) never issued|that has passed the release challenge lifetime|the (?:Trust Authority|CDS) issued for certificate issuance|already spent by an authorized secret request|already spent by a secret request that failed authorization)$`, holdsFlawedChallenge)
 	sc.Step(`^"([^"]*)" holds the sandbox token issued to "([^"]*)" for that release challenge$`, holdsOthersToken)
 	sc.Step(`^"([^"]*)" holds a sandbox token bound to a release challenge already spent$`, holdsSpentToken)
 	sc.Step(`^"([^"]*)" holds a sandbox token naming an inventory host other than the one bound to its sandbox$`, holdsForeignHostToken)
@@ -87,11 +87,11 @@ func registerSecrets(sc *godog.ScenarioContext) {
 	sc.Step(`^"([^"]*)" receives the stored secret value$`, receivesStoredValue)
 	sc.Step(`^"([^"]*)" receives a secret value$`, receivesAValue)
 	sc.Step(`^"([^"]*)" receives no secret value$`, receivesNoValue)
-	sc.Step(`^the CDS answers "([^"]*)" not authorized for this secret$`, answersNotAuthorized)
-	sc.Step(`^the CDS answers "([^"]*)" no such secret$`, answersNoSuchSecret)
-	sc.Step(`^the CDS rejects the request of "([^"]*)" as invalid$`, answersInvalid)
-	sc.Step(`^the CDS answers "([^"]*)" that the secret path already exists$`, answersExists)
-	sc.Step(`^the CDS answers "([^"]*)" that the secret storage limit is reached$`, answersQuota)
+	sc.Step(`^the (?:Trust Authority|CDS) answers "([^"]*)" not authorized for this secret$`, answersNotAuthorized)
+	sc.Step(`^the (?:Trust Authority|CDS) answers "([^"]*)" no such secret$`, answersNoSuchSecret)
+	sc.Step(`^the (?:Trust Authority|CDS) rejects the request of "([^"]*)" as invalid$`, answersInvalid)
+	sc.Step(`^the (?:Trust Authority|CDS) answers "([^"]*)" that the secret path already exists$`, answersExists)
+	sc.Step(`^the (?:Trust Authority|CDS) answers "([^"]*)" that the secret storage limit is reached$`, answersQuota)
 	sc.Step(`^that secret value is (\d+) bytes long$`, valueLength)
 	sc.Step(`^that secret value differs from the one "([^"]*)" holds for the secret path "([^"]*)"$`, valueDiffersFromHeld)
 	sc.Step(`^that secret value differs from the one "([^"]*)" received before$`, valueDiffersFromBefore)
@@ -106,7 +106,7 @@ func registerSecrets(sc *godog.ScenarioContext) {
 	sc.Step(`^the output directory of the secret client of "([^"]*)" is on memory-backed storage$`, outputOnMemory)
 }
 
-// The CDS's secret routes and the §11 answers the sentences name.
+// The Trust Authority's secret routes and the §11 answers the sentences name.
 const (
 	secretsRoute      = "/secrets"
 	authenticateRoute = "/authenticate"
@@ -119,7 +119,7 @@ const (
 	annotationSecrets = "confidential.ai/c8s-secrets"
 	annotationCW      = "confidential.ai/cw"
 	annotationRenewal = "confidential.ai/c8s-renew-interval"
-	issuanceRenewal   = "10s" // below the CDS's named leaf TTL, so a renewal can be observed
+	issuanceRenewal   = "10s" // below the Trust Authority's named leaf TTL, so a renewal can be observed
 	secretsRenewal    = "2h"  // leaves the leaf a secrets scenario obtained in place
 )
 
@@ -130,7 +130,7 @@ type secretsGrant struct {
 	Write  []string `json:"write,omitempty"`
 }
 
-// answer is what the CDS answered one request: status and body.
+// answer is what the Trust Authority answered one request: status and body.
 type answer struct {
 	status int
 	body   []byte
@@ -290,7 +290,7 @@ func operatorWritesEntry(ctx context.Context, name string) error {
 }
 
 // operatorAddsGrant writes the entry with the grant through the operator's
-// write path, which records the status: a grant the CDS refuses is a result
+// write path, which records the status: a grant the Trust Authority refuses is a result
 // the sentences after it read, not a broken harness.
 func operatorAddsGrant(ctx context.Context, name, action, p string) error {
 	if err := grantAllows(ctx, name, action, p); err != nil {
@@ -429,16 +429,16 @@ func putBody(value []byte, overwrite bool) []byte {
 	return body
 }
 
-// cdsRequest sends one request to the CDS from the runner: a method, a
+// taRequest sends one request to the Trust Authority from the runner: a method, a
 // route, a body (nil for none), an Authorization (empty for none) and a
 // client certificate and key (empty for none). Status 0 when nothing
 // answered.
-func (w *world) cdsRequest(method, route string, body []byte, auth, cert, key string) (*answer, error) {
-	return w.httpRequest("cds_request", method, route, body, auth, cert, key)
+func (w *world) taRequest(method, route string, body []byte, auth, cert, key string) (*answer, error) {
+	return w.httpRequest("ta_request", method, route, body, auth, cert, key)
 }
 
 // httpRequest sends one request through a backend function that takes
-// cds_request's arguments (cds_request, router_request), each header as
+// ta_request's arguments (ta_request, router_request), each header as
 // "Name: value".
 func (w *world) httpRequest(fn, method, route string, body []byte, auth, cert, key string, headers ...string) (*answer, error) {
 	send := func(bodyFile string) (string, error) {
@@ -469,7 +469,7 @@ func (w *world) operatorPut(signer, logical string, value []byte, overwrite bool
 	if err != nil {
 		return nil, err
 	}
-	a, err := w.cdsRequest(http.MethodPut, route, body, token, "", "")
+	a, err := w.taRequest(http.MethodPut, route, body, token, "", "")
 	if err != nil {
 		return nil, err
 	}
@@ -478,7 +478,7 @@ func (w *world) operatorPut(signer, logical string, value []byte, overwrite bool
 }
 
 // supply writes a fresh value at the logical path with the signer's token
-// and records it as stored when the CDS took it.
+// and records it as stored when the Trust Authority took it.
 func (w *world) supply(signer, logical string, overwrite bool) (*answer, error) {
 	v, err := randomValue()
 	if err != nil {
@@ -625,19 +625,19 @@ func operatorSignsSecretWrite(ctx context.Context, logical string) error {
 }
 
 // operatorSignsExpiredSecretWrite signs with the shortest validity and waits
-// it out, and the clock skew the CDS's verifier allows on top of it.
+// it out, and the clock skew the Trust Authority's verifier allows on top of it.
 func operatorSignsExpiredSecretWrite(ctx context.Context, logical string) error {
 	w := getWorld(ctx)
 	if err := w.signSecretWrite(logical, "1s"); err != nil {
 		return err
 	}
-	out, err := w.cdsArg("jwt-clock-skew")
+	out, err := w.taArg("jwt-clock-skew")
 	if err != nil {
 		return err
 	}
 	skew, err := strconv.Atoi(out)
 	if err != nil {
-		return fmt.Errorf("the CDS's clock skew %q: %w", out, err)
+		return fmt.Errorf("the Trust Authority's clock skew %q: %w", out, err)
 	}
 	time.Sleep(time.Second + time.Duration(skew)*time.Second + 2*time.Second)
 	return nil
@@ -662,7 +662,7 @@ func (w *world) sendSigned(fn func(*pendingWrite) (route string, body []byte, er
 	if err != nil {
 		return err
 	}
-	a, err := w.cdsRequest(http.MethodPut, route, body, signed.token, "", "")
+	a, err := w.taRequest(http.MethodPut, route, body, signed.token, "", "")
 	if err != nil {
 		return err
 	}
@@ -695,7 +695,7 @@ func operatorDeletes(ctx context.Context, logical string) error {
 	if err != nil {
 		return err
 	}
-	a, err := w.cdsRequest(http.MethodDelete, route, []byte{}, token, "", "")
+	a, err := w.taRequest(http.MethodDelete, route, []byte{}, token, "", "")
 	if err != nil {
 		return err
 	}
@@ -703,7 +703,7 @@ func operatorDeletes(ctx context.Context, logical string) error {
 	return nil
 }
 
-func cdsRefusesDelete(ctx context.Context) error {
+func taRefusesDelete(ctx context.Context) error {
 	a, err := getWorld(ctx).lastWrite()
 	if err != nil {
 		return err
@@ -936,7 +936,7 @@ func (w *world) probe(p *pod, args ...string) (string, error) {
 	}
 	// The leaf exists before the workload container does (the cert-wait init
 	// container gates on it), and until every main container has been
-	// admitted the inventory reports no workload containers, so the CDS
+	// admitted the inventory reports no workload containers, so the Trust Authority
 	// denies by design; the real client retries through that window
 	// (internal/cmds/sidecar Retry). The probe makes one request, so it
 	// waits for the pod to be Ready once instead. A pod the scenario gave
@@ -947,7 +947,7 @@ func (w *world) probe(p *pod, args ...string) (string, error) {
 			return "", err
 		}
 	}
-	url, err := w.be.call("cds_pod_url")
+	url, err := w.be.call("ta_pod_url")
 	if err != nil {
 		return "", err
 	}
@@ -955,7 +955,7 @@ func (w *world) probe(p *pod, args ...string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	verify, err := w.cdsVerification(p)
+	verify, err := w.taVerification(p)
 	if err != nil {
 		return "", err
 	}
@@ -963,12 +963,12 @@ func (w *world) probe(p *pod, args ...string) (string, error) {
 	return w.podExec(p, certContainer, append(cmd, args...)...)
 }
 
-// cdsVerification is how the pod's certificate container verifies the CDS,
+// taVerification is how the pod's certificate container verifies the Trust Authority,
 // as the probe's flags: the webhook's attestation API and pin document, with
 // the one $(HOST_IP) reference the kubelet expands resolved to the pod's node.
-func (w *world) cdsVerification(p *pod) ([]string, error) {
-	if p.verifyCDS != nil {
-		return p.verifyCDS, nil
+func (w *world) taVerification(p *pod) ([]string, error) {
+	if p.verifyTA != nil {
+		return p.verifyTA, nil
 	}
 	out, err := kubectl(nil, "-n", p.namespace, "get", "pod", p.name, "-o",
 		`jsonpath={.status.hostIP}{"\n"}{range .spec.initContainers[?(@.name=="`+certContainer+`")].args[*]}{@}{"\n"}{end}`)
@@ -980,7 +980,7 @@ func (w *world) cdsVerification(p *pod) ([]string, error) {
 	for _, arg := range strings.Split(rest, "\n") {
 		name, value, _ := strings.Cut(arg, "=")
 		switch name {
-		case "--attestation-api-url", "--image-policy-file", "--image-policy-json":
+		case "--attestation-api-url", "--ta-image-policy-file", "--ta-image-policy-json", "--image-policy-file", "--image-policy-json":
 		default:
 			continue
 		}
@@ -991,9 +991,9 @@ func (w *world) cdsVerification(p *pod) ([]string, error) {
 		flags = append(flags, name+"="+value)
 	}
 	if len(flags) == 0 {
-		return nil, fmt.Errorf("the %s container of %q names no attestation API to verify the CDS through", certContainer, p.name)
+		return nil, fmt.Errorf("the %s container of %q names no attestation API to verify the Trust Authority through", certContainer, p.name)
 	}
-	p.verifyCDS = flags
+	p.verifyTA = flags
 	return flags, nil
 }
 
@@ -1046,7 +1046,7 @@ func (w *world) request(p *pod, method, logical string) (*answer, error) {
 	case s.token != nil:
 		args = append(args, "--token", string(s.token))
 	}
-	// The CDS meters the workload secret routes per sandbox (cds
+	// The Trust Authority meters the workload secret routes per sandbox (cds
 	// --rate-limit, 10 a second by default); a scenario that asks many
 	// times in a row, such as filling the holder quota, is paced by the
 	// limiter, not judged by it, so a 429 is retried after a pause.
@@ -1179,7 +1179,7 @@ func holdsFlawedChallenge(ctx context.Context, name, flaw string) error {
 	s := w.secretState(p)
 	s.noChallenge = false
 	switch flaw {
-	case "the CDS never issued":
+	case "the CDS never issued", "the Trust Authority never issued":
 		s.challenge = make([]byte, 32)
 		_, err = rand.Read(s.challenge)
 		return err
@@ -1188,13 +1188,13 @@ func holdsFlawedChallenge(ctx context.Context, name, flaw string) error {
 			return err
 		}
 		return challengeExpired(ctx)
-	case "the CDS issued for certificate issuance":
-		a, err := w.cdsRequest(http.MethodPost, authenticateRoute, []byte("{}"), "", "", "")
+	case "the CDS issued for certificate issuance", "the Trust Authority issued for certificate issuance":
+		a, err := w.taRequest(http.MethodPost, authenticateRoute, []byte("{}"), "", "", "")
 		if err != nil {
 			return err
 		}
 		if a.status != http.StatusOK {
-			return fmt.Errorf("the CDS answered %s to an issuance challenge request", a)
+			return fmt.Errorf("the Trust Authority answered %s to an issuance challenge request", a)
 		}
 		s.challenge, err = parseChallenge(a.body)
 		return err
@@ -1386,7 +1386,7 @@ func selfSignedRequests(ctx context.Context, logical string) error {
 	if r == nil {
 		return errors.New("no requester holds a self-signed certificate")
 	}
-	a, err := w.cdsRequest(http.MethodGet, secretsRoute+w.secretPath(logical), nil, "", r.certFile, r.keyFile)
+	a, err := w.taRequest(http.MethodGet, secretsRoute+w.secretPath(logical), nil, "", r.certFile, r.keyFile)
 	if err != nil {
 		return err
 	}
@@ -1464,7 +1464,7 @@ func hasFilledQuota(ctx context.Context, name, below, holder string) error {
 	if _, err := w.entry(holder); err != nil {
 		return err
 	}
-	out, err := w.cdsArg("secrets-max-paths-per-workload")
+	out, err := w.taArg("secrets-max-paths-per-workload")
 	if err != nil {
 		return err
 	}
@@ -1513,7 +1513,7 @@ func receivesStoredValue(ctx context.Context, name string) error {
 	return w.denied(p, s.last, expectValue(name, s.last, want, "the one stored at "+s.lastPath))
 }
 
-// denied adds the CDS's account of the release decision to a denial the
+// denied adds the Trust Authority's account of the release decision to a denial the
 // scenario did not expect, so the record says what the sandbox was running and
 // which entry refused it. A backend that cannot name the sandbox adds nothing.
 func (w *world) denied(p *pod, a *answer, err error) error {
@@ -1523,7 +1523,7 @@ func (w *world) denied(p *pod, a *answer, err error) error {
 	return fmt.Errorf("%w%s", err, w.explanation(p))
 }
 
-// explanation is the CDS's release diagnostic for the pod's sandbox, as a
+// explanation is the Trust Authority's release diagnostic for the pod's sandbox, as a
 // clause to append to a failure, or empty.
 func (w *world) explanation(p *pod) string {
 	if p == nil {
@@ -1533,7 +1533,7 @@ func (w *world) explanation(p *pod) string {
 	if err != nil || out == "" {
 		return ""
 	}
-	return "; the CDS explains: " + out
+	return "; the Trust Authority explains: " + out
 }
 
 // expectValue checks the pod's answer carried want, described as source.
@@ -1578,10 +1578,10 @@ func (w *world) answered(name string, status int, message string) (*answer, erro
 	}
 	a := s.last
 	if a.status != status {
-		return nil, fmt.Errorf("the CDS answered %q %s, not %d %s", name, a, status, message)
+		return nil, fmt.Errorf("the Trust Authority answered %q %s, not %d %s", name, a, status, message)
 	}
 	if message != "" && !bytes.Contains(a.body, []byte(message)) {
-		return nil, fmt.Errorf("the CDS answered %q %d without %q: %s", name, status, message, a.body)
+		return nil, fmt.Errorf("the Trust Authority answered %q %d without %q: %s", name, status, message, a.body)
 	}
 	return a, nil
 }
@@ -1617,7 +1617,7 @@ func answersQuota(ctx context.Context, name string) error {
 		Code string `json:"error"`
 	}
 	if err := json.Unmarshal(a.body, &doc); err != nil || doc.Code != codeHolderQuota {
-		return fmt.Errorf("the CDS refused with %s, not %s", a, codeHolderQuota)
+		return fmt.Errorf("the Trust Authority refused with %s, not %s", a, codeHolderQuota)
 	}
 	return nil
 }

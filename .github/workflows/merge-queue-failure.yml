@@ -6,7 +6,7 @@ on:
   workflow_run:
     workflows:
       - actionlint
-      - CDS HA suite
+      - Trust Authority HA suite
       - CI
       - Docker
       - docs install parity

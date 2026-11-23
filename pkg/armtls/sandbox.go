@@ -1,5 +1,5 @@
 // Pod sandbox ID: the CRI sandbox identifier of the pod a leaf was issued to,
-// stamped by CDS as an X.509 extension in the signed area after verifying the
+// stamped by the Trust Authority as an X.509 extension in the signed area after verifying the
 // requester's inventory-signed sandbox token (docs/armtls.md, "Sandbox
 // identity").
 

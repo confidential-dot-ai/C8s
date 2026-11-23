@@ -1,4 +1,4 @@
-// Package secrets holds the CDS secret store and the policy that gates access
+// Package secrets holds the Trust Authority secret store and the policy that gates access
 // to it. See docs/secrets.md.
 package secrets
 
@@ -17,7 +17,7 @@ import (
 // ErrNotFound reports a path the store does not hold.
 var ErrNotFound = errors.New("secrets: no such path")
 
-// ErrUnavailable wraps a store that may take the next write: a CDS HA replica
+// ErrUnavailable wraps a store that may take the next write: a Trust Authority HA replica
 // with no leader or no quorum.
 var ErrUnavailable = errors.New("secrets: store unavailable; retry")
 
@@ -26,7 +26,7 @@ var ErrUnavailable = errors.New("secrets: store unavailable; retry")
 var ErrCapacity = errors.New("secrets: replicated state at capacity")
 
 // capacityMessage answers a write the cluster's state size refused.
-const capacityMessage = "CDS state is at its snapshot capacity: writes that grow it are refused until it shrinks; retry later"
+const capacityMessage = "Trust Authority state is at its snapshot capacity: writes that grow it are refused until it shrinks; retry later"
 
 // The two refusals a write that grows the path map can meet.
 var (
@@ -38,7 +38,7 @@ var (
 type Origin string
 
 const (
-	// OriginWorkload marks a value CDS generated for a workload that found its
+	// OriginWorkload marks a value Trust Authority generated for a workload that found its
 	// path empty.
 	OriginWorkload Origin = "workload"
 	// OriginOperator marks a value an operator supplied over PUT /secrets/*.
@@ -105,7 +105,7 @@ type Store interface {
 	TopHolders(n int) []HolderPaths
 }
 
-// GeneratedValueBytes is the size of a value CDS mints for a workload that
+// GeneratedValueBytes is the size of a value Trust Authority mints for a workload that
 // finds its path empty. 32 bytes is a symmetric key's worth of entropy, which
 // is what these values are used as.
 const GeneratedValueBytes = 32
@@ -122,7 +122,7 @@ func Generate() ([]byte, error) {
 // DefaultMaxPathsPerHolder is the shipped per-holder path quota.
 const DefaultMaxPathsPerHolder = 64
 
-// MemoryStore keeps secrets in the CDS process and nowhere else. They do not
+// MemoryStore keeps secrets in the Trust Authority process and nowhere else. They do not
 // survive a restart — see docs/secrets.md, "Restarts".
 //
 // A bound refuses the write: an entry is the only copy of its value.
@@ -161,7 +161,7 @@ func NewMemoryStore(maxPaths, maxPerHolder, maxValue int) *MemoryStore {
 	}
 }
 
-// Policy is the bounds the store holds. A CDS HA cluster fixes them at its
+// Policy is the bounds the store holds. A Trust Authority HA cluster fixes them at its
 // Genesis, and a replica built with others cannot apply its log.
 func (s *MemoryStore) Policy() (maxPaths, maxPerHolder, maxValue int) {
 	return s.maxPaths, s.maxPerHolder, s.maxValue

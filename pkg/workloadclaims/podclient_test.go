@@ -21,10 +21,10 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
 )
 
-// podIssuanceServers is a CDS that hands out challenge and records the
+// podIssuanceServers is a Trust Authority that hands out challenge and records the
 // /attest body it receives, beside an attestation-api that records the
 // report data it is asked to quote and answers with platform.
-func podIssuanceServers(t *testing.T, challenge, platform, certPEM string) (cdsURL, apiURL string, quoted *[]byte, attested *types.AttestRequestBody) {
+func podIssuanceServers(t *testing.T, challenge, platform, certPEM string) (taURL, apiURL string, quoted *[]byte, attested *types.AttestRequestBody) {
 	t.Helper()
 	quoted, attested = new([]byte), new(types.AttestRequestBody)
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -45,13 +45,13 @@ func podIssuanceServers(t *testing.T, challenge, platform, certPEM string) (cdsU
 	})
 	mux.HandleFunc("/attest", func(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewDecoder(r.Body).Decode(attested); err != nil {
-			t.Errorf("decode CDS attest request: %v", err)
+			t.Errorf("decode Trust Authority attest request: %v", err)
 		}
 		_, _ = w.Write([]byte(certPEM))
 	})
-	cds := httptest.NewServer(mux)
-	t.Cleanup(cds.Close)
-	return cds.URL, api.URL, quoted, attested
+	ta := httptest.NewServer(mux)
+	t.Cleanup(ta.Close)
+	return ta.URL, api.URL, quoted, attested
 }
 
 func testPodCSR(t *testing.T) (string, *ecdsa.PublicKey) {
@@ -68,7 +68,7 @@ func testPodCSR(t *testing.T) (string, *ecdsa.PublicKey) {
 }
 
 // The pod profile quotes PodReportData over the CSR key, the challenge and
-// the canonical claims, and carries the claims to CDS in place of a sandbox
+// the canonical claims, and carries the claims to the Trust Authority in place of a sandbox
 // token and a top-level runtime extension list.
 func TestObtainPodCertificateBindsTheClaimsIntoTheQuote(t *testing.T) {
 	const certPEM = "-----BEGIN CERTIFICATE-----\npod\n-----END CERTIFICATE-----\n"
@@ -83,9 +83,9 @@ func TestObtainPodCertificateBindsTheClaimsIntoTheQuote(t *testing.T) {
 		t.Fatal(err)
 	}
 	challenge := base64.StdEncoding.EncodeToString(nonce)
-	cdsURL, apiURL, quoted, attested := podIssuanceServers(t, challenge, "tdx", certPEM)
+	taURL, apiURL, quoted, attested := podIssuanceServers(t, challenge, "tdx", certPEM)
 
-	result, err := ObtainPodCertificateContext(context.Background(), attestclient.NewClient(cdsURL), apiURL, csrPEM, claims)
+	result, err := ObtainPodCertificateContext(context.Background(), attestclient.NewClient(taURL), apiURL, csrPEM, claims)
 	if err != nil {
 		t.Fatalf("ObtainPodCertificateContext: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestObtainPodCertificateBindsTheClaimsIntoTheQuote(t *testing.T) {
 		t.Fatalf("quoted report data %x, want PodReportData %x", *quoted, want)
 	}
 	if attested.Challenge != challenge || attested.CSR != csrPEM || !bytes.Equal(attested.PodClaims, canonical) {
-		t.Fatalf("CDS saw challenge %q, claims %s", attested.Challenge, attested.PodClaims)
+		t.Fatalf("Trust Authority saw challenge %q, claims %s", attested.Challenge, attested.PodClaims)
 	}
 	if len(attested.SandboxToken) != 0 || attested.RuntimeExtensions != nil {
 		t.Fatalf("pod profile sent a sandbox token (%s) or a top-level extension list (%v)", attested.SandboxToken, attested.RuntimeExtensions)
@@ -107,18 +107,18 @@ func TestObtainPodCertificateBindsTheClaimsIntoTheQuote(t *testing.T) {
 	}
 }
 
-// Evidence from any platform but TDX ends the round before CDS is asked.
-func TestObtainPodCertificateRefusesNonTDXEvidenceBeforeCDS(t *testing.T) {
+// Evidence from any platform but TDX ends the round before Trust Authority is asked.
+func TestObtainPodCertificateRefusesNonTDXEvidenceBeforeTA(t *testing.T) {
 	claims := testPodClaims(t)
 	csrPEM, _ := testPodCSR(t)
 	challenge := base64.StdEncoding.EncodeToString(make([]byte, 32))
-	cdsURL, apiURL, _, attested := podIssuanceServers(t, challenge, "snp", "cert")
+	taURL, apiURL, _, attested := podIssuanceServers(t, challenge, "snp", "cert")
 
-	_, err := ObtainPodCertificateContext(context.Background(), attestclient.NewClient(cdsURL), apiURL, csrPEM, claims)
+	_, err := ObtainPodCertificateContext(context.Background(), attestclient.NewClient(taURL), apiURL, csrPEM, claims)
 	if err == nil || !strings.Contains(err.Error(), "TDX") {
 		t.Fatalf("err = %v, want a TDX refusal", err)
 	}
 	if attested.Challenge != "" || attested.CSR != "" {
-		t.Fatal("a refused round reached CDS")
+		t.Fatal("a refused round reached Trust Authority")
 	}
 }

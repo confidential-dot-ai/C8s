@@ -19,26 +19,15 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
-// cdsPreflight refuses an install that names no CDS: no --cds-address and
-// --cds-pin, and no -f values file setting cds.address and
-// cds.measurementsConfig. The chart fails that render too; this names the
-// install flags before anything runs.
-func cdsPreflight(address string, pin string, valuesFiles []string) error {
-	if cdsNamed(address, pin) {
-		return nil
-	}
-	values, err := cdsValues(valuesFiles)
+func taPreflight(address string, pin string, valuesFiles []string) error {
+	values, _, err := taValuesFromFiles(valuesFiles)
 	if err != nil {
 		return err
 	}
-	named := func(path string) string {
-		text, _ := values[path].(string)
-		return text
-	}
-	if cdsNamed(named("cds.address"), named("cds.measurementsConfig")) {
+	if taNamed(address, pin) || (address == "" && pin == "" && taNamed(values["address"], values["measurementsConfig"])) {
 		return nil
 	}
-	return fmt.Errorf("nothing names the CDS this cluster trusts, so nothing dialing it could tell it from any other attested TEE: pass --%s <ip:port> and --%s <cds-pin.json>, the outputs of `c8s cds config new`", flagCDSAddress, flagCDSPin)
+	return fmt.Errorf("pass --%s <host:port> and --%s <pin.json> together, or set ta.address and ta.measurementsConfig in the values files", flagTAAddress, flagTAPin)
 }
 
 // confidentialNodeSelectorKey is the cloud value naming the labels this

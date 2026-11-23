@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Integration test for the router.
-# Starts the mock attestation-api and mock CDS, runs get-cert as an init
+# Starts the mock attestation-api and mock TA, runs get-cert as an init
 # container through the real armTLS attestation flow, and verifies nginx
-# serves HTTPS with the issued certificate, chained to the mock CDS CA.
+# serves HTTPS with the issued certificate, chained to the mock TA CA.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -31,19 +31,19 @@ for tool in docker make openssl curl jq; do
 done
 docker compose version >/dev/null 2>&1 || { echo "FAIL: docker compose (v2) not available" >&2; exit 1; }
 
-# The identity get-cert holds the mock CDS to. A CDS is pinned to the
+# The identity get-cert holds the mock TA to. A TA is pinned to the
 # configuration it runs on, so the pin binds its launch file byte for byte and
 # the mock attestation-api reports SHA-256 of that same file as HOST_DATA.
 # The measurement is the mock's all-zero launch digest.
 MOCK_MEASUREMENT=000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-CDS_CONFIG="$WORKDIR/cds-config.yaml"
-CDS_PIN="$WORKDIR/cds-pin.json"
-printf 'clusterID: integration\n' > "$CDS_CONFIG"
-CDS_HOST_DATA="$(openssl dgst -sha256 "$CDS_CONFIG" | cut -d' ' -f2)"
+TA_CONFIG="$WORKDIR/cds-config.yaml"
+TA_PIN="$WORKDIR/cds-pin.json"
+printf 'clusterID: integration\n' > "$TA_CONFIG"
+TA_HOST_DATA="$(openssl dgst -sha256 "$TA_CONFIG" | cut -d' ' -f2)"
 jq -Rs --arg measurement "$MOCK_MEASUREMENT" \
-    '{schema_version:"2",tee:"sev-snp",measurements:[{name:"mock-cds",measurement:$measurement,launch_file:.}]}' \
-    < "$CDS_CONFIG" > "$CDS_PIN"
-export CDS_HOST_DATA CDS_PIN
+    '{schema_version:"2",tee:"sev-snp",measurements:[{name:"mock-ta",measurement:$measurement,launch_file:.}]}' \
+    < "$TA_CONFIG" > "$TA_PIN"
+export TA_HOST_DATA TA_PIN
 
 echo "=== Building get-cert binary ==="
 make -C "$REPO_ROOT" build-c8s
@@ -54,11 +54,11 @@ $COMPOSE_CMD down -v --remove-orphans 2>/dev/null || true
 $COMPOSE_CMD build || fail "image build failed"
 $COMPOSE_CMD up -d || fail "services did not start"
 
-# The chain anchor, fetched out-of-band from the mock CDS container.
-$COMPOSE_CMD cp mock-cds:/ca/mock-cds-ca.pem "$WORKDIR/mock-cds-ca.pem" || fail "could not fetch the mock CDS CA"
-CACERT="$WORKDIR/mock-cds-ca.pem"
+# The chain anchor, fetched out-of-band from the mock TA container.
+$COMPOSE_CMD cp mock-ta:/ca/mock-ta-ca.pem "$WORKDIR/mock-ta-ca.pem" || fail "could not fetch the mock TA CA"
+CACERT="$WORKDIR/mock-ta-ca.pem"
 
-# Verified HTTPS access to the LB: the chain is checked against the mock CDS
+# Verified HTTPS access to the LB: the chain is checked against the mock TA
 # CA and the hostname against the leaf SAN.
 LB="https://nginx-lb:8443"
 CURL=(curl -sS --cacert "$CACERT" --resolve nginx-lb:8443:127.0.0.1)
@@ -96,10 +96,10 @@ LEAF="$WORKDIR/leaf.pem"
 echo | openssl s_client -connect 127.0.0.1:8443 -servername nginx-lb 2>/dev/null | openssl x509 >"$LEAF" 2>/dev/null || true
 [ -s "$LEAF" ] || fail "could not read the served certificate"
 
-# Test 3: Certificate chains to the mock CDS CA.
-openssl verify -CAfile "$CACERT" "$LEAF" >/dev/null || fail "served certificate does not chain to the mock CDS CA"
+# Test 3: Certificate chains to the mock TA CA.
+openssl verify -CAfile "$CACERT" "$LEAF" >/dev/null || fail "served certificate does not chain to the mock TA CA"
 CHECKS=$((CHECKS + 1))
-echo "PASS: certificate chains to the mock CDS CA"
+echo "PASS: certificate chains to the mock TA CA"
 
 # Test 4: Certificate has the expected SAN.
 SAN_INFO=$(openssl x509 -in "$LEAF" -noout -ext subjectAltName 2>/dev/null) || fail "served certificate carries no SAN extension"
@@ -115,7 +115,7 @@ CHECKS=$((CHECKS + 1))
 echo "PASS: certificate uses an ECDSA P-256 key"
 
 # Test 6: the leaf names the sandbox the mock inventory asserted, in the
-# workload-instance extension (1.3.6.1.4.1.66378.1.4) mock CDS stamped after
+# workload-instance extension (1.3.6.1.4.1.66378.1.4) mock TA stamped after
 # verifying the signed token.
 SANDBOX_ID=$($COMPOSE_CMD logs mock-inventory 2>/dev/null | grep -o 'sandbox_id=[A-Za-z0-9._-]\{1,128\}' | head -1 | cut -d= -f2) || true
 [ -n "$SANDBOX_ID" ] || fail "the mock inventory asserted no sandbox"

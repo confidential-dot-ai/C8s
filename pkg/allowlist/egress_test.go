@@ -143,7 +143,7 @@ func TestEgressAcceptsSingleAddressesAndNarrowRanges(t *testing.T) {
 	}
 }
 
-// Exits need the launch pinned as a secrets grant does, or CDS never signs
+// Exits need the launch pinned as a secrets grant does, or Trust Authority never signs
 // them. A node reading a served document keeps them and checks again before it
 // grants anything.
 func TestEgressRequiresAPinnedLaunch(t *testing.T) {

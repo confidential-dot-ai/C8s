@@ -67,7 +67,7 @@ const (
 	// ErrorCodeBindingExpired: the attest-lb binding of this connection lapsed
 	// before the request. Attest again.
 	ErrorCodeBindingExpired = "binding_expired"
-	// ErrorCodeSecretRefused: CDS or the KMS it brokers to refused a pod
+	// ErrorCodeSecretRefused: Trust Authority or the KMS it brokers to refused a pod
 	// secret release.
 	ErrorCodeSecretRefused = "secret_refused"
 	// ErrorCodeKMSUnavailable: the KMS a pod secret release is brokered to

@@ -6,10 +6,9 @@ Source: [templates/router-helpers.tpl](../../templates/router-helpers.tpl).
 The cloud lane's side of c8s-lib's
 [router helpers](../../../lib/helpers/router/README.md).
 
-`router.san` is the single identity baked into the router's CDS-issued mesh
-certificate, which the CDS's own leaf DNS rules must admit: the first
-`router.san` entry, or the chart-managed Service DNS name where the list is
-empty. `router.validateSan` holds the hostname rule both go through.
+The Trust Authority (TA) issues the router's mesh certificate with one DNS
+identity. Its leaf DNS rules must admit the first `router.san` entry, or the
+chart-managed Service DNS name when the list is empty. `router.validateSan` holds the hostname rule both go through.
 
 `router.configDir` names the directory nginx reads the files from, and
 `router.cloudNginxFiles` the file set the chart renders into one ConfigMap:

@@ -135,11 +135,11 @@ func startDaemon(t *testing.T, dir string) *recordingOps {
 }
 
 // The whole delivery path in one test: the sidecar redeems a token from a real
-// inventory, reads the blob from CDS, and hands it to a real volumed, which
+// inventory, reads the blob from the Trust Authority, and hands it to a real volumed, which
 // opens the device and mounts it into the pod's own emptyDir.
 func TestSidecarOpensAVolumeEndToEnd(t *testing.T) {
 	endpoint := "unix://" + testutil.StartInventory(t)
-	_, url := newFakeCDS(t, map[string][]reply{
+	_, url := newFakeTA(t, map[string][]reply{
 		"GET /secrets/tenant-a/volumes/weights": {{status: http.StatusOK, value: testBlobJSON(t)}},
 	})
 
@@ -172,7 +172,7 @@ func TestSidecarOpensAVolumeEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	if string(ops.key) != string(stored) {
-		t.Error("the key handed to dm-crypt is not the one CDS released")
+		t.Error("the key handed to dm-crypt is not the one Trust Authority released")
 	}
 	if ops.verity.RootHash != testBlob(t).Verity.RootHash {
 		t.Error("the verity anchor did not come from the blob")
@@ -196,7 +196,7 @@ func TestSidecarOpensAVolumeEndToEnd(t *testing.T) {
 // mapping for it.
 func TestSidecarRepeatIsIdempotent(t *testing.T) {
 	endpoint := "unix://" + testutil.StartInventory(t)
-	_, url := newFakeCDS(t, map[string][]reply{
+	_, url := newFakeTA(t, map[string][]reply{
 		"GET /secrets/tenant-a/volumes/weights": {
 			{status: http.StatusOK, value: testBlobJSON(t)},
 			{status: http.StatusOK, value: testBlobJSON(t)},
@@ -232,7 +232,7 @@ func TestSidecarReportsADaemonRefusal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, url := newFakeCDS(t, map[string][]reply{
+	_, url := newFakeTA(t, map[string][]reply{
 		"GET /secrets/tenant-a/volumes/absent": {{status: http.StatusOK, value: raw}},
 	})
 
@@ -253,7 +253,7 @@ func TestSidecarReportsADaemonRefusal(t *testing.T) {
 // mounts the crypt device itself, writable ext4.
 func TestSidecarOpensAMutableVolumeEndToEnd(t *testing.T) {
 	endpoint := "unix://" + testutil.StartInventory(t)
-	_, url := newFakeCDS(t, map[string][]reply{
+	_, url := newFakeTA(t, map[string][]reply{
 		"GET /secrets/tenant-a/volumes/weights": {{status: http.StatusOK, value: testMutableBlobJSON(t)}},
 	})
 
@@ -301,7 +301,7 @@ func containsDir(path, want string) bool {
 // as SIGTERM leaves it — and the daemon unwinds the pod's whole stack.
 func TestSidecarClosesItsVolumesAtTermination(t *testing.T) {
 	endpoint := "unix://" + testutil.StartInventory(t)
-	_, url := newFakeCDS(t, map[string][]reply{
+	_, url := newFakeTA(t, map[string][]reply{
 		"GET /secrets/tenant-a/volumes/weights": {{status: http.StatusOK, value: testBlobJSON(t)}},
 	})
 

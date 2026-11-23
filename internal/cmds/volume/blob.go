@@ -1,5 +1,5 @@
 // Package volume implements the `c8s volume` operator CLI: building an
-// encrypted block image and putting its key into the CDS secret store.
+// encrypted block image and putting its key into the Trust Authority secret store.
 //
 // The image is plain dm-crypt — erofs with a dm-verity tree inside it for an
 // immutable volume, writable ext4 for a mutable one. There is deliberately no

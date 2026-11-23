@@ -28,9 +28,9 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/confidential-kubernetes/charts"
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdsconfig"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/nodeservices"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/taconfig"
 	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
 )
@@ -268,10 +268,10 @@ func TestNodeImageRenderRejectsBadInputsBeforeHelm(t *testing.T) {
 	}
 }
 
-// bootstrapCDSPin is the pin `c8s cds config new` writes, built the way that
-// command builds it: this cluster's CDS configuration, bound to the launch
+// bootstrapTAPin is the pin `c8s ta config new` writes, built the way that
+// command builds it: this cluster's Trust Authority configuration, bound to the launch
 // digests of the image its VM boots.
-func bootstrapCDSPin(t *testing.T) string {
+func bootstrapTAPin(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	manifest := filepath.Join(dir, "cds-manifest.json")
@@ -284,7 +284,7 @@ func bootstrapCDSPin(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, pin, err := cdsconfig.Build(cdsconfig.Inputs{
+	_, pin, err := taconfig.Build(taconfig.Inputs{
 		ClusterID:     "bootstrap",
 		OperatorKeys:  operatorKeys,
 		ComponentSeed: []byte(`{"schema":"c8s.allowlist/v1","workloads":{}}`),
@@ -340,8 +340,8 @@ func testNodeImageBootstrap(t *testing.T, seed []byte, platform string) {
 			t.Fatal(err)
 		}
 	}
-	cds := cmdsutil.CDS{Address: "192.0.2.50:8443", Measurements: bootstrapCDSPin(t)}
-	if err := nodeservices.Prepare(root, nodeservices.FloorInputs{CDS: cds}); err != nil {
+	ta := cmdsutil.TA{Address: "192.0.2.50:8443", Measurements: bootstrapTAPin(t)}
+	if err := nodeservices.Prepare(root, nodeservices.FloorInputs{TA: ta}); err != nil {
 		t.Fatalf("actual chart seed and measured NRI floor cannot boot: %v", err)
 	}
 	prepared, err := os.ReadFile(filepath.Join(root, "etc/nri/conf.d/image-policy.yaml"))

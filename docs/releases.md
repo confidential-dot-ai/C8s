@@ -3,7 +3,7 @@
 C8s releases as one unit.
 
 A `vX.Y.Z` tag versions the `c8s` CLI, the component images, the Helm chart, and
-the measured guest images — the worker image a node boots and the CDS image a
+the measured guest images — the worker image a node boots and the Trust Authority (TA) image a
 cluster's clients pin — together, all built from one commit. Releases are
 automatic: maintainers do not calculate or push release tags. Terms are defined
 in [glossary.md](glossary.md).
@@ -30,16 +30,16 @@ gate.
 
 | Artifact | Where |
 |---|---|
-| Component images: `c8s-operator`, `cds`, `get-cert`, `armtls-mesh`, `nri-image-policy`, `volumed` | `ghcr.io/confidential-dot-ai/<name>`, tagged `vX.Y.Z`, `X.Y.Z`, and the 7-character commit SHA |
+| Component images: `c8s-operator`, `ta`, `get-cert`, `armtls-mesh`, `nri-image-policy`, `volumed` | `ghcr.io/confidential-dot-ai/<name>`, tagged `vX.Y.Z`, `X.Y.Z`, and the 7-character commit SHA |
 | Helm chart | `ghcr.io/confidential-dot-ai/charts/c8s-cloud`, version `X.Y.Z`, carrying the release's component image digests, packaged byte-reproducibly from the release commit |
-| Guest images | `ghcr.io/confidential-dot-ai/guests/worker:vX.Y.Z-{tdx,sev-snp}[-kubevirt]` and `ghcr.io/confidential-dot-ai/guests/cds:vX.Y.Z[-kubevirt]` |
+| Guest images | `ghcr.io/confidential-dot-ai/guests/worker:vX.Y.Z-{tdx,sev-snp}[-kubevirt]` and `ghcr.io/confidential-dot-ai/guests/ta:vX.Y.Z[-kubevirt]` |
 | GitHub release | `release-statement.json`, `release-statement.sigstore.json`, the CLI as `c8s-linux-amd64` and `c8s-darwin-arm64`, and the allowlist seed of each CPU TEE as `allowlist-seed-tdx.json` and `allowlist-seed-sev-snp.json` |
 
 A release also moves the `X.Y` image alias when it is the newest patch of that
 series, and `latest` when it is the newest stable release across all series. It
 adds no moving guest-image alias: it only creates the exact tags above, where
-the CDS tags name no TEE because one CDS image serves both. The floating
-`guests/worker:{tdx,sev-snp}[-kubevirt]` and `guests/cds:main[-kubevirt]` tags
+the TA tags name no TEE because one TA image serves both. The floating
+`guests/worker:{tdx,sev-snp}[-kubevirt]` and `guests/ta:main[-kubevirt]` tags
 track `main` builds, so pin the exact release whose measurement you accept.
 
 Every component image is rebuilt from the release commit under a commit-scoped
@@ -53,8 +53,8 @@ released binary prints its tag with `c8s --version`. The release workflow
 stamps that tag; a plain `go build` of the same commit prints `dev`. A released
 `c8s install` reads the image digests from the chart of its own version; any
 other build needs `--chart`. An allowlist seed holds the component entries a
-CDS serves for a cluster of workers booted from this release's worker image,
-the input of `c8s cds config new --allowlist-seed`
+TA serves for a cluster of workers booted from this release's worker image,
+the input of `c8s ta config new --allowlist-seed`
 ([allowlist-and-capabilities.md](allowlist-and-capabilities.md#bootstrap)). The
 release's CLI renders it from the release's image digests with the kubelet and
 Helm versions of the worker image build.
@@ -206,7 +206,7 @@ A push to the protected `beta` branch runs the same pipeline and releases
 get on `main` and `N` counts the betas of that base. A beta publishes exact
 image and chart tags, guest-image aliases
 `guests/worker:vX.Y.Z-beta.N-{tdx,sev-snp}[-kubevirt]` and
-`guests/cds:vX.Y.Z-beta.N[-kubevirt]`, and a GitHub prerelease with its own
+`guests/ta:vX.Y.Z-beta.N[-kubevirt]`, and a GitHub prerelease with its own
 statement. It never moves `latest`, an `X.Y` alias, a stable tag, or a floating
 guest-image tag, and beta tags never change the stable baseline on `main`.
 

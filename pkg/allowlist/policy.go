@@ -44,7 +44,7 @@ func (i *Index) Size() int {
 
 // AdmitsDigest reports whether an image with this digest may run at all — as
 // any workload container. It ignores argv, so it answers the coarse "are these
-// bytes allowlisted" question the CDS issuance gate asks.
+// bytes allowlisted" question the Trust Authority issuance gate asks.
 func (i *Index) AdmitsDigest(digest string) bool {
 	if i == nil {
 		return false

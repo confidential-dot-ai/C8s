@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Live-cluster check that a confidential workload runs bound to CDS: the sample
+# Live-cluster check that a confidential workload runs bound to TA: the sample
 # cw deployment reaches Ready and carries the injected c8s-cert sidecar.
 #
 # Needs kubectl pointed at a cluster with C8s installed. Under fail-closed image
@@ -32,7 +32,7 @@ cw_namespace "$ns"
 
 if [ -n "${C8S_OPERATOR_KEY:-}" ]; then
   : "${C8S_ALLOWLIST_URL:?needed alongside C8S_OPERATOR_KEY}"
-  cds_measurement_args
+  ta_measurement_args
   env_policy="$(dirname "$0")/../../samples/nginx-env-policy.json"
   [ -f "$env_policy" ] || fail "sample env policy not found at $env_policy"
   kubectl apply --dry-run=client -o json -f "$manifest" |
@@ -64,4 +64,4 @@ case "$names" in
 esac
 echo "ok: c8s-cert sidecar injected"
 
-echo "PASS: confidential workload runs with a CDS-issued cert"
+echo "PASS: confidential workload runs with a TA-issued cert"

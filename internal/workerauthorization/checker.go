@@ -24,16 +24,16 @@ type Checker struct {
 	verificationURL string
 }
 
-// The client authenticates CDS; evidence and verification belong to this worker.
+// The client authenticates Trust Authority; evidence and verification belong to this worker.
 func New(
 	client *http.Client,
-	cdsURL string,
+	taURL string,
 	evidence *armtls.SelfSignedProvider,
 	verificationURL string,
 ) *Checker {
 	return &Checker{
 		client:          client,
-		measurementsURL: strings.TrimRight(cdsURL, "/") + "/measurements",
+		measurementsURL: strings.TrimRight(taURL, "/") + "/measurements",
 		evidence:        evidence,
 		verificationURL: verificationURL,
 	}

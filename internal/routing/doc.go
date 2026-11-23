@@ -1,5 +1,5 @@
 // Package routing is the router side of the route policy: it fetches the
-// operator-signed route manifest from the verified CDS, applies it, and routes
+// operator-signed route manifest from the verified Trust Authority, applies it, and routes
 // application requests by it to authenticated backends.
 //
 // One State holds the applied manifest for both the routing listener and the
@@ -13,7 +13,7 @@
 //	fresh      route                      accept, bind the applied digest (E1)
 //
 // A manifest that is only staged counts as unapplied, so a replica that
-// starts while CDS serves a manifest whose notBefore is still ahead refuses
+// starts while the Trust Authority serves a manifest whose notBefore is still ahead refuses
 // sessions until then. The state does not change readiness reporting (A2).
 //
 // Requirement IDs in comments (A1, B3, F2, …) refer to
