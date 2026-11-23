@@ -91,9 +91,9 @@ describe() { # $1=source-root $2=file $3=line $4=column $5=type; one markdown li
   # a readable file that is physically under the root and digits only, or the
   # mutant is listed bare. The x keeps a newline ending a directory's name,
   # which the substitution would strip.
-  root="$(CDPATH="" cd -P "$1" 2>/dev/null && pwd -P && printf x)" || root=""
+  root="$(CDPATH="" cd -P -- "$1" 2>/dev/null && pwd -P && printf x)" || root=""
   src="$1/$2"
-  dir="$(CDPATH="" cd -P "${src%/*}" 2>/dev/null && pwd -P && printf x)" || dir=""
+  dir="$(CDPATH="" cd -P -- "${src%/*}" 2>/dev/null && pwd -P && printf x)" || dir=""
   root="${root%$'\n'x}"
   dir="${dir%$'\n'x}"
   src="$dir/${2##*/}"
