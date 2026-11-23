@@ -1,10 +1,10 @@
 // Package cdsattest implements the router attestation + over-encryption sidecar:
 // the *dynamic* client-facing endpoints of the c8s-verify protocol. The
-// router nginx front-end terminates public TLS, serves the static CDS/mesh-CA
+// router nginx front-end terminates public TLS, serves the static Trust Authority/mesh-CA
 // certs, and reverse-proxies the two explicit attestation endpoints
 // (attest-pq, attest-lb) and the over-encrypted application paths to this
 // sidecar on loopback. attest-pq lets an out-of-cluster JavaScript client
-// verify that the LB is a genuine, CDS-issued, TEE-attested endpoint and —
+// verify that the LB is a genuine, Trust Authority-issued, TEE-attested endpoint and —
 // in the same round trip — establish a post-quantum over-encrypted channel
 // that terminates inside the LB's enclave, independent of whatever TLS
 // terminator sits in front of it. attest-lb binds fresh evidence to the exact
@@ -698,7 +698,7 @@ func (s *Server) handleAttestLB(w http.ResponseWriter, r *http.Request) {
 
 // routesAdmit refuses an attested handshake while no route manifest is applied
 // (A2) or the applied one is stale (F2), each with its own code so a client
-// can tell an unconfigured router from one cut off from the CDS. It returns
+// can tell an unconfigured router from one cut off from the Trust Authority. It returns
 // the manifest it loaded, whose digest the handshake's evidence binds (E1);
 // the handshake loads no other (E2). Later requests in the session route only
 // while that manifest is still the applied one.

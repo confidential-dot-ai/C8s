@@ -5,7 +5,7 @@ import (
 	"net/http"
 )
 
-// handleRoutePublication serves the applied signed manifest in the CDS's
+// handleRoutePublication serves the applied signed manifest in the Trust Authority's
 // GET /routes envelope, byte for byte, so a client can verify it under its
 // pinned operator keys and compare its digest with the transcript's (V2). It
 // answers 404 before the first apply. A stale manifest is still the applied

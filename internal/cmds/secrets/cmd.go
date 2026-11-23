@@ -1,8 +1,8 @@
-// Package secrets implements the `c8s secrets` operator CLI for the CDS secret
+// Package secrets implements the `c8s secrets` operator CLI for the Trust Authority secret
 // store.
 //
-// Writes are authorized by an operator EC private key whose public key CDS pins
-// ('c8s cds config new --operator-keys') — the same credential that signs an allowlist mutation,
+// Writes are authorized by an operator EC private key whose public key Trust Authority pins
+// ('c8s ta config new --operator-keys') — the same credential that signs an allowlist mutation,
 // and the same key the `secrets` grants in that allowlist are rooted in. The
 // private key never leaves the CLI: it signs a short-lived token bound to the
 // method, path, and body of one request.
@@ -32,19 +32,19 @@ func newCmd(verifier taconn.PinVerifier) *cobra.Command {
 	o := &options{Options: taconn.Options{Verifier: verifier, DirectCDS: true}}
 	cmd := &cobra.Command{
 		Use:   "secrets",
-		Short: "Manage the CDS secret store",
-		Long: `Put operator-supplied values into the CDS secret store — an API token, a
-database password, a wrapped key: anything CDS cannot generate for itself.
+		Short: "Manage the Trust Authority secret store",
+		Long: `Put operator-supplied values into the Trust Authority secret store — an API token, a
+database password, a wrapped key: anything Trust Authority cannot generate for itself.
 
 A value is released to a pod when the images running in that pod's sandbox match
 an allowlist entry whose 'secrets' grant covers the path. Write the grant with
 'c8s allowlist apply'; this command supplies the value.
 
 Writes are signed with an operator EC private key you supply via --operator-key
-(or C8S_OPERATOR_KEY), whose public half CDS pins from its configuration
-('c8s cds config new --operator-keys').
+(or C8S_OPERATOR_KEY), whose public half Trust Authority pins from its configuration
+('c8s ta config new --operator-keys').
 
-Values live in the CDS process and nowhere else, so a CDS restart clears the
+Values live in the Trust Authority process and nowhere else, so a Trust Authority restart clears the
 store and every workload holding a secret has to be rolled (see
 docs/secrets.md).`,
 		SilenceUsage: true,
@@ -55,7 +55,7 @@ docs/secrets.md).`,
 	return cmd
 }
 
-// client builds the secrets API client over the attested channel to CDS.
+// client builds the secrets API client over the attested channel to the Trust Authority.
 func (o *options) client(ctx context.Context) (client, error) {
 	hc, err := o.HTTPClient(ctx)
 	if err != nil {

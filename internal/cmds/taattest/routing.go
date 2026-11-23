@@ -45,7 +45,7 @@ var defaultReservedPaths = []string{
 }
 
 type routingConfig struct {
-	cdsURL           string
+	taURL            string
 	imagePolicyFile  string
 	launchKeysFile   string // empty means nodeOperatorKeysFile; tests point it elsewhere
 	operatorKeysFile string
@@ -59,11 +59,11 @@ type routingConfig struct {
 }
 
 func bindRoutingFlags(f *pflag.FlagSet, cfg *routingConfig) {
-	f.StringVar(&cfg.cdsURL, "ta-url", "", "Trust Authority base URL (https, armTLS-verified) to poll the signed route manifest from; required unless this node's enforcer mounts the endpoint")
+	f.StringVar(&cfg.taURL, "ta-url", "", "Trust Authority base URL (https, armTLS-verified) to poll the signed route manifest from; required unless this node's enforcer mounts the endpoint")
 	cmdsutil.AliasFlag(f, "ta-url", "cds-url")
-	cmdsutil.BindTAImagePolicyFlags(f, &cfg.imagePolicyFile, nil, "pins the Trust Authority endpoint (REQUIRED), every entry bound to the launch file that CDS runs on")
-	f.StringVar(&cfg.operatorKeysFile, "operator-keys-file", "", "PEM operator public keys a route manifest must be signed under, used when the node's launch configuration carries none; unset, the keys come from the verified CDS's GET /operator-keys")
-	f.DurationVar(&cfg.pollInterval, "routes-poll-interval", 30*time.Second, "how often to poll the CDS for the route manifest")
+	cmdsutil.BindTAImagePolicyFlags(f, &cfg.imagePolicyFile, nil, "pins the Trust Authority endpoint (REQUIRED), every entry bound to the launch file that Trust Authority runs on")
+	f.StringVar(&cfg.operatorKeysFile, "operator-keys-file", "", "PEM operator public keys a route manifest must be signed under, used when the node's launch configuration carries none; unset, the keys come from the verified Trust Authority's GET /operator-keys")
+	f.DurationVar(&cfg.pollInterval, "routes-poll-interval", 30*time.Second, "how often to poll the Trust Authority for the route manifest")
 	f.StringVar(&cfg.host, "routing-host", "127.0.0.1", "routing listener host (loopback: nginx proxies application requests to it)")
 	f.IntVar(&cfg.port, "routing-port", 0, "REQUIRED: routing listener port")
 	f.DurationVar(&cfg.backendTimeout, "backend-timeout", time.Hour, "how long a request or upgraded connection on the routing listener may go with no data moving either way; a tunnelled request, whose response is buffered whole, gets this long in total")
@@ -74,11 +74,11 @@ func bindRoutingFlags(f *pflag.FlagSet, cfg *routingConfig) {
 
 func checkRoutingFlags(cfg config) error {
 	r := cfg.routing
-	if r.publish && r.cdsURL == "" {
-		return errors.New("--publish-routes requires --ta-url: it publishes the manifest polled from CDS")
+	if r.publish && r.taURL == "" {
+		return errors.New("--publish-routes requires --ta-url: it publishes the manifest polled from the Trust Authority")
 	}
-	if r.cdsURL == "" {
-		return errors.New("--ta-url is required: no node hands this router a CDS endpoint, and it routes only by the route manifest it polls from one")
+	if r.taURL == "" {
+		return errors.New("--ta-url is required: no node hands this router a Trust Authority endpoint, and it routes only by the route manifest it polls from one")
 	}
 	// routes.Compile requires normalized reserved paths.
 	for _, p := range r.reservedPaths {
@@ -87,7 +87,7 @@ func checkRoutingFlags(cfg config) error {
 		}
 	}
 	if cfg.attestationAPIURL == "" {
-		return errors.New("--ta-url requires --attestation-api-url to verify the CDS")
+		return errors.New("--ta-url requires --attestation-api-url to verify the Trust Authority")
 	}
 	if r.pollInterval <= 0 {
 		return errors.New("--routes-poll-interval must be positive")
@@ -128,13 +128,13 @@ func newRoutingEngine(ctx context.Context, cfg config, bindings *Bindings, logge
 	}
 	httpClient, err := armtls.NewRefreshingHTTPClient(pins, cfg.attestationAPIURL)
 	if err != nil {
-		return nil, fmt.Errorf("CDS armTLS client: %w", err)
+		return nil, fmt.Errorf("Trust Authority armTLS client: %w", err)
 	}
-	cds, err := routing.NewCDSClient(r.cdsURL, httpClient)
+	ta, err := routing.NewCDSClient(r.taURL, httpClient)
 	if err != nil {
 		return nil, fmt.Errorf("--ta-url: %w", err)
 	}
-	keys, err := operatorKeySource(r, cds, logger)
+	keys, err := operatorKeySource(r, ta, logger)
 	if err != nil {
 		return nil, err
 	}
@@ -148,7 +148,7 @@ func newRoutingEngine(ctx context.Context, cfg config, bindings *Bindings, logge
 	}
 	agents := routing.NewAgentIndex()
 	state := routing.NewState(routing.StateConfig{Reserved: r.reservedPaths, MeshCAs: identity.MeshCAs})
-	transports := routing.NewTransports(routing.TransportConfig{MeshIdentity: identity.Credential, Allowlist: cds, Logger: logger, Agents: agents})
+	transports := routing.NewTransports(routing.TransportConfig{MeshIdentity: identity.Credential, Allowlist: ta, Logger: logger, Agents: agents})
 	return &routingEngine{
 		cfg:    r,
 		log:    logger,
@@ -165,7 +165,7 @@ func newRoutingEngine(ctx context.Context, cfg config, bindings *Bindings, logge
 		}),
 		poller: routing.NewPoller(routing.PollerConfig{
 			State:      state,
-			Fetcher:    cds,
+			Fetcher:    ta,
 			Keys:       keys,
 			Transports: transports,
 			Interval:   r.pollInterval,
@@ -174,13 +174,13 @@ func newRoutingEngine(ctx context.Context, cfg config, bindings *Bindings, logge
 	}, nil
 }
 
-// routeSourcePins is the set the poller holds its CDS to: the pins the node's
-// enforcer mounts at followed, so the router keeps polling across a CDS image
+// routeSourcePins is the set the poller holds its Trust Authority to: the pins the node's
+// enforcer mounts at followed, so the router keeps polling across a Trust Authority image
 // roll, and --ta-image-policy-file where the node mounts none.
 func routeSourcePins(ctx context.Context, r routingConfig, followed string) (armtls.PinSource, error) {
 	node, err := cmdsutil.FollowNodePins(ctx, followed)
 	if err != nil {
-		return nil, fmt.Errorf("the node's followed CDS pins: %w", err)
+		return nil, fmt.Errorf("the node's followed Trust Authority pins: %w", err)
 	}
 	if node != nil {
 		return node, nil
@@ -313,9 +313,9 @@ func memberCredentials() (*routing.MeshIdentity, error) {
 }
 
 // operatorKeySource implements W6: the node's signed launch configuration
-// when it carries the keys, else --operator-keys-file, else the verified CDS.
+// when it carries the keys, else --operator-keys-file, else the verified Trust Authority.
 // A set --operator-keys-file must exist.
-func operatorKeySource(r routingConfig, cds *routing.CDSClient, logger *slog.Logger) (routing.KeySource, error) {
+func operatorKeySource(r routingConfig, ta *routing.CDSClient, logger *slog.Logger) (routing.KeySource, error) {
 	if r.launchKeysFile == "" {
 		r.launchKeysFile = nodeOperatorKeysFile
 	}
@@ -336,8 +336,8 @@ func operatorKeySource(r routingConfig, cds *routing.CDSClient, logger *slog.Log
 		logger.Info("route manifest operator keys from file", "path", r.operatorKeysFile)
 		return routing.KeyFile(r.operatorKeysFile), nil
 	}
-	logger.Warn("route manifest operator keys from the CDS (GET /operator-keys): control-plane configuration, so clients detect a substituted key but the router does not prevent it")
-	return cds, nil
+	logger.Warn("route manifest operator keys from the Trust Authority (GET /operator-keys): control-plane configuration, so clients detect a substituted key but the router does not prevent it")
+	return ta, nil
 }
 
 // loadKeys checks at startup that path holds at least one operator key;

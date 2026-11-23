@@ -53,13 +53,13 @@ func TestE4RoutePublication(t *testing.T) {
 	if got := resp.Header.Get("Content-Type"); got != "application/json" {
 		t.Fatalf("Content-Type = %q, want application/json", got)
 	}
-	// The CDS serves GET /routes as json.Marshal of the stored envelope.
+	// The Trust Authority serves GET /routes as json.Marshal of the stored envelope.
 	want, err := json.Marshal(env)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(body, want) {
-		t.Fatalf("published envelope = %s, want the CDS envelope %s", body, want)
+		t.Fatalf("published envelope = %s, want the Trust Authority envelope %s", body, want)
 	}
 	var got routes.Envelope
 	if err := json.Unmarshal(body, &got); err != nil {

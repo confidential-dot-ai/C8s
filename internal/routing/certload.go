@@ -32,7 +32,7 @@ type MeshIdentity struct {
 
 // NewMeshIdentity names the credential volume the three reader paths lie on.
 // It reads nothing, so a router comes up before get-cert has published and
-// while CDS is down; each credential is resolved when a connection needs one.
+// while the Trust Authority is down; each credential is resolved when a connection needs one.
 func NewMeshIdentity(certFile, keyFile, caFile string) (*MeshIdentity, error) {
 	volume, err := credvolume.For(certFile, keyFile, caFile)
 	if err != nil {

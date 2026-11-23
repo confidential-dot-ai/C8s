@@ -445,7 +445,7 @@ func TestAttestLBWrongSizeNonce(t *testing.T) {
 }
 
 // matchedWorkloadExtension builds a matched-workload stamp for name with the
-// same marshal helper CDS issuance uses.
+// same marshal helper Trust Authority issuance uses.
 func matchedWorkloadExtension(t *testing.T, name string) pkix.Extension {
 	t.Helper()
 	ext, err := armtls.MarshalMatchedWorkloadExtension(&armtls.MatchedWorkload{

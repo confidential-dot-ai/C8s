@@ -1,8 +1,8 @@
 // Package secretprobe implements the hidden secret-probe subcommand: one
-// workload secret request against CDS with every input under the caller's
+// workload secret request against the Trust Authority with every input under the caller's
 // control. The conformance steps exec it inside a pod's certificate sidecar to
 // present what a well-behaved sidecar never would — a missing or replayed
-// challenge, another pod's token, a non-canonical path — and report what CDS
+// challenge, another pod's token, a non-canonical path — and report what Trust Authority
 // answered. It is a test instrument, not a client for applications.
 package secretprobe
 
@@ -21,32 +21,32 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
-// probe is a CDS client bound to one leaf: the mTLS client presenting it, the
+// probe is a Trust Authority client bound to one leaf: the mTLS client presenting it, the
 // key a sandbox token must be bound to, and where challenges and tokens come
 // from.
 type probe struct {
 	client   *http.Client
 	pub      crypto.PublicKey
-	cdsURL   string
+	taURL    string
 	endpoint string // inventory endpoint, unix://<socket>
 	timeout  time.Duration
 }
 
-// nodePinsPath is where the enforcer mounts the node's CDS pins; a var so tests
+// nodePinsPath is where the enforcer mounts the node's Trust Authority pins; a var so tests
 // can mount their own.
 var nodePinsPath = workloadclaims.CDSPinsPath
 
-// clientFunc builds the mTLS client to CDS and returns the leaf's key;
+// clientFunc builds the mTLS client to the Trust Authority and returns the leaf's key;
 // sidecar.NewClient in the command, a client trusting a test server in tests.
 type clientFunc func(sidecar.Config, armtls.PinSource) (*http.Client, crypto.PublicKey, error)
 
-// newProbe verifies CDS as the pod's sidecars do, through armTLS against the
-// node's CDS pins where the enforcer mounts them, otherwise the policy given.
+// newProbe verifies Trust Authority as the pod's sidecars do, through armTLS against the
+// node's Trust Authority pins where the enforcer mounts them, otherwise the policy given.
 // The pins are resolved without the sidecars' log line: the steps read the
 // probe's stdout and stderr as one stream.
 func newProbe(ctx context.Context, o options) (*probe, error) {
 	cfg := sidecar.Config{
-		CDSURL:                 o.cdsURL,
+		CDSURL:                 o.taURL,
 		AttestationApiURL:      o.attestationURL,
 		MeasurementsConfig:     o.policyFile,
 		MeasurementsConfigJSON: o.policyJSON,
@@ -66,15 +66,15 @@ func newProbe(ctx context.Context, o options) (*probe, error) {
 	return &probe{
 		client:   client,
 		pub:      pub,
-		cdsURL:   o.cdsURL,
+		taURL:    o.taURL,
 		endpoint: "unix://" + o.socket,
 		timeout:  o.timeout,
 	}, nil
 }
 
-// challenge fetches a fresh single-use challenge from CDS.
+// challenge fetches a fresh single-use challenge from the Trust Authority.
 func (p *probe) challenge(ctx context.Context) ([]byte, error) {
-	return sidecar.FetchChallenge(ctx, p.client, p.cdsURL, p.timeout)
+	return sidecar.FetchChallenge(ctx, p.client, p.taURL, p.timeout)
 }
 
 // token redeems a sandbox token for this process's sandbox, bound to the leaf
@@ -84,7 +84,7 @@ func (p *probe) token(ctx context.Context, nonce []byte) ([]byte, error) {
 }
 
 // errUnsendable marks a request that never left: a path the URL parser
-// refuses is a usage error, not an answer from CDS.
+// refuses is a usage error, not an answer from the Trust Authority.
 type errUnsendable struct{ err error }
 
 func (e errUnsendable) Error() string { return "build request: " + e.err.Error() }
@@ -97,7 +97,7 @@ func (e errUnsendable) Unwrap() error { return e.err }
 func (p *probe) request(ctx context.Context, method, path string, challenge, tokenJSON []byte) (int, []byte, error) {
 	reqCtx, cancel := context.WithTimeout(ctx, p.timeout)
 	defer cancel()
-	req, err := sidecar.NewStoreRequest(reqCtx, p.cdsURL, method, path, challenge, tokenJSON)
+	req, err := sidecar.NewStoreRequest(reqCtx, p.taURL, method, path, challenge, tokenJSON)
 	if err != nil {
 		return 0, nil, errUnsendable{err}
 	}

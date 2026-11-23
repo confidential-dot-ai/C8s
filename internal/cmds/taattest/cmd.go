@@ -50,7 +50,7 @@ type config struct {
 // router pod, routes application requests by the operator-signed route
 // manifest, and serves the *dynamic* client-facing attestation +
 // over-encryption endpoints (the c8s-verify protocol). The router nginx
-// front-end terminates public TLS, serves the static CDS/mesh-CA certs, and
+// front-end terminates public TLS, serves the static Trust Authority/mesh-CA certs, and
 // reverse-proxies /.well-known/c8s/ and every application request to this
 // sidecar on loopback.
 func NewCmd() *cobra.Command {
@@ -122,12 +122,12 @@ func run(ctx context.Context, cfg config) error {
 	if cfg.establishRate <= 0 || cfg.establishBurst <= 0 {
 		return errors.New("--establish-rate and --establish-burst must be positive")
 	}
-	cdsURL, fromNode, err := cmdsutil.ResolveCDSURL(workloadclaims.CDSAddressPath, cfg.routing.cdsURL)
+	taURL, fromNode, err := cmdsutil.ResolveCDSURL(workloadclaims.CDSAddressPath, cfg.routing.taURL)
 	if err != nil {
 		return err
 	}
-	cfg.routing.cdsURL = cdsURL
-	logger.Info("CDS endpoint resolved", "cds_url", cfg.routing.cdsURL, "from_node", fromNode)
+	cfg.routing.taURL = taURL
+	logger.Info("Trust Authority endpoint resolved", "cds_url", cfg.routing.taURL, "from_node", fromNode)
 	if err := checkRoutingFlags(cfg); err != nil {
 		return err
 	}

@@ -539,7 +539,7 @@ func TestCheckRoutingFlags(t *testing.T) {
 	base := config{attestationAPIURL: "http://127.0.0.1:9"}
 	routed := func(edit func(*config)) config {
 		c := base
-		c.routing = routingConfig{cdsURL: "https://cds:8443", pollInterval: time.Second, backendTimeout: time.Hour, host: "127.0.0.1", port: 8802}
+		c.routing = routingConfig{taURL: "https://cds:8443", pollInterval: time.Second, backendTimeout: time.Hour, host: "127.0.0.1", port: 8802}
 		if edit != nil {
 			edit(&c)
 		}
@@ -551,7 +551,7 @@ func TestCheckRoutingFlags(t *testing.T) {
 		wantSub string
 	}{
 		{"routed", routed(nil), ""},
-		{"no cds", routed(func(c *config) { c.routing.cdsURL = "" }), "--ta-url is required"},
+		{"no cds", routed(func(c *config) { c.routing.taURL = "" }), "--ta-url is required"},
 		{"tunnel budget under one request", routed(func(c *config) { c.routing.tunnelBudget = quantityFlag{bytes: oneRequestBudget - 1, set: true} }), "--tunnel-budget"},
 		{"cds without attestation api", routed(func(c *config) { c.attestationAPIURL = "" }), "--attestation-api-url"},
 		{"non-loopback routing host", routed(func(c *config) { c.routing.host = "0.0.0.0" }), "loopback"},
@@ -561,7 +561,7 @@ func TestCheckRoutingFlags(t *testing.T) {
 		{"zero backend timeout", routed(func(c *config) { c.routing.backendTimeout = 0 }), "--backend-timeout"},
 		{"negative backend timeout", routed(func(c *config) { c.routing.backendTimeout = -time.Second }), "--backend-timeout"},
 		{"publish routes", routed(func(c *config) { c.routing.publish = true }), ""},
-		{"publish routes without cds", routed(func(c *config) { c.routing.publish = true; c.routing.cdsURL = "" }), "--publish-routes requires --ta-url"},
+		{"publish routes without cds", routed(func(c *config) { c.routing.publish = true; c.routing.taURL = "" }), "--publish-routes requires --ta-url"},
 		{"measured policies", routed(func(c *config) { c.measuredPolicies = "/run/nri/measured-policies" }), ""},
 		{"default reserved paths", routed(func(c *config) { c.routing.reservedPaths = defaultReservedPaths }), ""},
 		{"reserved path /a//b", routed(func(c *config) { c.routing.reservedPaths = []string{"/ok", "/a//b"} }), "--reserved-paths"},
@@ -587,7 +587,7 @@ func TestCheckRoutingFlags(t *testing.T) {
 }
 
 func TestW6OperatorKeySource(t *testing.T) {
-	cds, err := routing.NewCDSClient("https://cds:8443", http.DefaultClient)
+	ta, err := routing.NewCDSClient("https://cds:8443", http.DefaultClient)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -622,13 +622,13 @@ func TestW6OperatorKeySource(t *testing.T) {
 		{"W6 launch configuration over a configured file", routingConfig{launchKeysFile: present, operatorKeysFile: other}, routing.KeyFile(present), false},
 		{"W6 configured file", routingConfig{launchKeysFile: missing, operatorKeysFile: other}, routing.KeyFile(other), false},
 		{"W6 configured file absent", routingConfig{launchKeysFile: missing, operatorKeysFile: missing}, nil, true},
-		{"W6 CDS", routingConfig{launchKeysFile: missing}, cds, false},
+		{"W6 Trust Authority", routingConfig{launchKeysFile: missing}, ta, false},
 		{"W6 launch configuration without keys", routingConfig{launchKeysFile: empty}, nil, true},
 		{"W6 configured file without keys", routingConfig{launchKeysFile: missing, operatorKeysFile: empty}, nil, true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := operatorKeySource(tc.cfg, cds, logger)
+			got, err := operatorKeySource(tc.cfg, ta, logger)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("operatorKeySource() error = %v, want error %v", err, tc.wantErr)
 			}
@@ -640,7 +640,7 @@ func TestW6OperatorKeySource(t *testing.T) {
 }
 
 // A router whose launch configuration carries no operator keys takes both the
-// manifest and its keys from the CDS it polls, so the client is built only for
+// manifest and its keys from the Trust Authority it polls, so the client is built only for
 // a pinned one.
 func TestRoutingRefusesAnUnpinnedCDS(t *testing.T) {
 	cfg := routedRunConfig(t, freePort(t))
@@ -672,7 +672,7 @@ func TestRoutingFlagDefaults(t *testing.T) {
 	}
 }
 
-// TestRunRoutingListenerBeforeFirstApply runs cds-attest against a CDS that
+// TestRunRoutingListenerBeforeFirstApply runs cds-attest against a Trust Authority that
 // cannot be reached: the routing listener answers 503 (A2) while readiness
 // stays 200.
 func TestRunRoutingListenerBeforeFirstApply(t *testing.T) {
@@ -733,7 +733,7 @@ func TestMemberBackendCredentialComesFromTheCompiledVolume(t *testing.T) {
 	}
 }
 
-// The verifier this router weighs CDS evidence with is the node's, and never
+// The verifier this router weighs Trust Authority evidence with is the node's, and never
 // a plaintext endpoint this pod named: its connections into the cluster are
 // uncaptured, so such an endpoint could be a member pod. The node's own
 // address is compared as an address, after the expansion, so a host that
@@ -779,7 +779,7 @@ func TestCheckVerifierEndpoint(t *testing.T) {
 	}
 }
 
-// The router is held to the CDS pins its node follows, so a CDS image roll
+// The router is held to the Trust Authority pins its node follows, so a Trust Authority image roll
 // does not cost it the route manifest. Where the node mounts none, its own
 // --image-policy-file stands.
 func TestTheRouteSourceFollowsTheNodePins(t *testing.T) {

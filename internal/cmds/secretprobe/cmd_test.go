@@ -29,7 +29,7 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
-// seen is one store request as the fake CDS received it.
+// seen is one store request as the fake Trust Authority received it.
 type seen struct {
 	method, uri      string
 	challenge, token string
@@ -38,8 +38,8 @@ type seen struct {
 	peerKey          *ecdsa.PublicKey // the client certificate's key, over TLS
 }
 
-// fakeCDS issues one fixed challenge and records every store request.
-type fakeCDS struct {
+// fakeTA issues one fixed challenge and records every store request.
+type fakeTA struct {
 	mu         sync.Mutex
 	challenge  []byte
 	challenges int
@@ -48,11 +48,11 @@ type fakeCDS struct {
 	body       string
 }
 
-func newFakeCDS(status int, body string) *fakeCDS {
-	return &fakeCDS{challenge: bytes.Repeat([]byte{7}, 32), status: status, body: body}
+func newFakeTA(status int, body string) *fakeTA {
+	return &fakeTA{challenge: bytes.Repeat([]byte{7}, 32), status: status, body: body}
 }
 
-func (f *fakeCDS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (f *fakeTA) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if r.Method == http.MethodPost && r.RequestURI == secrets.ChallengeRoute {
@@ -73,40 +73,40 @@ func (f *fakeCDS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(f.body))
 }
 
-func (f *fakeCDS) only(t *testing.T) seen {
+func (f *fakeTA) only(t *testing.T) seen {
 	t.Helper()
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if len(f.requests) != 1 {
-		t.Fatalf("CDS saw %d store requests, want 1", len(f.requests))
+		t.Fatalf("Trust Authority saw %d store requests, want 1", len(f.requests))
 	}
 	return f.requests[0]
 }
 
 // harness is one probe invocation's environment: a leaf, an inventory and a
-// CDS, plus the flags that point the probe at them.
+// Trust Authority, plus the flags that point the probe at them.
 type harness struct {
-	cds     *fakeCDS
-	cdsURL  string
+	ta      *fakeTA
+	taURL   string
 	socket  string
 	leafPub *ecdsa.PublicKey
-	roots   *x509.CertPool // what the probe trusts CDS by, in place of armTLS
-	common  []string       // flags naming CDS, the leaf and the inventory
+	roots   *x509.CertPool // what the probe trusts Trust Authority by, in place of armTLS
+	common  []string       // flags naming Trust Authority, the leaf and the inventory
 	pinned  []string       // common, plus the pin a node that mounts none needs
 }
 
-func newHarness(t *testing.T, cds *fakeCDS) *harness {
+func newHarness(t *testing.T, ta *fakeTA) *harness {
 	t.Helper()
-	srv := httptest.NewServer(cds)
+	srv := httptest.NewServer(ta)
 	t.Cleanup(srv.Close)
-	return newHarnessAt(t, cds, srv.URL)
+	return newHarnessAt(t, ta, srv.URL)
 }
 
-func newHarnessAt(t *testing.T, cds *fakeCDS, cdsURL string) *harness {
+func newHarnessAt(t *testing.T, ta *fakeTA, taURL string) *harness {
 	t.Helper()
 	certPath, keyPath, pub := testutil.WriteLeaf(t, t.TempDir())
-	h := &harness{cds: cds, cdsURL: cdsURL, socket: testutil.StartInventory(t), leafPub: pub}
-	h.common = []string{"--cds-url", cdsURL, "--attestation-api-url", "unix:///nonexistent/attest.sock",
+	h := &harness{ta: ta, taURL: taURL, socket: testutil.StartInventory(t), leafPub: pub}
+	h.common = []string{"--cds-url", taURL, "--attestation-api-url", "unix:///nonexistent/attest.sock",
 		"--cert", certPath, "--key", keyPath, "--socket", h.socket, "--timeout", "5s"}
 	h.pinned = append(append([]string{}, h.common...),
 		"--image-policy-json", testutil.CDSPinDocument(testutil.TestMeasurement, testutil.CDSLaunchFile))
@@ -121,7 +121,7 @@ func (h *harness) run(t *testing.T, args ...string) (int, string, string) {
 }
 
 // trusting builds the probe's client as the command does, presenting the
-// leaf, but verifies CDS against roots instead of through armTLS.
+// leaf, but verifies Trust Authority against roots instead of through armTLS.
 func trusting(roots *x509.CertPool) clientFunc {
 	return func(cfg sidecar.Config, _ armtls.PinSource) (*http.Client, crypto.PublicKey, error) {
 		leaf, pub, err := sidecar.LoadLeaf(cfg.CertPath, cfg.KeyPath)
@@ -176,27 +176,27 @@ func decodeToken(t *testing.T, header string) workloadclaims.SignedSandboxToken 
 }
 
 // For the same challenge and token, the probe's headers are byte-for-byte what
-// sidecar.Do sends: the scenarios then test the CDS, not a probe dialect.
+// sidecar.Do sends: the scenarios then test the Trust Authority, not a probe dialect.
 func TestRequestHeadersMatchDo(t *testing.T) {
-	cds := newFakeCDS(http.StatusOK, `{"value":"`+base64.StdEncoding.EncodeToString([]byte("v"))+`"}`)
-	h := newHarness(t, cds)
+	ta := newFakeTA(http.StatusOK, `{"value":"`+base64.StdEncoding.EncodeToString([]byte("v"))+`"}`)
+	h := newHarness(t, ta)
 
-	cfg := sidecar.Config{CDSURL: h.cdsURL, RequestTimeout: 5 * time.Second, InventoryTimeout: 5 * time.Second}
+	cfg := sidecar.Config{CDSURL: h.taURL, RequestTimeout: 5 * time.Second, InventoryTimeout: 5 * time.Second}
 	if _, _, err := sidecar.Do(context.Background(), cfg, http.DefaultClient, h.leafPub, "unix://"+h.socket, http.MethodGet, "/api/db"); err != nil {
 		t.Fatal(err)
 	}
-	byDo := cds.only(t)
+	byDo := ta.only(t)
 	tokenJSON, _ := json.Marshal(decodeToken(t, byDo.token))
 
-	cds.mu.Lock()
-	cds.requests = nil
-	cds.mu.Unlock()
+	ta.mu.Lock()
+	ta.requests = nil
+	ta.mu.Unlock()
 	code, out, errOut := h.run(t, "request", "GET", "/api/db",
-		"--challenge", base64.StdEncoding.EncodeToString(cds.challenge), "--token", string(tokenJSON))
+		"--challenge", base64.StdEncoding.EncodeToString(ta.challenge), "--token", string(tokenJSON))
 	if code != 0 {
 		t.Fatalf("exit %d, stderr %q", code, errOut)
 	}
-	byProbe := cds.only(t)
+	byProbe := ta.only(t)
 	if byProbe.challenge != byDo.challenge || byProbe.token != byDo.token || byProbe.uri != byDo.uri || byProbe.method != byDo.method {
 		t.Fatalf("probe sent %+v, Do sent %+v", byProbe, byDo)
 	}
@@ -220,18 +220,18 @@ func answerFields(t *testing.T, out string) (status, challenge, token string) {
 // With nothing given, the probe does what a sidecar does: one fresh challenge,
 // one token bound to it and to the leaf, both on the request.
 func TestRequestDefaultsToFreshChallengeAndToken(t *testing.T) {
-	cds := newFakeCDS(http.StatusForbidden, "")
-	h := newHarness(t, cds)
+	ta := newFakeTA(http.StatusForbidden, "")
+	h := newHarness(t, ta)
 	code, out, errOut := h.run(t, "request", "POST", "/api/db")
 	if code != 0 || !strings.HasPrefix(out, "403 ") || strings.Count(out, "\n") != 1 {
 		t.Fatalf("exit %d, stdout %q, stderr %q", code, out, errOut)
 	}
-	got := cds.only(t)
-	if cds.fetched() != 1 {
-		t.Fatalf("fetched %d challenges, want 1", cds.fetched())
+	got := ta.only(t)
+	if ta.fetched() != 1 {
+		t.Fatalf("fetched %d challenges, want 1", ta.fetched())
 	}
-	if got.challenge != base64.StdEncoding.EncodeToString(cds.challenge) {
-		t.Fatalf("challenge header = %q, want the one CDS issued", got.challenge)
+	if got.challenge != base64.StdEncoding.EncodeToString(ta.challenge) {
+		t.Fatalf("challenge header = %q, want the one Trust Authority issued", got.challenge)
 	}
 	if got.method != http.MethodPost {
 		t.Fatalf("method = %q", got.method)
@@ -268,13 +268,13 @@ func TestRequestOmissions(t *testing.T) {
 		{"given challenge", []string{"--challenge", base64.StdEncoding.EncodeToString([]byte("replayed-challenge-of-32-bytes!!"))}, true, true, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cds := newFakeCDS(http.StatusUnauthorized, "")
-			h := newHarness(t, cds)
+			ta := newFakeTA(http.StatusUnauthorized, "")
+			h := newHarness(t, ta)
 			code, out, errOut := h.run(t, append([]string{"request", "GET", "/api/db"}, tc.flags...)...)
 			if code != 0 {
 				t.Fatalf("exit %d, stderr %q", code, errOut)
 			}
-			got := cds.only(t)
+			got := ta.only(t)
 			if got.hasChallenge != tc.wantChallenge || got.hasToken != tc.wantTok {
 				t.Fatalf("challenge header present=%v token present=%v, want %v/%v", got.hasChallenge, got.hasToken, tc.wantChallenge, tc.wantTok)
 			}
@@ -282,8 +282,8 @@ func TestRequestOmissions(t *testing.T) {
 			if (challenge == "-") == tc.wantChallenge || (token == "-") == tc.wantTok {
 				t.Fatalf("line %q does not name what was sent", out)
 			}
-			if cds.fetched() != tc.wantFetches {
-				t.Fatalf("fetched %d challenges, want %d", cds.fetched(), tc.wantFetches)
+			if ta.fetched() != tc.wantFetches {
+				t.Fatalf("fetched %d challenges, want %d", ta.fetched(), tc.wantFetches)
 			}
 			if got.hasToken {
 				decodeToken(t, got.token)
@@ -296,12 +296,12 @@ func TestRequestOmissions(t *testing.T) {
 func TestRequestPathIsVerbatim(t *testing.T) {
 	for _, path := range []string{"/a//b", "/a%2Fb", "/api/db/"} {
 		t.Run(path, func(t *testing.T) {
-			cds := newFakeCDS(http.StatusNotFound, "")
-			h := newHarness(t, cds)
+			ta := newFakeTA(http.StatusNotFound, "")
+			h := newHarness(t, ta)
 			if code, _, errOut := h.run(t, "request", "GET", path, "--no-challenge", "--no-token"); code != 0 {
 				t.Fatalf("exit %d, stderr %q", code, errOut)
 			}
-			if got := cds.only(t).uri; got != "/secrets"+path {
+			if got := ta.only(t).uri; got != "/secrets"+path {
 				t.Fatalf("request URI = %q, want %q", got, "/secrets"+path)
 			}
 		})
@@ -312,7 +312,7 @@ func TestRequestPathIsVerbatim(t *testing.T) {
 // newline, no trimming.
 func TestRequestPrintsStatusThenBody(t *testing.T) {
 	const body = "{\"error\":\"denied\"}\n\nmore"
-	h := newHarness(t, newFakeCDS(http.StatusForbidden, body))
+	h := newHarness(t, newFakeTA(http.StatusForbidden, body))
 	code, out, errOut := h.run(t, "request", "GET", "/api/db", "--no-challenge", "--no-token")
 	if code != 0 || out != "403 - -\n"+body {
 		t.Fatalf("exit %d, stdout %q, stderr %q", code, out, errOut)
@@ -327,7 +327,7 @@ func TestRequestReportsNoAnswerAs000(t *testing.T) {
 	}
 	closedURL := "http://" + l.Addr().String()
 	l.Close()
-	h := newHarnessAt(t, newFakeCDS(0, ""), closedURL)
+	h := newHarnessAt(t, newFakeTA(0, ""), closedURL)
 	code, out, errOut := h.run(t, "request", "GET", "/api/db", "--no-challenge", "--no-token")
 	if code != 0 || out != "000 - -\n" {
 		t.Fatalf("exit %d, stdout %q, stderr %q", code, out, errOut)
@@ -347,13 +347,13 @@ func TestRequestSendsGivenToken(t *testing.T) {
 	}
 	for name, flag := range map[string]string{"inline": given, "file": "@" + file} {
 		t.Run(name, func(t *testing.T) {
-			cds := newFakeCDS(http.StatusUnauthorized, "")
-			h := newHarness(t, cds)
+			ta := newFakeTA(http.StatusUnauthorized, "")
+			h := newHarness(t, ta)
 			if code, _, errOut := h.run(t, "request", "GET", "/api/db", "--no-challenge", "--token", flag); code != 0 {
 				t.Fatalf("exit %d, stderr %q", code, errOut)
 			}
 			want := secrets.AuthScheme + base64.StdEncoding.EncodeToString([]byte(given))
-			if got := cds.only(t).token; got != want {
+			if got := ta.only(t).token; got != want {
 				t.Fatalf("Authorization = %q, want %q", got, want)
 			}
 		})
@@ -362,45 +362,45 @@ func TestRequestSendsGivenToken(t *testing.T) {
 
 // The leaf is the client certificate.
 func TestRequestPresentsLeafOverTLS(t *testing.T) {
-	cds := newFakeCDS(http.StatusForbidden, "")
-	srv := httptest.NewUnstartedServer(cds)
+	ta := newFakeTA(http.StatusForbidden, "")
+	srv := httptest.NewUnstartedServer(ta)
 	srv.TLS = &tls.Config{ClientAuth: tls.RequireAnyClientCert}
 	srv.StartTLS()
 	t.Cleanup(srv.Close)
-	h := newHarnessAt(t, cds, srv.URL)
+	h := newHarnessAt(t, ta, srv.URL)
 	h.roots = x509.NewCertPool()
 	h.roots.AddCert(srv.Certificate())
 	if code, _, errOut := h.run(t, "request", "GET", "/api/db", "--no-challenge", "--no-token"); code != 0 {
 		t.Fatalf("exit %d, stderr %q", code, errOut)
 	}
-	if got := cds.only(t).peerKey; got == nil || !got.Equal(h.leafPub) {
+	if got := ta.only(t).peerKey; got == nil || !got.Equal(h.leafPub) {
 		t.Fatal("the request did not present the leaf as its client certificate")
 	}
 }
 
-// The command verifies CDS through armTLS, as the sidecars do: a CDS whose
+// The command verifies Trust Authority through armTLS, as the sidecars do: a Trust Authority whose
 // certificate carries no evidence the attestation API vouched for is never
 // sent the request, and the probe reports that nothing answered.
 func TestRequestDoesNotTrustAnUnverifiedCDS(t *testing.T) {
-	cds := newFakeCDS(http.StatusOK, "secret")
-	srv := httptest.NewTLSServer(cds)
+	ta := newFakeTA(http.StatusOK, "secret")
+	srv := httptest.NewTLSServer(ta)
 	t.Cleanup(srv.Close)
-	h := newHarnessAt(t, cds, srv.URL)
+	h := newHarnessAt(t, ta, srv.URL)
 	code, out, errOut := executeWith(t, sidecar.NewClient,
 		append(append([]string{}, h.pinned...), "request", "GET", "/api/db", "--no-challenge", "--no-token")...)
 	if code != 0 || out != "000 - -\n" {
 		t.Fatalf("exit %d, stdout %q, stderr %q; want 0 and 000", code, out, errOut)
 	}
-	if n := len(cds.requests); n != 0 {
-		t.Fatalf("an unverified CDS was sent %d store requests", n)
+	if n := len(ta.requests); n != 0 {
+		t.Fatalf("an unverified Trust Authority was sent %d store requests", n)
 	}
 }
 
 func TestChallengePrintsWhatCDSIssued(t *testing.T) {
-	cds := newFakeCDS(0, "")
-	h := newHarness(t, cds)
+	ta := newFakeTA(0, "")
+	h := newHarness(t, ta)
 	code, out, errOut := h.run(t, "challenge")
-	if code != 0 || out != base64.StdEncoding.EncodeToString(cds.challenge)+"\n" {
+	if code != 0 || out != base64.StdEncoding.EncodeToString(ta.challenge)+"\n" {
 		t.Fatalf("exit %d, stdout %q, stderr %q", code, out, errOut)
 	}
 }
@@ -408,7 +408,7 @@ func TestChallengePrintsWhatCDSIssued(t *testing.T) {
 // The token is bound to the given challenge, or to a nonce when none is given,
 // and printed as the one-line JSON the request action accepts back.
 func TestTokenPrintsAuthorizationJSON(t *testing.T) {
-	h := newHarness(t, newFakeCDS(0, ""))
+	h := newHarness(t, newFakeTA(0, ""))
 	for name, flags := range map[string][]string{
 		"bound to a challenge": {"--challenge", base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{9}, 32))},
 		"bound to a nonce":     nil,
@@ -431,7 +431,7 @@ func TestTokenPrintsAuthorizationJSON(t *testing.T) {
 
 // Without the inventory there is no token, and the failure names the socket.
 func TestTokenFailsWithoutInventory(t *testing.T) {
-	h := newHarness(t, newFakeCDS(0, ""))
+	h := newHarness(t, newFakeTA(0, ""))
 	absent := filepath.Join(t.TempDir(), "absent.sock")
 	code, out, errOut := h.run(t, "token", "--socket", absent)
 	if code != exitUsage || out != "" {
@@ -445,7 +445,7 @@ func TestTokenFailsWithoutInventory(t *testing.T) {
 // Anything that is not an answer exits 2 with the reason on stderr, including
 // what cobra would otherwise hand to c8s's main as exit 1.
 func TestUsageErrorsExit2(t *testing.T) {
-	h := newHarness(t, newFakeCDS(0, ""))
+	h := newHarness(t, newFakeTA(0, ""))
 	for name, args := range map[string][]string{
 		"no action":               nil,
 		"unknown action":          {"frobnicate"},
@@ -481,7 +481,7 @@ func TestUsageErrorsExit2(t *testing.T) {
 	}
 }
 
-// A CDS that issues no challenge has answered the request: nothing. The
+// A Trust Authority that issues no challenge has answered the request: nothing. The
 // default request prints 000 with no credentials and says why on stderr.
 func TestRequestReportsNoChallengeAs000(t *testing.T) {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
@@ -490,7 +490,7 @@ func TestRequestReportsNoChallengeAs000(t *testing.T) {
 	}
 	closedURL := "http://" + l.Addr().String()
 	l.Close()
-	h := newHarnessAt(t, newFakeCDS(0, ""), closedURL)
+	h := newHarnessAt(t, newFakeTA(0, ""), closedURL)
 	code, out, errOut := h.run(t, "request", "GET", "/api/db")
 	if code != 0 || out != "000 - -\n" || !strings.Contains(errOut, "challenge") {
 		t.Fatalf("exit %d, stdout %q, stderr %q", code, out, errOut)
@@ -512,14 +512,14 @@ func TestNewCmdIsHiddenWithDefaults(t *testing.T) {
 	}
 }
 
-// fetched is how many challenges the CDS issued.
-func (f *fakeCDS) fetched() int {
+// fetched is how many challenges the Trust Authority issued.
+func (f *fakeTA) fetched() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.challenges
 }
 
-// writeNodePins mounts the node's CDS pins where the probe reads them, for
+// writeNodePins mounts the node's Trust Authority pins where the probe reads them, for
 // the test's duration.
 func writeNodePins(t *testing.T) string {
 	t.Helper()
@@ -535,13 +535,13 @@ func writeNodePins(t *testing.T) string {
 }
 
 // The probe runs in the certificate container, where the enforcer mounts the
-// node's CDS pins. Like the sidecars it stands in for, it holds CDS to those
+// node's Trust Authority pins. Like the sidecars it stands in for, it holds Trust Authority to those
 // pins, so a node that passes its clients no pin document still names the
-// CDS the probe dials.
+// Trust Authority the probe dials.
 func TestProbeFollowsTheNodePins(t *testing.T) {
 	path := writeNodePins(t)
-	cds := newFakeCDS(http.StatusOK, "secret")
-	h := newHarness(t, cds)
+	ta := newFakeTA(http.StatusOK, "secret")
+	h := newHarness(t, ta)
 	var got refvalues.ReferenceValues
 	capture := func(cfg sidecar.Config, pins armtls.PinSource) (*http.Client, crypto.PublicKey, error) {
 		got = pins.Current()
@@ -563,8 +563,8 @@ func TestProbeResolvesPinsSilently(t *testing.T) {
 	var logged bytes.Buffer
 	log.SetOutput(&logged)
 	t.Cleanup(func() { log.SetOutput(os.Stderr) })
-	cds := newFakeCDS(http.StatusOK, "secret")
-	h := newHarness(t, cds)
+	ta := newFakeTA(http.StatusOK, "secret")
+	h := newHarness(t, ta)
 	code, out, errOut := executeWith(t, trusting(h.roots), append(append([]string{}, h.common...), "challenge")...)
 	if code != 0 {
 		t.Fatalf("exit %d, stdout %q, stderr %q", code, out, errOut)

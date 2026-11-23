@@ -181,7 +181,7 @@ func TestParseCDSURL(t *testing.T) {
 		{raw: "not a URL", wantErr: `invalid --ta-url "not a URL"`},
 	} {
 		t.Run(tc.raw, func(t *testing.T) {
-			_, err := parseCDSURL(tc.raw)
+			_, err := parseTAURL(tc.raw)
 			if tc.wantErr == "" && err != nil {
 				t.Fatal(err)
 			}
@@ -239,9 +239,9 @@ func mountedByTheNode(t *testing.T, address, pins, verifier string) {
 	})
 }
 
-// nodeCDSFiles writes the endpoint and the pins a node mounts for a
+// nodeTAFiles writes the endpoint and the pins a node mounts for a
 // credentials-role container, and names a verifier socket it does not serve.
-func nodeCDSFiles(t *testing.T) (address, pins, verifier string) {
+func nodeTAFiles(t *testing.T) (address, pins, verifier string) {
 	t.Helper()
 	dir := t.TempDir()
 	address = filepath.Join(dir, "cds-address")
@@ -256,7 +256,7 @@ func nodeCDSFiles(t *testing.T) (address, pins, verifier string) {
 	return address, pins, filepath.Join(dir, "attestation-api.sock")
 }
 
-// The node addresses this proxy's CDS (workloadclaims.CDSAddressPath). Where
+// The node addresses this proxy's Trust Authority (workloadclaims.CDSAddressPath). Where
 // no node does, --cds-url is the only remaining source, and its absence is a
 // refusal.
 func TestNewHandlerRequiresCDSURLWithoutNodeEndpoint(t *testing.T) {
@@ -266,16 +266,16 @@ func TestNewHandlerRequiresCDSURLWithoutNodeEndpoint(t *testing.T) {
 		requestTimeout:     time.Second,
 	}, slog.Default())
 	if err == nil || !strings.Contains(err.Error(), "--ta-url is required") {
-		t.Fatalf("error = %v, want one naming the missing CDS endpoint", err)
+		t.Fatalf("error = %v, want one naming the missing Trust Authority endpoint", err)
 	}
 }
 
 // The node is the only source while it mounts either file: an endpoint it
-// names, with pins it does not, reaches a CDS no measurement binds. Both
+// names, with pins it does not, reaches a Trust Authority no measurement binds. Both
 // halves must come from the same place, and a flag beside the node's mount is
 // refused outright.
 func TestNewHandlerRefusesMixedCDSSources(t *testing.T) {
-	address, pins, verifier := nodeCDSFiles(t)
+	address, pins, verifier := nodeTAFiles(t)
 	absent := filepath.Join(t.TempDir(), "absent")
 	node := config{
 		attestationAPIURL: "http://attestation-api:8400",
@@ -310,7 +310,7 @@ func TestNewHandlerRefusesMixedCDSSources(t *testing.T) {
 			cfg: config{
 				attestationAPIURL: node.attestationAPIURL,
 				requestTimeout:    time.Second,
-				cdsURL:            "https://cds.example:8443",
+				taURL:             "https://cds.example:8443",
 			},
 			want: "remove --ta-url",
 		},
@@ -335,11 +335,11 @@ func TestNewHandlerRefusesMixedCDSSources(t *testing.T) {
 	}
 }
 
-// The verifier decides whether the CDS the node names satisfies the pins it
+// The verifier decides whether the Trust Authority the node names satisfies the pins it
 // mounts, so while the node serves its own attestation-api this proxy reaches
 // that socket and nothing the chart or the control plane names instead.
 func TestNewHandlerRefusesANamedVerifier(t *testing.T) {
-	address, pins, verifier := nodeCDSFiles(t)
+	address, pins, verifier := nodeTAFiles(t)
 	if err := os.WriteFile(verifier, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -360,8 +360,8 @@ func TestNewHandlerRefusesANamedVerifier(t *testing.T) {
 	}
 }
 
-// The proxy holds CDS to the configuration it runs on, so a document naming
-// only its image admits any CDS VM.
+// The proxy holds Trust Authority to the configuration it runs on, so a document naming
+// only its image admits any Trust Authority VM.
 func TestNewHandlerRejectsAPinWithoutALaunchBinding(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "cds-pin.json")
 	unbound := `{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"cds","measurement":"` + testutil.TestMeasurement + `"}]}`
@@ -369,7 +369,7 @@ func TestNewHandlerRejectsAPinWithoutALaunchBinding(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err := newHandler(t.Context(), config{
-		cdsURL:             "https://c8s-cds:8443",
+		taURL:              "https://c8s-cds:8443",
 		measurementsConfig: path,
 		attestationAPIURL:  "http://attestation-api:8400",
 		requestTimeout:     time.Second,
@@ -382,7 +382,7 @@ func TestNewHandlerRejectsAPinWithoutALaunchBinding(t *testing.T) {
 func TestNewHandlerServesHealthWithoutDialingCDS(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	handler, err := newHandler(t.Context(), config{
-		cdsURL:             "https://c8s-cds.c8s-system.svc:8443",
+		taURL:              "https://c8s-cds.c8s-system.svc:8443",
 		measurementsConfig: testutil.CDSPinFile(t),
 		attestationAPIURL:  "http://attestation-api.c8s-system.svc:8400",
 		requestTimeout:     time.Second,
@@ -516,7 +516,7 @@ func validConfig(t *testing.T) config {
 	return config{
 		host:               "127.0.0.1",
 		port:               8801,
-		cdsURL:             "https://c8s-cds.c8s-system.svc:8443",
+		taURL:              "https://c8s-cds.c8s-system.svc:8443",
 		measurementsConfig: testutil.CDSPinFile(t),
 		attestationAPIURL:  "http://attestation-api.c8s-system.svc:8400",
 		requestTimeout:     time.Second,

@@ -18,7 +18,7 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
-// Exit codes. An answer from CDS, including "nothing answered", is the
+// Exit codes. An answer from the Trust Authority, including "nothing answered", is the
 // probe's success; only a failure to pose the question is its own.
 const (
 	exitOK    = 0
@@ -27,7 +27,7 @@ const (
 
 // options are the flags every action shares.
 type options struct {
-	cdsURL         string
+	taURL          string
 	attestationURL string
 	policyFile     string
 	policyJSON     string
@@ -39,15 +39,15 @@ type options struct {
 }
 
 func (o *options) validate() error {
-	if o.cdsURL == "" {
+	if o.taURL == "" {
 		return fmt.Errorf("--ta-url is required")
 	}
-	if err := cmdsutil.ValidateHTTPURL("--ta-url", o.cdsURL); err != nil {
+	if err := cmdsutil.ValidateHTTPURL("--ta-url", o.taURL); err != nil {
 		return err
 	}
-	o.cdsURL = strings.TrimRight(o.cdsURL, "/")
+	o.taURL = strings.TrimRight(o.taURL, "/")
 	if o.attestationURL == "" {
-		return fmt.Errorf("--attestation-api-url is required to verify CDS")
+		return fmt.Errorf("--attestation-api-url is required to verify Trust Authority")
 	}
 	if o.certPath == "" || o.keyPath == "" {
 		return fmt.Errorf("--cert and --key are required")
@@ -74,7 +74,7 @@ type requestOptions struct {
 func NewCmd() *cobra.Command { return newCmd(os.Exit, sidecar.NewClient) }
 
 // newCmd takes the exit function so tests can observe the code, and the
-// client builder so they can stand a plain TLS server in for CDS. Every failure
+// client builder so they can stand a plain TLS server in for Trust Authority. Every failure
 // goes through it rather than up to cobra's caller, which maps every error to
 // exit 1; the probe's contract is 2 for anything that is not an answer.
 func newCmd(exit func(int), newClient clientFunc) *cobra.Command {
@@ -86,12 +86,12 @@ func newCmd(exit func(int), newClient clientFunc) *cobra.Command {
 		Long: `secret-probe is a conformance test instrument, not a client for applications.
 
 The conformance steps exec it in a pod's certificate sidecar, where the pod's
-CDS-issued leaf and the node's sandbox-inventory socket are. Each action is one
+Trust Authority-issued leaf and the node's sandbox-inventory socket are. Each action is one
 piece of the request a get-secret sidecar makes, with the sidecar's choices
 handed to the caller, so a scenario can present what a sidecar never would: a
 missing or replayed challenge, another pod's token, a non-canonical path.
 
-  challenge   fetch a fresh challenge from CDS; prints it base64, one line
+  challenge   fetch a fresh challenge from the Trust Authority; prints it base64, one line
   token       redeem a sandbox token for this sandbox, bound to the leaf's key
               and to --challenge (32 random bytes when none is given); prints
               the JSON the Authorization header carries, one line
@@ -101,10 +101,10 @@ missing or replayed challenge, another pod's token, a non-canonical path.
               base64 or - when the header was omitted, then the body exactly
               as received
 
-CDS is verified as the pod's sidecars verify it: its armTLS certificate
-through --attestation-api-url, against the node's CDS pins where the enforcer
+Trust Authority is verified as the pod's sidecars verify it: its armTLS certificate
+through --attestation-api-url, against the node's Trust Authority pins where the enforcer
 mounts them, otherwise the measurement or image-policy pins given; with
-neither, every request fails. Exit 0 whenever an answer was printed, a CDS that
+neither, every request fails. Exit 0 whenever an answer was printed, a Trust Authority that
 issued no challenge included (status 000); 2 on a usage error, an unreadable
 file, or a token the inventory did not redeem, with the reason on stderr.`,
 		Args:          cobra.ArbitraryArgs,
@@ -127,18 +127,18 @@ file, or a token the inventory did not redeem, with the reason on stderr.`,
 		return nil
 	})
 	pf := root.PersistentFlags()
-	pf.StringVar(&o.cdsURL, "ta-url", "", "base URL of CDS (required)")
+	pf.StringVar(&o.taURL, "ta-url", "", "base URL of Trust Authority (required)")
 	cmdsutil.AliasFlag(pf, "ta-url", "cds-url")
-	pf.StringVar(&o.attestationURL, "attestation-api-url", "", "local attestation-api used to verify CDS's armTLS certificate (required)")
-	cmdsutil.BindTAImagePolicyFlags(pf, &o.policyFile, &o.policyJSON, "pins CDS, every entry bound to the launch file it runs on")
-	pf.StringVar(&o.certPath, "cert", "", "the pod's CDS-issued certificate, presented to CDS (required)")
+	pf.StringVar(&o.attestationURL, "attestation-api-url", "", "local attestation-api used to verify Trust Authority's armTLS certificate (required)")
+	cmdsutil.BindTAImagePolicyFlags(pf, &o.policyFile, &o.policyJSON, "pins Trust Authority, every entry bound to the launch file it runs on")
+	pf.StringVar(&o.certPath, "cert", "", "the pod's Trust Authority-issued certificate, presented to the Trust Authority (required)")
 	pf.StringVar(&o.keyPath, "key", "", "private key for --cert (required)")
 	pf.StringVar(&o.socket, "socket", strings.TrimPrefix(workloadclaims.InventoryEndpoint(), "unix://"), "the inventory's token socket")
 	pf.DurationVar(&o.timeout, "timeout", 20*time.Second, "per-request timeout")
 
 	root.AddCommand(&cobra.Command{
 		Use:   "challenge",
-		Short: "Fetch a fresh challenge from CDS and print it base64",
+		Short: "Fetch a fresh challenge from the Trust Authority and print it base64",
 		Args:  cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			exit(runChallenge(cmd.Context(), o, args, cmd.OutOrStdout(), cmd.ErrOrStderr()))
@@ -263,7 +263,7 @@ func runRequest(ctx context.Context, o options, ro requestOptions, args []string
 
 	// The challenge header's bytes, and the nonce a fresh token binds to. A
 	// header the request omits still leaves a token to bind: to random bytes,
-	// as the token action does. A CDS that issues no challenge has answered
+	// as the token action does. A Trust Authority that issues no challenge has answered
 	// the request: nothing.
 	var challenge, nonce []byte
 	var err error
@@ -305,7 +305,7 @@ func runRequest(ctx context.Context, o options, ro requestOptions, args []string
 		return exitUsage
 	}
 	// From here on the answer is printed and the exit is 0: the scenario asked
-	// what CDS does, and a connection it refused or dropped is what it did.
+	// what Trust Authority does, and a connection it refused or dropped is what it did.
 	fmt.Fprintln(out, answerLine(status, challenge, tokenJSON))
 	if _, werr := out.Write(body); werr != nil {
 		fmt.Fprintln(errOut, "secret-probe: write answer:", werr)
@@ -331,7 +331,7 @@ func answerLine(status int, challenge, tokenJSON []byte) string {
 }
 
 // givenToken is the --token value's bytes, untouched so a deliberately altered
-// token reaches CDS as given. @FILE reads the file, less the single trailing
+// token reaches Trust Authority as given. @FILE reads the file, less the single trailing
 // newline the token action prints, so its output can be saved and replayed.
 func givenToken(v string) ([]byte, error) {
 	if !strings.HasPrefix(v, "@") {

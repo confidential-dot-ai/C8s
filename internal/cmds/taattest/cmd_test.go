@@ -89,7 +89,7 @@ func TestRunErrors(t *testing.T) {
 // routed, so run refuses before serving anything.
 func TestRunRequiresCDSURL(t *testing.T) {
 	cfg := routedRunConfig(t, freePort(t))
-	cfg.routing.cdsURL = ""
+	cfg.routing.taURL = ""
 	if err := run(t.Context(), cfg); err == nil || !strings.Contains(err.Error(), "--ta-url is required") {
 		t.Fatalf("run() without --ta-url = %v, want the --ta-url error", err)
 	}
@@ -131,7 +131,7 @@ func TestRunRefusesBeforeServing(t *testing.T) {
 			wantSub: "is plaintext at an address this pod named",
 		},
 		{
-			name:    "an unpinned CDS",
+			name:    "an unpinned Trust Authority",
 			edit:    func(c *config) { c.routing.imagePolicyFile = "" },
 			wantSub: cmdsutil.ErrCDSPinUnbound.Error(),
 		},
@@ -147,7 +147,7 @@ func TestRunRefusesBeforeServing(t *testing.T) {
 	}
 }
 
-// routedRunConfig is a config run accepts, polling a CDS that cannot be
+// routedRunConfig is a config run accepts, polling a Trust Authority that cannot be
 // reached and naming an attestation-api that does not answer.
 func routedRunConfig(t *testing.T, attestPort int) config {
 	t.Helper()
@@ -163,7 +163,7 @@ func routedRunConfig(t *testing.T, attestPort int) config {
 		establishRate:     defaultEstablishRate,
 		establishBurst:    defaultEstablishBurst,
 		routing: routingConfig{
-			cdsURL:          "https://127.0.0.1:9",
+			taURL:           "https://127.0.0.1:9",
 			imagePolicyFile: testutil.CDSPinFile(t),
 			launchKeysFile:  filepath.Join(t.TempDir(), "absent"),
 			pollInterval:    time.Hour,

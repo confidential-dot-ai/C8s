@@ -28,7 +28,7 @@ type PollerConfig struct {
 	Logger     *slog.Logger
 }
 
-// Poller fetches the signed manifest from the CDS on an interval and offers
+// Poller fetches the signed manifest from the Trust Authority on an interval and offers
 // it to the State.
 type Poller struct {
 	cfg     PollerConfig
