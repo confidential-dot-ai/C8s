@@ -48,7 +48,7 @@ type config struct {
 	Worker bool `yaml:"worker"`
 
 	// cdsAddress is the <host>:<port> this node's CDS serves on, read at load
-	// from what names it (cdsaddress.go). "" when nothing does.
+	// from what names it (taaddress.go). "" when nothing does.
 	cdsAddress string
 }
 
@@ -307,7 +307,7 @@ const NodeIPFile = "node-ip"
 const DefaultConfigPath = "/etc/nri/conf.d/image-policy.yaml"
 
 // loadConfig loads configuration from a YAML file, and completes the one
-// binding a launched node makes itself (cdsaddress.go).
+// binding a launched node makes itself (taaddress.go).
 func loadConfig(path string) (*config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -460,7 +460,7 @@ func (c *config) PullEnabled() bool {
 }
 
 // pullURL is the CDS this node pulls its allowlist from: the endpoint
-// whatever named it at load (cdsaddress.go), dialled over armTLS. Empty where
+// whatever named it at load (taaddress.go), dialled over armTLS. Empty where
 // the config names no CDS.
 func (c *config) pullURL() string {
 	if c.cdsAddress == "" {

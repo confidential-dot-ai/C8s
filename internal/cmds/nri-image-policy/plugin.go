@@ -88,7 +88,7 @@ type plugin struct {
 
 	// cdsPins is the node-side path of the CDS attestation policy handed to
 	// the injected credential clients, or "" when no pod of this node is
-	// injected. prepareCDSPins sets it before any container can be created (cdspins.go).
+	// injected. prepareCDSPins sets it before any container can be created (tapins.go).
 	cdsPins string
 
 	// awaitingDecree holds back every container cdsPins would be mounted
@@ -98,7 +98,7 @@ type plugin struct {
 	// cdsAddress is the node-side path of the CDS endpoint handed to those
 	// same clients, or "" when no pod of this node is injected.
 	// prepareCDSAddress sets it before any container can be created
-	// (cdsaddress.go).
+	// (taaddress.go).
 	cdsAddress string
 
 	// clientDocument is the guest-side path of a Pod CVM's client document,

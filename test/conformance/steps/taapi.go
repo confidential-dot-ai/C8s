@@ -80,7 +80,7 @@ type reading struct {
 
 const allowlistPath = "/allowlist"
 
-// cdsAPIState is the scenario's view of the CDS API (cdsapi.go): who sends
+// cdsAPIState is the scenario's view of the CDS API (taapi.go): who sends
 // the next write, the last write's token and status, a write signed before
 // it is sent, and what a relying party read.
 type cdsAPIState struct {

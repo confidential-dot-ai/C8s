@@ -25,7 +25,7 @@ import (
 
 // The non-critical extensions a leaf carries under the C8s arc
 // 1.3.6.1.4.1.66378.1: the certificate evidence copied from the CSR (.1,
-// oidARMTLSAttestation in cds.go), the digest of the evidence the CDS
+// oidARMTLSAttestation in ta.go), the digest of the evidence the CDS
 // verified (.2), the sandbox ID the inventory bound (.4) and the matched
 // workload (.5).
 var (
