@@ -93,7 +93,9 @@ describe() { # $1=source-root $2=file $3=line $4=column $5=type; one markdown li
   root="$(CDPATH="" cd -P "$1" 2>/dev/null && pwd -P && printf x)" || root=""
   src="$1/$2"
   dir="$(CDPATH="" cd -P "${src%/*}" 2>/dev/null && pwd -P && printf x)" || dir=""
-  root="${root%$'\n'x}" dir="${dir%$'\n'x}" src="${dir%$'\n'x}/${2##*/}"
+  root="${root%$'\n'x}"
+  dir="${dir%$'\n'x}"
+  src="$dir/${2##*/}"
   if [[ "$3" =~ ^[1-9][0-9]*$ && "$4" =~ ^[1-9][0-9]*$ && -n "$root" && "$dir/" == "$root/"* \
     && -f "$src" && ! -L "$src" && -r "$src" ]]; then
     text="$(sed -n "${3}p" "$src" 2>/dev/null)" || text=""
