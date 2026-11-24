@@ -245,6 +245,12 @@ func (s *policyStore) rebuildEndedSets() bool {
 	}
 }
 
+// baseBindsRole reports whether the measured base binds this launch a role: a
+// component container of a set holds one the base binds nothing.
+func (s *policyStore) baseBindsRole(r allowlist.RunningContainer) bool {
+	return s.base.RoleOf(r) != ""
+}
+
 // roleOf is the platform role the base allowlist, or a component set the
 // applied document holds in force, binds to this launch. Two of them binding
 // different roles bind none, as two declarations within one index do.

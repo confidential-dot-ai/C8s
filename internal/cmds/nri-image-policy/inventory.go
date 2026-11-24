@@ -358,3 +358,15 @@ func (b *admissionInventory) podSnapshot(sandboxID string) ([]workloadclaims.San
 	_, containers, err := b.admitted[sandboxID].Snapshot(nil)
 	return containers, b.revision, err
 }
+
+// recordedContainers are the containers the inventory holds for a sandbox:
+// every container admission let run there, each with the digest, argv, env,
+// mounts and role it was admitted under. It is empty where the
+// sandbox-identity flow is off (plugin.inventory).
+func (p *plugin) recordedContainers(sandboxID string) ([]workloadclaims.SandboxContainer, error) {
+	if p.inventory == nil {
+		return nil, nil
+	}
+	_, recorded, _, err := p.inventory.DigestsForSandbox(sandboxID)
+	return recorded, err
+}
