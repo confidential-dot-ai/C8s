@@ -235,7 +235,8 @@ func collisionsWithLive(entries map[string]pkgallowlist.Workload, live *pkgallow
 	}
 	var out []finding
 	for _, names := range groups {
-		applied, served := 0, 0
+		applied := 0
+		served := 0
 		for _, n := range names {
 			if _, ok := entries[n]; ok {
 				applied++
@@ -284,14 +285,14 @@ func applyEntries(cmd *cobra.Command, c allowlistclient.Client, read allowlistRe
 	entries map[string]pkgallowlist.Workload, signer allowlistclient.Authorizer) error {
 	for attempt := 1; ; attempt++ {
 		doc := documentWith(read, entries)
-		served, err := changeAlreadyServed(doc, read, attempt)
+		served, err := changeAlreadyServed(&doc, read, attempt)
 		if err != nil {
 			return err
 		}
 		if served {
 			return nil
 		}
-		newer, err := conditionalWrite(cmd, c, doc, read, attempt, signer)
+		newer, err := conditionalWrite(cmd, c, &doc, read, attempt, signer)
 		if err != nil {
 			return writeFailure(fmt.Sprintf("apply %d entr(ies) in one write", len(entries)), "nothing was applied", err)
 		}
@@ -314,14 +315,14 @@ func deleteEntries(cmd *cobra.Command, c allowlistclient.Client, read allowlistR
 	names []string, signer allowlistclient.Authorizer) error {
 	for attempt := 1; ; attempt++ {
 		doc := documentWithout(read, names)
-		served, err := changeAlreadyServed(doc, read, attempt)
+		served, err := changeAlreadyServed(&doc, read, attempt)
 		if err != nil {
 			return err
 		}
 		if served {
 			return nil
 		}
-		newer, err := conditionalWrite(cmd, c, doc, read, attempt, signer)
+		newer, err := conditionalWrite(cmd, c, &doc, read, attempt, signer)
 		if err != nil {
 			return writeFailure(fmt.Sprintf("delete %d entr(ies) in one write", len(names)), "nothing was deleted", err)
 		}
@@ -398,20 +399,30 @@ func reportRacingWrite(cmd *cobra.Command, read, newer allowlistRead) {
 }
 
 // documentWith is the document read with every entry of entries put in.
-func documentWith(read allowlistRead, entries map[string]pkgallowlist.Workload) *pkgallowlist.Allowlist {
+func documentWith(read allowlistRead, entries map[string]pkgallowlist.Workload) pkgallowlist.Allowlist {
 	merged := make(map[string]pkgallowlist.Workload, len(read.document.Workloads)+len(entries))
 	maps.Copy(merged, read.document.Workloads)
 	maps.Copy(merged, entries)
-	return &pkgallowlist.Allowlist{Schema: read.document.Schema, Workloads: merged}
+	return documentWithWorkloads(read, merged)
 }
 
 // documentWithout is the document read without the named entries.
-func documentWithout(read allowlistRead, names []string) *pkgallowlist.Allowlist {
+func documentWithout(read allowlistRead, names []string) pkgallowlist.Allowlist {
 	kept := maps.Clone(read.document.Workloads)
 	for _, name := range names {
 		delete(kept, name)
 	}
-	return &pkgallowlist.Allowlist{Schema: read.document.Schema, Workloads: kept}
+	return documentWithWorkloads(read, kept)
+}
+
+// documentWithWorkloads is the document read with workloads in place of its
+// workloads section. Every other section goes back as it was read.
+func documentWithWorkloads(read allowlistRead, workloads map[string]pkgallowlist.Workload) pkgallowlist.Allowlist {
+	return pkgallowlist.Allowlist{
+		Schema:     read.document.Schema,
+		Workloads:  workloads,
+		Components: read.document.Components,
+	}
 }
 
 // sameDocument reports whether a and b have the same canonical bytes.
@@ -582,7 +593,9 @@ func runEditor(path string) error {
 	fields := strings.Fields(editor)
 	args := append(fields[1:], path)
 	c := exec.Command(fields[0], args...)
-	c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
+	c.Stdin = os.Stdin
+	c.Stdout = os.Stdout
+	c.Stderr = os.Stderr
 	if err := c.Run(); err != nil {
 		return fmt.Errorf("editor %q: %w", editor, err)
 	}

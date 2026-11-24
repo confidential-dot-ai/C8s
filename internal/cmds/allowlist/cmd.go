@@ -81,7 +81,9 @@ allowlist").`,
 	taconn.BindFlags(pf, &o.Options)
 	pf.StringVarP(&o.output, "output", "o", "text", "output format: text or json")
 
-	derive, lint, inspectImage := newDeriveCmd(o), newLintCmd(o), newInspectImageCmd(o)
+	derive := newDeriveCmd(o)
+	lint := newLintCmd(o)
+	inspectImage := newInspectImageCmd(o)
 	cmdsutil.HideUnreadFlags(derive, pf)
 	cmdsutil.HideUnreadFlags(lint, pf)
 	cmdsutil.HideUnreadFlags(inspectImage, pf, "output")
@@ -97,6 +99,7 @@ allowlist").`,
 		newEditCmd(o),
 		newDeleteCmd(o),
 		newUploadCmd(o),
+		newComponentsCmd(o),
 		lint,
 		inspectImage,
 	)

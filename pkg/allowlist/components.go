@@ -122,10 +122,10 @@ func (a *Allowlist) SetsInForce(now time.Time) []SetRef {
 		if !set.InForce(now) {
 			continue
 		}
-		refs = append(refs, SetRef{Version: version, Digest: set.digestString()})
+		refs = append(refs, SetRef{Version: version, Digest: set.DigestString()})
 	}
 	slices.SortFunc(refs, func(x, y SetRef) int {
-		return compareComponentVersions(x.Version, y.Version)
+		return CompareSetVersions(x.Version, y.Version)
 	})
 	return refs
 }
@@ -172,13 +172,14 @@ func (s ComponentSet) admits(r RunningContainer) bool {
 	return false
 }
 
-func (s ComponentSet) digestString() string {
+// DigestString is the set's digest spelled "sha256:<hex>".
+func (s ComponentSet) DigestString() string {
 	digest, _ := s.Digest()
 	return "sha256:" + hex.EncodeToString(digest)
 }
 
-// compareComponentVersions orders two versions by their numbers.
-func compareComponentVersions(a, b string) int {
+// CompareSetVersions orders two set versions by their numbers.
+func CompareSetVersions(a, b string) int {
 	x, _ := parseComponentVersion(a)
 	y, _ := parseComponentVersion(b)
 	return slices.Compare(x[:], y[:])
