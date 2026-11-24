@@ -203,9 +203,10 @@ func run(ctx context.Context, cfg config) error {
 			SandboxBindings:   sandboxBindings,
 		},
 		AllowlistHandler: allowlist.Handler{
-			Allowlist:         allowlistWrites,
-			WriteAuthorizer:   operatorAuthorizer,
-			MaxWriteBodyBytes: allowlistWriteBodyCap,
+			Allowlist:           allowlistWrites,
+			WriteAuthorizer:     operatorAuthorizer,
+			MaxWriteBodyBytes:   allowlistWriteBodyCap,
+			CertificateLifetime: issuer.CapTTL(cfg.certTTL, issuer.MaxLeafTTL),
 		},
 		Routes: routeHandler{
 			Allowlist: allowlistWrites,

@@ -3,8 +3,10 @@ package ta
 import (
 	"fmt"
 	"sync"
+	"time"
 
 	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
 )
 
 // PolicySnapshot is one immutable allowlist state a certificate-issuance
@@ -121,14 +123,74 @@ func (c *policySnapshotCache) snapshot(store policyStore) (*PolicySnapshot, erro
 	if err != nil {
 		return nil, err
 	}
-	c.held, c.gen = snapshot, gen
+	c.held = snapshot
+	c.gen = gen
 	return snapshot, nil
 }
 
-// Contains reports whether a canonical digest string is admitted as any
-// workload container — the same question internal/allowlist.Store.Contains
-// answers, but against this snapshot rather than a separate store read.
-func (s *PolicySnapshot) Contains(digest string) bool {
-	_, ok := s.members[digest]
-	return ok
+// admittedDigests is what the membership gate established about one report:
+// the canonical digest of every image it names, and when the first of those
+// admissions ends.
+type admittedDigests struct {
+	digests map[string]struct{}
+	// end is zero while a workload entry or a current set lists every reported
+	// digest; otherwise a leaf may not outlive it.
+	end time.Time
+}
+
+// admitDigests is the membership gate: every digest the report carries must be
+// admitted at now. It answers for one instant — a set's deadline ends its
+// entries without a write — so it is decided per request and never memoized.
+func (s *PolicySnapshot) admitDigests(reported []string, now time.Time) (admittedDigests, error) {
+	admitted := admittedDigests{digests: make(map[string]struct{}, len(reported))}
+	for _, d := range reported {
+		digest, err := types.ParseDigest(d)
+		if err != nil {
+			return admittedDigests{}, fmt.Errorf("container digest %q: %w", d, err)
+		}
+		end, ok := s.admissionEnd(digest.String(), now)
+		if !ok {
+			return admittedDigests{}, fmt.Errorf("container image %s is not allowlisted", digest)
+		}
+		if !end.IsZero() && (admitted.end.IsZero() || end.Before(admitted.end)) {
+			admitted.end = end
+		}
+		admitted.digests[digest.String()] = struct{}{}
+	}
+	return admitted, nil
+}
+
+// admissionEnd reports whether a canonical digest is admitted at now — by a
+// workload entry, or by an entry of a component set in force then — and when
+// the last set admitting it ends. A workload entry or a current set carries no
+// deadline, so the end is zero.
+func (s *PolicySnapshot) admissionEnd(digest string, now time.Time) (time.Time, bool) {
+	if _, ok := s.members[digest]; ok {
+		return time.Time{}, true
+	}
+	var last time.Time
+	for _, set := range s.Allowlist.Components {
+		if !set.InForce(now) || !setLists(set, digest) {
+			continue
+		}
+		if set.Current() {
+			return time.Time{}, true
+		}
+		if deadline := set.Retire.Deadline.Time; deadline.After(last) {
+			last = deadline
+		}
+	}
+	return last, !last.IsZero()
+}
+
+// setLists reports whether an entry of the set declares digest.
+func setLists(set pkgallowlist.ComponentSet, digest string) bool {
+	for _, entry := range set.Entries {
+		for _, d := range entry.Digests() {
+			if d.String() == digest {
+				return true
+			}
+		}
+	}
+	return false
 }

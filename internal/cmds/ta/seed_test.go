@@ -1,6 +1,7 @@
 package ta
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/allowlist"
@@ -163,5 +164,26 @@ func TestSeedWorkloads_FailsClosedOnStoreError(t *testing.T) {
 	seed := parseSeed(t, map[string]string{"cds": digestA})
 	if err := seedWorkloads(allowlistWrites, seed); err == nil {
 		t.Fatal("seedWorkloads succeeded on a closed store; want fail-closed error")
+	}
+}
+
+// A component set is written by an operator, never seeded: the measured
+// configuration naming one is a configuration error, and the Trust Authority
+// refuses to serve rather than seeding a set nobody signed.
+func TestSeedWorkloads_RefusesAComponentsSection(t *testing.T) {
+	store, err := allowlist.OpenInMemory()
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	seed := parseSeed(t, map[string]string{"cds": digestA})
+	seed.Components = map[string]pkgallowlist.ComponentSet{"0.43.0": {Entries: map[string]pkgallowlist.Workload{}}}
+	err = seedWorkloads(store.Local(), seed)
+	if err == nil {
+		t.Fatal("a seed carrying a components section was accepted")
+	}
+	if !strings.Contains(err.Error(), "components") {
+		t.Fatalf("error %q does not name the components section", err)
 	}
 }

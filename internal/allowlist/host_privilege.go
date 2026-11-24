@@ -3,6 +3,7 @@ package allowlist
 import (
 	"database/sql"
 	"fmt"
+	"maps"
 	"slices"
 
 	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
@@ -63,38 +64,59 @@ func seedDeclaresHostPrivilegeTx(tx *sql.Tx, seed map[string]pkgallowlist.Worklo
 }
 
 // hostPrivilegeLatch is what commitTx needs to record a grant: the declarations
-// the write serves and the entries it replaces. The zero value grants nothing.
+// the write serves and the ones it replaces. The zero value grants nothing.
 type hostPrivilegeLatch struct {
 	declared []string
 	replaced map[string]bool
 }
 
 // hostPrivilegeLatchTx reads the latch of the document about to replace the
-// store's entries; call it before replaceContentsTx.
+// store's contents; call it before replaceContentsTx.
 func hostPrivilegeLatchTx(tx *sql.Tx, al *pkgallowlist.Allowlist) (hostPrivilegeLatch, error) {
-	latch := hostPrivilegeLatch{replaced: map[string]bool{}}
-	for _, w := range al.Workloads {
+	declared, err := hostPrivilegeKeys(al.Workloads, al.Components)
+	if err != nil {
+		return hostPrivilegeLatch{}, err
+	}
+	workloads, err := loadWorkloads(tx)
+	if err != nil {
+		return hostPrivilegeLatch{}, err
+	}
+	components, err := loadComponents(tx)
+	if err != nil {
+		return hostPrivilegeLatch{}, err
+	}
+	replaced, err := hostPrivilegeKeys(workloads, components)
+	if err != nil {
+		return hostPrivilegeLatch{}, err
+	}
+	latch := hostPrivilegeLatch{declared: declared, replaced: map[string]bool{}}
+	for _, key := range replaced {
+		latch.replaced[key] = true
+	}
+	return latch, nil
+}
+
+// hostPrivilegeKeys are the declaration keys of every entry of a document that
+// declares host privilege. A component set's entries count as the workloads
+// section's do: a set introducing a host port or a host bind is the write that
+// granted it.
+func hostPrivilegeKeys(workloads map[string]pkgallowlist.Workload, components map[string]pkgallowlist.ComponentSet) ([]string, error) {
+	entries := slices.Collect(maps.Values(workloads))
+	for _, set := range components {
+		entries = append(entries, slices.Collect(maps.Values(set.Entries))...)
+	}
+	var keys []string
+	for _, w := range entries {
 		if !w.DeclaresHostPrivilege() {
 			continue
 		}
 		key, err := declarationKey(w)
 		if err != nil {
-			return hostPrivilegeLatch{}, err
+			return nil, err
 		}
-		latch.declared = append(latch.declared, key)
+		keys = append(keys, key)
 	}
-	replaced, err := loadWorkloads(tx)
-	if err != nil {
-		return hostPrivilegeLatch{}, err
-	}
-	for _, w := range replaced {
-		key, err := declarationKey(w)
-		if err != nil {
-			return hostPrivilegeLatch{}, err
-		}
-		latch.replaced[key] = true
-	}
-	return latch, nil
+	return keys, nil
 }
 
 // declarationKey is an entry as the latch compares it: its canonical JSON, with

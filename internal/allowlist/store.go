@@ -22,7 +22,9 @@ import (
 // Store provides persistent storage for the Trust Authority allowlist using SQLite.
 //
 // `workload_entry` holds one canonical allowlist.Workload JSON per named entry,
-// `workload_entry_digest` indexes each container digest for membership, and
+// `component_set` one canonical allowlist.ComponentSet JSON per release
+// version, `workload_entry_digest` indexes each container digest for
+// membership, and
 // `allowlist_version` is the counter every mutation bumps (the version nodes
 // refuse to go below). The journal tables (journal.go) keep the history of
 // served documents.
@@ -59,6 +61,10 @@ INSERT INTO allowlist_version (version)
 CREATE TABLE IF NOT EXISTS workload_entry (
 	name       TEXT PRIMARY KEY,
 	entry_json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS component_set (
+	version  TEXT PRIMARY KEY,
+	set_json TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS workload_entry_digest (
 	digest     TEXT NOT NULL,
@@ -168,15 +174,29 @@ func (s *Store) LoadAll() (*pkgallowlist.Allowlist, string, error) {
 		version = "1"
 	}
 
-	workloads, err := loadWorkloads(s.db)
+	document, err := loadDocument(s.db)
 	if err != nil {
 		return nil, "", err
 	}
+	return document, version, nil
+}
 
+// loadDocument is the stored document: the workloads section and the component
+// sets beside it.
+func loadDocument(q querier) (*pkgallowlist.Allowlist, error) {
+	workloads, err := loadWorkloads(q)
+	if err != nil {
+		return nil, err
+	}
+	components, err := loadComponents(q)
+	if err != nil {
+		return nil, err
+	}
 	return &pkgallowlist.Allowlist{
-		Schema:    pkgallowlist.Schema,
-		Workloads: workloads,
-	}, version, nil
+		Schema:     pkgallowlist.Schema,
+		Workloads:  workloads,
+		Components: components,
+	}, nil
 }
 
 // querier is *sql.DB or *sql.Tx. Inside a transaction reads must go through
@@ -204,6 +224,31 @@ func loadWorkloads(q querier) (map[string]pkgallowlist.Workload, error) {
 		workloads[name] = w
 	}
 	return workloads, rows.Err()
+}
+
+// loadComponents reads the component sets, nil when the document has none.
+func loadComponents(q querier) (map[string]pkgallowlist.ComponentSet, error) {
+	rows, err := q.Query("SELECT version, set_json FROM component_set")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var components map[string]pkgallowlist.ComponentSet
+	for rows.Next() {
+		var version, setJSON string
+		if err := rows.Scan(&version, &setJSON); err != nil {
+			return nil, err
+		}
+		var set pkgallowlist.ComponentSet
+		if err := json.Unmarshal([]byte(setJSON), &set); err != nil {
+			return nil, fmt.Errorf("decode component set %q: %w", version, err)
+		}
+		if components == nil {
+			components = map[string]pkgallowlist.ComponentSet{}
+		}
+		components[version] = set
+	}
+	return components, rows.Err()
 }
 
 // Contains reports whether digest is indexed as a workload container. It is
@@ -349,7 +394,8 @@ func (s *Store) seedWorkloads(workloads map[string]pkgallowlist.Workload, at tim
 // retireReplacedTx deletes every stored entry seed replaces and returns how
 // many it deleted.
 func retireReplacedTx(tx *sql.Tx, seed map[string]pkgallowlist.Workload) (int, error) {
-	seedKeys, overrideKeys := map[string]bool{}, map[string]bool{}
+	seedKeys := map[string]bool{}
+	overrideKeys := map[string]bool{}
 	for name := range seed {
 		if key := GeneratedKey(name); key != "" {
 			seedKeys[key] = true
@@ -513,8 +559,18 @@ func replaceContentsTx(tx *sql.Tx, al *pkgallowlist.Allowlist) error {
 	for _, stmt := range []string{
 		"DELETE FROM workload_entry",
 		"DELETE FROM workload_entry_digest",
+		"DELETE FROM component_set",
 	} {
 		if _, err := tx.Exec(stmt); err != nil {
+			return err
+		}
+	}
+	for version, set := range al.Components {
+		stored, err := json.Marshal(set)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec("INSERT INTO component_set (version, set_json) VALUES (?, ?)", version, string(stored)); err != nil {
 			return err
 		}
 	}

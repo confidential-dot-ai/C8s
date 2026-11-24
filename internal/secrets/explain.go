@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -88,8 +89,14 @@ type ExplainHandler struct {
 	// Authorize is operatorauth.Verifier.Authorize. Nil rejects every request.
 	Authorize func(r *http.Request, body []byte) error
 
+	// Now decides which component sets are in force for the decision it
+	// reports; nil reads the wall clock.
+	Now func() time.Time
+
 	Logger *slog.Logger
 }
+
+func (h ExplainHandler) now() time.Time { return nowOrWallClock(h.Now) }
 
 func (h ExplainHandler) logger() *slog.Logger {
 	if h.Logger != nil {
@@ -174,6 +181,17 @@ func (h ExplainHandler) explain(ctx context.Context, sandboxID string) ExplainRe
 			continue
 		}
 		resp.Candidates = append(resp.Candidates, entry)
+	}
+	// The release path decides membership and component sets before it matches
+	// an entry, so a pod refused there never reaches the entry verdicts.
+	now := h.now()
+	if err := workloadclaims.RequireAllowlisted(al, reported, now); err != nil {
+		resp.Refusal = err.Error()
+		return resp
+	}
+	if _, err := workloadclaims.ComponentSets(al, reported, now); err != nil {
+		resp.Refusal = err.Error()
+		return resp
 	}
 	candidates := WorkloadContainers(reported)
 	if len(candidates) == 0 {

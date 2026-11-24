@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -228,6 +229,59 @@ func TestExplainReportsEarlyRefusals(t *testing.T) {
 		_, resp := eh.serve(testSandbox)
 		if !strings.Contains(resp.Refusal, "platform-injected") {
 			t.Fatalf("refusal = %q", resp.Refusal)
+		}
+	})
+	t.Run("an image no entry in force lists", func(t *testing.T) {
+		eh := newExplainHarness(t)
+		eh.inv.containers = append(eh.inv.containers,
+			workloadclaims.SandboxContainer{Digest: testWorkerImg, Argv: []string{"sh"}})
+		_, resp := eh.serve(testSandbox)
+		if !strings.Contains(resp.Refusal, "is not allowlisted") {
+			t.Fatalf("refusal = %q", resp.Refusal)
+		}
+	})
+	t.Run("component containers from two sets", func(t *testing.T) {
+		eh := newExplainHarness(t)
+		al, _ := eh.h.Policy.Allowlist()
+		al.Components = map[string]pkgallowlist.ComponentSet{
+			"0.43.0": componentSet(t, false, map[string]pkgallowlist.Workload{
+				"c8s-credentials": pinnedEntry(t, testInjected, roleCredentials, "/c8s"),
+			}),
+			"0.44.0": componentSet(t, false, map[string]pkgallowlist.Workload{
+				"c8s-mesh": pinnedEntry(t, testMeshImg, roleMesh, "/mesh"),
+			}),
+		}
+		eh.inv.containers = append(eh.inv.containers,
+			reportedSidecar(testInjected, roleCredentials, "/c8s"),
+			reportedSidecar(testMeshImg, roleMesh, "/mesh"))
+		_, resp := eh.serve(testSandbox)
+		if !strings.Contains(resp.Refusal, "no common component set in force") {
+			t.Fatalf("refusal = %q", resp.Refusal)
+		}
+	})
+	// The clock, not a write, ends a set: the same report is explained as
+	// released before the deadline and refused at it.
+	t.Run("the pod's component set has ended", func(t *testing.T) {
+		eh := newExplainHarness(t)
+		al, _ := eh.h.Policy.Allowlist()
+		al.Components = map[string]pkgallowlist.ComponentSet{
+			"0.43.0": componentSet(t, true, map[string]pkgallowlist.Workload{
+				"c8s-mesh": pinnedEntry(t, testMeshImg, roleMesh, "/mesh"),
+			}),
+		}
+		eh.inv.containers = []workloadclaims.SandboxContainer{
+			{Digest: testAppImg, Argv: []string{"/serve"}},
+			{Digest: testAppImg2, Argv: []string{"/metrics"}},
+			reportedSidecar(testMeshImg, roleMesh, "/mesh"),
+		}
+
+		eh.h.Now = func() time.Time { return setDeadline.Add(-time.Hour) }
+		if _, resp := eh.serve(testSandbox); resp.Match != "api" || resp.Refusal != "" {
+			t.Fatalf("before the deadline: match=%q refusal=%q", resp.Match, resp.Refusal)
+		}
+		eh.h.Now = func() time.Time { return setDeadline }
+		if _, resp := eh.serve(testSandbox); !strings.Contains(resp.Refusal, "is not allowlisted") {
+			t.Fatalf("at the deadline: refusal = %q", resp.Refusal)
 		}
 	})
 	t.Run("matching entry has no grant", func(t *testing.T) {

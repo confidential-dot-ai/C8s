@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -28,6 +29,10 @@ type Handler struct {
 	// MaxWriteBodyBytes caps mutation request bodies. Zero means
 	// DefaultMaxWriteBodyBytes; a non-positive value clamps to the default.
 	MaxWriteBodyBytes int64
+	// CertificateLifetime is the longest leaf the Trust Authority issues,
+	// reported to a poller so it knows how stale its policy may be while its
+	// certificates live.
+	CertificateLifetime time.Duration
 }
 
 // WriteAuthorizer authorizes a mutation given the raw request body, so the
@@ -56,6 +61,9 @@ func (h Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 	tag := pkgallowlist.EntityTag(objectDigest(body))
 	w.Header().Set("ETag", tag)
 	w.Header().Set(pkgallowlist.VersionHeader, version)
+	if h.CertificateLifetime > 0 {
+		w.Header().Set(pkgallowlist.CertificateLifetimeHeader, strconv.Itoa(int(h.CertificateLifetime.Seconds())))
+	}
 	if r.Header.Get("If-None-Match") == tag {
 		w.WriteHeader(http.StatusNotModified)
 		return
