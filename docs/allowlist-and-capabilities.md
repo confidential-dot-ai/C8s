@@ -440,11 +440,12 @@ lifetime takes no new pod, tenant pods included, until the Trust Authority
 answers it again.
 
 A node is not fresh until its first poll of this process lands. The startup
-fetch retries for about 30s; when it gives up, the node keeps the containers it
-recovered and refuses new ones its base allowlist alone does not admit. A
-restart while Trust Authority answers changes nothing. `GET /healthz` reports
-`fresh` and `freshness_limit_seconds`, so an operator sees a node falling behind
-before it stops taking pods.
+fetch gives up after five failed attempts, at least 30s in all. The node then
+holds its base allowlist alone: the startup recheck stops each container it
+recovered that the base does not admit, and the node refuses new ones the same
+way until a poll lands. A restart while Trust Authority answers changes
+nothing. `GET /healthz` reports `fresh` and `freshness_limit_seconds`, so an
+operator sees a node falling behind before it stops taking pods.
 
 ## Bootstrap
 
