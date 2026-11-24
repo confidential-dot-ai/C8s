@@ -37,18 +37,30 @@ func TestRouterServiceAccountRendered(t *testing.T) {
 	t.Fatal("chart rendered no router Deployment")
 }
 
-func TestRouterPodReaderOnlyRuleIsPodsListWatch(t *testing.T) {
+func TestRouterReaderGrants(t *testing.T) {
 	t.Parallel()
-	out, err := helmTemplate(t)
-	if err != nil {
-		t.Fatalf("render: %v\n%s", err, out)
-	}
-	var role rbacv1.ClusterRole
-	if !findDoc(t, out, "ClusterRole", "c8s-router", &role) {
-		t.Fatal("chart renders no ClusterRole c8s-router")
-	}
-	want := []rbacv1.PolicyRule{{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"list", "watch"}}}
-	if !reflect.DeepEqual(role.Rules, want) {
-		t.Errorf("c8s-router ClusterRole rules = %+v, want %+v", role.Rules, want)
+	pods := rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"list", "watch"}}
+	nodes := rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"nodes"}, Verbs: []string{"list"}}
+	for _, tc := range []struct {
+		name   string
+		render func(*testing.T, ...string) (string, error)
+		want   []rbacv1.PolicyRule
+	}{
+		{"cloud", helmTemplate, []rbacv1.PolicyRule{pods}},
+		{"worker", helmTemplateWorker, []rbacv1.PolicyRule{pods, nodes}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := tc.render(t)
+			if err != nil {
+				t.Fatalf("render: %v\n%s", err, out)
+			}
+			var role rbacv1.ClusterRole
+			if !findDoc(t, out, "ClusterRole", "c8s-router", &role) {
+				t.Fatal("chart renders no ClusterRole c8s-router")
+			}
+			if !reflect.DeepEqual(role.Rules, tc.want) {
+				t.Errorf("c8s-router ClusterRole rules = %+v, want %+v", role.Rules, tc.want)
+			}
+		})
 	}
 }

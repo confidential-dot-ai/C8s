@@ -39,7 +39,8 @@ initContainers:
 containers:
   {{- include "c8s.routerContainers" (dict
     "root" .
-    "allowlistProxyMounts" (include "router.inventoryMount" .)
+    "allowlistProxyMounts" (include "router.allowlistProxyMounts" .)
+    "workerGPUAttestations" true
     "attestationApiMounts" (include "router.attestationApiMount" .)
     "attestationApiURL" $inventoryURL
     "certificateMounts" (include "router.acmeCertificateMounts" . | fromYamlArray)
@@ -49,6 +50,16 @@ containers:
     "ports" (include "router.publicPorts" . | fromJsonArray)
     "settingsMounts" (include "router.nodeConfigMount" . | fromYamlArray)
   ) | nindent 2 }}
+  - name: gpu-attestations
+    image: {{ include "c8s.image" . }}
+    imagePullPolicy: IfNotPresent
+    command: {{ include "c8s.entrypoint" (dict "root" . "valuePath" "image") }}
+    args: ["gpu-attestations"]
+    securityContext:
+      {{- include "c8s.getCertSecurityContext" (dict
+        "runAsUser" (include "c8s.upstreamUID" .)
+        "runAsGroup" (include "c8s.upstreamUID" .)
+      ) | nindent 6 }}
 volumes:
   {{- /* Public launch policy only; Directory requires verified staging to
          have completed. */}}
@@ -111,6 +122,13 @@ securityContext:
 {{- define "router.inventoryMount" -}}
 - name: workload-claims
   mountPath: {{ include "worker.inventoryDir" . }}
+  readOnly: true
+{{- end -}}
+
+{{- define "router.allowlistProxyMounts" -}}
+{{ include "router.inventoryMount" . }}
+- name: c8s-certs
+  mountPath: {{ include "c8s.certDir" . }}
   readOnly: true
 {{- end -}}
 

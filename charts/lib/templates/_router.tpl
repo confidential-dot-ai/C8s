@@ -99,7 +99,7 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{/*
 The router pod's nginx, cds-attest and allowlist-proxy containers. Takes:
   root
-  allowlistProxyMounts  the proxy's mounts of the attestation-api it verifies the Trust Authority through, as YAML
+  allowlistProxyMounts  the proxy's verification socket and any caller credential mounts, as YAML
   attestationApiMounts  cds-attest's mounts of the attestation-api it attests through, as YAML
   attestationApiURL     the attestation-api URL a credentials-role container of this pod dials
   certificateMounts     nginx's mounts of the certificates it serves beside the mesh leaf
@@ -201,6 +201,9 @@ The router pod's nginx, cds-attest and allowlist-proxy containers. Takes:
   command: {{ include "c8s.entrypoint" (dict "root" $root "valuePath" "image") }}
   args:
     {{- include "router.allowlistProxyArgs" (dict "root" $root "attestationApiURL" .attestationApiURL) | fromJsonArray | toYaml | nindent 4 }}
+    {{- if .workerGPUAttestations }}
+    - --worker-gpu-attestations
+    {{- end }}
   volumeMounts:
     {{- .allowlistProxyMounts | nindent 4 }}
     {{- with .sandboxGateMounts }}
@@ -226,11 +229,10 @@ The router pod's nginx, cds-attest and allowlist-proxy containers. Takes:
 {{- list "allowlist-proxy" "--host=127.0.0.1" (printf "--port=%s" (include "router.allowlistProxyPort" .root)) (printf "--attestation-api-url=%s" .attestationApiURL) | toJson -}}
 {{- end -}}
 
-{{/* The router's ServiceAccount and its pod reader. The router resolves the
-     agent a pattern route names from the pods the API reports
-     (internal/routing.WatchAgents). It reads pods only: what it reads decides
-     where a dial goes, and the dial checks the agent's leaf. */}}
-{{- define "router.podReader" -}}
+{{/* The router's ServiceAccount reads pods for routes. The worker also lists
+     nodes for GPU attestation discovery. Takes root and listNodes. */}}
+{{- define "router.reader" -}}
+{{- with .root -}}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -249,6 +251,11 @@ rules:
   - apiGroups: [""]
     resources: [pods]
     verbs: [list, watch]
+  {{- if $.listNodes }}
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [list]
+  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -264,4 +271,5 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "router.fullname" . }}
     namespace: {{ include "c8s.routerMeshNamespace" . }}
+{{- end -}}
 {{- end -}}

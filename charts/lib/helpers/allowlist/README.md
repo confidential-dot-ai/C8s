@@ -228,17 +228,9 @@ nginx and c8s-image container through `c8s.podShapes`, exactly as the
 component entries pin them: command, args and mount table as rendered, env
 matched.
 
-| Container | Declared as |
-|---|---|
-| nginx | main |
-| cds-attest | main |
-| allowlist-proxy | main |
-| acme, `c8s-cert`, `c8s-cert-wait` | init |
-
-A declared init container is admitted but not required. The router's own `c8s-cert` and `c8s-cert-wait`
-are pinned to their exact args, so they are not dropped as injected
-containers (`allowlist.AdmitsInjected` takes open args) and the entry declares
-them.
+The entry requires nginx and cds-attest, and the worker router also requires
+gpu-attestations. It admits ACME as an init container. The measured mesh and
+credentials roles are dropped before matching the router entry.
 
 `c8s.allowlistSeedJSON` seeds the entry when the nginx pin's digest and
 `image.digest` are both set. An argv reference the kubelet would expand fails

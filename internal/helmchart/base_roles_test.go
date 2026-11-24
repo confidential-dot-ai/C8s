@@ -177,13 +177,14 @@ const roleTenantNginxDigest = "sha256:e40000000000000000000000000000000000000000
 
 // routerPodRoles is the role every container of the rendered router pod takes.
 var routerPodRoles = map[string]string{
-	"c8s-mesh":        "mesh",
-	"c8s-cert":        "credentials",
-	"c8s-cert-wait":   "credentials",
-	"allowlist-proxy": "credentials",
-	"nginx":           "router",
-	"cds-attest":      "upstream",
-	"acme":            "acme",
+	"c8s-mesh":         "mesh",
+	"c8s-cert":         "credentials",
+	"c8s-cert-wait":    "credentials",
+	"allowlist-proxy":  "credentials",
+	"nginx":            "router",
+	"cds-attest":       "upstream",
+	"gpu-attestations": "upstream",
+	"acme":             "acme",
 }
 
 // TestChartBaseGrantsTheRouterPodItsRoles proves the rendered base grants

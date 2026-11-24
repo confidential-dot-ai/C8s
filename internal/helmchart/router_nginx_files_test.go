@@ -24,6 +24,12 @@ func TestCloudRouterNginxFilesAreTheWorkerImages(t *testing.T) {
 	lib := libRouterNginxFiles(t)
 	moved := strings.NewReplacer(workerRouterConfigDir, routerConfigDir, workerRouterSettingsDir, routerConfigDir)
 	for _, name := range slices.Sorted(maps.Keys(lib)) {
+		if name == "gpu-attestations.conf" {
+			if cloud[name] != "" {
+				t.Error("cloud nginx exposes the worker GPU attestation route")
+			}
+			continue
+		}
 		if cloud[name] != moved.Replace(lib[name]) {
 			t.Errorf("the cloud's %s is not c8s-lib's with %s in place of the worker's directories", name, routerConfigDir)
 		}
@@ -33,4 +39,16 @@ func TestCloudRouterNginxFilesAreTheWorkerImages(t *testing.T) {
 	if got := slices.Sorted(maps.Keys(cloud)); !slices.Equal(got, want) {
 		t.Errorf("the cloud ConfigMap holds %v, want c8s-lib's files and its settings %v", got, want)
 	}
+}
+
+func TestWorkerRouterGPUAttestationsRoute(t *testing.T) {
+	files := libRouterNginxFiles(t)
+	config := parseNginxConfig(t, files["nginx.conf"])
+	config.server(t).assertDirective(t, "include", workerRouterConfigDir+"/gpu-attestations.conf")
+	const path = "/.well-known/c8s/gpu-attestations"
+	route := parseNginxConfig(t, files["gpu-attestations.conf"]).location(t, "exact", path)
+	route.assertDirective(t, "proxy_pass", "http://127.0.0.1:8803"+path)
+	route.assertDirective(t, "proxy_pass_request_headers", "off")
+	route.assertDirective(t, "proxy_pass_request_body", "off")
+	route.assertDirective(t, "access_log", "off")
 }
