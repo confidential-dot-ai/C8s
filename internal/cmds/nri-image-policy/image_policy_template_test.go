@@ -85,7 +85,7 @@ func TestWorkerImageBaseGrantsTheFrontDoorShape(t *testing.T) {
 	if len(entry.Containers) != 1 {
 		t.Fatalf("the front door is pinned by %d entries, want the one shape a baked node renders", len(entry.Containers))
 	}
-	roles := newPolicyStore(cfg.Allowlist.Base)
+	roles := newPolicyStore(cfg.Allowlist.Base, localClock())
 	for _, container := range entry.Containers {
 		launch := allowlist.RunningContainer{
 			Digest: container.Digest.String(),
@@ -138,7 +138,7 @@ func TestWorkerImageBaseRefusesASwappedVolume(t *testing.T) {
 	if !ok {
 		t.Fatal("the baked base carries no attestation sidecar entry")
 	}
-	store := newPolicyStore(cfg.Allowlist.Base)
+	store := newPolicyStore(cfg.Allowlist.Base, localClock())
 	for _, container := range entry.Containers {
 		launch := allowlist.RunningContainer{
 			Digest: container.Digest.String(),
@@ -186,7 +186,7 @@ func TestWorkerImageBaseRefusesAComposedKeyReader(t *testing.T) {
 		t.Fatal("the baked base pins no mount set for the router pod's certificate sidecar")
 	}
 	declared := entry.Containers[i]
-	store := newPolicyStore(cfg.Allowlist.Base)
+	store := newPolicyStore(cfg.Allowlist.Base, localClock())
 	launch := allowlist.RunningContainer{
 		Digest: declared.Digest.String(),
 		Argv:   append(slices.Clone(declared.Command.Argv), "--san=c8s-router.c8s-router.svc"),

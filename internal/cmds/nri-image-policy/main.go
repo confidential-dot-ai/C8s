@@ -161,7 +161,7 @@ func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health
 
 	auditLogger := audit.NewLogger()
 
-	store := newPolicyStore(cfg.Allowlist.Base)
+	store := newPolicyStore(cfg.Allowlist.Base, newTAClock(time.Now))
 
 	// Every Trust Authority client of this node is built on one pin source, so the
 	// source comes before the first of them.

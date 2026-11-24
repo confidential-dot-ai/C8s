@@ -90,7 +90,7 @@ func TestPullLoopStallsOnATAItCannotReach(t *testing.T) {
 			timeout:  time.Second,
 			logger:   discardLogger(),
 			target: nodeTarget{
-				store:       newPolicyStore(nil),
+				store:       newPolicyStore(nil, localClock()),
 				killRevoked: func(context.Context) {},
 			},
 		})

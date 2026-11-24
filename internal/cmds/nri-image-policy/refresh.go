@@ -78,6 +78,7 @@ func pullInitialOnce(
 ) (string, error) {
 	args.logger.Info("fetching initial allowlist from the Trust Authority", "attempt", attempt)
 	served, notModified, err := fetchServed(ctx, args.client, args.timeout, "")
+	args.target.policy().clock.observe(served.Date)
 	switch {
 	case err != nil:
 		return "", err
@@ -121,7 +122,8 @@ type pullLoopArgs struct {
 // forward version arrives. 304 raises the applied version to the one Trust Authority
 // serves the document at; it and errors leave the index untouched. A
 // version the measurer refuses for good also advances the ETag and is logged
-// once per digest.
+// once per digest. Every tick ends the component sets whose deadline the
+// Trust Authority's time has passed, whatever the poll answered.
 func runPullLoop(ctx context.Context, args pullLoopArgs) {
 	ticker := time.NewTicker(args.interval)
 	defer ticker.Stop()
@@ -140,6 +142,7 @@ func runPullLoop(ctx context.Context, args pullLoopArgs) {
 			return
 		case <-ticker.C:
 			loop.poll(ctx)
+			loop.target.endSets(ctx)
 		}
 	}
 }
@@ -163,6 +166,7 @@ type pullLoop struct {
 
 func (l *pullLoop) poll(ctx context.Context) {
 	served, notModified, err := fetchServed(ctx, l.client, l.timeout, l.etag)
+	l.target.policy().clock.observe(served.Date)
 	switch {
 	case err != nil:
 		l.pull.failed(err)
@@ -174,7 +178,8 @@ func (l *pullLoop) poll(ctx context.Context) {
 	case l.rolledBack(served):
 		l.ignoreRollback(served)
 	case l.settle(ctx, served):
-		l.etag, l.unmeasuredDigest = served.ETag, ""
+		l.etag = served.ETag
+		l.unmeasuredDigest = ""
 	}
 }
 

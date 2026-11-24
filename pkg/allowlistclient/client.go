@@ -81,6 +81,10 @@ type Served struct {
 	// Allowlist.Canonical, so this is the policy digest it stamps into
 	// workload certificates and nodes measure into RTMR[3].
 	Digest string
+	// Date is the instant the reply is dated, the Trust Authority's own clock;
+	// zero when the reply carried no Date. Nodes judge component-set
+	// deadlines by it.
+	Date time.Time
 }
 
 // FetchServed is Fetch that also returns the digest of the served bytes and
@@ -121,7 +125,7 @@ func (c Client) fetch(ctx context.Context, ifNoneMatch string, raw *[]byte) (Ser
 
 	if resp.StatusCode == http.StatusNotModified {
 		io.Copy(io.Discard, resp.Body)
-		return Served{Version: servedVersion(resp.Header)}, true, nil
+		return Served{Version: servedVersion(resp.Header), Date: servedDate(resp.Header)}, true, nil
 	}
 	if resp.StatusCode != http.StatusOK {
 		return Served{}, false, operatorauth.ResponseError(resp)
@@ -147,6 +151,7 @@ func (c Client) fetch(ctx context.Context, ifNoneMatch string, raw *[]byte) (Ser
 		ETag:      resp.Header.Get("ETag"),
 		Version:   servedVersion(resp.Header),
 		Digest:    "sha256:" + hex.EncodeToString(sum[:]),
+		Date:      servedDate(resp.Header),
 	}, false, nil
 }
 
@@ -278,6 +283,16 @@ func retryWait(retryAfter string, attempt int) time.Duration {
 		return min(time.Duration(seconds)*time.Second, maxRetryWait)
 	}
 	return min(firstRetryWait<<(attempt-1), maxRetryWait)
+}
+
+// servedDate is the instant a response is dated, zero when it carries no
+// usable Date.
+func servedDate(h http.Header) time.Time {
+	date, err := http.ParseTime(h.Get("Date"))
+	if err != nil {
+		return time.Time{}
+	}
+	return date
 }
 
 // servedVersion is the version a GET /allowlist response names in its

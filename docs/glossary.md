@@ -32,7 +32,7 @@ CVM mode is [overview.md](overview.md#cvm-modes-and-hardware-platforms).
 | mount class | A mount rule's `kind`: `emptyDir`, `data`, `host`, or `nodeRootFile`; `platform` is the class the node assigns its own mounts, which no rule names. | [allowlist-entries.md](allowlist-entries.md) |
 | operator key | The EC keypair authorizing policy writes; TA pins its public half. | [allowlist-and-capabilities.md](allowlist-and-capabilities.md) |
 | operator write token | The write token of one policy write: an operator signature over that method, path, and body. | [allowlist-and-capabilities.md](allowlist-and-capabilities.md) |
-| platform role | An identity a measured base grants one C8s node-side invocation, such as the credentials role. | [allowlist-and-capabilities.md](allowlist-and-capabilities.md#host-privilege) |
+| platform role | An identity a measured base or a component set in force grants one C8s node-side invocation, such as the credentials role. | [allowlist-and-capabilities.md](allowlist-and-capabilities.md#host-privilege) |
 | policy history | The allowlist policies a TDX node extends into RTMR[3] for verifiers to replay, when policy measurement is on. | [allowlist-and-capabilities.md](allowlist-and-capabilities.md#measured-policy-history) |
 | privilege floor | The measured limits `c8s-runc` enforces on every container of a member pod. | [node-exec-mode.md](node-exec-mode.md) |
 | workload entry | One allowlist entry: a named container set with argv, mount, and environment policy. | [allowlist-entries.md](allowlist-entries.md) |
