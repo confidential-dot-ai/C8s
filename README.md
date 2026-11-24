@@ -111,9 +111,8 @@ that satisfy its admission, image, and network policies.
   SEV-SNP and TDX hosts, with GPU CC mode. Before a node sets the GPU CC
   Ready state it attests every GPU through its baked attestation service
   (SPDM evidence verified via NRAS, nonce-bound to the CPU TEE evidence) and
-  powers off on any failure. That verdict stays inside the node; it is not
-  wired into the C8s certificate flow, see
-  [Known gaps](#known-gaps-and-open-items).
+  powers off on any failure. The worker router publishes the boot quote and GPU reports
+  for [independent verification](docs/gpu-attestations.md).
 
 - **Verifiable from a browser.** A challenge-response protocol and a
   post-quantum over-encrypted channel let end users verify the cluster with
@@ -601,14 +600,9 @@ than let you discover them:
   C8s mappings; mappings still held open remain and are reported. See
   [docs/volumes.md](docs/volumes.md).
 
-- **GPU attestation is not wired end to end.** GPU passthrough into
-  confidential nodes works, and the node CVM fails closed unless every GPU
-  is in CC mode and its attestation verifies before the CC Ready state is
-  set (`gpu-cc-enforce.service`, via the node's baked
-  [attestation-rs](https://github.com/confidential-dot-ai/attestation-rs)
-  and NRAS). That is a self-check inside the measured node: the TA does not
-  require GPU evidence at certificate issuance, so no positive GPU
-  attestation reaches the relying party.
+- **GPU certificate and request binding.** Customers can independently verify
+  [GPU boot evidence](docs/gpu-attestations.md). Certificate issuance and
+  inference requests carry no binding to a particular GPU boot record.
 
 - **The browser over-encryption channel does not stream.** Requests and
   responses are buffered per envelope; responses over 32 MiB fail rather than
@@ -621,9 +615,8 @@ than let you discover them:
 
 The direction of travel:
 
-- **GPU attestation end to end.** Require GPU evidence at certificate
-  issuance, so a positive GPU attestation reaches the relying party rather
-  than stopping at the node's boot-time self-check.
+- **GPU attestation at issuance.** Require GPU evidence when issuing
+  workload certificates.
 
 - **In-TEE volume encryption.** Stream plaintext into a CVM that generates the
   key, writes the encrypted volume, and commits the key straight to the secret
