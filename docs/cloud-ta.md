@@ -28,8 +28,24 @@ ta-pin.json` carries into the release, and nothing else of it.
 ### Under a Kata Containers runtime
 
 Kata SEV-SNP binds the SHA-256 of its whole initdata document to `HOST_DATA`.
-TDX Kata launch binding through `MRCONFIGID` is not supported here; the TA
-rejects it at startup.
+Kata TDX binds its SHA-384 to `MRCONFIGID`, and the document then declares
+`algorithm = "sha384"`. On TDX the TA starts in one of two cases:
+
+- RTMR[3] holds the file's seed, as the `ta-guest` initrd extends it.
+  `MRCONFIGID` is then not read.
+- `MRCONFIGID` holds the file's SHA-384 and RTMR[3] is all zero.
+
+It refuses every other report. The `MRCONFIGID` case is not specific to Kata:
+any TDX launcher that sets the field, for a guest that extends nothing into
+RTMR[3], starts the TA, and no register shows that an initrd staged the
+operator key. The TA accepts the field because the check asks only what its
+own verified report proves about the file, and either field proves it byte
+for byte. One check serves every guest: it cannot tell a `ta-guest` VM from
+another, so which image answers is for a pin on the launch digest to
+establish. Only this startup check reads `MRCONFIGID`. `c8s install
+--ta-pin`, replica peer pins and Genesis pins read RTMR[3] on TDX, so a TDX TA
+launched this way starts but no cluster can be installed against it and it
+cannot join a replica set.
 
 Supply the TA container and an attestation API on guest loopback
 (`--attestation-api-url`). The guest launch digest does not cover containers
@@ -71,7 +87,8 @@ for `c8s install --ta-pin` instead:
 - Set every entry's `launch_file` to the same whole initdata document as a
   JSON string. Omit `launch_file_digest` and `approver_key`.
 
-Replace the placeholders below with those values:
+Replace the placeholders below with those values. This pin is for SEV-SNP: on
+TDX there is no pin `c8s install --ta-pin` accepts yet.
 
 ```json
 {

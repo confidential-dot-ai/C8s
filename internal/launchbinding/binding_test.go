@@ -60,6 +60,7 @@ func stageOperatorPubkey(t *testing.T, pub []byte) {
 type selfReport struct {
 	platform     teetypes.PlatformType
 	binding      []byte
+	initData     []byte // on TDX, MRCONFIGID
 	launchDigest []byte
 	rtmr1, rtmr2 []byte
 }
@@ -79,6 +80,7 @@ func stubAttester(t *testing.T, r selfReport) *mockapi.Stub {
 			}
 		}
 		v.Claims.PlatformData = pd
+		v.Claims.InitData = r.initData
 	} else {
 		v.Claims.InitData = r.binding
 	}
@@ -406,4 +408,75 @@ func journalOfDistinctDigests(n int) string {
 		fmt.Fprintf(&b, "sha256:%064x\n", i)
 	}
 	return b.String()
+}
+
+func tdxInitData(t *testing.T, file []byte) []byte {
+	t.Helper()
+	digest, err := runtimemeasure.LaunchFileDigest(teetypes.FamilyTDX, file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return digest
+}
+
+// On TDX the report says where the launch file is bound: the RTMR[3] seed, or
+// MRCONFIGID beside an untouched RTMR[3]. Nothing else is a binding.
+func TestVerifyMeasuredLaunchFileReadsEitherTDXField(t *testing.T) {
+	zero := make([]byte, runtimemeasure.Size)
+	other := []byte("another document")
+	extended := runtimemeasure.Extend(runtimemeasure.Seed(launchFile), runtimemeasure.Event("sha256:"+strings.Repeat("1", 64)))
+	for _, tc := range []struct {
+		name     string
+		platform teetypes.PlatformType
+		rtmr3    []byte
+		initData []byte
+		refusal  string // empty: accepted
+	}{
+		{"the seed, MRCONFIGID unset", teetypes.PlatformTDX, tdxBinding(launchFile), nil, ""},
+		{"the seed, MRCONFIGID of another document", teetypes.PlatformTDX, tdxBinding(launchFile), tdxInitData(t, other), ""},
+		{"the seed, MRCONFIGID of the same document", teetypes.PlatformTDX, tdxBinding(launchFile), tdxInitData(t, launchFile), ""},
+		{"MRCONFIGID, RTMR[3] untouched", teetypes.PlatformTDX, zero, tdxInitData(t, launchFile), ""},
+		{"MRCONFIGID, RTMR[3] seeded with another document", teetypes.PlatformTDX, tdxBinding(other), tdxInitData(t, launchFile), "RTMR[3] is"},
+		{"MRCONFIGID, RTMR[3] extended past the seed", teetypes.PlatformTDX, extended[:], tdxInitData(t, launchFile), "RTMR[3] is"},
+		{"MRCONFIGID of another document, RTMR[3] untouched", teetypes.PlatformTDX, zero, tdxInitData(t, other), "neither TDX field"},
+		{"neither field set", teetypes.PlatformTDX, zero, nil, "neither TDX field"},
+		{"an SEV-SNP width MRCONFIGID", teetypes.PlatformTDX, zero, snpBinding(launchFile), "neither TDX field"},
+		{"MRCONFIGID with no RTMR[3] claim", teetypes.PlatformTDX, nil, tdxInitData(t, launchFile), "rtmr_3"},
+		{"a provider's TDX tag, MRCONFIGID", teetypes.PlatformAzTDX, zero, tdxInitData(t, launchFile), "neither TDX field"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			url := stubAttester(t, selfReport{platform: tc.platform, binding: tc.rtmr3, initData: tc.initData}).URL()
+			got, err := VerifyMeasuredLaunchFile(context.Background(), url, launchFile)
+			if tc.refusal == "" {
+				if err != nil || got != teetypes.FamilyTDX {
+					t.Fatalf("got %s, %v; want TDX accepted", got, err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.refusal) {
+				t.Fatalf("got %v, want a refusal saying %q", err, tc.refusal)
+			}
+		})
+	}
+}
+
+// SEV-SNP has the one field, HOST_DATA, compared at its own width.
+func TestVerifyMeasuredLaunchFileOnSEVSNPReadsHostDataOnly(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		hostData []byte
+		accepted bool
+	}{
+		{"the file's HOST_DATA", snpBinding(launchFile), true},
+		{"another document", snpBinding([]byte("another document")), false},
+		{"a TDX width digest of the file", tdxInitData(t, launchFile), false},
+		{"all zero", make([]byte, runtimemeasure.HostDataSize), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := VerifyMeasuredLaunchFile(context.Background(), attester(t, teetypes.PlatformSNP, tc.hostData), launchFile)
+			if tc.accepted != (err == nil) || (tc.accepted && got != teetypes.FamilySNP) {
+				t.Fatalf("got %s, %v; want accepted=%v", got, err, tc.accepted)
+			}
+		})
+	}
 }

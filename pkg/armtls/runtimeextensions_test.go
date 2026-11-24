@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -165,6 +166,30 @@ func TestEnforceImagesRuntimeExtensions(t *testing.T) {
 		}
 		if pins[0].AcceptExtension != nil {
 			t.Errorf("EnforceImages set AcceptExtension on the caller's %s pin", launch.pin.Name)
+		}
+	}
+}
+
+// A Trust Authority may start on TDX from a launch file bound in MRCONFIGID
+// alone. No pin this release writes reads that field, so such a guest, with
+// RTMR[3] untouched, matches neither form of launch file pin.
+func TestEnforceImagesRefusesALaunchFileBoundOnlyInMRCONFIGID(t *testing.T) {
+	mrtd := bytes.Repeat([]byte{0x42}, sha512.Size384)
+	launchFile := []byte("clusterID: test\n")
+	digest := sha512.Sum384(launchFile)
+	claims := teetypes.Claims{
+		LaunchDigest: hex.EncodeToString(mrtd),
+		InitData:     digest[:],
+		PlatformData: map[string]any{"rtmr_3": hex.EncodeToString(runtimemeasure.Zero[:])},
+	}
+	resp := remote.VerifyResponse{Result: teetypes.VerificationResult{SignatureValid: true, Platform: teetypes.PlatformTDX, Claims: claims}}
+	for _, pin := range []remote.ImagePin{
+		{Name: "launch file", Digest: mrtd, LaunchFile: launchFile},
+		{Name: "launch file digest", Digest: mrtd, LaunchFileDigest: digest[:]},
+	} {
+		err := EnforceImages(resp, []remote.ImagePin{pin}, teetypes.PlatformTDX, nil)
+		if !errors.Is(err, remote.ErrLaunchFileNotAllowed) {
+			t.Errorf("%s pin: EnforceImages = %v, want %v", pin.Name, err, remote.ErrLaunchFileNotAllowed)
 		}
 	}
 }

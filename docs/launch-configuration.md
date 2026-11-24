@@ -108,7 +108,7 @@ against the report. `‖` below is byte concatenation:
 | | TDX | SEV-SNP |
 |---|---|---|
 | Who commits the digest | The measured initrd, before `switch_root` | The launcher, at launch |
-| Where it lands | The RTMR[3] seed, `SHA-384(0x00 * 48 ‖ SHA-384(document))` | `HOST_DATA`, `SHA-256(document)` |
+| Where it lands | The RTMR[3] seed, `SHA-384(0x00 * 48 ‖ SHA-384(document))`. A Trust Authority also accepts `MRCONFIGID`, `SHA-384(document)`, set by its launcher ([cloud-ta.md](cloud-ta.md#under-a-kata-containers-runtime)) | `HOST_DATA`, `SHA-256(document)` |
 
 On SEV-SNP the host sets that field, so a verifier has to pin a launch digest
 of an image known to read it and to refuse a document that does not match. On
@@ -116,6 +116,14 @@ a managed-cloud CVM — the `az-` and `gcp-` platforms — the cloud stack owns 
 field instead, which is why this flow is for a measured node image on
 `bare-metal`
 ([measurements.md](measurements.md#where-the-evidence-comes-from)).
+
+A Trust Authority holds its own launch file to the same fields, with one
+addition. On TDX it accepts the file where RTMR[3] holds the file's seed,
+which the `ta-guest` image's initrd extends, or where `MRCONFIGID` holds the
+file's SHA-384, which a launcher such as a Kata Containers runtime sets, and
+RTMR[3] is all zero
+([cloud-ta.md](cloud-ta.md#under-a-kata-containers-runtime)). A worker
+document is not read from `MRCONFIGID`.
 
 The boot-time check order is [below](#staging-a-worker-document). A document
 the launch did not bind leaves the worker with no staged output, and

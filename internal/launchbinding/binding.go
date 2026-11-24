@@ -4,6 +4,7 @@
 package launchbinding
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha512"
@@ -114,16 +115,50 @@ func verifiedSelfReport(ctx context.Context, attestationAPIURL string) (*teetype
 // NOT itself measured, only its digest, so a host that swapped it post-boot
 // produces a mismatch.
 //
+// The report says where the file is bound, whatever the file's form. On
+// SEV-SNP that is HOST_DATA. On TDX the file is accepted where RTMR[3] holds
+// its seed, as a measured initrd extends it, whatever MRCONFIGID holds; or
+// where MRCONFIGID holds its digest, as a launcher such as a Kata Containers
+// runtime commits it, and RTMR[3] is all zero. On that second path no
+// register shows that an initrd staged the operator key.
+//
 // A guest whose launch file is its whole configuration runs no workload
-// measurer, so the binding must equal the bare anchor: an extension beyond it
-// means an unexpected measurer ran.
+// measurer, so RTMR[3] must be the file's bare seed, or all zero beside a
+// matching MRCONFIGID: anything else means an unexpected measurer ran.
 func VerifyMeasuredLaunchFile(ctx context.Context, attestationAPIURL string, launchFile []byte) (teetypes.Family, error) {
-	var noWorkloadDigests []string
+	return verifyLaunchFile(ctx, attestationAPIURL, func(report *teetypes.VerificationResult) error {
+		return boundLaunchFile(report, launchFile)
+	})
+}
+
+// boundLaunchFile holds one verified report to launchFile.
+func boundLaunchFile(report *teetypes.VerificationResult, launchFile []byte) error {
+	seeded := runtimemeasure.VerifyBinding(report, launchFile, nil)
+	if seeded == nil || report.Platform.Family() != teetypes.FamilyTDX {
+		return seeded
+	}
+	if err := runtimemeasure.VerifyInitDataFile(report, launchFile); err != nil {
+		return fmt.Errorf("neither TDX field binds the file: RTMR[3]: %w; MRCONFIGID: %w", seeded, err)
+	}
+	register, err := report.Claims.RTMR(3)
+	if err != nil {
+		return err
+	}
+	// RTMR returns the register's 48 bytes or an error, never a shorter value.
+	if !bytes.Equal(register, make([]byte, len(register))) {
+		return fmt.Errorf("MRCONFIGID binds the file, but RTMR[3] is %x, neither all zero nor the file's seed: a measurer the launch file does not account for ran", register)
+	}
+	return nil
+}
+
+// verifyLaunchFile holds this guest's verified self-report to bound, and
+// returns the TEE family the report proves.
+func verifyLaunchFile(ctx context.Context, attestationAPIURL string, bound func(*teetypes.VerificationResult) error) (teetypes.Family, error) {
 	report, err := verifiedSelfReport(ctx, attestationAPIURL)
 	if err != nil {
 		return teetypes.FamilyUnknown, err
 	}
-	if err := runtimemeasure.VerifyBinding(report, launchFile, noWorkloadDigests); err != nil {
+	if err := bound(report); err != nil {
 		return teetypes.FamilyUnknown, err
 	}
 	family := report.Platform.Family()

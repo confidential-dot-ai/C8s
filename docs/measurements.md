@@ -38,6 +38,7 @@ runtime measurement registers, RTMR[0] to RTMR[3], extendable in the guest.
 | `RTMR[1]` | The guest kernel. | `--rtmr 1=<HEX>`, `--image-manifest`, config `rtmr[1]` |
 | `RTMR[2]` | The kernel command line, which carries the dm-verity root hash of the read-only root. | `--rtmr 2=<HEX>`, `--image-manifest`, config `rtmr[2]` |
 | `RTMR[3]` | The launch file the node was started with, then any workload images a measurer extended, then the allowlist policies it applied. | `--rtmr 3=<HEX>` or `--operator-pkey`, both needing `--image-manifest`; `--pin-policy`, or `--trust-operator` with `--trust-operator-keys`, then judge the replayed policies |
+| `MRCONFIGID` | Set by the launcher at launch, as `HOST_DATA` is on SEV-SNP. Read only by a Trust Authority checking its own launch file at startup. | — |
 | `REPORTDATA` | As SEV-SNP's `REPORT_DATA`. | Derived by the verifier |
 
 Pinning MRTD alone leaves the guest unpinned: it covers the firmware, so a host
@@ -53,6 +54,15 @@ Intel's current collateral says whether those levels are up to date, which
 ([verify.md](verify.md#require-a-current-intel-tcb-on-tdx)).
 
 ### Policy history
+
+`MRCONFIGID` is the TDX field a launcher sets at launch, as `HOST_DATA` is on
+SEV-SNP. A Trust Authority accepts its launch file there at startup while
+RTMR[3] is all zero
+([cloud-ta.md](cloud-ta.md#under-a-kata-containers-runtime)); no measurements
+config this release reads pins the field. Such a TA reports an all-zero
+RTMR[3], so a pin that names the file's seed, as `--operator-pkey` builds,
+never matches it. The policy history check below is
+unchanged: it replays RTMR[3] alone and does not read `MRCONFIGID`.
 
 RTMR[3] is extended by software inside the guest, so on its own it says nothing
 about which image booted: pin it only together with an image, which is why

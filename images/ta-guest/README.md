@@ -49,7 +49,10 @@ RTMR[3], on SNP by requiring HOST_DATA to equal their SHA-256 and halting
 when it does not. `ta.service` runs
 `c8s ta --host=auto --config=/run/confai/operator-pubkey`: Trust Authority parses the file, takes a
 fresh self-report from the attester on loopback, and exits unless that report
-binds exactly the bytes it parsed. The same report names the TEE family it
+binds exactly the bytes it parsed. On TDX it
+accepts the binding in the RTMR[3] seed this initrd extends, whatever
+`MRCONFIGID` holds, or, for a guest that seeds no register, in `MRCONFIGID`
+beside an all-zero RTMR[3]. The same report names the TEE family it
 attests on, so the image carries no platform setting. The service selects the
 guest's primary IPv4 address for its client and replica peer listeners.
 
