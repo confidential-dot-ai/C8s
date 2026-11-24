@@ -608,6 +608,7 @@ func signForLiveCaller(signer *SandboxTokenSigner, peer Peer, sandboxID string, 
 // node's running images to anyone who can reach the port.
 func ServeDigests(ctx context.Context, l net.Listener, resolver SandboxResolver, identity []byte) error {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET "+GPUAttestationPrefix+"{host}", serveGPUAttestation(gpuBootCache, WorkerKubeletEnv))
 	mux.HandleFunc("GET "+IdentityPath, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(InventoryIdentity{PublicKey: identity})

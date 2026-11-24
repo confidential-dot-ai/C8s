@@ -17,26 +17,28 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/routes"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/secretbroker"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 // dependencies bundles everything the cds router needs.
 type dependencies struct {
-	AttestHandler     AttestHandler
-	AllowlistHandler  allowlist.Handler
-	Routes            routeHandler
-	ReadyFn           attestation.ReadinessFunc
-	MeshCA            meshCA                      // the CA served at /ca, which signs every leaf
-	ClusterRoutes     map[string]http.HandlerFunc // a replica's cluster routes, by method and path
-	OperatorKeysPEM   []byte                      // pinned operator public keys; empty = /operator-keys 404s
-	NodeImages        armtls.PinSource            // the node images /attest admits by and /measurements publishes
-	RateLimiter       *issuer.IPRateLimiter       // per-source-IP limiter for attestation endpoints
-	ChallengeLimiter  *issuer.IPRateLimiter       // /authenticate's own, so it cannot spend the map above
-	MaxRequestSize    int64                       // applied to write endpoints; must be > 0
-	SecretsHandler    *secrets.Handler            // nil leaves /secrets unrouted (--secrets off)
-	SecretsChallenges attestation.Challenges
-	SecretsOperator   *secrets.OperatorHandler // operator-supplied values; routed with SecretsHandler
-	SecretsExplain    *secrets.ExplainHandler  // release diagnostic; routed with SecretsHandler
-	PodSecrets        *PodSecretHandler        // nil leaves pod secret release unrouted (no KMS configured)
+	WorkerGPUAttestation http.Handler
+	AttestHandler        AttestHandler
+	AllowlistHandler     allowlist.Handler
+	Routes               routeHandler
+	ReadyFn              attestation.ReadinessFunc
+	MeshCA               meshCA                      // the CA served at /ca, which signs every leaf
+	ClusterRoutes        map[string]http.HandlerFunc // a replica's cluster routes, by method and path
+	OperatorKeysPEM      []byte                      // pinned operator public keys; empty = /operator-keys 404s
+	NodeImages           armtls.PinSource            // the node images /attest admits by and /measurements publishes
+	RateLimiter          *issuer.IPRateLimiter       // per-source-IP limiter for attestation endpoints
+	ChallengeLimiter     *issuer.IPRateLimiter       // /authenticate's own, so it cannot spend the map above
+	MaxRequestSize       int64                       // applied to write endpoints; must be > 0
+	SecretsHandler       *secrets.Handler            // nil leaves /secrets unrouted (--secrets off)
+	SecretsChallenges    attestation.Challenges
+	SecretsOperator      *secrets.OperatorHandler // operator-supplied values; routed with SecretsHandler
+	SecretsExplain       *secrets.ExplainHandler  // release diagnostic; routed with SecretsHandler
+	PodSecrets           *PodSecretHandler        // nil leaves pod secret release unrouted (no KMS configured)
 }
 
 func newRouter(deps dependencies) http.Handler {
@@ -117,6 +119,9 @@ func newRouter(deps dependencies) http.Handler {
 	r.Get("/ca", handleCA(deps.MeshCA))
 	r.Get("/operator-keys", handleOperatorKeys(deps.OperatorKeysPEM))
 	r.Get("/measurements", handleMeasurements(deps.NodeImages))
+	if deps.WorkerGPUAttestation != nil {
+		r.Method(http.MethodGet, workloadclaims.GPUAttestationPrefix+"{host}", deps.WorkerGPUAttestation)
+	}
 
 	return r
 }
