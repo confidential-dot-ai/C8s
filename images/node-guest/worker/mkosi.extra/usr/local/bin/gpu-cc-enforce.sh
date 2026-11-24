@@ -15,7 +15,7 @@
 # and measurement checks to NRAS and applies its device policy (secure boot
 # on, debug off, measurements matched, nonce bound). The verdict comes from
 # inside the same measured CVM, so it is a self-check: it gates Ready state
-# and node start but does not reach relying parties (README: known gaps).
+# and node start. The boot cache retains the raw evidence and its nonce.
 #
 # PCI presence (vendor 0x10de) decides whether this gate applies, so a GPU-less boot
 # of the same image is a clean no-op.
@@ -36,15 +36,32 @@ fail() {
     exit 1
 }
 
+cache_dir=/run/c8s
+cache=$cache_dir/gpu-attestation.json
+mkdir -p "$cache_dir"
+umask 077
+rm -f "$cache"
+work=$(mktemp -d "$cache_dir/.gpu-attestation.XXXXXX")
+trap 'rm -rf "$work"' EXIT
+boot_id=$(cat /proc/sys/kernel/random/boot_id)
+[ -n "$boot_id" ] || fail "cannot read the boot ID"
+
+[ -d /sys/bus/pci/devices ] || fail "PCI inventory unavailable"
 present=0
+pci_gpus=0
 for vendor in /sys/bus/pci/devices/*/vendor; do
     [ -e "$vendor" ] || continue
-    if [ "$(cat "$vendor")" = "0x10de" ]; then
-        present=1
-        break
-    fi
+    vendor_id=$(cat "$vendor")
+    [ "$vendor_id" = "0x10de" ] || continue
+    present=1
+    pci_class=$(cat "${vendor%/*}/class")
+    case "$pci_class" in
+        0x03*|0x1200*) pci_gpus=$((pci_gpus + 1)) ;;
+    esac
 done
 if [ "$present" = 0 ]; then
+    jq -cn --arg boot "$boot_id" '{status: "no_gpu", boot_id: $boot}' > "$work/cache"
+    mv "$work/cache" "$cache"
     echo "gpu-cc-enforce: no NVIDIA GPU present; nothing to enforce"
     exit 0
 fi
@@ -85,33 +102,16 @@ $cc_gpu_list
 EOF
 echo "gpu-cc-enforce: all NVIDIA GPUs in CC mode"
 
-# Every GPU the driver enumerates must appear in the verified claims:
-# attestation-api tolerates a per-device collection failure (it only rejects
-# an empty bundle), so a count mismatch means a GPU slipped past NRAS.
-gpu_uuids=$(nvidia-smi --query-gpu=uuid --format=csv,noheader 2>&1) \
-    || fail "nvidia-smi --query-gpu failed: $gpu_uuids"
-gpu_count=$(printf '%s\n' "$gpu_uuids" | grep -c . || true)
-[ "$gpu_count" -gt 0 ] || fail "nvidia-smi enumerates no GPU despite CC mode on"
+gpu_count=$(printf '%s\n' "$cc_gpu_list" | wc -l)
+[ "$gpu_count" -ge "$pci_gpus" ] || fail "driver enumerated $gpu_count GPUs for $pci_gpus NVIDIA PCI GPU functions"
 
-# post PATH JSON — POST to attestation-api; print the body on 200, else fail
-# with the status and body.
 post() {
-    body=$(mktemp)
-    # The request JSON must NOT travel in argv: an 8-GPU /verify bundle exceeds
-    # ARG_MAX and curl dies with "Argument list too long", which fails the gate
-    # and powers the node off. Measured on b200-dev-1: 1 GPU fits, 8 does not.
-    # Feed it on stdin instead, which has no size limit.
-    req=$(mktemp)
-    printf '%s' "$2" > "$req"
-    code=$(curl -sS -o "$body" -w '%{http_code}' -X POST \
-        -H 'content-type: application/json' --data-binary @"$req" "$API$1" 2>&1) \
-        || { rm -f "$body" "$req"; fail "POST $1: $code"; }
-    rm -f "$req"
+    code=$(curl -sS -o "$work/$1.json" -w '%{http_code}' -X POST \
+        -H 'content-type: application/json' --data-binary @"$work/request" "$API/$1") \
+        || fail "POST /$1 failed"
     if [ "$code" != 200 ]; then
-        resp=$(cat "$body"); rm -f "$body"
-        fail "POST $1 returned $code: $resp"
+        fail "POST /$1 returned $code: $(cat "$work/$1.json")"
     fi
-    cat "$body"; rm -f "$body"
 }
 
 api_deadline=$(deadline "$API_TIMEOUT")
@@ -125,31 +125,52 @@ platform=$(printf '%s' "$platform_json" | jq -r '.platform // empty')
 [ -n "$platform" ] || fail "attestation-api detected no TEE platform"
 
 nonce=$(head -c 32 /dev/urandom | base64 -w0)
-attest=$(post /attest "$(jq -cn --arg p "$platform" --arg n "$nonce" \
-    '{platform: $p, report_data: $n, nvidia_gpu: true}')")
-printf '%s' "$attest" | jq -e '.nvidia_gpu != null' >/dev/null \
-    || fail "/attest returned no GPU evidence"
+[ "${#nonce}" -eq 44 ] || fail "cannot generate an attestation nonce"
+jq -cn --arg p "$platform" --arg n "$nonce" \
+    '{platform: $p, report_data: $n, nvidia_gpu: true}' > "$work/request"
+post attest
 
-verify_req=$(printf '%s' "$attest" | jq -c --arg n "$nonce" \
-    '{platform, evidence, nvidia_gpu, params: {expected_report_data: $n, nvidia_gpu_user_nonce: $n, nvidia_gpu_required: true}}')
-verdict=$(post /verify "$verify_req")
+jq -e --arg p "$platform" --argjson want "$gpu_count" '
+    def populated: type == "string" and length > 0;
+    def distinct_values: all(.[]; populated) and length == (unique | length);
+    .platform == $p and .evidence != null and
+    ([.nvidia_gpu.devices[]? | select(.arch != "LS10")] |
+        length == $want and
+        (map(.uuid) | distinct_values) and
+        (all(.[]; .cert_chain_b64 | populated)) and
+        (map(.evidence_b64) | distinct_values))
+' "$work/attest.json" >/dev/null || fail "/attest lacks distinct GPU evidence for every enumerated GPU"
+
+jq -c --arg n "$nonce" \
+    '{platform, evidence, nvidia_gpu, params: {expected_report_data: $n, nvidia_gpu_user_nonce: $n, nvidia_gpu_required: true}}' \
+    "$work/attest.json" > "$work/request"
+post verify
 
 # attestation-api already errors (non-200) on a failed NRAS check or device
 # policy; the field checks below guard against a verdict that merely omits
 # the GPU section, and the count against a partially collected bundle.
-verified=$(printf '%s' "$verdict" | jq -r --argjson want "$gpu_count" '
+verified=$(jq -r --argjson want "$gpu_count" '
     .result as $r
     | ($r.claims.nvidia_gpu // {}) as $g
-    | [$g.devices[]? | select(.arch != "LS10")] | length as $gpus
+    | [$g.devices[]? | select(.arch != "LS10") | .ueid] as $ids
+    | ($ids | length) as $gpus
     | if $r.signature_valid == true
         and $r.report_data_match == true
         and $g.overall_ok == true
         and $g.nonce_binding_ok == true
-        and $gpus >= $want
+        and $gpus == $want
+        and all($ids[]; type == "string" and length > 0)
+        and ($ids | unique | length) == $want
       then "ok \($gpus)"
       else "bad signature_valid=\($r.signature_valid) report_data_match=\($r.report_data_match) overall_ok=\($g.overall_ok) nonce_binding_ok=\($g.nonce_binding_ok) gpus=\($gpus) want=\($want)"
-      end') || fail "cannot parse /verify response: $verdict"
+      end' "$work/verify.json") || fail "cannot parse /verify response"
 case "$verified" in
 ok\ *) echo "gpu-cc-enforce: ${verified#ok } NVIDIA GPU(s) attested (platform $platform)" ;;
 *) fail "GPU attestation rejected: ${verified#bad }" ;;
 esac
+
+jq -c --arg boot "$boot_id" --arg nonce "$nonce" '
+    {status: "attested", boot_id: $boot, nonce: $nonce, platform, evidence, nvidia_gpu}
+    + (if has("collateral") then {collateral} else {} end)
+' "$work/attest.json" > "$work/cache"
+mv "$work/cache" "$cache"
