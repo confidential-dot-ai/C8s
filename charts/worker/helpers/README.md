@@ -15,6 +15,11 @@ this label after matching fresh evidence against the TA node policy. An explicit
 mismatch removes eligibility and releases an unready router whose certificate
 wait gate is running. Transient check failures retain the last known decision.
 
+The router serves `GET /.well-known/c8s/gpu-attestations` through a
+loopback listener on port 8803. The collector lists Kubernetes Nodes under the
+router ServiceAccount. Its loopback requests reach the Trust Authority through
+allowlist-proxy, which reads the router’s member certificate and key.
+
 Keep purpose and invariant comments beside the template; keep longer contracts
 and cross-template coordination notes here. Documentation lives outside
 `templates/` so Helm does not render it as a Kubernetes resource.

@@ -98,6 +98,26 @@ func TestWorkerImageBaseGrantsTheFrontDoorShape(t *testing.T) {
 	}
 }
 
+func TestWorkerGPUAttestationsRoleRequiresExactLaunch(t *testing.T) {
+	cfg, err := parseConfig([]byte(renderWorkerImagePolicy(t)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	index := cfg.Allowlist.Base.BuildIndex()
+	launch := allowlist.RunningContainer{
+		Digest: operatorImageDigest,
+		Argv:   []string{"/c8s", "gpu-attestations"},
+		Mounts: observedNoMounts,
+	}
+	if !index.BindsRoleMounts(launch, allowlist.RoleUpstream) {
+		t.Fatal("worker policy denied the GPU collector its API access")
+	}
+	launch.Argv = append(launch.Argv, "--unexpected")
+	if got := index.RoleOf(launch); got != "" {
+		t.Errorf("GPU collector with extra argv received role %q", got)
+	}
+}
+
 // Every emptyDir rule of a role entry names the pod volume behind it, so two
 // destinations of one container cannot be fed from each other's volume. The
 // one exception is the injected clients' discovery mount: the webhook mounts
@@ -219,15 +239,16 @@ func mountDestinations(p allowlist.MountPolicy) []string {
 // roleEntries is the role each base entry grants the component it pins.
 func roleEntries() map[string]string {
 	return map[string]string{
-		"c8s-mesh-endpoint":   allowlist.RoleMesh,
-		"c8s-get-cert":        allowlist.RoleCredentials,
-		"c8s-probe-file":      allowlist.RoleCredentials,
-		"c8s-get-secret":      allowlist.RoleCredentials,
-		"c8s-get-volume":      allowlist.RoleCredentials,
-		"c8s-allowlist-proxy": allowlist.RoleCredentials,
-		"c8s-router-nginx":    allowlist.RoleRouter,
-		"c8s-acme":            allowlist.RoleACME,
-		"c8s-router-upstream": allowlist.RoleUpstream,
+		"c8s-mesh-endpoint":    allowlist.RoleMesh,
+		"c8s-get-cert":         allowlist.RoleCredentials,
+		"c8s-probe-file":       allowlist.RoleCredentials,
+		"c8s-get-secret":       allowlist.RoleCredentials,
+		"c8s-get-volume":       allowlist.RoleCredentials,
+		"c8s-allowlist-proxy":  allowlist.RoleCredentials,
+		"c8s-router-nginx":     allowlist.RoleRouter,
+		"c8s-gpu-attestations": allowlist.RoleUpstream,
+		"c8s-acme":             allowlist.RoleACME,
+		"c8s-router-upstream":  allowlist.RoleUpstream,
 	}
 }
 

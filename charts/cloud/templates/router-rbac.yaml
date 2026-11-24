@@ -1,1 +1,1 @@
-{{ include "router.podReader" . }}
+{{ include "router.reader" (dict "root" . "listNodes" false) }}

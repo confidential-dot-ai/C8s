@@ -418,6 +418,15 @@ allowlist:
                   kind: "host"
                   source: "/run/c8s-node"
                   readOnly: true
+      c8s-gpu-attestations:
+        label: "c8s gpu-attestations"
+        containers:
+          - digest: "@OPERATOR_DIGEST@"
+            image: "@OPERATOR_REPO@@@OPERATOR_DIGEST@"
+            role: "upstream"
+            command: {policy: exact, argv: ["/c8s", "gpu-attestations"]}
+            args: {policy: deny}
+            mounts: {policy: deny}
       c8s-allowlist-proxy:
         label: "c8s allowlist-proxy"
         containers:
@@ -427,8 +436,6 @@ allowlist:
             command: {policy: exact, argv: ["/c8s", "allowlist-proxy"]}
             # Per cluster: the port it listens on.
             args: {policy: any}
-            # The node's own inventory socket directory, which is where it
-            # reaches the verifier it dials CDS through.
             mounts:
               policy: exact
               rules:
@@ -436,6 +443,9 @@ allowlist:
                   kind: "host"
                   source: "/run/nri-image-policy"
                   readOnly: true
+                - destination: "/etc/c8s/certs"
+                  kind: "emptyDir"
+                  source: "c8s-certs"
   pull:
     # Worker staging replaces this endpoint with the CDS the worker document
     # names (internal/cmds/nodeservices Prepare), so a worker never pulls from

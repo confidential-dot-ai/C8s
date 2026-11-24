@@ -95,4 +95,47 @@ func TestWorkerSnapshot(t *testing.T) {
 	if calls.Load() != 4 {
 		t.Fatalf("relay calls %d", calls.Load())
 	}
+	node2 = noGPU(boot1)
+	c.refresh(t.Context())
+	for _, w := range get(http.StatusOK) {
+		if w.Status != "unavailable" || w.BootID != "" {
+			t.Fatalf("duplicate boot published: %+v", w)
+		}
+	}
+	node2 = noGPU("30000000-0000-4000-8000-000000000003")
+	c.refresh(t.Context())
+	if next := get(http.StatusOK)[1]; next.BootID == boot1 || next.BootID == boot2 || next.Status != "no_gpu" {
+		t.Fatalf("reboot: %+v", next)
+	}
+	node2 = "{}"
+	c.refresh(t.Context())
+	if got := get(http.StatusOK)[1]; got.Status != "unavailable" || got.BootID != "" {
+		t.Fatalf("failed read retained evidence: %+v", got)
+	}
+	for _, bad := range []string{`{"metadata":{"continue":"token"},"items":[]}`, `{}`, `invalid`} {
+		list = bad
+		c.refresh(t.Context())
+		get(http.StatusServiceUnavailable)
+	}
+	list = `{"items":[]}`
+	c.refresh(t.Context())
+	if len(get(http.StatusOK)) != 0 {
+		t.Fatal("departed workers retained")
+	}
+}
+
+func TestExactRoute(t *testing.T) {
+	c := &collector{}
+	for _, tc := range []struct {
+		method, path string
+		want         int
+	}{
+		{"HEAD", publicPath, 405}, {"GET", publicPath + "/", 404}, {"GET", "/another", 404},
+	} {
+		w := httptest.NewRecorder()
+		c.ServeHTTP(w, httptest.NewRequest(tc.method, tc.path, nil))
+		if w.Code != tc.want {
+			t.Fatalf("%s %s: %d", tc.method, tc.path, w.Code)
+		}
+	}
 }
