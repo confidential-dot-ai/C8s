@@ -220,7 +220,16 @@ check prints, with `…` for elided lines:
   WARNING:      the attested front door was observed on this verify's single connection to a single router replica at a single instant: … clients must verify their own connection
   sandbox id:   <SANDBOX_ID>
                 verified: the leaf chains to the supplied mesh CA
+  component set: <VERSION>  (digest <SHA256_HEX>)
+                ca-vouched: the leaf chains to the supplied mesh CA
 ```
+
+The `component set` line appears when the leaf names one: the release whose
+component entries admitted the pod's c8s containers, and the digest of that
+set's entries (`component_set`, `component_set_digest` and
+`component_set_note` in JSON). The note under it says what stands behind the
+set, as the `sandbox id` and `workload` notes do: without `--mesh-ca` only the
+Trust Authority's signature on the leaf vouches for it.
 
 `WARNING:` names a limit of the policy you gave, such as an unpinned
 measurement, or of the observation made: the front-door warning above says the
@@ -237,7 +246,7 @@ The `*_note` fields and `chain_anchor` say what stands behind a reported
 value. A failed verdict states no passed policy check. Of the fields a check
 qualifies it keeps:
 
-- `sandbox_id` and `workload` with their `not verified:` notes.
+- `sandbox_id`, `workload` and `component_set` with their `not verified:` notes.
 - `operator_keys` and `operator_keys_note` only when the note says why the set
   was not pinned or not fetched; otherwise both are dropped.
 - `binding`, without the front-door handshake clause.

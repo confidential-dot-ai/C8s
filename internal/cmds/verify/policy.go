@@ -124,13 +124,23 @@ func applyFinalNotes(oc *Outcome, ev *evidence, result *teetypes.VerificationRes
 		if strings.HasPrefix(oc.SandboxIDNote, sandboxIDUnverifiedNote) {
 			oc.SandboxIDNote = sandboxIDUnverifiedNote
 		} else {
-			oc.SandboxID, oc.SandboxIDNote = "", ""
+			oc.SandboxID = ""
+			oc.SandboxIDNote = ""
 		}
 		if oc.WorkloadNote != workloadUnverifiedNote {
-			oc.Workload, oc.WorkloadAllowlistVersion, oc.WorkloadAllowlistDigest, oc.WorkloadNote = "", "", "", ""
+			oc.Workload = ""
+			oc.WorkloadAllowlistVersion = ""
+			oc.WorkloadAllowlistDigest = ""
+			oc.WorkloadNote = ""
+		}
+		if oc.ComponentSetNote != componentSetUnverifiedNote {
+			oc.ComponentSet = ""
+			oc.ComponentSetDigest = ""
+			oc.ComponentSetNote = ""
 		}
 		if oc.OperatorKeysNote == "" || oc.OperatorKeysNote == operatorKeysMatchedNote {
-			oc.OperatorKeys, oc.OperatorKeysNote = nil, ""
+			oc.OperatorKeys = nil
+			oc.OperatorKeysNote = ""
 		}
 		oc.ChainAnchor = ""
 		// A replayed history is a passed check too; cert_body stays, as a
@@ -197,9 +207,10 @@ func launchBindingPinned(platform string, images []remote.ImagePin) bool {
 // The notes applyFinalNotes recognises: the unverified ones survive a failed
 // verdict, the matched one does not.
 const (
-	sandboxIDUnverifiedNote = "not verified: Trust Authority's signature on the leaf vouches for this ID; pass --mesh-ca to check it"
-	workloadUnverifiedNote  = "not verified: Trust Authority's signature on the leaf vouches for this name; pass --mesh-ca to check it"
-	operatorKeysMatchedNote = "matched: the set served over the attested cert equals --operator-keys"
+	sandboxIDUnverifiedNote    = "not verified: Trust Authority's signature on the leaf vouches for this ID; pass --mesh-ca to check it"
+	workloadUnverifiedNote     = "not verified: Trust Authority's signature on the leaf vouches for this name; pass --mesh-ca to check it"
+	componentSetUnverifiedNote = "not verified: Trust Authority's signature on the leaf vouches for this set; pass --mesh-ca to check it"
+	operatorKeysMatchedNote    = "matched: the set served over the attested cert equals --operator-keys"
 )
 
 // applySandboxPolicy surfaces the leaf's sandbox ID and enforces --sandbox-id /
@@ -352,6 +363,15 @@ func applyClientDocumentPolicy(oc *Outcome, cfg config, ev *evidence) {
 	}
 }
 
+// leafComponentSet is the component set the leaf names, nil when there is no
+// leaf or it carries no stamp.
+func leafComponentSet(leaf *x509.Certificate) (*armtls.ComponentSet, error) {
+	if leaf == nil {
+		return nil, nil
+	}
+	return armtls.ComponentSetFromCert(leaf)
+}
+
 // applyWorkloadPolicy surfaces the leaf's matched-workload stamp and enforces
 // --workload / --allowlist, mirroring applySandboxPolicy's ordering: an
 // unparseable stamp fails closed; the mesh-CA chain check (applySandboxPolicy,
@@ -367,6 +387,21 @@ func applyWorkloadPolicy(oc *Outcome, cfg config, ev *evidence, held *heldAllowl
 	if ev.workloadErr != nil {
 		fail("workload_malformed: matched-workload extension unparseable or duplicated (newer target than this CLI?): %v", ev.workloadErr)
 		return
+	}
+
+	set, setErr := leafComponentSet(ev.leaf)
+	if setErr != nil {
+		fail("component_set_malformed: component-set extension unparseable or duplicated (newer target than this CLI?): %v", setErr)
+		return
+	}
+	if oc.Verified && set != nil {
+		oc.ComponentSet = set.Version
+		oc.ComponentSetDigest = hex.EncodeToString(set.Digest)
+		if cfg.meshCA == "" {
+			oc.ComponentSetNote = componentSetUnverifiedNote
+		} else {
+			oc.ComponentSetNote = "ca-vouched: the leaf chains to the supplied mesh CA"
+		}
 	}
 
 	// Report the stamp only once the hardware evidence (and, with --mesh-ca,
