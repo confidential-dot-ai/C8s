@@ -315,8 +315,9 @@ func NewDigestsClient(ctx context.Context, cfg DigestsClientConfig) (*DigestsCli
 	}
 	return &DigestsClient{
 		http: &http.Client{
-			Timeout:   timeout,
-			Transport: transport,
+			Timeout:       timeout,
+			Transport:     transport,
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		},
 	}, nil
 }
