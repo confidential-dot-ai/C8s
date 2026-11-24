@@ -29,13 +29,14 @@ const (
 )
 
 type config struct {
-	measurementsConfig string
-	host               string
-	port               int
-	taURL              string
-	attestationAPIURL  string
-	requestTimeout     time.Duration
-	readHeaderTimeout  time.Duration
+	workerGPUAttestations bool
+	measurementsConfig    string
+	host                  string
+	port                  int
+	taURL                 string
+	attestationAPIURL     string
+	requestTimeout        time.Duration
+	readHeaderTimeout     time.Duration
 }
 
 // What the enforcer mounts for a credentials-role container, each at the one
@@ -66,6 +67,7 @@ func NewCmd() *cobra.Command {
 		},
 	}
 	f := cmd.Flags()
+	f.BoolVar(&cfg.workerGPUAttestations, "worker-gpu-attestations", false, "relay boot evidence reads from the measured worker router")
 	f.StringVar(&cfg.host, "host", "127.0.0.1", "listen host (loopback; nginx is the public listener)")
 	f.IntVarP(&cfg.port, "port", "p", 8801, "listen port")
 	f.StringVar(&cfg.taURL, "ta-url", "", "Trust Authority base URL (must use https/armTLS)")
@@ -153,7 +155,16 @@ func newHandler(ctx context.Context, cfg config, logger *slog.Logger) (http.Hand
 	}
 	logger.Info("router allowlist proxy verifying Trust Authority", "cds_url", resolved.url)
 	proxy := newReverseProxy(target, httpClient.Transport, cfg.requestTimeout, logger)
-	return newRouter(proxy), nil
+	mux := newRouter(proxy)
+	if !cfg.workerGPUAttestations {
+		return mux, nil
+	}
+	workerClient, err := workerEvidenceClient(resolved.pins, cfg.attestationAPIURL, cfg.requestTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("worker evidence relay: %w", err)
+	}
+	mux.HandleFunc("GET "+workloadclaims.GPUAttestationPrefix+"{host}", relayWorkerEvidence(target, workerClient))
+	return mux, nil
 }
 
 // resolveTA fixes the Trust Authority this proxy dials, the pins it holds it to and the
@@ -210,7 +221,7 @@ func parseTAURL(raw string) (*url.URL, error) {
 	return target, nil
 }
 
-func newRouter(proxy http.Handler) http.Handler {
+func newRouter(proxy http.Handler) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
