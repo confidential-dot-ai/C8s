@@ -824,11 +824,11 @@ func (a *Allowlist) normalize(p ingestPosture) error {
 	return a.normalizeComponents(p)
 }
 
-// normalizeEntry validates and canonicalizes one entry under p. It keeps no
-// entry whose name the cw selector or the leaf stamp cannot represent
-// (workloadname.MaxLen): a served document loses such an entry instead of
-// failing.
-func normalizeEntry(name string, w *Workload, p ingestPosture) (keep bool, err error) {
+// normalizeEntry validates and canonicalizes one entry under p, and reports
+// whether the document keeps it. It keeps no entry whose name the cw selector
+// or the leaf stamp cannot represent (workloadname.MaxLen): a served document
+// loses such an entry instead of failing.
+func normalizeEntry(name string, w *Workload, p ingestPosture) (bool, error) {
 	// The grammar is not negotiable on either path: the name is used
 	// verbatim as a URL path segment.
 	if !workloadname.ValidGrammar(name) {
