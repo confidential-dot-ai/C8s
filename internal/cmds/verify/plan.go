@@ -19,6 +19,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/localverify"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/taconfig"
 	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
@@ -301,8 +302,12 @@ func requireTAIdentity(cfg config, refValues refvalues.ReferenceValues) error {
 	if cfg.imageManifest != "" {
 		return fmt.Errorf("--image-manifest cannot pin a Trust Authority, which is pinned to the configuration it runs on: pass --image-policy-file <ta-pin.json>")
 	}
-	if _, err := cmdsutil.TALaunchFile(refValues); err != nil {
+	file, err := cmdsutil.TALaunchFile(refValues)
+	if err != nil {
 		return fmt.Errorf("--image-policy-file %w", err)
+	}
+	if err := taconfig.CheckInitdataFamily(file, refValues.Family); err != nil {
+		return fmt.Errorf("--image-policy-file names a launch file its Trust Authority refuses: %w", err)
 	}
 	return nil
 }

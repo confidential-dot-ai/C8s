@@ -35,7 +35,10 @@ the operator signed before the set its own launch document carries.
 ## What the launch file starts and what it fixes
 
 Every replica boots the same `ta-config.yaml`, and clients pin those bytes,
-so no field of it changes while the cluster lives. Some fields only start the
+so no field of it changes while the cluster lives. For replicas launched
+[under a Kata Containers runtime](cloud-ta.md#under-a-kata-containers-runtime)
+the launch file is the whole initdata document: pass it wherever a command
+below takes `--config ta-config.yaml`. Some fields only start the
 cluster; the log rules afterwards.
 
 | Field | Role | How it changes |

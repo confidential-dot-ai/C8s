@@ -53,6 +53,10 @@ binds exactly the bytes it parsed. The same report names the TEE family it
 attests on, so the image carries no platform setting. The service selects the
 guest's primary IPv4 address for its client and replica peer listeners.
 
+A Trust Authority launched as a pod under a Kata Containers runtime does not
+use this image or this staging: see
+[under a Kata Containers runtime](../../docs/cloud-ta.md#under-a-kata-containers-runtime).
+
 No scratch disk is needed. The config is read-only, the allowlist store lives
 in the unit's runtime directory, and the mesh CA stays in memory: a restart
 re-bootstraps the trust root and a reboot leaves nothing behind.

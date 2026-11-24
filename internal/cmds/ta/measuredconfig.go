@@ -47,7 +47,7 @@ func runMeasuredConfig(ctx context.Context, cfg config) error {
 // were read from are one verified read: a replica's peers and its cluster's
 // decrees are bound to those bytes.
 func withMeasuredConfig(cfg config, document []byte, platform teetypes.Family) (config, error) {
-	measured, err := taconfig.Parse(document)
+	measured, err := taconfig.ParseForFamily(document, platform)
 	if err != nil {
 		return config{}, err
 	}

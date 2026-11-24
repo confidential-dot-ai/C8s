@@ -36,6 +36,9 @@ func Pin(manifestPath string, family teetypes.Family, vcpus []int, config []byte
 	if len(config) == 0 {
 		return nil, errors.New("a Trust Authority pin binds a launch file: the configuration is empty")
 	}
+	if err := CheckInitdataFamily(config, family); err != nil {
+		return nil, fmt.Errorf("a Trust Authority pin binds a launch file its Trust Authority serves: %w", err)
+	}
 	images, err := refvalues.FromImageManifest(manifestPath, pinName, family)
 	if err != nil {
 		return nil, fmt.Errorf("the Trust Authority image manifest: %w", err)

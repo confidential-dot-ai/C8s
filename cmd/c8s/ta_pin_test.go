@@ -187,3 +187,19 @@ func mustJSONString(s string) string {
 	}
 	return string(quoted)
 }
+
+// A Trust Authority refuses an initdata launch file declaring another family's
+// digest, so a pin naming one is refused before the release is applied.
+// The pin is written by hand: taconfig.Pin refuses this launch file itself, so
+// only a pin from another writer can carry it here.
+func TestTAPinRefusesAnInitdataDigestOfAnotherFamily(t *testing.T) {
+	launchFile, err := json.Marshal("algorithm = \"sha384\"\n[data]\n\"ta-config.yaml\" = \"clusterID: test\"\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pin := `{"schema_version":"2","tee":"sev-snp","measurements":[{"name":"ta","measurement":"` +
+		strings.Repeat("cd", 48) + `","launch_file":` + string(launchFile) + `}]}`
+	if _, err := taPinConfig([]byte(pin)); err == nil || !strings.Contains(err.Error(), "algorithm") {
+		t.Fatalf("got %v, want a refusal naming the algorithm", err)
+	}
+}

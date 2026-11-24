@@ -12,6 +12,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/util/validation"
 
+	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
@@ -64,12 +65,34 @@ type wire struct {
 	KMS                *kmsWire `yaml:"kms,omitempty"`
 }
 
-// Parse validates a Trust Authority configuration document. It authenticates nothing:
-// these bytes are trusted once a verified self-report binds them.
-func Parse(data []byte) (*Config, error) {
+// Parse validates the Trust Authority configuration a launch file carries: the
+// file itself, or the ConfigFile entry of the initdata document a Kata
+// Containers runtime binds. It authenticates nothing: these bytes are trusted
+// once a verified self-report binds the whole file.
+//
+// It does not judge the algorithm an initdata document declares: a reader that
+// knows the TEE family uses [ParseForFamily].
+func Parse(launchFile []byte) (*Config, error) {
+	data, err := configDocument(launchFile)
+	return parseDocument(launchFile, data, err)
+}
+
+// ParseForFamily is [Parse] for a launch file whose TEE family is known, as a
+// reader holding a pin or a verified report knows it. The same read refuses
+// an initdata document declaring another family's digest. A command that
+// signs for a cluster from --config alone has no family and uses [Parse].
+func ParseForFamily(launchFile []byte, family teetypes.Family) (*Config, error) {
+	data, err := configDocumentFor(launchFile, family)
+	return parseDocument(launchFile, data, err)
+}
+
+func parseDocument(launchFile, data []byte, err error) (*Config, error) {
+	if err != nil {
+		return nil, err
+	}
 	var document wire
 	if err := yamlutil.Decode(data, &document); err != nil {
-		return nil, err
+		return nil, overCap(launchFile, err)
 	}
 	return document.parse()
 }
@@ -173,9 +196,24 @@ type Cluster struct {
 // ReadCluster reads those fields out of launchFile and nothing else, so a
 // setting only Trust Authority acts on cannot keep a client from starting.
 func ReadCluster(launchFile []byte) (Cluster, error) {
-	var document wire
-	if err := yamlutil.Decode(launchFile, &document); err != nil {
+	data, err := configDocument(launchFile)
+	return readCluster(launchFile, data, err)
+}
+
+// ReadClusterForFamily is [ReadCluster] with the family check of
+// [ParseForFamily].
+func ReadClusterForFamily(launchFile []byte, family teetypes.Family) (Cluster, error) {
+	data, err := configDocumentFor(launchFile, family)
+	return readCluster(launchFile, data, err)
+}
+
+func readCluster(launchFile, data []byte, err error) (Cluster, error) {
+	if err != nil {
 		return Cluster{}, err
+	}
+	var document wire
+	if err := yamlutil.Decode(data, &document); err != nil {
+		return Cluster{}, overCap(launchFile, err)
 	}
 	if err := checkSchemaVersion(document.SchemaVersion); err != nil {
 		return Cluster{}, err

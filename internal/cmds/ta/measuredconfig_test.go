@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	toml "github.com/pelletier/go-toml/v2"
 	"gopkg.in/yaml.v3"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
@@ -94,6 +95,77 @@ func measuredConfig(t *testing.T, c cluster) *taconfig.Config {
 		t.Fatalf("parse Trust Authority configuration: %v", err)
 	}
 	return measured
+}
+
+// A Kata Containers runtime binds its initdata document, not the configuration
+// inside it, so the bytes a replica's peers and its cluster's decrees pin are
+// the whole document.
+func TestMeasuredConfigKeepsAnInitdataLaunchFileWhole(t *testing.T) {
+	launchFile, _ := initdataLaunchFile(t)
+	cfg, err := withMeasuredConfig(config{}, launchFile, teetypes.FamilySNP)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(cfg.measuredFile, launchFile) {
+		t.Fatal("the measured file is not the launch file the VM was bound to")
+	}
+	if cfg.measured.ClusterID != "lane" {
+		t.Fatalf("cluster %q, want the one the carried configuration names", cfg.measured.ClusterID)
+	}
+	// The binding proves the bytes, not the digest they declare, so a document
+	// declaring another family's is refused before it serves.
+	if _, err := withMeasuredConfig(config{}, launchFile, teetypes.FamilyTDX); err == nil || !strings.Contains(err.Error(), "algorithm") {
+		t.Fatalf("an SEV-SNP initdata document on TDX = %v, want an algorithm refusal", err)
+	}
+}
+
+// initdataLaunchFile returns a Kata Containers initdata document and the
+// configuration it carries.
+func initdataLaunchFile(t *testing.T) (launchFile, configuration []byte) {
+	t.Helper()
+	configuration = measuredDocument(t, cluster{operatorPEM: operatorKeysPEM(t), workloads: map[string]string{"attestation-api": digestA}})
+	launchFile, err := toml.Marshal(map[string]any{
+		"version":   "0.1.0",
+		"algorithm": taconfig.InitdataAlgorithmSNP,
+		"data":      map[string]string{taconfig.ConfigFile: string(configuration)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return launchFile, configuration
+}
+
+// The launch binding is over the initdata document: a report binding only the
+// configuration inside it is of a guest launched with something else.
+func TestRunMeasuredConfigBindsTheWholeInitdataDocument(t *testing.T) {
+	launchFile, configuration := initdataLaunchFile(t)
+	path := filepath.Join(t.TempDir(), "initdata.toml")
+	if err := os.WriteFile(path, launchFile, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stub := mockapi.New(t)
+	stub.SetPlatform(teetypes.PlatformSNP)
+	bind := func(bound []byte) {
+		verdict := mockapi.PassingVerdict(strings.Repeat("ab", 48))
+		hostData := runtimemeasure.HostData(bound)
+		verdict.Claims.InitData = hostData[:]
+		stub.SetVerdict(verdict)
+	}
+	// Startup past the binding check stops at the first step after it.
+	noRoute := errors.New("no default route")
+	previous := chooseHostInterface
+	t.Cleanup(func() { chooseHostInterface = previous })
+	chooseHostInterface = func() (net.IP, error) { return nil, noRoute }
+	cfg := config{configPath: path, attestationApiURL: stub.URL(), host: "auto"}
+
+	bind(launchFile)
+	if err := runMeasuredConfig(t.Context(), cfg); !errors.Is(err, noRoute) {
+		t.Fatalf("a report binding the whole document = %v, want startup to pass the launch-binding check", err)
+	}
+	bind(configuration)
+	if err := runMeasuredConfig(t.Context(), cfg); err == nil || !strings.Contains(err.Error(), "launched with") {
+		t.Fatalf("a report binding only the carried configuration = %v, want a launch-binding refusal", err)
+	}
 }
 
 // Every setting the document decides must reach the server through the
@@ -309,5 +381,22 @@ func fetchJSON(t *testing.T, client *http.Client, url string, into any) {
 	t.Helper()
 	if err := json.Unmarshal(fetch(t, client, url), into); err != nil {
 		t.Fatalf("decode %s: %v", url, err)
+	}
+}
+
+// On TDX the report this build reads binds no initdata document, so startup
+// stops at the launch-binding check, before the document's family is judged.
+func TestRunMeasuredConfigRefusesAnInitdataDocumentOnTDXAtTheLaunchBinding(t *testing.T) {
+	launchFile, _ := initdataLaunchFile(t)
+	path := filepath.Join(t.TempDir(), "initdata.toml")
+	if err := os.WriteFile(path, launchFile, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stub := mockapi.New(t)
+	stub.SetPlatform(teetypes.PlatformTDX)
+	stub.SetVerdict(mockapi.PassingVerdict(strings.Repeat("ab", 48)))
+	err := runMeasuredConfig(t.Context(), config{configPath: path, attestationApiURL: stub.URL(), host: "auto"})
+	if err == nil || !strings.Contains(err.Error(), "launched with") {
+		t.Fatalf("got %v, want a launch-binding refusal", err)
 	}
 }
