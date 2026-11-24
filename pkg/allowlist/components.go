@@ -168,6 +168,45 @@ func (a *Allowlist) SetsDeclaring(r RunningContainer) []SetRef {
 	return declaring
 }
 
+// NodeServiceRef names a node-service entry: the entry's name and the set it
+// comes from.
+type NodeServiceRef struct {
+	Set   SetRef
+	Entry string
+}
+
+// NodeServiceAdmitting is the node-service entry admitting r whole, under the
+// newest set in force at now that carries one.
+func (a *Allowlist) NodeServiceAdmitting(r RunningContainer, now time.Time) (NodeServiceRef, bool) {
+	digest, err := types.ParseDigest(r.Digest)
+	if err != nil {
+		return NodeServiceRef{}, false
+	}
+	r.Digest = digest.String()
+	inForce := a.SetsInForce(now)
+	for i := len(inForce) - 1; i >= 0; i-- {
+		for name, entry := range a.Components[inForce[i].Version].Entries {
+			if entry.NodeService && admittedBy(entry.Containers, r) {
+				return NodeServiceRef{Set: inForce[i], Entry: name}, true
+			}
+		}
+	}
+	return NodeServiceRef{}, false
+}
+
+// DeclaresNodeService reports whether a set in force at now marks an entry as
+// a node service.
+func (a *Allowlist) DeclaresNodeService(now time.Time) bool {
+	for _, ref := range a.SetsInForce(now) {
+		for _, entry := range a.Components[ref.Version].Entries {
+			if entry.NodeService {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // EarliestDeadline is the first deadline among the retiring sets still in
 // force at now, where there is one.
 func (a *Allowlist) EarliestDeadline(now time.Time) (time.Time, bool) {

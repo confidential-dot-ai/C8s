@@ -228,6 +228,22 @@ host privilege. A static pod's entry, which the worker's floor marks
 `staticPod: true`, grants no host bind, host port or capability, and a boot
 config whose static-pod entry declares host ports or capabilities is refused.
 
+A component set in force grants one more exemption: an entry marked
+`nodeService` names a pod of one container serving the whole node, such as
+`volumed`, and its container is excused exactly what a static pod the measured
+base pins is excused. The entry pins the launch whole — digest, command, args,
+environment and mounts — and the enforcer grants the exemption only while that
+container is the only one of its pod and no other pod on the node runs that
+entry's container; a launch the entry admits in any other pod is refused,
+naming the rule. Host ports are no part of it: they are declared or refused as
+for every other pod. Both rules read the containers the enforcer has recorded
+for each sandbox, so a restart recovers them with the containers it records
+again, and it records each grant under `/run/nri-image-policy-node-services` for the
+runtime wrapper's floor, removed with the container
+([node-exec-mode.md](node-exec-mode.md#the-privilege-floor)). The operator key
+therefore runs code as root on a worker; that is the cost of fixing a node
+service without a relaunch.
+
 A worker's config also names no mesh-exempt namespace, so the mesh protects
 every API pod with its own network namespace wherever the control plane puts
 it; a static pod is the node's own and is never a member, on any node. It names
