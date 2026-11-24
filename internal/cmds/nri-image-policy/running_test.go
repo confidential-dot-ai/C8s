@@ -499,3 +499,56 @@ func TestEveryStartInAPodOffItsSetsIsRefused(t *testing.T) {
 		t.Fatalf("a pod on a set in force was refused a start: %v", err)
 	}
 }
+
+// --- the freshness limit ---
+
+// freshnessPlugin is a node enforcer that polls a Trust Authority and whose first poll of
+// this process has not landed, with pushDigestA in a served allowlist and
+// pushDigestC in its base, recording what it stops.
+func freshnessPlugin(t *testing.T) (*plugin, *[]string) {
+	t.Helper()
+	p, _, killed := revocationPlugin(enforcing)
+	p.cfg.Allowlist.Pull.URL = "https://cds.example"
+	p.policy.freshness = newFreshness(p.policy.clock.local)
+	return p, killed
+}
+
+// A node past its freshness limit refuses a start the served allowlist
+// admits, leaves what runs running, and admits that start again once a poll
+// lands. A start its base allowlist admits runs throughout.
+func TestBehindTheTARefusesAServedStartAndKeepsWhatRuns(t *testing.T) {
+	p, killed := freshnessPlugin(t)
+	pod := makePod("tenant", "inference-0")
+	app := runningCtr(pod, "app", pushDigestA)
+	p.running.add(pod, app)
+
+	// Before the first poll of this process the node is behind.
+	err := p.StartContainer(t.Context(), pod, runningCtr(pod, "app-restarted", pushDigestA))
+	if err == nil {
+		t.Fatal("a node behind the Trust Authority started a container the served allowlist admits")
+	}
+	if !strings.Contains(err.Error(), "no allowlist of the Trust Authority's within") {
+		t.Fatalf("refusal %q does not say the node has had no allowlist of the Trust Authority's", err)
+	}
+	if len(*killed) != 0 || !p.running.contains(app.GetId()) {
+		t.Fatalf("killed %v, want a node behind the Trust Authority to end no running container", *killed)
+	}
+	if err := p.StartContainer(t.Context(), pod, runningCtr(pod, "tool", pushDigestC)); err != nil {
+		t.Fatalf("a node behind the Trust Authority refused a start its base allowlist admits: %v", err)
+	}
+
+	p.policy.freshness.replied(time.Hour, true)
+	if err := p.StartContainer(t.Context(), pod, runningCtr(pod, "app-restarted", pushDigestA)); err != nil {
+		t.Fatalf("a fresh poll did not admit the served start again: %v", err)
+	}
+}
+
+// A node that polls no Trust Authority has no freshness limit to pass.
+func TestWithoutATrustAuthorityToPollAServedStartIsAdmitted(t *testing.T) {
+	p, _, _ := revocationPlugin(enforcing)
+	pod := makePod("tenant", "inference-0")
+
+	if err := p.StartContainer(t.Context(), pod, runningCtr(pod, "app", pushDigestA)); err != nil {
+		t.Fatalf("a node that polls no Trust Authority refused a served start: %v", err)
+	}
+}

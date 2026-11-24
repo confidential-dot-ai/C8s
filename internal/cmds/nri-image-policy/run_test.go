@@ -961,3 +961,35 @@ func TestCreateSocketDir(t *testing.T) {
 		t.Errorf("mode of an existing directory = %o, want the 755 its owner set", info.Mode().Perm())
 	}
 }
+
+// The body says whether the last poll was fresh and how long this node admits
+// from a served allowlist without one, so an operator sees a node falling
+// behind before it falls back.
+func TestStartHealthServer_HealthzReportsFreshness(t *testing.T) {
+	sock := filepath.Join(t.TempDir(), "health.sock")
+	p := newTestPlugin(&config{Policy: policyConfig{Mode: ModeFailClosed}})
+	p.SetReady()
+	if err := startHealthServer(t.Context(), healthServerConfig{
+		logger:       discardLogger(),
+		plugin:       p,
+		pull:         newAllowlistPull("cds.example", time.Now, discardLogger()),
+		addr:         "unix://" + sock,
+		readTimeout:  time.Second,
+		writeTimeout: time.Second,
+	}); err != nil {
+		t.Fatalf("startHealthServer: %v", err)
+	}
+	httpClient := unixHealthClient(sock)
+
+	if _, body := healthz(t, httpClient); body.Fresh || body.FreshnessLimitSeconds != int64(freshnessLimitCap.Seconds()) {
+		t.Fatalf("before any poll: fresh %v limit %d, want false and the cap", body.Fresh, body.FreshnessLimitSeconds)
+	}
+	p.policy.freshness.replied(time.Hour, true)
+	if _, body := healthz(t, httpClient); !body.Fresh || body.FreshnessLimitSeconds != 3600 {
+		t.Fatalf("after a fresh poll: fresh %v limit %d, want true and the reported hour", body.Fresh, body.FreshnessLimitSeconds)
+	}
+	p.policy.freshness.unanswered()
+	if _, body := healthz(t, httpClient); body.Fresh {
+		t.Fatal("after an unanswered poll the body still reports the node fresh")
+	}
+}

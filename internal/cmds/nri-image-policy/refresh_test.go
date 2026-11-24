@@ -338,6 +338,8 @@ type flippingHandler struct {
 	hits       atomic.Int32      // total requests seen
 	bodyByV    map[string][]byte // canonical allowlist body per version
 	statusCode int               // overrides normal logic when non-zero
+	lifetime   string            // certificate lifetime in seconds, none when empty
+	down       atomic.Bool       // answers 503 while set
 }
 
 func (f *flippingHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -349,11 +351,18 @@ func (f *flippingHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(f.statusCode)
 		return
 	}
+	if f.down.Load() {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
 
 	version := f.versions[f.idx]
 	etag := servedTag(f.bodyByV[version])
 	w.Header().Set("ETag", etag)
 	w.Header().Set(allowlist.VersionHeader, version)
+	if f.lifetime != "" {
+		w.Header().Set(allowlist.CertificateLifetimeHeader, f.lifetime)
+	}
 	if r.Header.Get("If-None-Match") == etag {
 		w.WriteHeader(http.StatusNotModified)
 		return
@@ -750,6 +759,8 @@ func TestPullLoop5xxLeavesIndexUntouched(t *testing.T) {
 	client := allowlistclient.NewClientWithHTTP(srv.URL, &http.Client{Timeout: 2 * time.Second})
 	store := newPolicyStore(anyAllowlist(map[string]string{}), localClock())
 	store.apply(anyAllowlist(map[string]string{pushDigestA: "image-1"}), 5)
+	// As the startup fetch leaves a node: the document the ETag names applied.
+	store.freshness.replied(0, true)
 	before := store.current()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1618,5 +1629,181 @@ func TestPullInitialStopsOnRefusal(t *testing.T) {
 	})
 	if !errors.Is(err, errPolicyRefused) || handler.hits.Load() != 1 {
 		t.Fatalf("pullInitial = %v after %d fetches, want errPolicyRefused after 1", err, handler.hits.Load())
+	}
+}
+
+// --- the freshness limit ---
+
+// loop is a pull loop a freshness test runs: a server, the local clock
+// freshness is judged on, a measurer that refuses the documents it names, and
+// the recheck the loop asks for when it puts a document in force.
+type loop struct {
+	srv     *httptest.Server
+	clock   *movingClock
+	measure func(digest string) error
+	recheck func(context.Context)
+}
+
+// refusing is a measurer that refuses the document body for good.
+func refusing(body []byte) func(string) error {
+	return func(digest string) error {
+		if digest != servedDigest(body) {
+			return nil
+		}
+		return fmt.Errorf("%w: cap reached", errPolicyRefused)
+	}
+}
+
+// loopOn starts l and returns the store admission reads.
+func loopOn(t *testing.T, l loop) *policyStore {
+	t.Helper()
+	store := newPolicyStore(anyAllowlist(map[string]string{pushDigestC: "base-image"}), newTAClock(l.clock.now))
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	go runPullLoop(ctx, pullLoopArgs{
+		pull:     quietPull(),
+		client:   allowlistclient.NewClientWithHTTP(l.srv.URL, &http.Client{Timeout: time.Second}),
+		measure:  l.measure,
+		interval: 5 * time.Millisecond,
+		timeout:  time.Second,
+		logger:   discardLogger(),
+
+		target: nodeTarget{store: store, recheckRunning: l.recheck},
+	})
+	return store
+}
+
+// A poll is fresh while its reply names the document admission applies: the
+// 200 that lands it, and the 304s that follow. The limit is the certificate
+// lifetime the reply reports.
+func TestPullLoopIsFreshOn200AndOnA304NamingTheAppliedDocument(t *testing.T) {
+	handler := &flippingHandler{
+		versions: []string{"1"},
+		bodyByV:  map[string][]byte{"1": canonicalBody(t, anyAllowlist(map[string]string{pushDigestA: "image-1"}))},
+		lifetime: "3600",
+	}
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+	store := loopOn(t, loop{
+		srv:     srv,
+		clock:   newMovingClock(time.Now()),
+		recheck: func(context.Context) {},
+	})
+
+	waitFor(t, func() bool { fresh, _ := store.freshness.report(); return fresh }, "the applied pull to be fresh")
+	if _, limit := store.freshness.report(); limit != time.Hour {
+		t.Fatalf("limit = %s, want the reported hour", limit)
+	}
+	polls := handler.hits.Load()
+	waitFor(t, func() bool { return handler.hits.Load() > polls+2 }, "the polls that follow the applied one")
+	if fresh, _ := store.freshness.report(); !fresh {
+		t.Fatal("a 304 naming the applied document left the node behind")
+	}
+	if store.freshness.behind() {
+		t.Fatal("a fresh node is behind its limit")
+	}
+}
+
+// A node fed a document it refuses for good, and 304s for it after, applies
+// another document than the one its replies name: it is not fresh, and past
+// the limit it is behind, with the document it applies still in force.
+func TestPullLoopFallsBehindAfterARefusedDocumentAnd304s(t *testing.T) {
+	applied := canonicalBody(t, anyAllowlist(map[string]string{pushDigestA: "image-1"}))
+	refused := canonicalBody(t, anyAllowlist(map[string]string{pushDigestB: "image-2"}))
+	srv := httptest.NewServer(&flippingHandler{
+		versions: []string{"1", "2"},
+		bodyByV:  map[string][]byte{"1": applied, "2": refused},
+		lifetime: "3600",
+	})
+	defer srv.Close()
+	clock := newMovingClock(time.Now())
+	var rechecks atomic.Int32
+	store := loopOn(t, loop{
+		srv:     srv,
+		clock:   clock,
+		measure: refusing(refused),
+		recheck: func(context.Context) { rechecks.Add(1) },
+	})
+
+	waitFor(t, func() bool { return admitsDigest(store, pushDigestA) }, "the measured document to be applied")
+	waitFor(t, func() bool { fresh, _ := store.freshness.report(); return !fresh }, "the refused document to leave the node behind")
+
+	clock.advance(time.Hour + time.Second)
+	waitFor(t, func() bool { return store.freshness.behind() }, "the node to pass its limit")
+	if !admitsDigest(store, pushDigestA) || !admitsDigest(store, pushDigestC) {
+		t.Fatal("a node past its limit dropped a document it admits from")
+	}
+	if rechecks.Load() != 1 {
+		t.Fatalf("running containers rechecked %d times, want 1 for the applied document alone", rechecks.Load())
+	}
+}
+
+// A node cut off from the Trust Authority keeps the document it applies in
+// force at its version, is behind past the limit, and is fresh again on the
+// first poll that lands after.
+func TestPullLoopFallsBehindWhileCutOffAndRecovers(t *testing.T) {
+	handler := &flippingHandler{
+		versions: []string{"1"},
+		bodyByV:  map[string][]byte{"1": canonicalBody(t, anyAllowlist(map[string]string{pushDigestA: "image-1"}))},
+		lifetime: "3600",
+	}
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+	clock := newMovingClock(time.Now())
+	store := loopOn(t, loop{
+		srv:     srv,
+		clock:   clock,
+		recheck: func(context.Context) {},
+	})
+
+	waitFor(t, func() bool { return admitsDigest(store, pushDigestA) }, "the first document to be applied")
+	handler.down.Store(true)
+	clock.advance(time.Hour + time.Second)
+	waitFor(t, func() bool { return store.freshness.behind() }, "the cut-off node to pass its limit")
+
+	if !admitsDigest(store, pushDigestA) {
+		t.Fatal("a cut-off node dropped the document it applies")
+	}
+	if version := store.current().version; version != 1 {
+		t.Fatalf("version = %d, want the applied 1", version)
+	}
+
+	handler.down.Store(false)
+	waitFor(t, func() bool { return !store.freshness.behind() }, "the poll that lands to put the node within its limit")
+	if fresh, _ := store.freshness.report(); !fresh {
+		t.Fatal("the node within its limit again reports no fresh poll")
+	}
+}
+
+// A 200 the loop ignores as a rollback leaves the node behind, though its
+// ETag names the document admission applies: a reply serving an older version
+// of it does not answer for the document in effect.
+func TestPullLoopARolledBackReplyIsNotFresh(t *testing.T) {
+	applied := canonicalBody(t, anyAllowlist(map[string]string{pushDigestA: "image-1"}))
+	refused := canonicalBody(t, anyAllowlist(map[string]string{pushDigestB: "image-2"}))
+	// The refused document moves the poll ETag ahead of the applied one, so
+	// the rolled-back reply arrives as a 200 rather than a 304.
+	handler := &flippingHandler{
+		versions: []string{"5", "7", "4"},
+		bodyByV:  map[string][]byte{"5": applied, "7": refused, "4": applied},
+		lifetime: "3600",
+	}
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+	store := loopOn(t, loop{
+		srv:     srv,
+		clock:   newMovingClock(time.Now()),
+		measure: refusing(refused),
+		recheck: func(context.Context) {},
+	})
+
+	waitFor(t, func() bool { return admitsDigest(store, pushDigestA) }, "the measured document to be applied")
+	polls := handler.hits.Load()
+	waitFor(t, func() bool { return handler.hits.Load() > polls+3 }, "the rolled-back replies")
+	if fresh, _ := store.freshness.report(); fresh {
+		t.Fatal("a reply the loop ignored as a rollback reports the node fresh")
+	}
+	if version := store.current().version; version != 5 {
+		t.Fatalf("version = %d, want the applied 5", version)
 	}
 }

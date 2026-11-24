@@ -866,6 +866,8 @@ func newCachedPlugin(cfg *config, wl *allowlist.Allowlist) (*plugin, *policyStor
 	}
 	store := newPolicyStore(cfg.Allowlist.Base, localClock())
 	store.apply(wl, 1)
+	// The state a landed poll leaves: the served document in force and fresh.
+	store.freshness.replied(0, true)
 	p := &plugin{
 		cfg:        cfg,
 		policy:     store,

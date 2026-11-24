@@ -422,6 +422,31 @@ mesh and would still hold its secrets, and a dropped delete would otherwise
 leave the kubelet starting it again. A pod a newer set also admits runs on when
 the older set ends.
 
+A node must also keep up with the Trust Authority. A poll is **fresh** when its reply, a
+304 included, names by ETag the document the node applies, so a document the
+node refuses, and 304s for it after, leave the node behind. The **freshness
+limit** is the certificate lifetime the reply reports, at most 24h, and 24h
+when the reply reports none. It is counted on the node's own clock.
+
+Past the limit without a fresh poll the node starts no further container of a
+pod the served document admits — a new pod and a restart of a running pod's
+container alike — until a poll is fresh again. What already runs keeps running
+until its certificates run out, and the node keeps the served document in
+force, so the poll that lands measures nothing again. The pods the base
+allowlist admits, a node's static pods, are unaffected. So a host gains nothing
+by cutting a node off, holding a write back, or feeding a node a document it
+refuses. The cost is that a node unanswered for longer than one certificate
+lifetime takes no new pod, tenant pods included, until the Trust Authority
+answers it again.
+
+A node is not fresh until its first poll of this process lands. The startup
+fetch gives up after five failed attempts, at least 30s in all. The node then
+holds its base allowlist alone: the startup recheck stops each container it
+recovered that the base does not admit, and the node refuses new ones the same
+way until a poll lands. A restart while Trust Authority answers changes
+nothing. `GET /healthz` reports `fresh` and `freshness_limit_seconds`, so an
+operator sees a node falling behind before it stops taking pods.
+
 ## Bootstrap
 
 Two documents start the platform before the TA serves anything. The base allowlist

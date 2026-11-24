@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
@@ -293,4 +294,49 @@ func mustDigest(t *testing.T, s string) types.Digest {
 		t.Fatal(err)
 	}
 	return d
+}
+
+// The certificate lifetime a node's freshness limit follows is carried from
+// every reply, a 304 included, and absent where the reply reports none.
+func TestFetchServedCertificateLifetime(t *testing.T) {
+	const doc = `{"schema":"c8s.allowlist/v1","workloads":{"cds":{"containers":[{"digest":"` + testDigest + `","command":{"policy":"any"},"args":{"policy":"any"}}]}}}`
+	for _, tc := range []struct {
+		name        string
+		header      string
+		notModified bool
+		want        time.Duration
+	}{
+		{name: "on a 200", header: "3600", want: time.Hour},
+		{name: "on a 304", header: "3600", notModified: true, want: time.Hour},
+		{name: "absent"},
+		{name: "not seconds", header: "1h"},
+		{name: "negative", header: "-1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if tc.header != "" {
+					w.Header().Set(allowlist.CertificateLifetimeHeader, tc.header)
+				}
+				if tc.notModified {
+					w.WriteHeader(http.StatusNotModified)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				io.WriteString(w, doc)
+			}))
+			defer srv.Close()
+
+			ifNoneMatch := ""
+			if tc.notModified {
+				ifNoneMatch = testTag
+			}
+			served, _, err := newClient(srv.URL).FetchServed(context.Background(), ifNoneMatch)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if served.CertificateLifetime != tc.want {
+				t.Fatalf("CertificateLifetime = %s, want %s", served.CertificateLifetime, tc.want)
+			}
+		})
+	}
 }
