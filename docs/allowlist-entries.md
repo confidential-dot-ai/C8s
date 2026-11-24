@@ -233,8 +233,10 @@ sidecars, the router and the node services.
 }
 ```
 
-A set is keyed by the release that built it, `MAJOR.MINOR.PATCH` with no `v`
-and no leading zeros. Each entry has the shape of a workload entry and may
+A set is keyed by the release that built it: its tag without the leading `v`,
+`MAJOR.MINOR.PATCH` with no leading zeros, carrying the pre-release a beta tag
+has (`0.44.0-beta.1`) and no build metadata. Sets order as semver orders those
+releases, a pre-release before the version it leads to. Each entry has the shape of a workload entry and may
 carry two fields a workload entry may not: a container's `role`, and the
 entry's `nodeService`, which marks the entry of a node service — a pod of one
 container serving the whole node. A set entry's mount rule may also name one of
@@ -263,14 +265,14 @@ other spelling is refused, so one instant has one form in the signed bytes.
 
 Every set is checked:
 
-- the version is `MAJOR.MINOR.PATCH` with major version `0`;
+- the version is a release version as above, with major version `0`;
 - a `retire` carries a deadline;
 - every entry is a valid workload entry;
 - every container names one of the roles `mesh`, `credentials`, `router`,
   `acme` and `upstream` or none, pins its `command` and its `mounts` (`exact`),
   and declares no `capabilities`;
 - no two containers of the set share a launch — the same digest under the same
-  `command` argv and `args` policy;
+  `command` argv, `args` policy and mount rules;
 - a `nodeService` entry has one container and no init container, and its
   `command`, `args`, `env` and `mounts` are all `exact`.
 

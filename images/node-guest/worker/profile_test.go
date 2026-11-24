@@ -1,4 +1,3 @@
-// Package profile checks the worker image's profile for internal consistency.
 package profile
 
 import (

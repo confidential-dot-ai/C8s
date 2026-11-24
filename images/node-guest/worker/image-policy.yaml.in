@@ -1,6 +1,9 @@
-# Measured NRI bootstrap base allowlist. mkosi.sync pins the operator and mesh
-# images at build time, and `c8s worker floor` adds the chart's router entry and
-# an entry for each of the image's static pods. Worker staging selects the CDS
+# Measured NRI bootstrap base allowlist, and the role entries of the release
+# this image is built from. mkosi.sync pins the operator and mesh images at
+# build time. `c8s worker floor` builds the measured base from the image's
+# static pods alone; `c8s node-image render` publishes the role entries below,
+# with the chart's router entry, as the release's component set, which a
+# cluster admits by a signed write. Worker staging selects the Trust Authority
 # endpoint and the served allowlist before containerd starts.
 # The immutable source remains /usr/lib/c8s/image-policy.yaml; the staged copy
 # under /etc/nri is writable only through the worker's ephemeral state overlay.
@@ -37,13 +40,14 @@ allowlist:
   base:
     schema: c8s.allowlist/v1
     workloads:
-      # The platform roles the enforcer grants inside a member pod. A role
-      # comes from this measured base alone: the JSON ingest drops the field,
-      # so a document CDS serves can never claim one (pkg/allowlist).
+      # The platform roles the enforcer grants inside a member pod. These
+      # entries are the release's component set, not part of the measured
+      # base: a cluster admits them by a signed write, and the enforcer grants
+      # their roles from the set in force (pkg/allowlist).
       #
       # INVARIANT: every command, and every exact args and mounts policy, is
       # what the injector builds for that container over the image's
-      # entrypoint (internal/webhook, TestMeasuredBaseAdmitsTheInjectedArgv).
+      # entrypoint (internal/webhook, TestComponentEntriesAdmitTheInjectedArgv).
       # An args or mounts policy is any only where the pod chooses them.
       c8s-mesh-endpoint:
         label: "armtls-mesh"
@@ -186,19 +190,6 @@ allowlist:
                   source: "c8s-certs"
                 - destination: "/run/c8s/discovery"
                   kind: "emptyDir"
-          # The router pod's gate waits on the member credential and holds
-          # nothing else.
-          - digest: "@OPERATOR_DIGEST@"
-            image: "@OPERATOR_REPO@@@OPERATOR_DIGEST@"
-            role: "credentials"
-            command: {policy: exact, argv: ["/c8s", "probe-file"]}
-            args: {policy: exact, argv: ["--wait", "--timeout=3m0s", "/etc/c8s/certs/tls.crt"]}
-            mounts:
-              policy: exact
-              rules:
-                - destination: "/etc/c8s/certs"
-                  kind: "emptyDir"
-                  source: "c8s-certs"
       c8s-get-secret:
         label: "c8s get-secret"
         containers:

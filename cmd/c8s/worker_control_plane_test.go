@@ -173,7 +173,7 @@ func TestWorkerClusterRouterIsTheImagesSeededRouter(t *testing.T) {
 		cfg := workerRenderConfig()
 		cfg.platform = platform
 		cfg.outputDir = t.TempDir()
-		if err := renderNodeImage(context.Background(), cfg); err != nil {
+		if err := renderNodeImage(context.Background(), cfg, io.Discard); err != nil {
 			t.Fatal(err)
 		}
 		data, err := os.ReadFile(filepath.Join(cfg.outputDir, "allowlist-seed.json"))

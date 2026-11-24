@@ -249,7 +249,23 @@ it. Kubernetes assigns the pod ranges, and the operator uses the worker's
 CRD identity allocation and L7 policy settings.
 
 The image flags must be the worker image build's, so the router it renders is
-the launch the image's floor pins. Each API server reaches the operator at
+the launch the release's component set pins.
+
+The worker image's measured base admits its own static pods alone, so the
+cluster needs one signed write before its first pod: the release's component
+set, which carries the entries of the injected sidecars and the router
+([allowlist-and-capabilities.md](allowlist-and-capabilities.md#component-sets)).
+
+```sh
+c8s allowlist components add component-set-<PLATFORM>.json \
+  --url https://<TA_ADDRESS> \
+  --image-policy-file cds-pin.json \
+  --operator-key operator.key
+```
+
+`component-set-<PLATFORM>.json` is the release asset for the CPU TEE the
+workers boot ([releases.md](releases.md)). Until it lands, a worker refuses
+every injected sidecar and the router. Each API server reaches the operator at
 `--webhook-host`, so a control plane with several replicas runs an operator
 beside each. The control plane the workers join must also accept the bootstrap
 token and run the client-certificate signer and approver, give each node a pod

@@ -82,6 +82,7 @@ case "$BINARY_INPUT" in
         C8S_SOURCE=plugin ;;
     *)  fail "c8s-binary sync-input must be 1 or empty, got '$BINARY_INPUT'" ;;
 esac
+# The same bytes the c8s binary embeds for the release's component set.
 FLOOR_TEMPLATE="$SRCDIR/mkosi.profiles/worker/image-policy.yaml.in"
 [ -f "$FLOOR_TEMPLATE" ] || fail "no floor template at $FLOOR_TEMPLATE"
 
@@ -297,9 +298,10 @@ sed \
     -e "s|@ROUTER_DIGEST@|${ROUTER_IMAGE##*@}|g" \
     "$FLOOR_TEMPLATE" > "$TMP/floor-template.yaml"
 ! grep -o '@[A-Z_]*@' "$TMP/floor-template.yaml" || fail "the floor template names a placeholder this sync does not fill"
+# The pod profile's sync builds the Pod CVM image's floor from these bytes.
+install -m 0644 "$TMP/floor-template.yaml" "$CACHE_DIR/floor-template.yaml"
 "$C8S" worker floor \
     --floor-template "$TMP/floor-template.yaml" \
-    --render-dir "$RENDER" \
     --static-pods "$STATIC_PODS" \
     --out "$STAGE_DIR/usr/lib/c8s/image-policy.yaml"
 printf '{"schema":"c8s.allowlist/v1","workloads":{}}\n' > "$STAGE_DIR/usr/lib/c8s/allowlist-seed.json"
