@@ -13,8 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-chi/chi/v5"
-
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
@@ -31,17 +29,18 @@ func TestOnlyCurrentMembersCanReadAnAdmittedWorkerNetwork(t *testing.T) {
 	leaf := &x509.Certificate{NotBefore: time.Now().Add(-time.Minute), NotAfter: time.Now().Add(time.Minute), Extensions: []pkix.Extension{ext}}
 	verified := &tls.ConnectionState{VerifiedChains: [][]*x509.Certificate{{leaf}}, PeerCertificates: []*x509.Certificate{leaf}}
 	callbacks := 0
-	router := chi.NewRouter()
-	router.Method(http.MethodGet, workloadclaims.GPUAttestationPrefix+"{host}", workerGPUAttestation(hosts, func(_ context.Context, ip netip.Addr) ([]byte, error) {
+	deps := stubRouterDependencies(t)
+	deps.WorkerGPUAttestation = workerGPUAttestation(hosts, func(_ context.Context, ip netip.Addr) ([]byte, error) {
 		callbacks++
 		if ip.String() != "10.40.0.2" {
 			return nil, errors.New("worker unavailable")
 		}
 		return []byte(`{"status":"no_gpu"}`), nil
-	}))
+	})
+	router := newRouter(deps)
 	check := func(host string, peer *tls.ConnectionState, want, calls int) {
 		t.Helper()
-		req := httptest.NewRequest("GET", workloadclaims.GPUAttestationPrefix+host, nil)
+		req := httptest.NewRequest(http.MethodGet, workloadclaims.GPUAttestationPrefix+host, nil)
 		req.TLS = peer
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, req)
