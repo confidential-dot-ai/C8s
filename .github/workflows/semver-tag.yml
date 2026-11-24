@@ -860,6 +860,7 @@ jobs:
       - name: Write release statement
         run: |
           set -euo pipefail
+          shopt -s inherit_errexit
 
           github_api() {
             timeout --kill-after=5s "$GH_API_TIMEOUT" \
