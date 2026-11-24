@@ -16,7 +16,7 @@ import (
 const routerWorkloadPrefix = "c8s-router-"
 
 // ComponentSetFile is the component set a release publishes, as a set file
-// `c8s allowlist components add --set-file` reads: an allowlist document whose
+// `c8s allowlist components add` reads: an allowlist document whose
 // one set, keyed by version, holds the floor template's platform role entries
 // and the router entry of the seed `c8s node-image render` writes.
 func ComponentSetFile(templateData, seed []byte, version string) ([]byte, error) {

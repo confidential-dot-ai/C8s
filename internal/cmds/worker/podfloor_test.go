@@ -30,7 +30,9 @@ func TestPodImageFloorRendersAnAssignedPod(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := workloadsOf(t, floor), mustRoleEntries(t, template); len(got) != len(want) {
+	got := workloadsOf(t, floor)
+	want := mustRoleEntries(t, template)
+	if len(got) != len(want) {
 		t.Fatalf("the Pod CVM floor holds %d entries, want the template's %d role entries", len(got), len(want))
 	}
 	for name, entry := range workloadsOf(t, floor) {
