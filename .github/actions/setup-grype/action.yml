@@ -10,6 +10,11 @@ description: >-
 runs:
   using: composite
   steps:
+    - name: Load the C8s router OpenSSL assessment
+      if: github.job == 'router-image'
+      shell: bash
+      run: echo "GRYPE_VEX_DOCUMENTS=.grype/c8s-router-openssl.openvex.json" >> "$GITHUB_ENV"
+
     - id: dir
       shell: bash
       run: echo "dir=$RUNNER_TOOL_CACHE/grype/0.118.0" >>"$GITHUB_OUTPUT"
