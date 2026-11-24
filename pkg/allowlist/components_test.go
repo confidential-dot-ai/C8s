@@ -141,10 +141,19 @@ func nodeServiceContainer(digest string) string {
 }
 
 func TestComponentSetAdmitsANodeService(t *testing.T) {
-	set := `"0.43.0":{"entries":{"volumed":{"nodeService":true,"containers":[` + nodeServiceContainer(digestA) + `]}}}`
-	al := mustParse(t, componentsDoc(set))
-	if !al.Components["0.43.0"].Entries["volumed"].NodeService {
-		t.Fatal("the node service mark was lost")
+	// A pod's name is one of its container's variables, so a node service in a
+	// cluster names its environment by variable rather than pinning the whole.
+	matchedEnv := strings.Replace(nodeServiceContainer(digestA),
+		`"env":{"policy":"exact","values":{"HOME":"/root"}}`,
+		`"env":{"policy":"match","variables":{"HOSTNAME":{"present":true},"HOME":{"exact":"/root"}}}`, 1)
+	for name, container := range map[string]string{"an exact environment": nodeServiceContainer(digestA), "a matched environment": matchedEnv} {
+		t.Run(name, func(t *testing.T) {
+			set := `"0.43.0":{"entries":{"volumed":{"nodeService":true,"containers":[` + container + `]}}}`
+			al := mustParse(t, componentsDoc(set))
+			if !al.Components["0.43.0"].Entries["volumed"].NodeService {
+				t.Fatal("the node service mark was lost")
+			}
+		})
 	}
 }
 

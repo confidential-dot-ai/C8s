@@ -41,6 +41,8 @@ type nodeImageRenderConfig struct {
 	imageRepository           string
 	armtlsMeshImageDigest     string
 	armtlsMeshImageRepository string
+	volumedImageDigest        string
+	volumedImageRepository    string
 	chartDir                  string
 	outputDir                 string
 }
@@ -68,6 +70,8 @@ func newNodeImageCmd() *cobra.Command {
 	f.StringVar(&cfg.imageRepository, "image-repository", "", "operator/get-cert container repository; empty uses the chart default")
 	f.StringVar(&cfg.armtlsMeshImageDigest, "armtls-mesh-image-digest", "", "digest of the armTLS mesh container image (sha256:..., required)")
 	f.StringVar(&cfg.armtlsMeshImageRepository, "armtls-mesh-image-repository", "", "armTLS mesh container repository; empty uses the chart default")
+	f.StringVar(&cfg.volumedImageDigest, "volumed-image-digest", "", "digest of the volumed container image (sha256:..., required)")
+	f.StringVar(&cfg.volumedImageRepository, "volumed-image-repository", "", "volumed container repository; empty uses the chart default")
 	f.StringVar(&cfg.chartDir, "chart-dir", "", "c8s-worker chart directory; empty uses the chart bundled in this binary")
 	f.StringVar(&cfg.outputDir, "output-dir", "", "directory for allowlist-seed.json, component-set.json, router-image.txt, router-nginx/ and static-pods/ (required)")
 	cmd.AddCommand(render)
@@ -109,7 +113,7 @@ func (cfg nodeImageRenderConfig) validate() error {
 type nodeImageInput struct {
 	flag        string // build flag prefix, e.g. "armtls-mesh-image"
 	valuePath   string // chart value the repository and digest are set under
-	placeholder string // floor template placeholder prefix, e.g. "MESH"
+	placeholder string // floor template placeholder prefix, e.g. "MESH"; empty where the template names none
 	repository  string
 	digest      string
 	required    bool // the image must be pinned for the render to succeed
@@ -120,6 +124,7 @@ func (cfg nodeImageRenderConfig) images() []nodeImageInput {
 	return []nodeImageInput{
 		{flag: "image", valuePath: "image", placeholder: "OPERATOR", repository: cfg.imageRepository, digest: cfg.imageDigest, required: true},
 		{flag: "armtls-mesh-image", valuePath: "armtlsMesh.image", placeholder: "MESH", repository: cfg.armtlsMeshImageRepository, digest: cfg.armtlsMeshImageDigest, required: true},
+		{flag: "volumed-image", valuePath: "volumed.image", repository: cfg.volumedImageRepository, digest: cfg.volumedImageDigest, required: true},
 	}
 }
 
@@ -180,6 +185,9 @@ func (cfg nodeImageRenderConfig) fillFloorTemplate(ctx context.Context, routerIm
 	routerRepository, routerDigest, _ := strings.Cut(routerImage, "@")
 	filled := []string{"@ROUTER_REPO@", routerRepository, "@ROUTER_DIGEST@", routerDigest}
 	for _, input := range cfg.images() {
+		if input.placeholder == "" {
+			continue
+		}
 		repository := input.repository
 		if repository == "" {
 			repository, err = stringAtPath(values, input.valuePath+".repository")

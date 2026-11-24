@@ -39,6 +39,8 @@ import (
 
 var nodeImageTestMeshDigest = "sha256:" + strings.Repeat("d", 64)
 
+var nodeImageTestVolumedDigest = "sha256:" + strings.Repeat("e", 64)
+
 // floorTemplateFile is the worker image's floor template, as the image build
 // reads it from the checkout.
 const floorTemplateFile = "../../images/node-guest/worker/image-policy.yaml.in"
@@ -74,6 +76,7 @@ func TestNodeImageRender(t *testing.T) {
 				"render", "--hardware-platform", platform, "--kube-version", "v1.36.6",
 				"--image-digest", testDigest, "--image-repository", "registry.example.com/c8s-operator",
 				"--armtls-mesh-image-digest", nodeImageTestMeshDigest, "--armtls-mesh-image-repository", "registry.example.com/armtls-mesh",
+				"--volumed-image-digest", nodeImageTestVolumedDigest, "--volumed-image-repository", "registry.example.com/volumed",
 				"--output-dir", out,
 			})
 			if err := cmd.Execute(); err != nil {
@@ -119,7 +122,9 @@ func TestNodeImageRender(t *testing.T) {
 			}
 			var labelled []string
 			for name, workload := range allowlist.Workloads {
-				if !strings.HasPrefix(name, "c8s-router-") {
+				// The router's and volumed's entries declare whole pods, which
+				// carry no one image label.
+				if !strings.HasPrefix(name, "c8s-router-") && !strings.HasPrefix(name, "c8s-volumed-") {
 					labelled = append(labelled, workload.Label)
 				}
 			}
@@ -139,15 +144,15 @@ func TestNodeImageRender(t *testing.T) {
 			}
 			assertRouterDeclaresItsHostPorts(t, allowlist.Workloads[routerEntryName(t, cluster)], deployment)
 			assertLocalPathDenied(t, allowlist)
-			assertComponentSet(t, got["component-set.json"], routerEntryName(t, cluster), allowlist.Workloads[routerEntryName(t, cluster)])
+			assertComponentSet(t, got["component-set.json"], routerEntryName(t, cluster), allowlist)
 		})
 	}
 }
 
 // assertComponentSet checks the set the render publishes: the release's
-// version, the sidecars' images as this render pinned them, and the router
-// entry named name as the seed carries it.
-func assertComponentSet(t *testing.T, file []byte, name string, router pkgallowlist.Workload) {
+// version, the sidecars' images as this render pinned them, the router entry
+// named name as the seed carries it, and volumed's as the node service.
+func assertComponentSet(t *testing.T, file []byte, name string, seed *pkgallowlist.Allowlist) {
 	t.Helper()
 	doc, err := pkgallowlist.ParseJSON(file)
 	if err != nil {
@@ -165,15 +170,22 @@ func assertComponentSet(t *testing.T, file []byte, name string, router pkgallowl
 		}
 	}
 	for digest, want := range map[string]string{
-		testDigest:              "registry.example.com/c8s-operator@" + testDigest,
-		nodeImageTestMeshDigest: "registry.example.com/armtls-mesh@" + nodeImageTestMeshDigest,
+		testDigest:                 "registry.example.com/c8s-operator@" + testDigest,
+		nodeImageTestMeshDigest:    "registry.example.com/armtls-mesh@" + nodeImageTestMeshDigest,
+		nodeImageTestVolumedDigest: "registry.example.com/volumed@" + nodeImageTestVolumedDigest,
 	} {
 		if images[digest] != want {
 			t.Errorf("the set labels %s %q, want %q", digest, images[digest], want)
 		}
 	}
-	if !reflect.DeepEqual(set.Entries[name], router) {
+	if router := seed.Workloads[name]; !reflect.DeepEqual(set.Entries[name], router) {
 		t.Errorf("the set's %s entry =\n%+v\nwant the seed's\n%+v", name, set.Entries[name], router)
+	}
+	volumedName, volumed := seededEntry(t, seed, "c8s-volumed-")
+	volumed.NodeService = true
+	if !reflect.DeepEqual(set.Entries[volumedName], volumed) {
+		t.Errorf("the set's %s entry =\n%+v\nwant the seed's as a node service\n%+v",
+			volumedName, set.Entries[volumedName], volumed)
 	}
 }
 
@@ -191,6 +203,7 @@ func TestNodeImageRenderPublishesNoSetForADevBuild(t *testing.T) {
 	cmd.SetArgs([]string{
 		"render", "--hardware-platform", "tdx", "--kube-version", "v1.36.6",
 		"--image-digest", testDigest, "--armtls-mesh-image-digest", nodeImageTestMeshDigest,
+		"--volumed-image-digest", nodeImageTestVolumedDigest,
 		"--output-dir", out,
 	})
 	if err := cmd.Execute(); err != nil {
@@ -366,6 +379,8 @@ func TestNodeImageRenderRejectsBadInputsBeforeHelm(t *testing.T) {
 		{"missing mesh digest", func(c *nodeImageRenderConfig) { c.armtlsMeshImageDigest = "" }},
 		{"tagged mesh repository", func(c *nodeImageRenderConfig) { c.armtlsMeshImageRepository = "example.com/armtls-mesh:main" }},
 		{"invalid mesh repository", func(c *nodeImageRenderConfig) { c.armtlsMeshImageRepository = "invalid repo" }},
+		{"missing volumed digest", func(c *nodeImageRenderConfig) { c.volumedImageDigest = "" }},
+		{"tagged volumed repository", func(c *nodeImageRenderConfig) { c.volumedImageRepository = "example.com/volumed:main" }},
 		{"tag as digest", func(c *nodeImageRenderConfig) { c.imageDigest = "main" }},
 		{"tagged repository", func(c *nodeImageRenderConfig) { c.imageRepository += ":main" }},
 		{"missing output", func(c *nodeImageRenderConfig) { c.outputDir = "" }},
@@ -373,7 +388,15 @@ func TestNodeImageRenderRejectsBadInputsBeforeHelm(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFakeBin(t)
 			f.tool(t, "helm", "exit 99")
-			cfg := nodeImageRenderConfig{platform: "tdx", kubeVersion: "v1.34.5", imageDigest: testDigest, armtlsMeshImageDigest: nodeImageTestMeshDigest, imageRepository: "ghcr.io/confidential-dot-ai/c8s-operator", outputDir: t.TempDir()}
+			cfg := nodeImageRenderConfig{
+				platform:              "tdx",
+				kubeVersion:           "v1.34.5",
+				imageDigest:           testDigest,
+				imageRepository:       "ghcr.io/confidential-dot-ai/c8s-operator",
+				armtlsMeshImageDigest: nodeImageTestMeshDigest,
+				volumedImageDigest:    nodeImageTestVolumedDigest,
+				outputDir:             t.TempDir(),
+			}
 			tc.change(&cfg)
 			if err := renderNodeImage(context.Background(), cfg, io.Discard); err == nil {
 				t.Fatal("accepted invalid build inputs")

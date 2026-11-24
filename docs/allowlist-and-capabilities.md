@@ -504,7 +504,8 @@ c8s node-image render \
     --hardware-platform sev-snp \
     --kube-version v1.36.6 \
     --image-digest sha256:<operator/get-cert digest> \
-    --armtls-mesh-image-digest sha256:<armTLS mesh digest>
+    --armtls-mesh-image-digest sha256:<armTLS mesh digest> \
+    --volumed-image-digest sha256:<volumed digest>
 c8s ta config new --allowlist-seed seed/allowlist-seed.json ...
 ```
 

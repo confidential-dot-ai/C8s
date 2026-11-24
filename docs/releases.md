@@ -243,7 +243,8 @@ first on `PATH`:
 ```sh
 OPERATOR=$(crane digest "ghcr.io/confidential-dot-ai/c8s-operator:$TAG")
 MESH=$(crane digest "ghcr.io/confidential-dot-ai/armtls-mesh:$TAG")
-.github/scripts/release-seeds.sh ./c8s-linux-amd64 rendered "$OPERATOR" "$MESH" "$PLATFORM"
+VOLUMED=$(crane digest "ghcr.io/confidential-dot-ai/volumed:$TAG")
+.github/scripts/release-seeds.sh ./c8s-linux-amd64 rendered "$OPERATOR" "$MESH" "$VOLUMED" "$PLATFORM"
 cmp "rendered/allowlist-seed-$PLATFORM.json" "allowlist-seed-$PLATFORM.json"
 cmp "rendered/component-set-$PLATFORM.json" "component-set-$PLATFORM.json"
 ```
