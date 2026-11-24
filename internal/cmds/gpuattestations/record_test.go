@@ -1,11 +1,14 @@
 package gpuattestations
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
 	"testing"
+
+	tdxabi "github.com/google/go-tdx-guest/abi"
 )
 
 const (
@@ -76,6 +79,29 @@ func TestWorkerRecord(t *testing.T) {
 	} {
 		if _, ok := decodeRecord([]byte(body)); ok {
 			t.Fatalf("accepted invalid record %.120s", body)
+		}
+	}
+}
+
+func TestCPUOnlyRecord(t *testing.T) {
+	cpuOnly := noGPU(boot1)
+	if r, ok := decodeRecord([]byte(cpuOnly)); !ok || r.Status != "no_gpu" || r.BootID != boot1 {
+		t.Fatal("CPU-only boot evidence lost")
+	}
+	for _, field := range []string{`"nonce":"x"`, `"platform":"snp"`, `"evidence":{}`, `"nvidia_gpu":{}`, `"collateral":{}`} {
+		mixed := strings.TrimSuffix(cpuOnly, "}") + "," + field + "}"
+		if _, ok := decodeRecord([]byte(mixed)); ok {
+			t.Fatalf("CPU-only record accepted %s", field)
+		}
+	}
+}
+
+func TestMinimumTDXQuoteSize(t *testing.T) {
+	for _, size := range []int{tdxabi.QuoteMinSize - 1, tdxabi.QuoteMinSize} {
+		quote := base64.StdEncoding.EncodeToString(make([]byte, size))
+		evidence := json.RawMessage(fmt.Sprintf(`{"quote":%q}`, quote))
+		if hasCPUEvidence("tdx", evidence) != (size == tdxabi.QuoteMinSize) {
+			t.Fatalf("unexpected structural check for a %d-byte quote", size)
 		}
 	}
 }

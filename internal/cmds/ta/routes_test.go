@@ -35,6 +35,11 @@ func testMeshCA(t *testing.T) ownCA {
 
 func newStubRouter(t *testing.T) http.Handler {
 	t.Helper()
+	return newRouter(stubRouterDependencies(t))
+}
+
+func stubRouterDependencies(t *testing.T) dependencies {
+	t.Helper()
 	store, err := allowlist.OpenInMemory()
 	if err != nil {
 		t.Fatalf("allowlist: %v", err)
@@ -48,7 +53,7 @@ func newStubRouter(t *testing.T) http.Handler {
 		t.Fatalf("ca: %v", err)
 	}
 	cs := attestation.NewLocalChallenges(time.Minute)
-	deps := dependencies{
+	return dependencies{
 		AttestHandler: AttestHandler{
 			Challenges: cs,
 			CertTTL:    time.Hour,
@@ -65,7 +70,6 @@ func newStubRouter(t *testing.T) http.Handler {
 		ChallengeLimiter: newTestRateLimiter(t),
 		MaxRequestSize:   65536,
 	}
-	return newRouter(deps)
 }
 
 func TestRouter_RateLimitsAttestationEndpoints(t *testing.T) {

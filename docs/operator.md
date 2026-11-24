@@ -375,13 +375,14 @@ and remove it with `c8s routes rm-pattern --host-suffix <suffix>`.
   workload and the label in the peer's leaf; a wrong or forged annotation
   costs a 502, never a request at the wrong agent. A label no pod publishes
   gets 404.
-- The router's upstream identity (`cds-attest`) carries its own TCP out of
-  the router pod uncaptured, wherever it goes: a pod CVM's endpoint lies
-  outside the cluster's ranges, on whatever port its cloud published, and a
-  captured dial would be wrapped in a second mesh handshake. Every
-  connection that identity opens authenticates its peer. nginx and every
-  other container of the pod stay captured.
-- The router's service account may get, list and watch pods cluster-wide.
+- The upstream identity carries TCP out of the router pod uncaptured.
+  `cds-attest` authenticates its backend on each dial, including pod CVM
+  endpoints outside the cluster ranges. On the worker chart, the GPU boot
+  evidence collector uses the same identity for TLS to the Kubernetes API
+  and a loopback relay for authenticated worker reads. nginx stays captured.
+- The router’s service account may list and watch pods cluster-wide.
+  The worker chart also grants cluster-wide `list` on core `nodes` for
+  [GPU boot evidence discovery](gpu-attestations.md).
 
 ### Built-in allowlist route
 
