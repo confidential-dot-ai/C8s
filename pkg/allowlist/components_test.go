@@ -23,7 +23,7 @@ func currentSet() string {
 	return `"` + currentSetVersion + `":{"entries":{"c8s-mesh-endpoint":` + componentEntry(digestA, RoleMesh) + `}}`
 }
 
-// componentsDoc is a document with a tenant entry, the current set and sets.
+// componentsDoc is a document with a tenant entry and the given sets.
 func componentsDoc(sets ...string) string {
 	return `{"schema":"` + Schema + `","workloads":{"tenant":{"containers":[` +
 		`{"digest":"` + digestC + `","command":{"policy":"any"},"args":{"policy":"any"}}]}},` +

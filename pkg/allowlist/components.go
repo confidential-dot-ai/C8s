@@ -2,12 +2,16 @@ package allowlist
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
 )
 
 // SupportedComponentMajor is the major version of the component sets this
@@ -78,6 +82,106 @@ func (d *Deadline) UnmarshalJSON(data []byte) error {
 	}
 	d.Time = parsed
 	return nil
+}
+
+// Digest is SHA-256 over the set's entries as the document carries them:
+// json.Marshal of the normalized map. A retirement leaves it unchanged, so the
+// digest names what the release published.
+func (s ComponentSet) Digest() ([]byte, error) {
+	canonical, err := json.Marshal(s.Entries)
+	if err != nil {
+		return nil, err
+	}
+	sum := sha256.Sum256(canonical)
+	return sum[:], nil
+}
+
+// Current reports whether the set is one new pods join: it carries no
+// retirement.
+func (s ComponentSet) Current() bool {
+	return s.Retire == nil
+}
+
+// InForce reports whether the set admits what it declares at now: it is
+// current, or retiring with its deadline still ahead. At the deadline itself
+// the set has ended.
+func (s ComponentSet) InForce(now time.Time) bool {
+	return s.Current() || now.Before(s.Retire.Deadline.Time)
+}
+
+// SetRef names one set: its version and the digest of its bytes, "sha256:<hex>".
+type SetRef struct {
+	Version string
+	Digest  string
+}
+
+// SetsInForce are the sets in force at now, in version order.
+func (a *Allowlist) SetsInForce(now time.Time) []SetRef {
+	refs := make([]SetRef, 0, len(a.Components))
+	for version, set := range a.Components {
+		if !set.InForce(now) {
+			continue
+		}
+		refs = append(refs, SetRef{Version: version, Digest: set.digestString()})
+	}
+	slices.SortFunc(refs, func(x, y SetRef) int {
+		return compareComponentVersions(x.Version, y.Version)
+	})
+	return refs
+}
+
+// SetsAdmitting are the sets in force at now with an entry that admits the
+// running container whole.
+func (a *Allowlist) SetsAdmitting(r RunningContainer, now time.Time) []SetRef {
+	digest, err := types.ParseDigest(r.Digest)
+	if err != nil {
+		return nil
+	}
+	r.Digest = digest.String()
+	var admitting []SetRef
+	for _, ref := range a.SetsInForce(now) {
+		if a.Components[ref.Version].admits(r) {
+			admitting = append(admitting, ref)
+		}
+	}
+	return admitting
+}
+
+// EarliestDeadline is the first deadline among the retiring sets still in
+// force at now, where there is one.
+func (a *Allowlist) EarliestDeadline(now time.Time) (time.Time, bool) {
+	var earliest time.Time
+	for _, set := range a.Components {
+		if set.Current() || !set.InForce(now) {
+			continue
+		}
+		if deadline := set.Retire.Deadline.Time; earliest.IsZero() || deadline.Before(earliest) {
+			earliest = deadline
+		}
+	}
+	return earliest, !earliest.IsZero()
+}
+
+// admits reports whether an entry of the set declares a container admitting r.
+func (s ComponentSet) admits(r RunningContainer) bool {
+	for _, entry := range s.Entries {
+		if admittedBy(entry.containers(), r) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s ComponentSet) digestString() string {
+	digest, _ := s.Digest()
+	return "sha256:" + hex.EncodeToString(digest)
+}
+
+// compareComponentVersions orders two versions by their numbers.
+func compareComponentVersions(a, b string) int {
+	x, _ := parseComponentVersion(a)
+	y, _ := parseComponentVersion(b)
+	return slices.Compare(x[:], y[:])
 }
 
 // normalizeComponents canonicalizes the components section. A set that fails a
@@ -175,8 +279,7 @@ func checkComponentEntry(w Workload) error {
 }
 
 // checkNodeService requires a node service to be one container whose whole
-// launch the entry fixes: the enforcer excuses it from the privilege rules, so
-// nothing about it is left to the control plane.
+// launch the entry fixes, so nothing about it is left to the control plane.
 func checkNodeService(w Workload) error {
 	if !w.NodeService {
 		return nil
