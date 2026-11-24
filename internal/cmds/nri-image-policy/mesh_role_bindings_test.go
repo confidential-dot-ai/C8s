@@ -6,13 +6,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 func TestMeshRoleBindingsAfterCredentialEndpoint(t *testing.T) {
 	cfg := meshConfigForLoad(t)
 	cfg.Allowlist.NodeTCB = false
-	cfg.Allowlist.Base = roleBase(t, pushDigestB, CredentialRole, []string{"/usr/local/bin/c8s", "get-cert"})
+	cfg.Allowlist.Base = roleBase(t, pushDigestB, allowlist.RoleCredentials, []string{"/usr/local/bin/c8s", "get-cert"})
 	cfg.WorkloadClaims.AdvertiseHost = "10.0.0.7"
 	cfg.Allowlist.Pull = installedTAAddress(t, "cds.example.org:8443").Pull
 	cfg.Allowlist.Pull.Interval, cfg.Allowlist.Pull.Timeout = time.Second, time.Second
@@ -52,7 +53,7 @@ func TestNodeImageBootConfigRequiresCredentialBinding(t *testing.T) {
 		t.Fatal("unstaged boot config loaded without a credential binding")
 	}
 	cfg.Mesh.Roles = append(cfg.Mesh.Roles, roleBinding{
-		Name: CredentialRole,
+		Name: allowlist.RoleCredentials,
 		UID:  workloadclaims.CredentialsUID,
 		Port: 30808,
 	})

@@ -19,6 +19,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/podmesh/ruleset"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
@@ -155,7 +156,7 @@ func TestProtectAndGateAPodInTheNamespace(t *testing.T) {
 		t.Fatalf("protect: %v", err)
 	}
 	mesh := gateCtr("c8s-mesh", testMeshUID)
-	if err := gate.admit(pod, mesh, gatedContainer{role: meshRole}); err != nil {
+	if err := gate.admit(pod, mesh, gatedContainer{role: allowlist.RoleMesh}); err != nil {
 		t.Fatalf("the mesh endpoint was refused in a protected pod: %v", err)
 	}
 	workload := gateCtr("app", testWorkloadUID)
@@ -213,7 +214,7 @@ func verifierGate() *meshGate {
 	policy := meshRoles()
 	policy.CredentialAttestationPort = 8400
 	policy.Roles = append(policy.Roles, roleBinding{
-		Name: CredentialRole,
+		Name: allowlist.RoleCredentials,
 		UID:  workloadclaims.CredentialsUID,
 		Port: 8443,
 	})
@@ -233,7 +234,7 @@ func TestRecoverAProtectedPodInTheNamespace(t *testing.T) {
 		t.Fatalf("protect: %v", err)
 	}
 	mesh := gateCtr("c8s-mesh", testMeshUID)
-	meshLaunch := gatedContainer{role: meshRole, digest: digestOther, argv: []string{"/app/c8s", "armtls-mesh"}}
+	meshLaunch := gatedContainer{role: allowlist.RoleMesh, digest: digestOther, argv: []string{"/app/c8s", "armtls-mesh"}}
 	if err := before.admit(pod, mesh, meshLaunch); err != nil {
 		t.Fatalf("admit the mesh endpoint: %v", err)
 	}
@@ -284,7 +285,7 @@ func TestRecoverAProtectedPodInTheNamespace(t *testing.T) {
 func TestRecoverAPodHoldingExitsInTheNamespace(t *testing.T) {
 	exits := []exit{{Range: netip.MustParsePrefix("203.0.113.7/32"), Port: 443}}
 	mesh := gateCtr("c8s-mesh", testMeshUID)
-	meshLaunch := gatedContainer{role: meshRole, digest: digestOther, argv: []string{"/app/c8s", "armtls-mesh"}}
+	meshLaunch := gatedContainer{role: allowlist.RoleMesh, digest: digestOther, argv: []string{"/app/c8s", "armtls-mesh"}}
 
 	p := sandboxPod(t, "default", "pod")
 	addressSandbox(t, p.GetPid(), "10.0.3.7/24")

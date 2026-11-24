@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
@@ -79,7 +80,7 @@ func bindCredentialRole(cfg *config) error {
 		return err
 	}
 	cfg.Mesh.Roles = append(cfg.Mesh.Roles, roleBinding{
-		Name: CredentialRole,
+		Name: allowlist.RoleCredentials,
 		UID:  workloadclaims.CredentialsUID,
 		Port: port,
 	})
@@ -88,7 +89,7 @@ func bindCredentialRole(cfg *config) error {
 
 // credentialRole is this node's binding of the credential role.
 func (c *config) credentialRole() (roleBinding, bool) {
-	return c.Mesh.role(CredentialRole)
+	return c.Mesh.role(allowlist.RoleCredentials)
 }
 
 // nodeOwnAddress is this node's own address, from the same inputs the sandbox

@@ -10,32 +10,8 @@ import (
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/podmesh"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
-)
-
-// The platform roles the enforcer acts on itself, each with the identity it
-// reserves (pkg/workloadclaims). Trusted policy names a role on a declared
-// container of the measured base allowlist, and the enforcer grants it to a
-// container whose verified identity matches that declaration — never to a
-// name or annotation a pod carries.
-const (
-	// meshRole is the pod's own endpoint, whose start opens the gate for the
-	// rest of the pod.
-	meshRole = workloadclaims.MeshRole
-	// CredentialRole is the role of the injected credential clients. A node's
-	// boot preparation binds it to that cluster's Trust Authority address, so the name is
-	// shared rather than written twice.
-	CredentialRole = workloadclaims.CredentialsRole
-	// routerRole answers the cluster's external traffic on ports of its own,
-	// in the router's namespace.
-	routerRole = workloadclaims.RouterRole
-	// acmeRole is the one role of that namespace whose sockets leave the
-	// cluster in the clear.
-	acmeRole = "acme"
-	// upstreamRole is that namespace's route authority: it holds the signed
-	// route manifest and reaches the cluster uncaptured, as a mesh client of
-	// the backend each route names.
-	upstreamRole = "upstream"
 )
 
 // routerNamespace is the namespace whose pods serve the router's ports. The
@@ -195,7 +171,7 @@ func (p meshPolicy) validate() error {
 	if err := p.validateRoles(); err != nil {
 		return err
 	}
-	if _, bound := p.role(meshRole); !bound {
+	if _, bound := p.role(allowlist.RoleMesh); !bound {
 		return errors.New("mesh.roles binds no reserved uid to the mesh role")
 	}
 	return nil
@@ -224,20 +200,20 @@ func validateRole(role roleBinding) error {
 		return fmt.Errorf("mesh.roles %s requires a nonzero uid", role.Name)
 	}
 	switch {
-	case role.Name != meshRole && role.Port == 0:
+	case role.Name != allowlist.RoleMesh && role.Port == 0:
 		return fmt.Errorf("mesh.roles %s reaches nothing: give it the port it dials or drop it", role.Name)
-	case role.Name == meshRole && role.Port != 0:
-		return fmt.Errorf("mesh.roles %s reaches no port of its own: the enforcer installs the ruleset its pod rides", meshRole)
-	case role.Name != CredentialRole && role.UID == workloadclaims.CredentialsUID:
-		return fmt.Errorf("mesh.roles %s holds uid %d, reserved for the %s role", role.Name, role.UID, CredentialRole)
-	case role.Name == routerRole || role.Name == acmeRole || role.Name == upstreamRole:
+	case role.Name == allowlist.RoleMesh && role.Port != 0:
+		return fmt.Errorf("mesh.roles %s reaches no port of its own: the enforcer installs the ruleset its pod rides", allowlist.RoleMesh)
+	case role.Name != allowlist.RoleCredentials && role.UID == workloadclaims.CredentialsUID:
+		return fmt.Errorf("mesh.roles %s holds uid %d, reserved for the %s role", role.Name, role.UID, allowlist.RoleCredentials)
+	case role.Name == allowlist.RoleRouter || role.Name == allowlist.RoleACME || role.Name == allowlist.RoleUpstream:
 		return fmt.Errorf("mesh.roles %s is a compiled role of the router's namespace, not a dialing role", role.Name)
 	case role.UID == workloadclaims.RouterUID:
-		return fmt.Errorf("mesh.roles %s holds uid %d, reserved for the %s role", role.Name, role.UID, routerRole)
+		return fmt.Errorf("mesh.roles %s holds uid %d, reserved for the %s role", role.Name, role.UID, allowlist.RoleRouter)
 	case role.UID == workloadclaims.AcmeUID:
-		return fmt.Errorf("mesh.roles %s holds uid %d, reserved for the %s role", role.Name, role.UID, acmeRole)
+		return fmt.Errorf("mesh.roles %s holds uid %d, reserved for the %s role", role.Name, role.UID, allowlist.RoleACME)
 	case role.UID == workloadclaims.UpstreamUID:
-		return fmt.Errorf("mesh.roles %s holds uid %d, reserved for the %s role", role.Name, role.UID, upstreamRole)
+		return fmt.Errorf("mesh.roles %s holds uid %d, reserved for the %s role", role.Name, role.UID, allowlist.RoleUpstream)
 	}
 	return nil
 }
@@ -250,9 +226,9 @@ func (p meshPolicy) reservedIdentities() map[string]uint32 {
 	for _, role := range p.Roles {
 		ids[role.Name] = role.UID
 	}
-	ids[routerRole] = workloadclaims.RouterUID
-	ids[acmeRole] = workloadclaims.AcmeUID
-	ids[upstreamRole] = workloadclaims.UpstreamUID
+	ids[allowlist.RoleRouter] = workloadclaims.RouterUID
+	ids[allowlist.RoleACME] = workloadclaims.AcmeUID
+	ids[allowlist.RoleUpstream] = workloadclaims.UpstreamUID
 	return ids
 }
 

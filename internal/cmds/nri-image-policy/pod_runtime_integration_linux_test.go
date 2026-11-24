@@ -371,7 +371,7 @@ func writeRuntimeWrapperPolicy(t *testing.T, fixture runtimeFixture) {
 	base := runtimeAllowlist(fixture)
 	for name, w := range cfg.Allowlist.Base.Workloads {
 		for _, c := range w.Containers {
-			if c.Role == meshRole {
+			if c.Role == allowlist.RoleMesh {
 				base.Workloads[name] = w
 			}
 		}
@@ -389,7 +389,7 @@ func writeRuntimeWrapperPolicy(t *testing.T, fixture runtimeFixture) {
 	cfg.Mesh.Pod = &podMeshPolicy{}
 	cfg.Mesh.ExemptNamespaces = nil
 	cfg.Mesh.CredentialAttestationPort = 0
-	cfg.Mesh.Roles = []roleBinding{{Name: meshRole, UID: workloadclaims.MeshUID}}
+	cfg.Mesh.Roles = []roleBinding{{Name: allowlist.RoleMesh, UID: workloadclaims.MeshUID}}
 	cfg.WorkloadClaims.PublishNodeIP = false
 	data, err := yaml.Marshal(cfg)
 	if err != nil {

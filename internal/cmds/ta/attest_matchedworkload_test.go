@@ -278,7 +278,7 @@ func TestAttest_RouterLeafTTL(t *testing.T) {
 		h.RouterCertTTL = 20 * time.Second
 	}
 	router := containersView(wlDigestA)
-	router[0].Role = workloadclaims.RouterRole
+	router[0].Role = pkgallowlist.RoleRouter
 	if got := time.Until(leafFromInventory(t, store, []string{wlDigestA}, router, tune).NotAfter); got > 20*time.Second {
 		t.Fatalf("router leaf expires in %v, want at most 20s", got)
 	}
@@ -291,7 +291,7 @@ func TestAttest_RouterLeafTTL(t *testing.T) {
 // TTL leaves it where it was.
 func TestAttest_RouterTTLOnlyShortens(t *testing.T) {
 	router := containersView(wlDigestA)
-	router[0].Role = workloadclaims.RouterRole
+	router[0].Role = pkgallowlist.RoleRouter
 	leaf := leafFromInventory(t, completeAPIStore(t), []string{wlDigestA}, router, func(h *AttestHandler) {
 		h.CertTTL = 30 * time.Minute
 		h.RouterCertTTL = 12 * time.Hour

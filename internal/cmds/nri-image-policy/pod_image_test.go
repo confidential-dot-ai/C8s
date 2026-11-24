@@ -11,6 +11,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
@@ -29,7 +30,7 @@ func TestPodImageConfigRequiresCanonicalPinsAndMeasuredEndpoint(t *testing.T) {
 		{"ambiguous endpoint", func(c *config) { c.Allowlist.Base.Workloads["other"] = c.Allowlist.Base.Workloads["role-entry"] }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := &config{Pod: &podConfig{Images: map[string]string{"app": pushDigestA, workloadclaims.MeshContainerName: pushDigestB}}, Allowlist: allowlistConfig{Base: roleBase(t, pushDigestB, meshRole, []string{"/mesh"})}}
+			cfg := &config{Pod: &podConfig{Images: map[string]string{"app": pushDigestA, workloadclaims.MeshContainerName: pushDigestB}}, Allowlist: allowlistConfig{Base: roleBase(t, pushDigestB, allowlist.RoleMesh, []string{"/mesh"})}}
 			if err := cfg.validatePodImages(); err != nil {
 				t.Fatalf("valid pins: %v", err)
 			}

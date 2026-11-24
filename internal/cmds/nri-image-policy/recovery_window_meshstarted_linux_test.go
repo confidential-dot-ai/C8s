@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/containerd/nri/pkg/api"
+
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
 // Recovery must read liveness from the running set when a measured mesh
@@ -62,7 +64,7 @@ func TestMeshEndpointStartedInTheDeferralWindowRecoversAsAMember(t *testing.T) {
 				Policy: policyConfig{Mode: ModeFailClosed, EnforceExisting: true},
 				Mesh:   meshRoles(),
 				Allowlist: allowlistConfig{
-					Base: roleBase(t, pushDigestB, meshRole, []string{"/app/c8s", "armtls-mesh"}),
+					Base: roleBase(t, pushDigestB, allowlist.RoleMesh, []string{"/app/c8s", "armtls-mesh"}),
 				},
 			}
 			p, _ := newCachedPlugin(cfg, exitsAllowlist(t, ""))

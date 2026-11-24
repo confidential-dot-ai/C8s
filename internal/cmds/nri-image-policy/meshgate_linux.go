@@ -7,6 +7,7 @@ import (
 
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/podmesh"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/podmesh/ruleset"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
@@ -96,7 +97,7 @@ func rulesetExits(exits []exit) []ruleset.Exit {
 // and a pod of the router's namespace also answers the router's external
 // listeners.
 func (p meshPolicy) podRuleset(kubeNamespace string, granted []exit) ruleset.Policy {
-	endpoint, _ := p.role(meshRole)
+	endpoint, _ := p.role(allowlist.RoleMesh)
 	policy := ruleset.Policy{
 		Resolver:      p.Resolver,
 		Capture:       ruleset.CapturePorts(p.Capture),
@@ -166,11 +167,11 @@ func (p meshPolicy) credentialVerifier() (ruleset.Destination, bool) {
 func (p meshPolicy) dialingRoles() []ruleset.Role {
 	var roles []ruleset.Role
 	for _, role := range p.Roles {
-		if role.Name == meshRole {
+		if role.Name == allowlist.RoleMesh {
 			continue
 		}
 		bound := ruleset.Role{UID: role.UID, OutsidePort: role.Port}
-		if verifier, named := p.credentialVerifier(); named && role.Name == CredentialRole {
+		if verifier, named := p.credentialVerifier(); named && role.Name == allowlist.RoleCredentials {
 			bound.Destinations = append(bound.Destinations, verifier)
 		}
 		roles = append(roles, bound)

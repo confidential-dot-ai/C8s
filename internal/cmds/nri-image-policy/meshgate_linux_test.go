@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/podmesh/ruleset"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
 // notANamespace is a regular file: it exists, so the enforcer reads it, and it
@@ -194,10 +195,10 @@ func TestAdmitAndVerifyReadTheLiveRuleset(t *testing.T) {
 	}
 
 	mesh := gateCtr("c8s-mesh", testMeshUID)
-	if _, _, err := gate.admissible(pod, mesh, gatedContainer{role: meshRole}); err != nil {
+	if _, _, err := gate.admissible(pod, mesh, gatedContainer{role: allowlist.RoleMesh}); err != nil {
 		t.Fatalf("the enforcer's own record refused the mesh endpoint: %v", err)
 	}
-	if err := gate.admit(pod, mesh, gatedContainer{role: meshRole}); err == nil {
+	if err := gate.admit(pod, mesh, gatedContainer{role: allowlist.RoleMesh}); err == nil {
 		t.Fatal("a container was admitted without a verified ruleset")
 	}
 

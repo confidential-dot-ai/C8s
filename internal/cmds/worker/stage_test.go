@@ -27,7 +27,6 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/nodeservices"
-	nriimagepolicy "github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/nri-image-policy"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/fileutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/taconfig"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
@@ -261,7 +260,7 @@ func TestStagePublishesTheDocumentsFloor(t *testing.T) {
 		t.Errorf("pull = %+v, want the document's Trust Authority and pin floor %d", pull, doc.TA.PinFloor)
 	}
 	roles := floor.Mesh.Roles
-	if i := slices.IndexFunc(roles, func(r stagedRole) bool { return r.Name == nriimagepolicy.CredentialRole }); i < 0 || roles[i].Port != 8443 {
+	if i := slices.IndexFunc(roles, func(r stagedRole) bool { return r.Name == allowlist.RoleCredentials }); i < 0 || roles[i].Port != 8443 {
 		t.Errorf("mesh roles = %+v, want the credential role on the document's Trust Authority port", roles)
 	}
 
