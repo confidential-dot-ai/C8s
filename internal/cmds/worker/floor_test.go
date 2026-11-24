@@ -118,7 +118,7 @@ func workloadsOf(t *testing.T, floor []byte) map[string]allowlist.Workload {
 // platformRoleEntries are the template's entries a member pod's injected
 // containers run under.
 var platformRoleEntries = []string{
-	"c8s-acme", "c8s-allowlist-proxy", "c8s-get-cert", "c8s-get-secret", "c8s-get-volume",
+	"c8s-acme", "c8s-allowlist-proxy", "c8s-get-cert", "c8s-get-secret", "c8s-get-volume", "c8s-gpu-attestations",
 	"c8s-mesh-endpoint", "c8s-probe-file", "c8s-router-nginx", "c8s-router-upstream",
 }
 

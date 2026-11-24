@@ -22,6 +22,7 @@
 {{- define "router.cloudNginxFiles" -}}
 {{- $dir := include "router.configDir" . -}}
 {{- $files := include "c8s.routerNginxFiles" (dict "root" . "dir" $dir) | fromJson -}}
+{{- $_ := set $files "gpu-attestations.conf" "" -}}
 {{- $_ := set $files "request-body.conf" "client_max_body_size 1048576;\n" -}}
 {{- $_ := set $files "tls.conf" (printf "include %s/tls-cds.conf;\n" $dir) -}}
 {{- $files | toJson -}}

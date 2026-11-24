@@ -579,7 +579,7 @@
 {{- $mode := index $argv 1 -}}
 {{- if has $mode (append (include "c8s.injectedModes" $root | fromJsonArray) "allowlist-proxy") -}}
 credentials
-{{- else if eq $mode "cds-attest" -}}
+{{- else if or (eq $mode "cds-attest") (and (eq $mode "gpu-attestations") (eq (len $argv) 2)) -}}
 upstream
 {{- else if eq $mode "acme" -}}
 acme

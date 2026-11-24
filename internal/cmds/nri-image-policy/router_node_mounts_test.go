@@ -27,13 +27,16 @@ func TestChartRouterNodeMountAdmission(t *testing.T) {
 			role: allowlist.RoleUpstream,
 		},
 		{
+			name: "gpu-attestations",
+			role: allowlist.RoleUpstream,
+		},
+		{
 			name: "allowlist-proxy",
 			role: allowlist.RoleCredentials,
 		},
 	} {
 		t.Run(client.name, func(t *testing.T) {
 			p := routerNodeMountPlugin(t)
-			p.mountStorage = fixedStorage(allowlist.MountMemory)
 			// The mount and role checks run outside the gate's scope;
 			// assertRouterMeshRole drives the same containers through the
 			// gate on a member view of this pod.
@@ -202,6 +205,7 @@ func routerNodeMountPlugin(t *testing.T) *plugin {
 		t.Fatal(err)
 	}
 	p := newTestPlugin(cfg)
+	p.mountStorage = fixedStorage(allowlist.MountMemory)
 	p.SetReady()
 	p.taPins = "/run/node-cds-policy.json"
 	p.taAddress = "/run/node-cds-address"

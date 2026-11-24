@@ -4667,15 +4667,6 @@ func TestChartRouterPodTakesTheMeasuredRoles(t *testing.T) {
 		"@OPERATOR_DIGEST@": operatorDigest,
 		"@ROUTER_DIGEST@":   nginxDigest,
 	}).BuildIndex()
-	wantRoles := map[string]string{
-		"c8s-mesh":        "mesh",
-		"c8s-cert":        "credentials",
-		"c8s-cert-wait":   "credentials",
-		"allowlist-proxy": "credentials",
-		"nginx":           "router",
-		"cds-attest":      "upstream",
-		"acme":            "acme",
-	}
 	// The measured base is the worker's, whose launch file carries the
 	// front-door mode, so one render covers both: the acme sidecar is there
 	// either way and the pinned argv names the configuration directory that
@@ -4691,7 +4682,7 @@ func TestChartRouterPodTakesTheMeasuredRoles(t *testing.T) {
 	pins := componentPins(t, out, args)
 	pod := renderedDeployment(t, out, "c8s-router").Spec.Template.Spec
 	for _, container := range append(slices.Clone(pod.InitContainers), pod.Containers...) {
-		want, held := wantRoles[container.Name]
+		want, held := routerPodRoles[container.Name]
 		if !held {
 			t.Errorf("router container %q holds no platform role, so the enforcer refuses the pod", container.Name)
 			continue

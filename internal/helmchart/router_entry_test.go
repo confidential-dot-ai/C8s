@@ -169,8 +169,8 @@ func TestWorkerChartRouterEntryPinsItsLaunch(t *testing.T) {
 	// The allowlist proxy holds the credentials role, so the drop set removes
 	// it before matching and the entry declares it no more than the mesh
 	// endpoint or the credential sidecars.
-	if len(entry.Containers) != 2 {
-		t.Errorf("entry mains = %+v, want nginx and cds-attest", entry.Containers)
+	if got := len(entry.Containers); got != 3 {
+		t.Errorf("entry has %d main containers, want nginx, cds-attest and gpu-attestations", got)
 	}
 	var inits []string
 	for _, c := range entry.InitContainers {
@@ -208,6 +208,14 @@ func TestWorkerChartRouterEntryPinsItsLaunch(t *testing.T) {
 			mutate: func(cs []workloadclaims.SandboxContainer) []workloadclaims.SandboxContainer {
 				return slices.DeleteFunc(cs, func(c workloadclaims.SandboxContainer) bool {
 					return len(c.Argv) > 1 && c.Argv[1] == "cds-attest"
+				})
+			},
+		},
+		{
+			name: "no gpu-attestations",
+			mutate: func(cs []workloadclaims.SandboxContainer) []workloadclaims.SandboxContainer {
+				return slices.DeleteFunc(cs, func(c workloadclaims.SandboxContainer) bool {
+					return slices.Equal(c.Argv, []string{"/c8s", "gpu-attestations"})
 				})
 			},
 		},
