@@ -33,10 +33,6 @@ const (
 	containerTypeSandbox       = "sandbox"
 )
 
-// requireFloor refuses a bundle that would start a container of a member pod
-// with privileges the pod's protection cannot survive. Attachability is
-// refused for every container the wrapper creates, whether or not the floor
-// covers it.
 // floorCreate is the create the floor judges: the bundle containerd
 // persisted, the container it starts, the standard input runc was handed, the
 // measured floor and the directories admission records its grants in.
@@ -49,6 +45,10 @@ type floorCreate struct {
 	NodeServiceGrantDir string
 }
 
+// requireFloor refuses a bundle that would start a container of a member pod
+// with privileges the pod's protection cannot survive. Attachability is
+// refused for every container the wrapper creates, whether or not the floor
+// covers it.
 func requireFloor(create floorCreate) error {
 	spec := create.Spec
 	if create.Floor.PodRole && spec.Hooks != nil {
