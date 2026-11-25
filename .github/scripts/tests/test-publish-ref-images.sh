@@ -54,7 +54,7 @@ case "$1 $2" in
       */git/ref/heads/*) [ -e "$FAKE_STATE/branch-sha" ] || { echo "{\"message\":\"Not Found\",\"status\":\"404\"}"; exit 1; } ; cat "$FAKE_STATE/branch-sha" ;;
       */contents/.github/workflows/c8s-image-manual.yml\?ref=*)
         if [ -e "$FAKE_STATE/workflow" ]; then cat "$FAKE_STATE/workflow"; else cat "$FAKE_MANUAL_WORKFLOW"; fi ;;
-      */actions/runs/40001/attempts/1)
+      */actions/runs/4000[12]/attempts/1)
         sha=$(cat "$FAKE_STATE/dispatched-sha")
         [ ! -e "$FAKE_STATE/wrong-run-sha" ] || sha=3eddfb9ed4909133cfc0844ad4913b3b02d6a9fe
         status=completed
@@ -64,7 +64,7 @@ case "$1 $2" in
           echo 3eddfb9ed4909133cfc0844ad4913b3b02d6a9fe >"$FAKE_STATE/branch-sha"
         fi
         jq -nc --arg sha "$sha" --arg status "$status" --arg conclusion "$conclusion" '{head_sha:$sha,status:$status,conclusion:$conclusion,run_attempt:1}' ;;
-      */actions/runs/40001) echo 'must not follow a mutable latest attempt' >&2; exit 1 ;;
+      */actions/runs/4000[12]) echo 'must not follow a mutable latest attempt' >&2; exit 1 ;;
       *) echo "unexpected api path $path" >&2; exit 1 ;;
     esac ;;
   "api -X")
@@ -74,8 +74,9 @@ case "$1 $2" in
       exit 0
     fi
     workflow=${4%/dispatches}; workflow=${workflow##*/}
+    run_id=40001; [ "$workflow" != c8s-image-manual.yml ] || run_id=40002
     cp "$FAKE_STATE/branch-sha" "$FAKE_STATE/dispatched-sha"
-    : >"$FAKE_STATE/pushed-tags"
+    : >"$FAKE_STATE/pushed-tags-$run_id"
     printf '%s\n' "$workflow" >>"$FAKE_STATE/runs"
     # docker publishes every component tag for the short sha; the image
     # workflow publishes both formats of both platforms, unless the fixture
@@ -85,26 +86,24 @@ case "$1 $2" in
     fi
     if [ "$workflow" = c8s-image-manual.yml ] && [ ! -e "$FAKE_STATE/image-publishes-nothing" ]; then
       for tee in tdx sev-snp; do
-        echo "guests/worker:sha-c7cf2f3-$tee" >>"$FAKE_STATE/pushed-tags"
-        echo "guests/worker:sha-c7cf2f3-$tee-kubevirt" >>"$FAKE_STATE/pushed-tags"
+        echo "guests/worker:sha-c7cf2f3-$tee" >>"$FAKE_STATE/pushed-tags-$run_id"
+        echo "guests/worker:sha-c7cf2f3-$tee-kubevirt" >>"$FAKE_STATE/pushed-tags-$run_id"
       done
       for tag in sha-c7cf2f3 sha-c7cf2f3-kubevirt; do
-        [ "$tag" = "$(cat "$FAKE_STATE/missing-ta" 2>/dev/null || true)" ] || echo "guests/ta:$tag" >>"$FAKE_STATE/pushed-tags"
+        [ "$tag" = "$(cat "$FAKE_STATE/missing-ta" 2>/dev/null || true)" ] || echo "guests/ta:$tag" >>"$FAKE_STATE/pushed-tags-$run_id"
       done
     fi
-    cat "$FAKE_STATE/pushed-tags" >>"$FAKE_STATE/present-tags"
-    if [ -e "$FAKE_STATE/missing-run-id" ]; then echo null; else echo 40001; fi ;;
+    cat "$FAKE_STATE/pushed-tags-$run_id" >>"$FAKE_STATE/present-tags"
+    if [ -e "$FAKE_STATE/missing-run-id" ]; then echo null; else echo "$run_id"; fi ;;
   "run list") echo 'must not guess a dispatched run from a list' >&2; exit 1 ;;
   "run view")
-    [ "$3" = 40001 ] || exit 1
+    [ "$3" = 40002 ] || exit 1
     [[ " $* " == *" --attempt 1 --log "* ]] || { echo 'logs must name the successful attempt' >&2; exit 1; }
     while read -r ref; do
-      printf 'job\tstep\t2026-01-01T00:00:00Z Pushed [registry] ghcr.io/confidential-dot-ai/%s\n' "$ref"
-      printf 'job\tstep\t2026-01-01T00:00:00Z Digest: sha256:%064d\n' 1
-    done <"$FAKE_STATE/pushed-tags"
+      printf 'job\tstep\t2026-01-01T00:00:00Z Pushed [registry] ghcr.io/confidential-dot-ai/%s\njob\tstep\t2026-01-01T00:00:00Z Digest: sha256:%064d\n' "$ref" 1
+    done <"$FAKE_STATE/pushed-tags-$3"
     if [ -e "$FAKE_STATE/conflicting-log" ]; then
-      printf 'job\tstep\t2026-01-01T00:00:00Z Pushed [registry] ghcr.io/confidential-dot-ai/guests/worker:sha-c7cf2f3-tdx\n'
-      printf 'job\tstep\t2026-01-01T00:00:00Z Digest: sha256:%064d\n' 2
+      printf 'job\tstep\t2026-01-01T00:00:00Z Pushed [registry] ghcr.io/confidential-dot-ai/%s\njob\tstep\t2026-01-01T00:00:00Z Digest: sha256:%064d\n' guests/worker:sha-c7cf2f3-tdx 2
     fi ;;
   *) echo "unexpected gh call: $*" >&2; exit 1 ;;
 esac
@@ -245,7 +244,7 @@ touch "$state/commit-known"
 printf '%s' "$sha" >"$state/branch-sha"
 for c in c8s-operator nri-image-policy ta armtls-mesh volumed; do echo "$c:c7cf2f3" >>"$state/present-tags"; done
 out=$(bash "$script" --sha "$sha" --receipt "$fixture_dir/receipt.json")
-jq -e --arg sha "$sha" ' .source == $sha and .componentRun == "" and .componentAttempt == "" and .guestRun == "40001" and .guestAttempt == "1" and (.images | length) == 6 and ([.images[] | endswith("@sha256:" + ("0" * 63) + "1")] | all) ' "$fixture_dir/receipt.json" >/dev/null || fail "receipt did not identify dispatched build"
+jq -e --arg sha "$sha" ' .source == $sha and .componentRun == "" and .componentAttempt == "" and .guestRun == "40002" and .guestAttempt == "1" and (.images | length) == 6 and ([.images[] | endswith("@sha256:" + ("0" * 63) + "1")] | all) ' "$fixture_dir/receipt.json" >/dev/null || fail "receipt did not identify dispatched build"
 ! grep -q '/tags/list' "$calls" || fail "publication depends on a paginated tag listing"
 grep -q 'branch build/c7cf2f3 already at c7cf2f3' <<<"$out" || fail "existing branch not reused"
 ! grep -q 'actions/workflows/docker.yml/dispatches' "$calls" || fail "docker dispatched although every tag exists"
@@ -318,7 +317,7 @@ pass
 reset
 touch "$state/commit-known" "$state/attempt-pending"
 bash "$script" --sha "$sha" --receipt "$fixture_dir/attempt-receipt" >/dev/null
-jq -e '.componentAttempt == "1" and .guestAttempt == "1"' "$fixture_dir/attempt-receipt" >/dev/null || fail "attempt identity changed"
+jq -e '.componentRun == "40001" and .guestRun == "40002" and .componentAttempt == "1" and .guestAttempt == "1"' "$fixture_dir/attempt-receipt" >/dev/null || fail "attempt identity changed"
 pass
 
 # --- changed sources and missing TA formats fail -----------------------------
