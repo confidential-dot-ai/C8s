@@ -21,7 +21,7 @@ import (
 // --cds-url stands as it was given, and Validate canonicalises it.
 func TestResolveTAEndpointTakesTheNodesEndpoint(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "cds-address")
-	if err := os.WriteFile(path, cmdsutil.FormatTAAddress("cds.example.org:30808"), 0o600); err != nil {
+	if err := os.WriteFile(path, cmdsutil.FormatTAAddress("cds.example.org:30808", ""), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	previousPath := nodeAddressPath

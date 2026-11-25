@@ -194,8 +194,9 @@ What a change must preserve. The page or code named owns the detail.
    `armtls.EnforceImages`, never field by field in new code.
 3. For an armTLS connection use the `pkg/armtls` constructors:
    `NewServerTLSConfig`, `NewClientTLSConfig`, `NewMeshServerTLSConfig`,
-   `NewMeshClientTLSConfig` or `NewVerifyingHTTPClient`. They keep the evidence
-   and chain paths separate and never resume a session.
+   `NewMeshClientTLSConfig`, `NewVerifyingHTTPClient`, or `NewFollowingHTTPClient`
+   for pins that change while the client runs. They keep the evidence and chain
+   paths separate and never resume a session.
 4. Inside the cluster, secret values, the mesh CA key, pod keys and volume
    plaintext exist only in TEE memory, never as a Kubernetes object or in the
    clear on a host disk (`docs/guarantees.md`). Do not move one into an

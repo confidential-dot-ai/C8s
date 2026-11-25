@@ -61,7 +61,7 @@ type routingConfig struct {
 func bindRoutingFlags(f *pflag.FlagSet, cfg *routingConfig) {
 	f.StringVar(&cfg.taURL, "ta-url", "", "Trust Authority base URL (https, armTLS-verified) to poll the signed route manifest from; required unless this node's enforcer mounts the endpoint")
 	cmdsutil.AliasFlag(f, "ta-url", "cds-url")
-	cmdsutil.BindTAImagePolicyFlags(f, &cfg.imagePolicyFile, nil, "pins the Trust Authority endpoint (REQUIRED), every entry bound to the launch file that Trust Authority runs on")
+	cmdsutil.BindTAImagePolicyFlags(f, &cfg.imagePolicyFile, nil, "pins the Trust Authority endpoint, every entry bound to the launch file that Trust Authority runs on (REQUIRED); the node's Trust Authority pins replace it where the enforcer mounts them")
 	f.StringVar(&cfg.operatorKeysFile, "operator-keys-file", "", "PEM operator public keys a route manifest must be signed under, used when the node's launch configuration carries none; unset, the keys come from the verified Trust Authority's GET /operator-keys")
 	f.DurationVar(&cfg.pollInterval, "routes-poll-interval", 30*time.Second, "how often to poll the Trust Authority for the route manifest")
 	f.StringVar(&cfg.host, "routing-host", "127.0.0.1", "routing listener host (loopback: nginx proxies application requests to it)")
@@ -107,6 +107,39 @@ func checkRoutingFlags(cfg config) error {
 	return nil
 }
 
+// nodePinsPath is where the enforcer mounts this node's Trust Authority pins; tests
+// point it elsewhere.
+var nodePinsPath = workloadclaims.CDSPinsPath
+
+// routerCDSPins reads the router's Trust Authority pins per handshake: the node's pins
+// when the enforcer mounts them, which it rewrites as the replica set accepts
+// other builds, else the --image-policy-file pin.
+func routerCDSPins(file string) (armtls.Pins, error) {
+	fromNode, err := cmdsutil.NodeProvidesTAPins(nodePinsPath)
+	if err != nil {
+		return armtls.Pins{}, err
+	}
+	source := cmdsutil.ImagePolicySource{File: file}
+	if fromNode {
+		source = cmdsutil.ImagePolicySource{}
+	}
+	return cmdsutil.TAPins(nodePinsPath, source)
+}
+
+// routerCDSClient is the router's Trust Authority client over verified, held to the
+// chain entry the node pins in its endpoint document at addressPath (C-ID).
+func routerCDSClient(base string, verified *http.Client, addressPath string) (*routing.TAClient, error) {
+	held, err := cmdsutil.NodeCDSChain(verified, addressPath)
+	if err != nil {
+		return nil, fmt.Errorf("the Trust Authority armTLS client: %w", err)
+	}
+	ta, err := routing.NewTAClient(base, held)
+	if err != nil {
+		return nil, fmt.Errorf("--ta-url: %w", err)
+	}
+	return ta, nil
+}
+
 // routingEngine is the manifest routing a cds-attest process runs: the poller,
 // the proxy the tunnel shares, and the routing listener.
 type routingEngine struct {
@@ -122,20 +155,14 @@ type routingEngine struct {
 // connections whose binding in bindings no longer holds.
 func newRoutingEngine(cfg config, bindings *Bindings, logger *slog.Logger) (*routingEngine, error) {
 	r := cfg.routing
-	values, err := (cmdsutil.ImagePolicySource{File: r.imagePolicyFile}).Values()
-	if err != nil {
-		return nil, err
-	}
-	if _, err := cmdsutil.TALaunchFile(values); err != nil {
-		return nil, fmt.Errorf("--image-policy-file %w", err)
-	}
-	httpClient, err := armtls.NewVerifyingHTTPClient(armtls.Pins(values.Policy()), cfg.attestationAPIURL) // A1
+	pins := func() (armtls.Pins, error) { return routerCDSPins(r.imagePolicyFile) }
+	httpClient, err := armtls.NewFollowingHTTPClient(pins, cfg.attestationAPIURL)
 	if err != nil {
 		return nil, fmt.Errorf("the Trust Authority armTLS client: %w", err)
 	}
-	ta, err := routing.NewTAClient(r.taURL, httpClient)
+	ta, err := routerCDSClient(r.taURL, httpClient, workloadclaims.CDSAddressPath)
 	if err != nil {
-		return nil, fmt.Errorf("--ta-url: %w", err)
+		return nil, err
 	}
 	keys, err := operatorKeySource(r, ta, logger)
 	if err != nil {

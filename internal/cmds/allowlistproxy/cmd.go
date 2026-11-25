@@ -148,7 +148,15 @@ func newHandler(cfg config, logger *slog.Logger) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	httpClient, err := armtls.NewVerifyingHTTPClient(armtls.Pins(resolved.pins), cfg.attestationAPIURL)
+	// resolveTA checked the pins once; the client re-reads them per
+	// handshake to follow a Trust Authority upgrade.
+	pins := func() (armtls.Pins, error) {
+		return cmdsutil.TAPins(nodePinsPath, cmdsutil.ImagePolicySource{File: cfg.measurementsConfig})
+	}
+	httpClient, err := armtls.NewFollowingHTTPClient(pins, cfg.attestationAPIURL)
+	if err == nil {
+		httpClient, err = cmdsutil.NodeCDSChain(httpClient, workloadclaims.CDSAddressPath)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("the Trust Authority armTLS client: %w", err)
 	}

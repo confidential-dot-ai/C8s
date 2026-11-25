@@ -17,6 +17,11 @@ type TA struct {
 	// Measurements is a measurements document binding the Trust Authority image to its
 	// launch file.
 	Measurements string `yaml:"measurements" json:"measurements"`
+	// Chain, "<seq>:<hash>", pins a Trust Authority replica set by one entry of its chain
+	// (the genesis, or a later one as a floor): the node's Trust Authority pins then
+	// follow the builds the chain accepts, and Measurements is only the
+	// first Trust Authority a node meets.
+	Chain string `yaml:"chain,omitempty" json:"chain,omitempty"`
 }
 
 // TAEndpoint is an accepted Trust Authority block.

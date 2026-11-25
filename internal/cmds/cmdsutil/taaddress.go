@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"net"
+	"net/http"
 	"net/netip"
 	"net/url"
 	"os"
@@ -12,6 +13,8 @@ import (
 	"strings"
 
 	"k8s.io/apimachinery/pkg/util/validation"
+
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/cdspin"
 )
 
 // The Trust Authority endpoint document the enforcer hands an injected credential client:
@@ -80,15 +83,17 @@ func validateTAHost(host string) error {
 	return nil
 }
 
-// FormatTAAddress renders the endpoint a node hands its clients.
-func FormatTAAddress(address string) []byte {
-	return []byte(address + "\n")
+// FormatTAAddress renders the endpoint a node hands its clients and, after
+// it, the Trust Authority replica set chain entry the node pins ("" for none).
+func FormatTAAddress(address, chain string) []byte {
+	return []byte(strings.TrimSpace(address+" "+chain) + "\n")
 }
 
-// ParseTAAddress reads that document. An empty one names no endpoint, which
-// is an error rather than a default: a client with no endpoint reaches no Trust Authority.
+// ParseTAAddress reads that document's endpoint. An empty one names no
+// endpoint, which is an error rather than a default: a client with no
+// endpoint reaches no Trust Authority.
 func ParseTAAddress(data []byte) (string, error) {
-	address := strings.TrimSpace(string(data))
+	address, _, _ := strings.Cut(strings.TrimSpace(string(data)), " ")
 	if address == "" {
 		return "", errors.New("names no address")
 	}
@@ -96,6 +101,21 @@ func ParseTAAddress(data []byte) (string, error) {
 		return "", err
 	}
 	return address, nil
+}
+
+// NodeCDSChain holds c to the Trust Authority replica set chain entry the node pins in
+// its endpoint document at path (C-ID): every answer must name it. Without
+// that document, or a pin in it, c is held to nothing more.
+func NodeCDSChain(c *http.Client, path string) (*http.Client, error) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return c, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("node policy %s: %w", path, err)
+	}
+	_, pin, _ := strings.Cut(strings.TrimSpace(string(data)), " ")
+	return cdspin.Client(c, pin), nil
 }
 
 // TAURL is that endpoint as the base URL a client dials. Trust Authority is reached over
