@@ -86,7 +86,6 @@ func NewCmd() *cobra.Command {
 	flags.StringVar(&cfg.ha.runtimeDir, "ha-runtime-dir", "", "replica set: the unmeasured runtime disk: an 'etcd.yaml' there is --ha-store-etcd")
 	flags.StringVar(&cfg.ha.storeEtcd, "ha-store-etcd", "", "replica set: etcd client configuration (YAML) of the chain store; without it the store is the Kubernetes API, from the credential 'c8s ta ha store-credential' posts")
 	flags.BoolVar(&cfg.ha.storeMemory, "ha-store-memory", false, "single replica: keep the chain in this process")
-	flags.StringVar(&cfg.ha.inputConfigMap, "ha-input-configmap", "", "replica set: consume signed policy/routes from binaryData.entry of this ConfigMap in the Kubernetes store namespace (disabled when empty)")
 	flags.DurationVar(&cfg.ha.gossip, "ha-gossip-interval", 2*time.Second, "replica set: T, the gossip interval; a replica refuses without answers from a majority within it")
 	flags.DurationVar(&cfg.ha.peerTimeout, "ha-peer-timeout", 2*time.Second, "replica set: timeout of one gossip exchange (at most T)")
 	flags.DurationVar(&cfg.ha.storeTimeout, "ha-store-timeout", 5*time.Second, "replica set: timeout of one chain store call")

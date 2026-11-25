@@ -194,6 +194,59 @@ func TestNewPinsAnEmptyChainNodeSet(t *testing.T) {
 	}
 }
 
+func TestNewBindsPolicyInputToTheLaunchPin(t *testing.T) {
+	args := append(inputs(t, "unused"),
+		"--node-pins", writeInput(t, "empty-nodes.json", `{"schema_version":"1","tee":"tdx","measurements":[]}`),
+		"--ha-endpoint", "ta.example.com:8443")
+	var previous []byte
+	for _, input := range []string{"", "policy-input", "other-input"} {
+		out := filepath.Join(t.TempDir(), "ta")
+		current := slices.Clone(args)
+		current[slices.Index(current, "--out")+1] = out
+		if input != "" {
+			current = append(current, "--ha-input-configmap", input)
+		}
+		if err := run(t, current...); err != nil {
+			t.Fatal(err)
+		}
+		launch := pinnedConfiguration(t, out)
+		cfg, err := taconfig.Parse(launch)
+		if err != nil || cfg.HA == nil || cfg.HA.InputConfigMap != input {
+			t.Fatalf("input %q: %+v, %v", input, cfg, err)
+		}
+		if input == "" && bytes.Contains(launch, []byte("inputConfigMap")) {
+			t.Fatal("disabled input changed the existing launch-file format")
+		}
+		if previous != nil && bytes.Equal(previous, launch) {
+			t.Fatal("changing the input did not change the pinned launch file")
+		}
+		previous = launch
+	}
+}
+
+func TestNewRefusesPolicyInputWithoutValidHA(t *testing.T) {
+	for _, tc := range []struct {
+		input, endpoint, want string
+	}{
+		{input: "policy-input", want: "requires --ha-endpoint"},
+		{input: "invalid/name", endpoint: "ta.example.com:8443", want: "ha.inputConfigMap"},
+	} {
+		out := filepath.Join(t.TempDir(), "ta")
+		args := append(inputs(t, out),
+			"--node-pins", writeInput(t, "empty-nodes.json", `{"schema_version":"1","tee":"tdx","measurements":[]}`),
+			"--ha-input-configmap", tc.input)
+		if tc.endpoint != "" {
+			args = append(args, "--ha-endpoint", tc.endpoint)
+		}
+		if err := run(t, args...); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("input %q: %v", tc.input, err)
+		}
+		if _, err := os.Stat(out); !os.IsNotExist(err) {
+			t.Fatal("refused input still created output")
+		}
+	}
+}
+
 func TestNewRefusesANodeSubnetHoldingClusterAddresses(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "ta")
 	args := append(inputs(t, out), "--pod-cidr", "10.0.0.0/16")

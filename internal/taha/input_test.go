@@ -78,12 +78,15 @@ func TestInputPolicyAndHistoricalRetry(t *testing.T) {
 	if got, _ := p.poll(context.Background(), s.node(0).Replica); got.outcome != "confirmed" || s.node(0).State().Head.Hash != later.Hash() {
 		t.Fatalf("historical retry: %+v", got)
 	}
+	// PrependReactor does not lock against the replica's background store reads.
+	client.Lock()
 	client.PrependReactor("get", "configmaps", func(a ktesting.Action) (bool, runtime.Object, error) {
 		if a.(ktesting.GetAction).GetName() == "cds-lane-head" {
 			return true, nil, errors.New("a cached result must not submit again")
 		}
 		return false, nil, nil
 	})
+	client.Unlock()
 	if got, retry := p.poll(context.Background(), s.node(0).Replica); got.outcome != "confirmed" || retry {
 		t.Fatalf("confirmed input was resubmitted: %+v", got)
 	}
@@ -242,6 +245,7 @@ func TestInputRetriesUncertainCommit(t *testing.T) {
 	e, _ := s.policyEntry(s.node(0).State().Head, "app")
 	raw, _ := e.Encode()
 	setInput(t, store, raw)
+	client.Lock()
 	client.PrependReactor("update", "configmaps", func(a ktesting.Action) (bool, runtime.Object, error) {
 		obj := a.(ktesting.UpdateAction).GetObject()
 		if err := client.Tracker().Update(corev1.SchemeGroupVersion.WithResource("configmaps"), obj, "c8s-cds"); err != nil {
@@ -249,6 +253,7 @@ func TestInputRetriesUncertainCommit(t *testing.T) {
 		}
 		return true, nil, errors.New("lost write response")
 	})
+	client.Unlock()
 	p := inputPoller{name: "policy-input"}
 	if got, retry := p.poll(context.Background(), s.node(0).Replica); got.outcome != "unconfirmed" || !retry {
 		t.Fatalf("uncertain commit cached: %+v, retry=%v", got, retry)
