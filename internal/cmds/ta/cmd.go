@@ -29,9 +29,8 @@ const (
 func NewCmd() *cobra.Command {
 	var cfg config
 	cmd := &cobra.Command{
-		Use:     "ta",
-		Aliases: []string{"cds"},
-		Short:   "Run the Trust Authority",
+		Use:   "ta",
+		Short: "Run the Trust Authority",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runMeasuredConfig(cmd.Context(), cfg)
 		},

@@ -36,7 +36,7 @@
 {{/* The front door's mounts of the Trust Authority pin and, where set, the operator
      keys; cds-attest reads both. */}}
 {{- define "router.taAttestMounts" -}}
-{{- $ta := include "c8s.trustAuthority" . | fromJson -}}
+{{- $ta := .Values.ta | default dict -}}
 - name: measurements-config
   mountPath: /mnt/c8s-data/measurements
   readOnly: true
@@ -51,9 +51,9 @@
      keys from values. Loopback only: nginx proxies /readyz, the attest routes
      and /tunnel to it. */}}
 {{- define "router.taAttestArgs" -}}
-{{- $ta := include "c8s.trustAuthority" . | fromJson -}}
+{{- $ta := .Values.ta | default dict -}}
 {{- $args := list
-  "cds-attest"
+  "ta-attest"
   "--host=127.0.0.1"
   (printf "--port=%s" (include "router.attestPort" .))
   (printf "--platform=%s" .Values.router.attest.platform)
@@ -106,7 +106,7 @@ unix://{{ include "router.inventoryDir" . }}/attestation-api.sock
 {{- define "router.getCertArgs" -}}
 {{- list
   (printf "--discovery-out=%s" (include "router.discoveryFilePath" .))
-  (printf "--discovery-cds-cert-url=%s" (include "router.taCertPath" .))
+  (printf "--discovery-ta-cert-url=%s" (include "router.taCertPath" .))
   "--discovery-public-tls-mode=cds"
   (printf "--discovery-mesh-ca-url=%s" (include "router.meshCAPath" .))
   "--ca-watch-interval=1m"

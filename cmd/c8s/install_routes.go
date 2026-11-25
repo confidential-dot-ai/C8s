@@ -210,7 +210,7 @@ func installedOperatorKeys() (keys []*ecdsa.PublicKey, source string, err error)
 		}
 		source = "--operator-keys"
 	} else {
-		values, _, err := taValuesFromFiles(installValues)
+		values, err := taValuesFromFiles(installValues)
 		if err != nil {
 			return nil, "", err
 		}

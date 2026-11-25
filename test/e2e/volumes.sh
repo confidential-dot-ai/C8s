@@ -44,8 +44,6 @@
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 
-C8S_TA_URL=${C8S_TA_URL:-${C8S_CDS_URL:-}}
-C8S_TA_PIN=${C8S_TA_PIN:-${C8S_CDS_PIN:-}}
 : "${C8S_TA_URL:?the TA the launch of this cluster names}"
 : "${C8S_TA_PIN:?the pin document binding that TA to its configuration}"
 : "${C8S_OPERATOR_KEY:?path to the operator EC key PEM}"

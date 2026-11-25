@@ -257,7 +257,7 @@ func nodeTAFiles(t *testing.T) (address, pins, verifier string) {
 }
 
 // The node addresses this proxy's Trust Authority (workloadclaims.CDSAddressPath). Where
-// no node does, --cds-url is the only remaining source, and its absence is a
+// no node does, --ta-url is the only remaining source, and its absence is a
 // refusal.
 func TestNewHandlerRequiresTAURLWithoutNodeEndpoint(t *testing.T) {
 	_, err := newHandler(t.Context(), config{
@@ -493,7 +493,7 @@ func TestCommandRejectsPublicListenerBeforeStarting(t *testing.T) {
 	cmd.SetErr(io.Discard)
 	cmd.SetArgs([]string{
 		"--host=0.0.0.0",
-		"--cds-url=https://c8s-cds.c8s-system.svc:8443",
+		"--ta-url=https://c8s-cds.c8s-system.svc:8443",
 		"--attestation-api-url=http://attestation-api.c8s-system.svc:8400",
 	})
 	err := cmd.Execute()

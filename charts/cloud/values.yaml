@@ -51,7 +51,6 @@ controlPlane:
 ## serves attestation, the allowlist and mesh-CA leaf signing.
 ## `c8s ta config new` writes its launch file and pin. The mesh CA key stays
 ## in the VM's memory.
-## Set the address, pin and optional operator keys together under ta.
 ta:
   ## Its endpoint, as <host>:<port>, the host a DNS name or an IPv4 address.
   ## Required. An injected credential client's packet rules admit that port

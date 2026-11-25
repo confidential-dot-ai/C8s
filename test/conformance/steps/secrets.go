@@ -959,7 +959,7 @@ func (w *world) probe(p *pod, args ...string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	cmd := append([]string{"/c8s", "secret-probe", "--cds-url", url, "--cert", certFile, "--key", keyFile}, verify...)
+	cmd := append([]string{"/c8s", "secret-probe", "--ta-url", url, "--cert", certFile, "--key", keyFile}, verify...)
 	return w.podExec(p, certContainer, append(cmd, args...)...)
 }
 

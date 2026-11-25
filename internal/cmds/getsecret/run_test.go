@@ -132,7 +132,7 @@ func TestValidate(t *testing.T) {
 	}
 }
 
-// A trailing slash on --cds-url must not produce a double slash in the request
+// A trailing slash on --ta-url must not produce a double slash in the request
 // path, which the server would reject as non-canonical.
 func TestValidateTrimsURL(t *testing.T) {
 	cfg := validConfig(t)

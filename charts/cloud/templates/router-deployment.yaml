@@ -1,5 +1,5 @@
 {{- define "router.podSpec" -}}
-{{- $ta := include "c8s.trustAuthority" . | fromJson -}}
+{{- $ta := .Values.ta | default dict -}}
 # Keeps the env names fixed for the allowlist's env match (c8s.componentEnv).
 enableServiceLinks: false
 serviceAccountName: {{ include "router.fullname" . }}
@@ -96,7 +96,7 @@ securityContext:
     type: RuntimeDefault
 {{- end -}}
 
-{{- $ta := include "c8s.trustAuthority" . | fromJson }}
+{{- $ta := .Values.ta | default dict }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:

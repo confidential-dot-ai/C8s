@@ -3,7 +3,7 @@ The keys the route manifest is signed under, in the router's own namespace,
 which a projected volume cannot leave. Public key material — not a secret, and
 checked for content in validations.yaml.
 */ -}}
-{{- $ta := include "c8s.trustAuthority" . | fromJson }}
+{{- $ta := .Values.ta | default dict }}
 {{- if $ta.operatorKeys }}
 apiVersion: v1
 kind: ConfigMap

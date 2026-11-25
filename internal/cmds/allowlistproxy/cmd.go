@@ -69,7 +69,6 @@ func NewCmd() *cobra.Command {
 	f.StringVar(&cfg.host, "host", "127.0.0.1", "listen host (loopback; nginx is the public listener)")
 	f.IntVarP(&cfg.port, "port", "p", 8801, "listen port")
 	f.StringVar(&cfg.taURL, "ta-url", "", "Trust Authority base URL (must use https/armTLS)")
-	cmdsutil.AliasFlag(f, "ta-url", "cds-url")
 	cmdsutil.BindTAImagePolicyFlags(f, &cfg.measurementsConfig, nil, "pins the Trust Authority endpoint, every entry bound to the launch file that Trust Authority runs on; required unless the node pins Trust Authority")
 	f.StringVar(&cfg.attestationAPIURL, "attestation-api-url", "", "attestation-api URL used to verify Trust Authority evidence"+cmdsutil.NodeAddressHelp)
 	f.DurationVar(&cfg.requestTimeout, "request-timeout", defaultRequestTimeout, "timeout for one request to the Trust Authority")

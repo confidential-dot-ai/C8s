@@ -128,7 +128,6 @@ file, or a token the inventory did not redeem, with the reason on stderr.`,
 	})
 	pf := root.PersistentFlags()
 	pf.StringVar(&o.taURL, "ta-url", "", "base URL of Trust Authority (required)")
-	cmdsutil.AliasFlag(pf, "ta-url", "cds-url")
 	pf.StringVar(&o.attestationURL, "attestation-api-url", "", "local attestation-api used to verify Trust Authority's armTLS certificate (required)")
 	cmdsutil.BindTAImagePolicyFlags(pf, &o.policyFile, &o.policyJSON, "pins Trust Authority, every entry bound to the launch file it runs on")
 	pf.StringVar(&o.certPath, "cert", "", "the pod's Trust Authority-issued certificate, presented to the Trust Authority (required)")

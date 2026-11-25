@@ -54,7 +54,7 @@ func NewPodBundle(opts PodBundleOptions) (err error) {
 	}
 	taPolicy, err := readBounded(opts.TAImagePolicyPath, MaxDocumentSize)
 	if err != nil {
-		return fmt.Errorf("--cds-image-policy-file: %w", err)
+		return fmt.Errorf("--ta-image-policy-file: %w", err)
 	}
 	ta := cmdsutil.TA{Address: opts.TAAddress, Measurements: string(taPolicy)}
 	if _, err := ta.Parse(); err != nil {

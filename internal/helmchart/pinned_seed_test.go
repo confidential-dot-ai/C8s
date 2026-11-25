@@ -474,7 +474,7 @@ func TestChartOperatorEntrypointEntryReachesBase(t *testing.T) {
 
 // Two open-args entries for one digest whose pins are comparable both render:
 // the base carries the wider one, so an any-argv `c8s allowlist add` entry
-// beside a `/c8s cds-attest` application entry keeps rendering, as it did
+// beside a `/c8s ta-attest` application entry keeps rendering, as it did
 // before pinned entries reached the base.
 func TestChartOverlappingOperatorPinsKeepTheWider(t *testing.T) {
 	t.Parallel()
@@ -486,7 +486,7 @@ func TestChartOverlappingOperatorPinsKeepTheWider(t *testing.T) {
 		"--set-string", attest+"digest="+opD,
 		"--set-string", attest+"command.policy=exact",
 		"--set-string", attest+"command.argv[0]=/c8s",
-		"--set-string", attest+"command.argv[1]=cds-attest",
+		"--set-string", attest+"command.argv[1]=ta-attest",
 		"--set-string", attest+"args.policy=any",
 		"--set-string", attest+"mounts.policy=any",
 	)
@@ -512,7 +512,7 @@ func TestChartOperatorPinBesideDerivedComponentPin(t *testing.T) {
 		"--set-string", attest+"digest="+opD,
 		"--set-string", attest+"command.policy=exact",
 		"--set-string", attest+"command.argv[0]=/c8s",
-		"--set-string", attest+"command.argv[1]=cds-attest",
+		"--set-string", attest+"command.argv[1]=ta-attest",
 		"--set-string", attest+"args.policy=any",
 		"--set-string", attest+"mounts.policy=any",
 	)
@@ -522,7 +522,7 @@ func TestChartOperatorPinBesideDerivedComponentPin(t *testing.T) {
 	base := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker").Allowlist.Base
 	index := base.BuildIndex()
 	operator := runtimeArgv(renderedDeploymentContainer(t, out, "c8s-operator", "operator"), []string{"/c8s"})
-	for _, argv := range [][]string{operator, {"/c8s", "cds-attest", "--port=1"}} {
+	for _, argv := range [][]string{operator, {"/c8s", "ta-attest", "--port=1"}} {
 		if !index.AdmitsProcess(pkgallowlist.RunningContainer{Digest: opD, Argv: argv}) {
 			t.Errorf("base does not admit %q", argv)
 		}

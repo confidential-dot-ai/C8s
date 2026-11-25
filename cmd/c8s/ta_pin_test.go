@@ -60,7 +60,7 @@ func taPinDocument(t *testing.T, entries []string, subnets string) []byte {
 		strings.Repeat("cd", 48) + `","launch_file":` + string(file) + `}]}`)
 }
 
-// taPinFile is that document where `--cds-pin` reads it.
+// taPinFile is that document where `--ta-pin` reads it.
 func taPinFile(t *testing.T, entries []string, subnets string) string {
 	t.Helper()
 	return writePin(t, string(taPinDocument(t, entries, subnets)))

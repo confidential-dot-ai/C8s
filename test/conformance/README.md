@@ -32,7 +32,7 @@ Where a scenario needs the cluster to see a request no well-behaved client
 sends, the steps exec a probe built into the `c8s` binary that is already in
 the pod. `c8s secret-probe` (`internal/cmds/secretprobe`) is hidden from
 `c8s --help` because it is a test instrument, not a client for applications:
-run with `kubectl exec -c c8s-cert <pod> -- /c8s secret-probe --cds-url URL
+run with `kubectl exec -c c8s-cert <pod> -- /c8s secret-probe --ta-url URL
 --attestation-api-url URL --cert FILE --key FILE <action>` inside the injected
 certificate sidecar, it performs one workload secret request with every input
 under the caller's control. It verifies the Trust Authority (TA) as the sidecars do, through

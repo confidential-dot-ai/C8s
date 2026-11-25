@@ -345,7 +345,7 @@ allowlist:
           - digest: "@OPERATOR_DIGEST@"
             image: "@OPERATOR_REPO@@@OPERATOR_DIGEST@"
             role: "upstream"
-            command: {policy: exact, argv: ["/c8s", "cds-attest"]}
+            command: {policy: exact, argv: ["/c8s", "ta-attest"]}
             # Per cluster: the upstream it fronts and the leaf it binds.
             args: {policy: any}
             mounts:
@@ -367,7 +367,7 @@ allowlist:
           - digest: "@OPERATOR_DIGEST@"
             image: "@OPERATOR_REPO@@@OPERATOR_DIGEST@"
             role: "upstream"
-            command: {policy: exact, argv: ["/c8s", "cds-attest"]}
+            command: {policy: exact, argv: ["/c8s", "ta-attest"]}
             args: {policy: any}
             mounts:
               policy: exact
@@ -390,7 +390,7 @@ allowlist:
           - digest: "@OPERATOR_DIGEST@"
             image: "@OPERATOR_REPO@@@OPERATOR_DIGEST@"
             role: "upstream"
-            command: {policy: exact, argv: ["/c8s", "cds-attest"]}
+            command: {policy: exact, argv: ["/c8s", "ta-attest"]}
             args: {policy: any}
             mounts:
               policy: exact

@@ -18,7 +18,7 @@ import (
 )
 
 // An injected sidecar dials the endpoint its node mounts; without a mount
-// --cds-url stands as it was given, and Validate canonicalises it.
+// --ta-url stands as it was given, and Validate canonicalises it.
 func TestResolveTAEndpointTakesTheNodesEndpoint(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "cds-address")
 	if err := os.WriteFile(path, cmdsutil.FormatTAAddress("cds.example.org:30808"), 0o600); err != nil {
@@ -52,7 +52,7 @@ func TestResolveTAEndpointTakesTheNodesEndpoint(t *testing.T) {
 		t.Fatalf("ResolveCDSEndpoint: %v", err)
 	}
 	if supplied.TAURL != "https://cds:8443/" {
-		t.Fatalf("CDSURL = %q, want --cds-url as it was given", supplied.TAURL)
+		t.Fatalf("CDSURL = %q, want --ta-url as it was given", supplied.TAURL)
 	}
 }
 

@@ -88,7 +88,7 @@ func resolveTAPin(valuesFiles []string) (pin *taPin, remove func(), err error) {
 		}
 		return &taPin{path: path, config: config}, keep, nil
 	}
-	values, _, err := taValuesFromFiles(valuesFiles)
+	values, err := taValuesFromFiles(valuesFiles)
 	if err != nil {
 		return nil, keep, err
 	}

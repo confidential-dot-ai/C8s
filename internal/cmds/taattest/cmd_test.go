@@ -99,7 +99,7 @@ func TestCmdRequiresRoutingPort(t *testing.T) {
 	cmd := NewCmd()
 	cmd.SetArgs([]string{
 		"--log-level=error",
-		"--cds-url=https://127.0.0.1:9",
+		"--ta-url=https://127.0.0.1:9",
 		"--attestation-api-url=http://127.0.0.1:9",
 	})
 	cmd.SetOut(io.Discard)

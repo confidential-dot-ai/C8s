@@ -51,9 +51,9 @@ func TestNewWritesTheDocumentItsFlagsName(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "worker.yaml")
 	args := append([]string{
 		"--out", out,
-		"--cds-address", "cds.acme.example:8443",
-		"--cds-pin", pinPath,
-		"--cds-pin-floor", "3",
+		"--ta-address", "cds.acme.example:8443",
+		"--ta-pin", pinPath,
+		"--ta-pin-floor", "3",
 		"--tls-san", "c8s.acme.example",
 		"--router-hostname", "api.acme.example",
 		"--acme-email", "ops@acme.example",
@@ -94,7 +94,7 @@ func TestNewWritesTheDocumentItsFlagsName(t *testing.T) {
 
 func TestNewWritesToStdoutWithoutARouterBlockWhenNoneIsNamed(t *testing.T) {
 	pinPath, caPath := newFiles(t, "192.168.0.0/16")
-	args := append([]string{"--cds-address", "cds.acme.example:8443", "--cds-pin", pinPath, "--tls-san", "c8s.acme.example"}, kubernetesFlags(caPath)...)
+	args := append([]string{"--ta-address", "cds.acme.example:8443", "--ta-pin", pinPath, "--tls-san", "c8s.acme.example"}, kubernetesFlags(caPath)...)
 	stdout, err := runNew(t, args...)
 	if err != nil {
 		t.Fatal(err)
@@ -114,7 +114,7 @@ func TestNewWritesToStdoutWithoutARouterBlockWhenNoneIsNamed(t *testing.T) {
 func TestNewRefusesADocumentAWorkerWouldRefuse(t *testing.T) {
 	pinPath, caPath := newFiles(t, "10.52.0.0/24")
 	out := filepath.Join(t.TempDir(), "worker.yaml")
-	args := append([]string{"--out", out, "--cds-address", "cds.acme.example:8443", "--cds-pin", pinPath, "--tls-san", "c8s.acme.example"}, kubernetesFlags(caPath)...)
+	args := append([]string{"--out", out, "--ta-address", "cds.acme.example:8443", "--ta-pin", pinPath, "--tls-san", "c8s.acme.example"}, kubernetesFlags(caPath)...)
 	_, err := runNew(t, args...)
 	if err == nil || !strings.Contains(err.Error(), "overlaps the cluster range 10.52.0.0/16") {
 		t.Fatalf("got %v, want the node subnet overlap refused", err)
@@ -130,7 +130,7 @@ func TestNewRefusesAnOutThatExists(t *testing.T) {
 	if err := os.WriteFile(out, []byte("measured"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	args := append([]string{"--out", out, "--cds-address", "cds.acme.example:8443", "--cds-pin", pinPath, "--tls-san", "c8s.acme.example"}, kubernetesFlags(caPath)...)
+	args := append([]string{"--out", out, "--ta-address", "cds.acme.example:8443", "--ta-pin", pinPath, "--tls-san", "c8s.acme.example"}, kubernetesFlags(caPath)...)
 	if _, err := runNew(t, args...); err == nil || !errors.Is(err, fs.ErrExist) {
 		t.Fatalf("got %v, want the existing --out refused", err)
 	}

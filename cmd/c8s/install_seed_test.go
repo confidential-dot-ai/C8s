@@ -27,7 +27,7 @@ import (
 func chartTAValues() map[string]any {
 	pin := `{"schema_version":"2","tee":"sev-snp","measurements":[{"name":"cds","measurement":"` + strings.Repeat("ab", 48) + `","launch_file":"clusterID: test\n"}]}`
 	return map[string]any{
-		"cds": map[string]any{
+		"ta": map[string]any{
 			"address":            "10.9.9.9:8443",
 			"measurementsConfig": pin,
 		},

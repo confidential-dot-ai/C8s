@@ -46,7 +46,7 @@ type config struct {
 	routing routingConfig
 }
 
-// NewCmd returns the `cds-attest` subcommand: a sidecar that runs inside the
+// NewCmd returns the `ta-attest` subcommand: a sidecar that runs inside the
 // router pod, routes application requests by the operator-signed route
 // manifest, and serves the *dynamic* client-facing attestation +
 // over-encryption endpoints (the c8s-verify protocol). The router nginx
@@ -56,9 +56,8 @@ type config struct {
 func NewCmd() *cobra.Command {
 	var cfg config
 	cmd := &cobra.Command{
-		Use:     "ta-attest",
-		Aliases: []string{"cds-attest"},
-		Short:   "Run the router routing, attestation and over-encryption sidecar",
+		Use:   "ta-attest",
+		Short: "Run the router routing, attestation and over-encryption sidecar",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return run(cmd.Context(), cfg)
 		},

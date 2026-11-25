@@ -46,9 +46,9 @@ func TestTAPinPreflight(t *testing.T) {
 		}
 		return path
 	}
-	named := file("named.yaml", "cds:\n  address: 10.9.9.9:8443\n  measurementsConfig: '{}'\n")
-	addressOnly := file("address.yaml", "cds:\n  address: 10.9.9.9:8443\n")
-	emptied := file("emptied.yaml", "cds:\n  address: \"\"\n")
+	named := file("named.yaml", "ta:\n  address: 10.9.9.9:8443\n  measurementsConfig: '{}'\n")
+	addressOnly := file("address.yaml", "ta:\n  address: 10.9.9.9:8443\n")
+	emptied := file("emptied.yaml", "ta:\n  address: \"\"\n")
 	for _, tc := range []struct {
 		name         string
 		address, pin string
@@ -59,11 +59,11 @@ func TestTAPinPreflight(t *testing.T) {
 		{name: "address and pin", address: "10.9.9.9:8443", pin: "cds-pin.json"},
 		{name: "address alone", address: "10.9.9.9:8443", wantErr: true},
 		{name: "pin alone", pin: "cds-pin.json", wantErr: true},
-		{name: "cds.address and cds.measurementsConfig", values: []string{named}},
-		{name: "cds.address alone", values: []string{addressOnly}, wantErr: true},
+		{name: "ta.address and ta.measurementsConfig", values: []string{named}},
+		{name: "ta.address alone", values: []string{addressOnly}, wantErr: true},
 		{name: "later file keeps the Trust Authority", values: []string{addressOnly, named}},
 		{name: "later file drops the address", values: []string{named, emptied}, wantErr: true},
-		{name: "cds.operatorKeys names no Trust Authority", values: []string{file("k.yaml", "cds:\n  operatorKeys: pem\n")}, wantErr: true},
+		{name: "ta.operatorKeys names no Trust Authority", values: []string{file("k.yaml", "ta:\n  operatorKeys: pem\n")}, wantErr: true},
 		{name: "router disabled still needs a Trust Authority", values: []string{file("r.yaml", "router:\n  enabled: false\n")}, wantErr: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

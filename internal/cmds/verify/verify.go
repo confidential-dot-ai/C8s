@@ -280,8 +280,6 @@ func run(ctx context.Context, cfg config, out, errOut io.Writer) int {
 		return exitUsage
 	}
 	switch cfg.kind {
-	case "cds":
-		cfg.kind = "ta"
 	case "", "auto", "ta", "lb", "workload":
 	default:
 		fmt.Fprintf(errOut, "error: unknown --kind %q (valid kinds: auto, ta, lb, workload)\n", cfg.kind)

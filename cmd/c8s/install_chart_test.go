@@ -111,29 +111,3 @@ func lastValuesFile(t *testing.T, calls []string) string {
 	upgrade := calls[lineIndex(calls, "helm upgrade ")]
 	return upgrade[strings.LastIndex(upgrade, " ")+1:]
 }
-
-func TestInstallFlagsRenderAnOlderCloudChart(t *testing.T) {
-	s := newInstallStubs(t, "", false)
-	s.f.tool(t, "kubectl", clusterKubectl(t, s.applied, ""))
-	dir, err := helmchart.ExtractTemp()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	chart := filepath.Join(dir, helmchart.CloudChartFSPath)
-	path := filepath.Join(chart, "values.yaml")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte(strings.Replace(string(data), "\nta:\n", "\ncds:\n", 1)), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := runInstall(t, "--chart", chart, "--platform=aks-snp", "--wait=false", "--force"); err != nil {
-		t.Fatalf("install: %v", err)
-	}
-	values := readYAMLTree(t, s.computed)
-	if values["ta"] != nil || values["cds"] == nil {
-		t.Fatal("the older cloud chart must receive the legacy Trust Authority values key")
-	}
-}

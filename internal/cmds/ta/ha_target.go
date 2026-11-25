@@ -59,7 +59,6 @@ func bindTargetFlags(cmd *cobra.Command, target *replica) {
 	f := cmd.Flags()
 	f.StringVar(&target.address, "target", "", "<host>[:"+strconv.Itoa(replicaPort)+"] of the replica this decree is for (REQUIRED)")
 	f.StringVar(&target.taPin, "ta-pin", "", "measurements document pinning this cluster's Trust Authority, which every replica read is verified against (REQUIRED)")
-	cmdsutil.AliasFlag(f, "ta-pin", "cds-pin")
 	cmdsutil.RequireFlags(cmd, "target", "ta-pin")
 }
 
@@ -70,7 +69,6 @@ func bindDeliveryFlags(cmd *cobra.Command, to *replica) {
 	f := cmd.Flags()
 	f.StringVar(&to.address, "to", "", "<host>[:"+strconv.Itoa(replicaPort)+"] of a replica of the cluster to post this decree to (REQUIRED)")
 	f.StringVar(&to.taPin, "ta-pin", "", "measurements document pinning this cluster's Trust Authority, which the replica posted to is verified against (REQUIRED)")
-	cmdsutil.AliasFlag(f, "ta-pin", "cds-pin")
 	cmdsutil.RequireFlags(cmd, "to", "ta-pin")
 }
 

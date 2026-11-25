@@ -105,7 +105,7 @@ func TestPodBundleIsGeneric(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := filepath.Join(t.TempDir(), "bundle")
-			args := append([]string{"new-pod", "--out", dir, "--cluster-id", "cluster-one", "--image-manifest", manifest, "--cds-address", "cds.example.org:8443", "--cds-image-policy-file", taPolicy}, tc.args...)
+			args := append([]string{"new-pod", "--out", dir, "--cluster-id", "cluster-one", "--image-manifest", manifest, "--ta-address", "cds.example.org:8443", "--ta-image-policy-file", taPolicy}, tc.args...)
 			err := runBundleCmd(t, args...)
 			if (err == nil) != tc.valid {
 				t.Fatalf("bundle validity: %v", err)

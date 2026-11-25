@@ -240,7 +240,7 @@ func TestStoredManifestKeysFromValues(t *testing.T) {
 		t.Fatal(err)
 	}
 	values := filepath.Join(t.TempDir(), "values.yaml")
-	body, err := json.Marshal(map[string]any{"cds": map[string]any{"operatorKeys": string(pubPEM)}})
+	body, err := json.Marshal(map[string]any{"ta": map[string]any{"operatorKeys": string(pubPEM)}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -420,11 +420,11 @@ func TestPreflightUpstreamRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	values := filepath.Join(dir, "values.yaml")
-	if err := os.WriteFile(values, []byte("cds:\n  operatorKeys: |\n    "+strings.ReplaceAll(strings.TrimSpace(string(pubPEM)), "\n", "\n    ")+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(values, []byte("ta:\n  operatorKeys: |\n    "+strings.ReplaceAll(strings.TrimSpace(string(pubPEM)), "\n", "\n    ")+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	emptied := filepath.Join(dir, "emptied.yaml")
-	if err := os.WriteFile(emptied, []byte("cds:\n  operatorKeys: \"\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(emptied, []byte("ta:\n  operatorKeys: \"\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	tests := []struct {
@@ -446,9 +446,9 @@ func TestPreflightUpstreamRoutes(t *testing.T) {
 		{name: "max age above D4", upstream: "web", maxAge: "600000h", wantErr: "--routes-max-age"},
 		{name: "unpinned Trust Authority", upstream: "web", key: key, keys: pub, wantErr: "unpinned endpoint"},
 		{name: "key in --operator-keys", upstream: "web", key: key, keys: pub, pinned: true},
-		{name: "key in cds.operatorKeys", upstream: "web", key: key, values: []string{values}, pinned: true},
+		{name: "key in ta.operatorKeys", upstream: "web", key: key, values: []string{values}, pinned: true},
 		{name: "no keys for Trust Authority", upstream: "web", key: key, pinned: true, wantErr: "pass --operator-keys"},
-		{name: "a later file empties cds.operatorKeys", upstream: "web", key: key, values: []string{values, emptied}, pinned: true, wantErr: "pass --operator-keys"},
+		{name: "a later file empties ta.operatorKeys", upstream: "web", key: key, values: []string{values, emptied}, pinned: true, wantErr: "pass --operator-keys"},
 		{name: "key Trust Authority does not trust", upstream: "web", key: key, keys: otherPub, pinned: true, wantErr: "not among the operator keys"},
 	}
 	for _, tc := range tests {
