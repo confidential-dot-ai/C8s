@@ -138,5 +138,5 @@ func nodesInForce(state *cdschain.State) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("the accepted builds' Trust Authority configuration: %w", err)
 	}
-	return refvalues.Format(config.Nodes)
+	return refvalues.Render(config.Nodes)
 }

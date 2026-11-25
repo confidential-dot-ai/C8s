@@ -16,8 +16,8 @@ type Inputs struct {
 	// the operator's own, nil for a cluster running components only.
 	ComponentSeed   []byte
 	TenantWorkloads []byte
-	// Nodes is the measurements document pinning the nodes Trust Authority admits; nil
-	// for a replica set whose Genesis names the first set.
+	// Nodes is the measurements document pinning the nodes Trust Authority admits.
+	// A replica set may start with an explicitly typed empty set.
 	Nodes []byte
 	// PodImagePolicy optionally pins Pod identities separately from Nodes.
 	// Empty disables Pod issuance; nonempty bytes must be a complete policy.
@@ -31,7 +31,7 @@ type Inputs struct {
 	LeafDNSPatterns []string
 	// KMS is where pod secret release is brokered to; nil serves no pod secrets.
 	KMS *KMS
-	// HA is the replica set, nil for a single Trust Authority.
+	// HA is the replica set, nil for a standalone Trust Authority.
 	HA *HA
 	// ManifestPath, Family and VCPUs select the Trust Authority guest image the VM boots
 	// and the launch digests its pin carries.

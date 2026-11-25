@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -140,6 +141,59 @@ func TestNewWritesAConfigurationItsPinBinds(t *testing.T) {
 	}
 }
 
+func TestNewRequiresNodePins(t *testing.T) {
+	args := inputs(t, filepath.Join(t.TempDir(), "cds"))
+	at := slices.Index(args, "--node-pins")
+	err := run(t, slices.Delete(args, at, at+2)...)
+	if err == nil || !strings.Contains(err.Error(), "node-pins") {
+		t.Fatalf("config without --node-pins: %v", err)
+	}
+}
+
+// pinnedConfiguration is the written configuration, failing unless the pin
+// binds it.
+func pinnedConfiguration(t *testing.T, out string) []byte {
+	t.Helper()
+	launch, err := os.ReadFile(filepath.Join(out, taconfig.ConfigFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(out, taconfig.PinFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pin, err := refvalues.Parse(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pin.Images) != 1 || !bytes.Equal(pin.Images[0].LaunchFile, launch) {
+		t.Fatal("Trust Authority pin does not bind the written configuration")
+	}
+	return launch
+}
+
+func TestNewPinsAnEmptyChainNodeSet(t *testing.T) {
+	for _, family := range []teetypes.Family{teetypes.FamilySNP, teetypes.FamilyTDX} {
+		t.Run(string(family), func(t *testing.T) {
+			out := filepath.Join(t.TempDir(), "cds")
+			empty := fmt.Sprintf(`{"schema_version":"1","tee":%q,"measurements":[]}`, family)
+			args := append(inputs(t, out),
+				"--node-pins", writeInput(t, "empty-nodes.json", empty),
+				"--ha-endpoint", "cds.example.com:8443")
+			if err := run(t, args...); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := taconfig.Parse(pinnedConfiguration(t, out))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !cfg.Nodes.Empty() || cfg.Nodes.Family != family || cfg.HA == nil || len(cfg.HA.Endpoints) != 1 {
+				t.Fatalf("configuration lost the empty %s node set or replica: %+v", family, cfg)
+			}
+		})
+	}
+}
+
 func TestNewRefusesANodeSubnetHoldingClusterAddresses(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "cds")
 	args := append(inputs(t, out), "--pod-cidr", "10.0.0.0/16")
@@ -214,27 +268,12 @@ func TestNewEmbedsPodAuthorityInTheBoundConfiguration(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			configuration, err := os.ReadFile(filepath.Join(out, taconfig.ConfigFile))
-			if err != nil {
-				t.Fatal(err)
-			}
-			cfg, err := taconfig.Parse(configuration)
+			cfg, err := taconfig.Parse(pinnedConfiguration(t, out))
 			if err != nil {
 				t.Fatal(err)
 			}
 			if len(cfg.PodImages) != 1 || !bytes.Equal(cfg.PodImages[0].Anchor, []byte(podKey)) {
 				t.Fatal("measured Pod policy lost")
-			}
-			pinBytes, err := os.ReadFile(filepath.Join(out, taconfig.PinFile))
-			if err != nil {
-				t.Fatal(err)
-			}
-			pin, err := refvalues.Parse(pinBytes)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(pin.Images) != 1 || !bytes.Equal(pin.Images[0].LaunchFile, configuration) {
-				t.Fatal("Trust Authority pin does not bind Pod policy")
 			}
 		})
 	}
