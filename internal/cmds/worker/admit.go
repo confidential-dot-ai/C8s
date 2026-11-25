@@ -16,14 +16,15 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdschain"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/readutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
 )
 
-// AdmitInputs are what a worker document is admitted against: the customer's
-// Trust Authority pin, the worker image's measurements, and the node images the cluster
-// certifies now.
+// AdmitInputs are what a worker document is admitted against: the Trust Authority pin of
+// an accepted build, the worker image's measurements, and the node images the
+// cluster certifies now ('c8s ta ha accept-node').
 type AdmitInputs struct {
 	TAPin       []byte
 	WorkerImage []byte
@@ -109,7 +110,7 @@ func parseWorkerImage(measurements []byte) (refvalues.ReferenceValues, error) {
 		return image, fmt.Errorf("--worker-image: %w", err)
 	}
 	for _, pin := range image.Images {
-		if bindsLaunch(pin) {
+		if cdschain.BindsLaunch(pin) {
 			return image, fmt.Errorf("--worker-image entry %q binds a launch already: pass the image's measurements as 'c8s measurements derive' writes them", pin.Name)
 		}
 	}
@@ -154,7 +155,7 @@ func checkNotAdmitted(nodes refvalues.ReferenceValues, added []remote.ImagePin) 
 	return nil
 }
 
-// admittedSet is the node image set that admits the worker, under the
+// admittedSet is the node image set a nodes entry accepts, under the
 // schema that reads its launch file digests.
 func admittedSet(nodes refvalues.ReferenceValues) ([]byte, error) {
 	set, err := refvalues.Format(nodes)
@@ -170,18 +171,10 @@ func admittedSet(nodes refvalues.ReferenceValues) ([]byte, error) {
 	if declared.SchemaVersion != launchDigestSchema {
 		return nil, fmt.Errorf("schema_version is %q, want %q, which reads launch_file_digest", declared.SchemaVersion, launchDigestSchema)
 	}
-	for _, pin := range nodes.Images {
-		if !bindsLaunch(pin) {
-			return nil, fmt.Errorf("entry %q binds no launch: give it an approver_key, launch_file or launch_file_digest", pin.Name)
-		}
+	if err := cdschain.CheckNodes(set); err != nil {
+		return nil, err
 	}
 	return set, nil
-}
-
-// bindsLaunch reports whether one entry binds the launch of the guests it
-// admits: by approver key, launch file or launch file digest.
-func bindsLaunch(image remote.ImagePin) bool {
-	return image.Anchor != nil || image.LaunchFile != nil || image.LaunchFileDigest != nil
 }
 
 // checkTAPin requires the document to pin the Trust Authority the customer pins: the
@@ -226,6 +219,11 @@ func (a Admission) Report(w io.Writer) error {
 	fact("Service range", k.ServiceCIDR)
 	fact("cluster DNS", k.ClusterDNS)
 	fact("Trust Authority address", a.document.TA.Address)
+	chain := a.document.TA.Chain
+	if chain == "" {
+		chain = "none"
+	}
+	fact("Trust Authority chain", chain)
 	fact("router TLS SAN", a.document.TLSSAN)
 	fact("router hostnames", hostnames)
 	set, err := refvalues.Parse(a.Nodes)
