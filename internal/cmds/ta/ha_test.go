@@ -469,7 +469,6 @@ func TestValidateHAConfig(t *testing.T) {
 		"zero store timeout":                    {set, func(h *haConfig) { h.storeTimeout = 0 }},
 		"negative store timeout":                {set, func(h *haConfig) { h.storeTimeout = -time.Second }},
 		"--ha-self without an ha block":         {&taconfig.Config{}, func(h *haConfig) { h.self = "a:1" }},
-		"input without an ha block":             {&taconfig.Config{}, func(h *haConfig) { h.inputConfigMap = "policy-input" }},
 		"--ha-store-etcd without an ha block":   {&taconfig.Config{}, func(h *haConfig) { h.storeEtcd = "etcd.yaml" }},
 		"--ha-store-memory without an ha block": {&taconfig.Config{}, func(h *haConfig) { h.storeMemory = true }},
 	} {
@@ -478,6 +477,38 @@ func TestValidateHAConfig(t *testing.T) {
 		if err := validateHAConfig(config{measured: tc.measured, ha: ha}); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
+	}
+}
+
+func TestStartHAUsesTheMeasuredPolicyInput(t *testing.T) {
+	mesh, err := issuer.NewMeshCA("input", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, input := range []string{"", "policy-input"} {
+		measured := measuredConfig(t, cluster{operatorPEM: operatorKeysPEM(t), workloads: map[string]string{"cds": digestA}})
+		measured.HA = &taconfig.HA{
+			Endpoints:      []string{"cds.example.com:8443"},
+			InputConfigMap: input,
+		}
+		cfg := withMeasuredConfig(config{ha: haConfig{storeMemory: true, storeTimeout: time.Second, gossip: time.Second}}, measured, teetypes.FamilySNP)
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		_, err := startHA(ctx, cfg, mesh, &allowlist.Store{}, nil, nil, nil)
+		if input == "" && err != nil {
+			t.Fatalf("disabled input stopped memory-backed startup: %v", err)
+		}
+		if input != "" && (err == nil || !strings.Contains(err.Error(), "requires the Kubernetes chain store")) {
+			t.Fatalf("measured input did not reach consumer validation: %v", err)
+		}
+	}
+}
+
+func TestPolicyInputCannotBeOverriddenByRuntimeFlag(t *testing.T) {
+	cmd := NewCmd()
+	cmd.SetArgs([]string{"--ha-input-configmap", "other-input"})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "unknown flag: --ha-input-configmap") {
+		t.Fatalf("runtime policy input override: %v", err)
 	}
 }
 

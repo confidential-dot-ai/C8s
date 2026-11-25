@@ -221,3 +221,22 @@ func TestParseEmptyNodesRequiresAReplicaSetAndExplicitFamily(t *testing.T) {
 		}
 	}
 }
+
+func TestParsePolicyInputName(t *testing.T) {
+	_, operatorPEM := testKey(t)
+	_, anchorPEM := testKey(t)
+	document := testDocument(t, operatorPEM, anchorPEM)
+	document.HA = &HA{Endpoints: []string{"cds.example:8443"}}
+	for _, name := range []string{"", "policy-input", "policy.input", "-invalid", "invalid/entry", "cds-" + document.ClusterID + "-head", strings.Repeat("a", 254)} {
+		document.HA.InputConfigMap = name
+		cfg, err := Parse(render(t, document))
+		valid := name == "" || name == "policy-input" || name == "policy.input"
+		if valid {
+			if err != nil || cfg.HA == nil || cfg.HA.InputConfigMap != name {
+				t.Fatalf("input %q: %+v, %v", name, cfg, err)
+			}
+		} else if err == nil || !strings.Contains(err.Error(), "ha.inputConfigMap") {
+			t.Fatalf("input %q: %v", name, err)
+		}
+	}
+}
