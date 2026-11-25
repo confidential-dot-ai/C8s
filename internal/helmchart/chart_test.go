@@ -1616,6 +1616,20 @@ func TestChartRendersRouterAttestSidecar(t *testing.T) {
 		t.Fatalf("limit_conn_zone = %v, want only the per-client tunnel zone", got)
 	}
 	conf := renderedRouterNginxConf(t, out)
+	// The front door records no request: access_log is off at the http level,
+	// and no server or location sets it again.
+	for _, block := range cfg.all {
+		got := block.directives["access_log"]
+		if block == cfg.http && (len(got) != 1 || !slices.Equal(got[0], []string{"off"})) {
+			t.Fatalf("http access_log = %v, want off", got)
+		}
+		if block != cfg.http && len(got) != 0 {
+			t.Fatalf("access_log %v set below the http level, want it set once there", got)
+		}
+	}
+	if strings.Contains(conf, "log_format") {
+		t.Fatal("router nginx.conf declares a log_format, want no access log")
+	}
 	for _, want := range []string{"\nworker_rlimit_nofile 65536;\n", "\n    worker_connections 16384;\n"} {
 		if !strings.Contains(conf, want) {
 			t.Fatalf("router nginx.conf lacks %q", want)
