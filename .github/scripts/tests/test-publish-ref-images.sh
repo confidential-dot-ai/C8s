@@ -55,7 +55,8 @@ case "$1 $2" in
       */contents/.github/workflows/c8s-image-manual.yml\?ref=*)
         if [ -e "$FAKE_STATE/workflow" ]; then cat "$FAKE_STATE/workflow"; else cat "$FAKE_MANUAL_WORKFLOW"; fi ;;
       */actions/runs/4000[12]/attempts/1)
-        sha=$(cat "$FAKE_STATE/dispatched-sha")
+        run_id=${path%/attempts/1}; run_id=${run_id##*/}
+        sha=$(cat "$FAKE_STATE/dispatched-sha-$run_id")
         [ ! -e "$FAKE_STATE/wrong-run-sha" ] || sha=3eddfb9ed4909133cfc0844ad4913b3b02d6a9fe
         status=completed
         if [ -e "$FAKE_STATE/attempt-pending" ]; then status=in_progress; rm "$FAKE_STATE/attempt-pending"; fi
@@ -75,7 +76,7 @@ case "$1 $2" in
     fi
     workflow=${4%/dispatches}; workflow=${workflow##*/}
     run_id=40001; [ "$workflow" != c8s-image-manual.yml ] || run_id=40002
-    cp "$FAKE_STATE/branch-sha" "$FAKE_STATE/dispatched-sha"
+    cp "$FAKE_STATE/branch-sha" "$FAKE_STATE/dispatched-sha-$run_id"
     : >"$FAKE_STATE/pushed-tags-$run_id"
     printf '%s\n' "$workflow" >>"$FAKE_STATE/runs"
     # docker publishes every component tag for the short sha; the image
@@ -169,6 +170,7 @@ touch "$fixture_dir/existing-receipt"
 expect_failure bash "$script" --sha "$sha" --receipt "$fixture_dir/existing-receipt" | grep -q 'receipt already exists' || fail "existing receipt accepted"
 ln -s "$fixture_dir/absent" "$fixture_dir/symlink-receipt"
 expect_failure bash "$script" --sha "$sha" --receipt "$fixture_dir/symlink-receipt" | grep -q 'receipt already exists' || fail "receipt symlink accepted"
+expect_failure env TMPDIR="$fixture_dir/missing" bash "$script" --sha "$sha" | grep -q 'mktemp' || fail "invalid temporary directory accepted"
 [ ! -s "$calls" ] || fail "argument errors reached gh or curl"
 pass
 
@@ -278,7 +280,7 @@ pass
 
 reset
 touch "$state/commit-known"
-out=$(bash "$script" --sha "$sha" --dry-run)
+out=$(env TMPDIR="$fixture_dir/missing" bash "$script" --sha "$sha" --dry-run)
 grep -q 'would create branch build/c7cf2f3' <<<"$out" || fail "dry run did not describe the branch"
 grep -q 'would dispatch docker.yml' <<<"$out" || fail "dry run did not describe the docker dispatch"
 grep -Fq 'would dispatch c8s-image-manual.yml on build/c7cf2f3 with: -f inputs[c8s_ref]=c7cf2f3' <<<"$out" || fail "dry run did not describe the image dispatch: $out"

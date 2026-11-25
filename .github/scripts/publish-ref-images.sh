@@ -204,6 +204,11 @@ dispatch_and_wait() {
 
 # --- main -------------------------------------------------------------------
 
+if [ "$dry_run" = false ]; then
+  work=$(mktemp -d)
+  temporary=""
+  trap 'rm -rf -- "$work"; [ -z "$temporary" ] || rm -f -- "$temporary"' EXIT
+fi
 commit_exists || die "commit $sha is not on $repo; push it to a branch first"
 manual=$(gh api "repos/$repo/contents/.github/workflows/$image_workflow?ref=$sha" \
   -H 'Accept: application/vnd.github.raw+json')
@@ -252,9 +257,6 @@ dispatch_and_wait "$image_workflow" "${image_args[@]}"
 image_run_id=$last_run_id
 
 # Bind digests to the dispatched attempt before reporting any publication.
-work=$(mktemp -d)
-temporary=""
-trap 'rm -rf -- "$work"; [ -z "$temporary" ] || rm -f -- "$temporary"' EXIT
 gh run view "$image_run_id" --repo "$repo" --attempt 1 --log >"$work/guest.log"
 guests='{}'
 for expected in "${guest_refs[@]}"; do
@@ -262,9 +264,7 @@ for expected in "${guest_refs[@]}"; do
   tag_exists "${expected%%:*}" "${expected#*:}" || die "missing expected image $expected"
   published=$(awk -F '\t' -v ref="$reference" '
     /Pushed \[registry\] / {line=$NF; sub(/^.*Pushed \[registry\] /, "", line); selected[$1]=(line==ref)}
-    / Digest: sha256:[0-9a-f]+$/ && selected[$1] {
-      line=$NF; sub(/^.* Digest: /, "", line); print line; selected[$1]=0
-    }' "$work/guest.log" | sort -u)
+    / Digest: sha256:[0-9a-f]+$/ && selected[$1] {sub(/^.* Digest: /, "", $NF); print $NF; selected[$1]=0}' "$work/guest.log" | sort -u)
   [[ "$published" =~ ^sha256:[0-9a-f]{64}$ ]] || die "missing or conflicting publication digest for $reference"
   token=$(registry_token "${expected%%:*}")
   curl -fsSI -H "Authorization: Bearer $token" \
@@ -274,16 +274,12 @@ for expected in "${guest_refs[@]}"; do
   [ "$current" = "$published" ] || die "guest tag changed since run $image_run_id: $reference"
   guests=$(jq -c --arg tag "$reference" --arg pin "${reference%:*}@$published" '. + {($tag): $pin}' <<<"$guests")
 done
-echo "verified images for $short:"
-jq -r 'to_entries[] | "  \(.key) -> \(.value)"' <<<"$guests"
+jq -r --arg short "$short" '"verified images for \($short):", (to_entries[] | "  \(.key) -> \(.value)")' <<<"$guests"
 if [ -n "$receipt" ]; then
   temporary=$(mktemp -- "$receipt_dir/.publication.XXXXXX")
   jq -n --arg source "$sha" --arg repository "$repo" --arg branch "$branch" \
     --arg components "$component_run_id" --arg guests "$image_run_id" --argjson images "$guests" \
     '{source: $source, repository: $repository, branch: $branch, componentRun: $components,
       componentAttempt: (if $components == "" then "" else "1" end), guestRun: $guests, guestAttempt: "1", images: $images}' >"$temporary"
-  python3 - "$temporary" "$receipt" <<'PY'
-import os, sys
-os.link(sys.argv[1], sys.argv[2])
-PY
+  python3 -c 'import os, sys; os.link(sys.argv[1], sys.argv[2])' "$temporary" "$receipt"
 fi
