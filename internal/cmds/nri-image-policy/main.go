@@ -199,7 +199,7 @@ func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health
 	}
 	var podSecretsClient *http.Client
 	if cfg.PullEnabled() && cfg.podRole() {
-		if podSecretsClient, err = taHTTPClientWithLeaf(cfg.Allowlist.Pull, cfg.Mesh.Resolver, plugin.podLeafCertificate); err != nil {
+		if podSecretsClient, err = taHTTPClientWithLeaf(cfg.Allowlist.Pull, cfg.Mesh.Resolver, chain, plugin.podLeafCertificate); err != nil {
 			return fmt.Errorf("create Pod secrets client: %w", err)
 		}
 	}
@@ -335,7 +335,7 @@ func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health
 				timeout:  cfg.Allowlist.Pull.Timeout,
 				etag:     initialETag,
 				logger:   logger,
-				refresh:  chain.refresher(),
+				refresh:  chain.createRefreshFn(),
 			})
 		}()
 	}
@@ -374,14 +374,25 @@ func allowlistPullHTTPClient(cfg pullConfig, clusterDNS netip.Addr) (*http.Clien
 	return client, nil
 }
 
-// taHTTPClientWithLeaf is allowlistPullHTTPClient presenting clientCert as
-// its TLS client certificate.
-func taHTTPClientWithLeaf(cfg pullConfig, clusterDNS netip.Addr, clientCert func(*tls.CertificateRequestInfo) (*tls.Certificate, error)) (*http.Client, error) {
-	client, err := allowlistPullHTTPClient(cfg, clusterDNS)
+// taHTTPClientWithLeaf is a Trust Authority client presenting clientCert as its TLS
+// client certificate. Its pins are read on every handshake: the chain's pins
+// document once the node has followed the replica set's chain, else the
+// launch pins, so it follows the builds the replica set accepts.
+func taHTTPClientWithLeaf(cfg pullConfig, clusterDNS netip.Addr, chain *chainPins, clientCert func(*tls.CertificateRequestInfo) (*tls.Certificate, error)) (*http.Client, error) {
+	launch := cfg.TAMeasurementsConfig
+	client, err := armtls.NewFollowingHTTPClient(func() (armtls.Pins, error) {
+		pinCfg := cfg
+		pinCfg.TAMeasurementsConfig = chain.pinsPath(launch)
+		set, err := pinCfg.policySet()
+		return armtls.Pins(set.Policy()), err
+	}, cfg.AttestationApiURL)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("the Trust Authority armTLS client: %w", err)
 	}
-	client.Transport.(*http.Transport).TLSClientConfig.GetClientCertificate = clientCert
+	transport := client.Transport.(*http.Transport)
+	transport.DialContext = clusterFirstDialer(netip.AddrPortFrom(clusterDNS, clusterDNSPort)).DialContext
+	transport.TLSClientConfig.GetClientCertificate = clientCert
+	client.Timeout = cfg.Timeout
 	return client, nil
 }
 

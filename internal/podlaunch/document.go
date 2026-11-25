@@ -24,6 +24,7 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdschain"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/readutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/yamlutil"
@@ -149,6 +150,11 @@ func (d *Document) validate() error {
 	}
 	if _, err := d.TA.Parse(); err != nil {
 		return err
+	}
+	if d.TA.Chain != "" {
+		if _, err := cdschain.ParsePin(d.TA.Chain); err != nil {
+			return fmt.Errorf("ta.chain: %w", err)
+		}
 	}
 	if !dnsLabel(d.ClusterID) {
 		return fmt.Errorf("clusterID must be an RFC1123 label")
