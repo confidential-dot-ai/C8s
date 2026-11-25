@@ -18,7 +18,7 @@
 #      if any is missing, dispatches docker.yml on the build branch and waits;
 #   3. dispatches c8s-image-manual.yml on the build branch with c8s_ref set to
 #      the same short SHA (plus --confos-ref when given) and waits;
-#   4. prints the run URLs and the published image tags.
+#   4. verifies the guest digests against the run's logs and prints immutable references.
 #
 # Who may run it: anyone who can push a branch and dispatch workflows in the
 # repository. Nothing here changes who holds the signing material; the
@@ -55,10 +55,7 @@ dry_run=false
 receipt=""
 component_run_id=""
 component_run_attempt=""
-image_run_id=""
-image_run_attempt=""
 last_run_id=""
-last_run_attempt=""
 
 die() {
   echo "publish-ref-images: $*" >&2
@@ -78,7 +75,9 @@ while [ $# -gt 0 ]; do
     --repo) repo="${2:-}"; shift 2 ;;
     --receipt)
       receipt="${2:-}"
-      case "$receipt" in ''|*/|--sha|--repo|--branch|--confos-ref|--receipt|--dry-run|-h|--help) die "--receipt needs a file path; use ./ for option-shaped names" ;; esac
+      if [[ -z "$receipt" || "$receipt" == */ || "$receipt" == --* || ( "$receipt" == -* && "$receipt" != */* ) ]]; then
+        die "--receipt needs a file path; use ./ for option-shaped names"
+      fi
       shift 2 ;;
     --dry-run) dry_run=true; shift ;;
     -h|--help) usage ;;
@@ -201,7 +200,6 @@ dispatch_and_wait() {
   done
   [ "$(jq -r .conclusion <<<"$details")" = success ] || die "$workflow run failed: $url"
   echo "$workflow run succeeded: $url"
-  last_run_attempt=1
   last_run_id=$run_id
 }
 
@@ -233,7 +231,7 @@ else
   else
     dispatch_and_wait "$docker_workflow"
     component_run_id=$last_run_id
-    component_run_attempt=$last_run_attempt
+    component_run_attempt=1
     still_missing=$(missing_components)
     [ -z "$still_missing" ] || die "$docker_workflow finished but tags are still missing: $still_missing"
   fi
@@ -244,57 +242,47 @@ if [ -n "$confos_ref" ]; then
   image_args+=(-f "inputs[confos_ref]=$confos_ref")
 fi
 
+guest_refs=("guests/worker:sha-$short-tdx" "guests/worker:sha-$short-tdx-kubevirt"
+            "guests/worker:sha-$short-sev-snp" "guests/worker:sha-$short-sev-snp-kubevirt"
+            "guests/ta:sha-$short" "guests/ta:sha-$short-kubevirt")
 if [ "$dry_run" = true ]; then
   echo "would dispatch $image_workflow on $branch with: ${image_args[*]}"
-else
-  dispatch_and_wait "$image_workflow" "${image_args[@]}"
-  image_run_id=$last_run_id
-  image_run_attempt=$last_run_attempt
+  for expected in "${guest_refs[@]}"; do echo "  would publish $registry_host/$registry_namespace/$expected"; done
+  exit 0
 fi
+dispatch_and_wait "$image_workflow" "${image_args[@]}"
+image_run_id=$last_run_id
 
-# Check exact references: GHCR may paginate its repository-wide tag listing.
-echo "images for $short (profile and components from the same commit):"
-for expected in "guests/worker:sha-$short-tdx" "guests/worker:sha-$short-tdx-kubevirt" \
-                "guests/worker:sha-$short-sev-snp" "guests/worker:sha-$short-sev-snp-kubevirt" \
-                "guests/ta:sha-$short" "guests/ta:sha-$short-kubevirt"; do
-  if [ "$dry_run" = true ]; then
-    echo "  would publish $registry_host/$registry_namespace/$expected"
-  else
-    tag_exists "${expected%%:*}" "${expected#*:}" || die "missing expected image $expected"
-    echo "  $registry_host/$registry_namespace/$expected"
-  fi
+# Bind digests to the dispatched attempt before reporting any publication.
+work=$(mktemp -d)
+temporary=""
+trap 'rm -rf -- "$work"; [ -z "$temporary" ] || rm -f -- "$temporary"' EXIT
+gh run view "$image_run_id" --repo "$repo" --attempt 1 --log >"$work/guest.log"
+guests='{}'
+for expected in "${guest_refs[@]}"; do
+  reference="$registry_host/$registry_namespace/$expected"
+  tag_exists "${expected%%:*}" "${expected#*:}" || die "missing expected image $expected"
+  published=$(awk -F '\t' -v ref="$reference" '
+    /Pushed \[registry\] / {line=$NF; sub(/^.*Pushed \[registry\] /, "", line); selected[$1]=(line==ref)}
+    / Digest: sha256:[0-9a-f]+$/ && selected[$1] {
+      line=$NF; sub(/^.* Digest: /, "", line); print line; selected[$1]=0
+    }' "$work/guest.log" | sort -u)
+  [[ "$published" =~ ^sha256:[0-9a-f]{64}$ ]] || die "missing or conflicting publication digest for $reference"
+  token=$(registry_token "${expected%%:*}")
+  curl -fsSI -H "Authorization: Bearer $token" \
+    -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json' \
+    "https://$registry_host/v2/$registry_namespace/${expected%%:*}/manifests/${expected#*:}" >"$work/headers"
+  current=$(awk 'tolower($1)=="docker-content-digest:" {gsub(/\r/, "", $2); print $2}' "$work/headers")
+  [ "$current" = "$published" ] || die "guest tag changed since run $image_run_id: $reference"
+  guests=$(jq -c --arg tag "$reference" --arg pin "${reference%:*}@$published" '. + {($tag): $pin}' <<<"$guests")
 done
-
-if [ -n "$receipt" ] && [ "$dry_run" = false ]; then
-  # confos reports the pushed reference and digest together. Read the selected
-  # run's logs, never a later build's mutable tags as publication evidence.
-  work=$(mktemp -d)
-  temporary=""
-  trap 'rm -rf -- "$work"; [ -z "$temporary" ] || rm -f -- "$temporary"' EXIT
-  gh run view "$image_run_id" --repo "$repo" --attempt "$image_run_attempt" --log >"$work/guest.log"
-  guests='{}'
-  for expected in "guests/worker:sha-$short-tdx" "guests/worker:sha-$short-tdx-kubevirt" \
-                  "guests/worker:sha-$short-sev-snp" "guests/worker:sha-$short-sev-snp-kubevirt" \
-                  "guests/ta:sha-$short" "guests/ta:sha-$short-kubevirt"; do
-    reference="$registry_host/$registry_namespace/$expected"
-    published=$(awk -F '\t' -v ref="$reference" '
-      /Pushed \[registry\] / {line=$NF; sub(/^.*Pushed \[registry\] /, "", line); selected[$1]=(line==ref)}
-      / Digest: sha256:[0-9a-f]+$/ && selected[$1] {
-        line=$NF; sub(/^.* Digest: /, "", line); print line; selected[$1]=0
-      }' "$work/guest.log" | sort -u)
-    [[ "$published" =~ ^sha256:[0-9a-f]{64}$ ]] || die "missing or conflicting publication digest for $reference"
-    token=$(registry_token "${expected%%:*}")
-    curl -fsSI -H "Authorization: Bearer $token" \
-      -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json' \
-      "https://$registry_host/v2/$registry_namespace/${expected%%:*}/manifests/${expected#*:}" >"$work/headers"
-    current=$(awk 'tolower($1)=="docker-content-digest:" {gsub(/\r/, "", $2); print $2}' "$work/headers")
-    [ "$current" = "$published" ] || die "guest tag changed since run $image_run_id: $reference"
-    guests=$(jq -c --arg tag "$reference" --arg pin "${reference%:*}@$published" '. + {($tag): $pin}' <<<"$guests")
-  done
+echo "verified images for $short:"
+jq -r 'to_entries[] | "  \(.key) -> \(.value)"' <<<"$guests"
+if [ -n "$receipt" ]; then
   temporary=$(mktemp -- "$receipt_dir/.publication.XXXXXX")
   jq -n --arg source "$sha" --arg repository "$repo" --arg branch "$branch" \
     --arg components "$component_run_id" --arg guests "$image_run_id" --argjson images "$guests" \
-    --arg componentAttempt "$component_run_attempt" --arg guestAttempt "$image_run_attempt" \
+    --arg componentAttempt "$component_run_attempt" --arg guestAttempt 1 \
     '{source: $source, repository: $repository, branch: $branch, componentRun: $components, componentAttempt: $componentAttempt,
       guestRun: $guests, guestAttempt: $guestAttempt, images: $images}' >"$temporary"
   python3 - "$temporary" "$receipt" <<'PY'

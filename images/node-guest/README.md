@@ -471,24 +471,20 @@ Published builds resolve C8s container digests from the registry tag
 static pod pins record those digests. A rebuild after a mutable `C8S_REF` tag
 moves will not match.
 
-The sync log emits `C8S_BUILD_COMPONENT <repository> <digest>` for each
-resolved core image, including the plugin supplying the binary. Compare these
-records with deployment image pins; source SHAs alone do not detect a rebuilt
-mutable tag. `publish-ref-images.sh --receipt <file>` records the run IDs
-returned by dispatch and checks all six guest tags against that run's push
-logs. Its `images` map contains immutable digest references; use those pins
-after verification because another build can replace a tag at any time.
-The `guestAttempt` and `componentAttempt` fields pin each dispatch's first attempt;
-read their logs with `gh run view <run> --attempt <attempt> --log --repo <repo>`.
-The component fields are empty when its tags already existed. The receipt
-requires Python 3 and is installed atomically without replacing an existing path.
+The sync log emits `C8S_BUILD_COMPONENT <repository> <digest>` for resolved core
+images and the plugin binary's source. Compare these records with deployment pins;
+source SHAs and guest digests alone do not establish their component map.
+`publish-ref-images.sh` checks all six guest tags against the dispatched attempt's
+push logs and prints immutable references. Pull by those pins because tags can move.
+Optional `--receipt <file>` saves run IDs, pins in `images`, and first-attempt numbers
+in `guestAttempt` and `componentAttempt`; component fields are empty for existing tags.
+Read logs with `gh run view <run> --attempt <attempt> --log --repo <repo>`.
+Receipts require Python 3 and install atomically without replacing existing paths.
 
-This publisher requires yq v4 and the manual workflow's `expected_sha` input and source
-guard: a moved dispatch branch fails before any guest build or push. Older
-targets without that input are rejected before mutation and need their matching publisher.
-Only targets containing the sync log records support component-pin verification.
-The receipt's guest digests alone do not establish the component map inside
-those guests.
+The publisher requires yq v4 and the target workflow's `expected_sha` source guard,
+which rejects moved sources before guest builds. Unsupported targets are rejected
+before mutation; use their matching publisher. Component-pin verification also
+requires a target containing the sync log records.
 
 ## Physical host prerequisites
 

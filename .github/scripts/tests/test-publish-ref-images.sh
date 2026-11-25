@@ -96,14 +96,10 @@ case "$1 $2" in
   "run view")
     [ "$3" = 40001 ] || exit 1
     [[ " $* " == *" --attempt 1 --log "* ]] || { echo 'logs must name the successful attempt' >&2; exit 1; }
-    for tee in tdx sev-snp; do
-      for suffix in "" -kubevirt; do echo "guests/worker:sha-c7cf2f3-$tee$suffix"; done
-    done >"$FAKE_STATE/log-tags"
-    printf '%s\n' guests/ta:sha-c7cf2f3 guests/ta:sha-c7cf2f3-kubevirt >>"$FAKE_STATE/log-tags"
     while read -r ref; do
       printf 'job\tstep\t2026-01-01T00:00:00Z Pushed [registry] ghcr.io/confidential-dot-ai/%s\n' "$ref"
       printf 'job\tstep\t2026-01-01T00:00:00Z Digest: sha256:%064d\n' 1
-    done <"$FAKE_STATE/log-tags"
+    done < <(grep '^guests/' "$FAKE_STATE/present-tags" | sort -u)
     if [ -e "$FAKE_STATE/conflicting-log" ]; then
       printf 'job\tstep\t2026-01-01T00:00:00Z Pushed [registry] ghcr.io/confidential-dot-ai/guests/worker:sha-c7cf2f3-tdx\n'
       printf 'job\tstep\t2026-01-01T00:00:00Z Digest: sha256:%064d\n' 2
@@ -168,7 +164,7 @@ reset
 expect_failure bash "$script" --sha c7cf2f38 | grep -q 'full 40-hex' || fail "short --sha accepted"
 expect_failure bash "$script" --sha "$sha" --branch '../x' | grep -q 'safe branch' || fail "unsafe branch accepted"
 expect_failure bash "$script" --sha "$sha" --confos-ref '@{bad}' | grep -q 'safe Git ref' || fail "unsafe confos ref accepted"
-for path in '' --dry-run --sha --repo --branch --confos-ref --receipt -h --help 'publication.json/'; do
+for path in '' --dry-run --dry-run=true --dry-run=/tmp/foo --unknown -x --sha --repo --branch --confos-ref --receipt -h --help 'publication.json/'; do
   expect_failure bash "$script" --sha "$sha" --receipt "$path" | grep -q 'needs a file path' || fail "invalid receipt accepted: $path"
 done
 touch "$fixture_dir/existing-receipt"
@@ -207,8 +203,8 @@ order=$(sed -n 's|.*actions/workflows/\([^/]*\)/dispatches.*|\1|p' "$calls" | tr
 grep -Fq 'actions/workflows/docker.yml/dispatches -H X-GitHub-Api-Version: 2022-11-28 -f ref=build/c7cf2f3 -F return_run_details=true' "$calls" || fail "docker dispatch did not use the build branch"
 grep -Fq 'actions/workflows/c8s-image-manual.yml/dispatches -H X-GitHub-Api-Version: 2022-11-28 -f ref=build/c7cf2f3 -F return_run_details=true -f inputs[c8s_ref]=c7cf2f3 -f inputs[expected_sha]=c7cf2f38de3b035fbce00fe22d2451e77cdcefa0 -f inputs[confos_ref]=af8cef0e937e4cc300ddd30c85af6ccd8cb9be91' "$calls" \
   || fail "image dispatch arguments differ: $(grep 'c8s-image-manual' "$calls")"
-grep -q 'guests/worker:sha-c7cf2f3-tdx$' <<<"$out" || fail "artifact tag not printed"
-grep -q 'guests/worker:sha-c7cf2f3-sev-snp-kubevirt$' <<<"$out" || fail "KubeVirt tag not printed"
+grep -q 'guests/worker:sha-c7cf2f3-tdx ->' <<<"$out" || fail "artifact tag not printed"
+[ "$(grep -c ' -> .*@sha256:0\{63\}1$' <<<"$out")" -eq 6 ] || fail "verified guest pins not printed without a receipt"
 pass
 
 # --- a successful image run that published nothing is an error ---------------
@@ -255,7 +251,7 @@ jq -e --arg sha "$sha" ' .source == $sha and .componentRun == "" and .componentA
 grep -q 'branch build/c7cf2f3 already at c7cf2f3' <<<"$out" || fail "existing branch not reused"
 ! grep -q 'actions/workflows/docker.yml/dispatches' "$calls" || fail "docker dispatched although every tag exists"
 grep -Fq 'actions/workflows/c8s-image-manual.yml/dispatches -H X-GitHub-Api-Version: 2022-11-28 -f ref=build/c7cf2f3 -F return_run_details=true -f inputs[c8s_ref]=c7cf2f3 -f inputs[expected_sha]=c7cf2f38de3b035fbce00fe22d2451e77cdcefa0 --jq .workflow_run_id' "$calls" || fail "production image dispatch differs"
-grep -q 'guests/worker:sha-c7cf2f3-tdx$' <<<"$out" || fail "production artifact tag not printed"
+grep -q 'guests/worker:sha-c7cf2f3-tdx ->' <<<"$out" || fail "production artifact tag not printed"
 pass
 
 # --- a missing split volumed image must trigger component publication --------
@@ -289,6 +285,7 @@ grep -q 'would create branch build/c7cf2f3' <<<"$out" || fail "dry run did not d
 grep -q 'would dispatch docker.yml' <<<"$out" || fail "dry run did not describe the docker dispatch"
 grep -Fq 'would dispatch c8s-image-manual.yml on build/c7cf2f3 with: -f inputs[c8s_ref]=c7cf2f3' <<<"$out" || fail "dry run did not describe the image dispatch: $out"
 ! grep -q 'api -X POST' "$calls" || fail "dry run dispatched or pushed"
+! grep -q 'gh run view' "$calls" || fail "dry run requested build logs"
 pass
 
 # --- no returned ID must stop, never select a concurrent run -----------------
@@ -313,7 +310,7 @@ reset
 touch "$state/commit-known"
 yq '.jobs.build-and-push.needs = ["verify-source"]' "$FAKE_MANUAL_WORKFLOW" >"$state/workflow"
 mkdir "$fixture_dir/-out"
-for path in '-out/-publication.json' './--dry-run'; do
+for path in '-out/-publication.json' './--dry-run' './--dry-run=true'; do
   (cd "$fixture_dir" && bash "$script" --sha "$sha" --receipt "$path") >/dev/null
   jq -e '.guestAttempt == "1"' "$fixture_dir/$path" >/dev/null || fail "list dependency or leading-dash receipt failed"
 done
@@ -350,12 +347,17 @@ done
 # --- mutable tags and conflicting build evidence cannot produce a receipt ---
 
 for failure in moved-tag conflicting-log; do
-  reset
-  touch "$state/commit-known" "$state/$failure"
-  expect_failure bash "$script" --sha "$sha" --receipt "$fixture_dir/race-receipt" \
-    | grep -Eq 'tag changed|conflicting publication digest' || fail "mismatched publication accepted"
-  [ ! -e "$fixture_dir/race-receipt" ] || fail "mismatched publication wrote a receipt"
-  pass
+  for receipt_path in '' "$fixture_dir/race-receipt"; do
+    reset
+    touch "$state/commit-known" "$state/$failure"
+    receipt_args=()
+    [ -z "$receipt_path" ] || receipt_args=(--receipt "$receipt_path")
+    expect_failure bash "$script" --sha "$sha" "${receipt_args[@]}" \
+      | grep -Eq 'tag changed|conflicting publication digest' || fail "mismatched publication accepted"
+    ! grep -q 'verified images' "$fixture_dir/unexpected.stdout" || fail "unverified publication reported success"
+    [ ! -e "$fixture_dir/race-receipt" ] || fail "mismatched publication wrote a receipt"
+    pass
+  done
 done
 
 reset
