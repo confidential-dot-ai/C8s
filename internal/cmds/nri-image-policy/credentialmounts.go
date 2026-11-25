@@ -2,7 +2,6 @@ package nriimagepolicy
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"github.com/containerd/nri/pkg/api"
@@ -28,9 +27,6 @@ import (
 func (c nodeCVM) containerMounts(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) (*api.ContainerAdjustment, error) {
 	p := c.p
 	if fetchesRouteManifest(pod, ctr) {
-		if err := p.refusedUntilFirstDecree(); err != nil {
-			return nil, err
-		}
 		return p.routerTAMount(), nil
 	}
 	injected := injectedCredentialSidecar(pod, ctr)
@@ -58,9 +54,6 @@ func (c nodeCVM) containerMounts(ctx context.Context, pod *api.PodSandbox, ctr *
 	if len(mounts) == 0 {
 		return nil, nil
 	}
-	if err := p.refusedUntilFirstDecree(); err != nil {
-		return nil, err
-	}
 	return &api.ContainerAdjustment{Mounts: mounts}, nil
 }
 
@@ -70,16 +63,6 @@ func (c podCVM) containerMounts(_ context.Context, _ *api.PodSandbox, _ *api.Con
 		return nil, nil
 	}
 	return &api.ContainerAdjustment{Mounts: []*api.Mount{readOnlyBind(c.p.clientDocument, workloadclaims.ClientDocumentPath)}}, nil
-}
-
-// refusedUntilFirstDecree refuses immediately rather than waiting: the look
-// can outlast containerd's NRI request timeout, and the kubelet retries the
-// creation.
-func (p *plugin) refusedUntilFirstDecree() error {
-	if p.awaitingDecree.Load() {
-		return errors.New("the node is still taking its first Trust Authority pin decree; retry once it has")
-	}
-	return nil
 }
 
 // holdsCredentialsIdentity reports whether this container runs as the identity
@@ -101,22 +84,16 @@ func fetchesRouteManifest(pod *api.PodSandbox, ctr *api.Container) bool {
 		ctr.GetUser().GetUid() == workloadclaims.UpstreamUID
 }
 
-// routerTAMount is the Trust Authority endpoint and the node's Trust Authority pins: without the
-// followed pins the router loses its routes the moment an image roll retires
-// its launch-time set. The pins land at a path of their own, so the router is
-// not handed a credential client's trust root.
+// routerTAMount is the Trust Authority endpoint alone: the router polls the signed route
+// manifest from the one Trust Authority its node admits, and takes its pins from the
+// measured base the chart renders rather than from a node document.
 func (p *plugin) routerTAMount() *api.ContainerAdjustment {
-	var mounts []*api.Mount
-	if p.taAddress != "" {
-		mounts = append(mounts, readOnlyBind(p.taAddress, workloadclaims.CDSAddressPath))
-	}
-	if p.taPins != "" {
-		mounts = append(mounts, readOnlyBind(p.taPins, workloadclaims.RouterCDSPinsPath))
-	}
-	if len(mounts) == 0 {
+	if p.taAddress == "" {
 		return nil
 	}
-	return &api.ContainerAdjustment{Mounts: mounts}
+	return &api.ContainerAdjustment{
+		Mounts: []*api.Mount{readOnlyBind(p.taAddress, workloadclaims.CDSAddressPath)},
+	}
 }
 
 // injectedCredentialSidecar reports the webhook's own shape: a reserved

@@ -11,7 +11,7 @@ import (
 // Its contents matter only to a test that also reports the matching binding.
 const TALaunchFile = "schemaVersion: c8s-cds/v1\nclusterID: lane\n"
 
-// NextTAImage is the image a Trust Authority pin decree moves a test cluster to.
+// NextTAImage is a Trust Authority image other than the one a test cluster pins.
 const NextTAImage = "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
 
 // TAPinDocument renders the only pin shape a Trust Authority client accepts: a refvalues

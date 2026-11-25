@@ -26,7 +26,6 @@ func NewCmd() *cobra.Command {
 type draft struct {
 	out               string
 	ta                cmdsutil.TA
-	taPinFloor        uint64
 	taPinPath         string
 	tlsSAN            string
 	router            nodeservices.Router
@@ -68,8 +67,6 @@ parses it with, then written to --out, or to stdout without one.`,
 	cmdsutil.AliasFlag(f, "ta-address", "cds-address")
 	f.StringVar(&d.taPinPath, "ta-pin", "", "measurements document pinning the cluster's Trust Authority VM to its configuration, as 'c8s ta config new' writes it")
 	cmdsutil.AliasFlag(f, "ta-pin", "cds-pin")
-	f.Uint64Var(&d.taPinFloor, "ta-pin-floor", 0, "lowest cluster version a worker takes a Trust Authority pin decree at")
-	cmdsutil.AliasFlag(f, "ta-pin-floor", "cds-pin-floor")
 	f.StringVar(&d.tlsSAN, "tls-san", "", "DNS name of the router's front-door certificate, one the pinned Trust Authority configuration lets a leaf carry")
 	nodeservices.BindRouterFlags(f, &d.router)
 	f.StringVar(&d.kubernetes.APIServer, "api-server", "", "<host>:<port> of the cluster's Kubernetes API server, the host a DNS name or an IPv4 address")
@@ -107,7 +104,6 @@ func (d draft) render() ([]byte, error) {
 		Kubernetes:    d.kubernetes,
 	}
 	doc.TA.Measurements = string(pin)
-	doc.TA.PinFloor = cmdsutil.ClusterVersion(d.taPinFloor)
 	if !d.router.Empty() {
 		doc.Router = &d.router
 	}

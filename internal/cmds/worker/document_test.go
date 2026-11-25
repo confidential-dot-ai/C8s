@@ -134,7 +134,6 @@ func testDocument(t *testing.T) Document {
 		TA: cmdsutil.TA{
 			Address:      "cds.acme.example:8443",
 			Measurements: testTAPin(t, taConfig(t, "192.168.0.0/16")),
-			PinFloor:     1,
 		},
 		TLSSAN: "c8s.acme.example",
 		Router: &nodeservices.Router{Hostnames: []string{"api.acme.example"}, ACMEEmail: "ops@acme.example"},

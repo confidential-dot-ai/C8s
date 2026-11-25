@@ -40,7 +40,7 @@ func NewCmd() *cobra.Command {
 	flags := cmd.Flags()
 
 	flags.StringVar(&cfg.configPath, "config", "", "path to the Trust Authority configuration document (c8s-cds/v1) this VM was launched with (REQUIRED). Trust Authority serves the cluster it describes only if a verified self-report binds the file byte for byte")
-	flags.StringVar(&cfg.host, "host", "0.0.0.0", "listen address; auto selects this VM's primary IPv4 address")
+	flags.StringVar(&cfg.host, "host", "0.0.0.0", "listen address")
 	flags.IntVarP(&cfg.port, "port", "p", 8443, "listen port")
 	flags.StringVar(&cfg.logLevel, "log-level", "info", "log level: debug, info, warn, error")
 
@@ -101,7 +101,6 @@ func NewCmd() *cobra.Command {
 
 	cmd.AddCommand(taca.NewCmd())
 	cmd.AddCommand(talaunch.NewCmd())
-	cmd.AddCommand(newHACmd())
 
 	return cmd
 }
@@ -147,8 +146,7 @@ type config struct {
 	secretsMaxValueBytes       int
 	sandboxLedgerMax           int
 
-	// measured is the configuration document this VM was launched with, and
-	// measuredFile the bytes its launch bound and a cluster's decrees pin.
-	measured     *taconfig.Config
-	measuredFile []byte
+	// measured is the configuration document this VM was launched with: every
+	// per-cluster setting Trust Authority serves.
+	measured *taconfig.Config
 }

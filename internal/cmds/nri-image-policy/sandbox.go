@@ -369,8 +369,6 @@ func takesNodeMount(pod *api.PodSandbox, ctr *api.Container, destination string)
 		return injected
 	case workloadclaims.CDSPinsPath:
 		return injected || holdsCredentialsIdentity(ctr)
-	case workloadclaims.RouterCDSPinsPath:
-		return fetchesRouteManifest(pod, ctr)
 	case workloadclaims.CDSAddressPath:
 		return injected || holdsCredentialsIdentity(ctr) || fetchesRouteManifest(pod, ctr)
 	case workloadclaims.ClientDocumentPath:
@@ -385,7 +383,6 @@ func isInjectedNodeMount(pod *api.PodSandbox, ctr *api.Container, m *api.Mount, 
 	source := map[string]string{
 		workloadclaims.SidecarSocketDir:   own.socketDir,
 		workloadclaims.CDSPinsPath:        own.taPins,
-		workloadclaims.RouterCDSPinsPath:  own.taPins,
 		workloadclaims.CDSAddressPath:     own.taAddress,
 		workloadclaims.ClientDocumentPath: own.clientDocument,
 	}[m.GetDestination()]

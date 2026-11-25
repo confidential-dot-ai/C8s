@@ -72,10 +72,8 @@ image), `gke` or `aks`.
 - **TA.** A measured VM outside the cluster (`images/ta-guest`), booted on the
   configuration `c8s ta config new` writes and pinned by the `cds-pin.json`
   written with it. No chart deploys it, and only test harnesses run it as a
-  container. It runs as one VM, or as replicas that share
-  state over a replicated log and take operator-signed decrees
-  (`docs/ta-ha.md`). It calls back to each node's admission inventory on TCP
-  1019.
+  container. It runs as one VM. It calls back to each node's admission
+  inventory on TCP 1019.
 - **Cloud.** `c8s install --platform aks-snp|aks-tdx|gke-snp` deploys
   `charts/cloud` onto the provider's confidential VMs (`docs/operator.md`;
   `docs/cloud-ta.md` for where that cluster's TA runs).
@@ -99,7 +97,7 @@ and the commands defined in `cmd/c8s` itself: `install`, `uninstall`, `operator`
 
 | Role | Runs in | Code |
 |---|---|---|
-| `ta` | the TA VM | `internal/cmds/ta`, `internal/taha`, `internal/issuer`, `internal/secrets`, `internal/allowlist` |
+| `ta` | the TA VM | `internal/cmds/ta`, `internal/issuer`, `internal/secrets`, `internal/allowlist` |
 | `operator`: controllers, `pod-injector`, `pod-validator`, Pod CVM provider | a cluster pod on cloud; a host process beside the control plane in a cluster of workers | `cmd/c8s/operator.go`, `internal/controller`, `internal/webhook`, `internal/podprovider` |
 | `nri-image-policy`: admission plugin, admission inventory, packet rules | the node host | `internal/cmds/nri-image-policy`, `internal/podmesh` |
 | `c8s-runc`: privilege floor, exec denial | measured images | `internal/cmds/c8srunc` |
@@ -107,7 +105,7 @@ and the commands defined in `cmd/c8s` itself: `install`, `uninstall`, `operator`
 | `ta-attest`, `allowlist-proxy`, `acme` | the router pod (the attestation container is named `cds-attest`) | `internal/cmds/{taattest,allowlistproxy,acme}`, `pkg/overenc`, `pkg/routes` |
 | `volumed`, `attest-proxy`, `volume attach\|detach` | the node | `internal/cmds/{volumed,attestproxy,volume}` |
 | `worker stage`, `launch-config stage`, `node-services`, `pod-status` | guest boot | `internal/cmds/{worker,nodeservices,podstatus}`, `internal/podlaunch` |
-| Operator CLIs: `keys`, `measurements`, `allowlist`, `routes`, `secrets`, `volume create`, `verify`, `ta verify\|ca\|config\|ha` | the operator's machine | `internal/cmds/{keys,measurements,allowlist,routes,secrets,volume,verify,taca,talaunch,ta}`, with `internal/cmds/taconn` for the TA connection |
+| Operator CLIs: `keys`, `measurements`, `allowlist`, `routes`, `secrets`, `volume create`, `verify`, `ta verify\|ca\|config` | the operator's machine | `internal/cmds/{keys,measurements,allowlist,routes,secrets,volume,verify,taca,talaunch,ta}`, with `internal/cmds/taconn` for the TA connection |
 
 Shared libraries: `pkg/armtls` (TLS configs, pins, certificate extensions),
 `pkg/workloadclaims` (inventory socket and sandbox token), `pkg/allowlist`
@@ -156,11 +154,9 @@ Kubernetes mislead.
    versioned document under a single-use operator signature over the method,
    path and body. Nodes apply it after a delay, then stop any running container
    it no longer admits.
-8. **A one-VM TA keeps nothing across a restart.** Its state is in memory and on
+8. **The TA keeps nothing across a restart.** Its state is in memory and on
    a tmpfs: a restart loses the mesh CA, the secrets, operator-written entries
-   and the route manifest, and voids every leaf. A replica set keeps them while a
-   majority stays up; past that, only a `recover` decree on a surviving voter
-   does (`docs/operator.md`, `docs/ta-ha.md`).
+   and the route manifest, and voids every leaf (`docs/operator.md`).
 9. **The router routes application requests only by the operator-signed route
    manifest** (`docs/operator.md`, `docs/routes-evidence.md`).
 10. **A worker document is unsigned and holds no secret.** Its digest in the
@@ -190,9 +186,8 @@ What a change must preserve. The page or code named owns the detail.
    `armtls.EnforceImages`, never field by field in new code.
 3. For an armTLS connection use the `pkg/armtls` constructors:
    `NewServerTLSConfig`, `NewClientTLSConfig`, `NewMeshServerTLSConfig`,
-   `NewMeshClientTLSConfig`, `NewVerifyingHTTPClient`, or the refreshing clients
-   built on them such as `NewRefreshingHTTPClient`. They keep the evidence and
-   chain paths separate and never resume a session.
+   `NewMeshClientTLSConfig` or `NewVerifyingHTTPClient`. They keep the evidence
+   and chain paths separate and never resume a session.
 4. Inside the cluster, secret values, the mesh CA key, pod keys and volume
    plaintext exist only in TEE memory, never as a Kubernetes object or in the
    clear on a host disk (`docs/guarantees.md`). Do not move one into an
@@ -252,17 +247,15 @@ covers what they leave to discovery.
   `TestRouterRejectsInvalidValues` fails under helm v4.
 - `make manifests` needs controller-gen v0.20.1: the CRD records the generator
   version.
-- Many tests skip without root, `KUBEBUILDER_ASSETS` or particular capabilities,
-  and the TA replication tests need `-tags integration`. Read what skipped
-  before trusting a green run.
+- Many tests skip without root, `KUBEBUILDER_ASSETS` or particular capabilities.
+  Read what skipped before trusting a green run.
 
 **Add a command.** Create package `internal/cmds/<name>` exporting
 `NewCmd() *cobra.Command`, and register it from a one-line `init()` in
 `cmd/c8s/<name>.go`. `test/workflows/command_imports_test.go` refuses a new import
 of cobra or of a command package from outside `cmd/` and `internal/cmds/`. Tag the
 registration file and its tests `!c8s_node` when the slim node binary must not
-carry the command, as `install`, `operator` and `ta` are;
-`scripts/shipped-deps-guard.sh` checks what that binary links. Require flags with
+carry the command, as `install` and `operator` are. Require flags with
 `cmdsutil.RequireFlags`, and reuse `cmdsutil.BindImagePolicyFlags`,
 `taconn.BindFlags` and `sidecar.BindFlags`. Return `*cmdsutil.ExitStatusError`
 for an exit status other than 1.

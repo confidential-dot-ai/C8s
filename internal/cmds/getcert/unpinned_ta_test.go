@@ -19,7 +19,7 @@ func TestUnpinnedTARefused(t *testing.T) {
 		AttestationApiURL: "http://attestation-api:8400",
 		SAN:               "host.example.com",
 	}
-	if _, err := taHTTPClient(t.Context(), cfg); !errors.Is(err, cmdsutil.ErrTAPinUnbound) {
+	if _, err := taHTTPClient(cfg); !errors.Is(err, cmdsutil.ErrTAPinUnbound) {
 		t.Fatalf("err = %v, want errors.Is cmdsutil.ErrCDSPinUnbound", err)
 	}
 }
@@ -32,7 +32,7 @@ func TestPinnedTAAccepted(t *testing.T) {
 		SAN:                    "host.example.com",
 		MeasurementsConfigJSON: testTAPin,
 	}
-	if _, err := taHTTPClient(t.Context(), cfg); err != nil {
+	if _, err := taHTTPClient(cfg); err != nil {
 		t.Fatalf("cdsHTTPClient: %v", err)
 	}
 }

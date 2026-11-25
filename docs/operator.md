@@ -206,16 +206,13 @@ kubectl -n "$namespace" delete pod POD_NAME
 kubectl -n "$namespace" get pods -w
 ```
 
-## The TA runs as one VM
+## The TA is a singleton
 
 The TA runs as one VM outside the cluster, which `c8s ta config new` writes the
 configuration and the pin for. On an AKS or GKE cluster that VM runs on
 hardware you hold rather than on the cloud, and
 [cloud-ta.md](cloud-ta.md) covers its placement, its flows and its node
-pins. A cluster may also run its TA as several VMs
-that share one mesh CA and one store, where a replica that restarts takes the
-cluster's state back from the others ([ta-ha.md](ta-ha.md)). Everything
-below is the one-VM deployment. Its state is in that VM: the mesh CA key is
+pins. Its state is in that VM: the mesh CA key is
 generated inside the process and written nowhere, released secrets live in
 process memory, and the allowlist and route manifest live in a store on a
 tmpfs. Any restart is a re-bootstrap:

@@ -188,7 +188,7 @@ func TestRenderedDocumentsAreOutsideTheMountedSocketDirectory(t *testing.T) {
 	}
 	renderInTempDir(t)
 	p := &plugin{cfg: cfg}
-	if err := p.prepareTAPins(nodeTAPins(t, p)); err != nil {
+	if err := p.prepareTAPins(); err != nil {
 		t.Fatalf("prepareCDSPins: %v", err)
 	}
 	if err := p.prepareCDSAddress(); err != nil {

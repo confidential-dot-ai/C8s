@@ -4,8 +4,7 @@ The TA — the VM outside the cluster that
 holds C8s policy and signs every workload certificate — does not run on the
 cloud that runs the cluster. This page covers where it runs instead, the flows
 it needs, and where the node pins come from on AKS and GKE. What the TA does for a
-cluster is [operator.md](operator.md); running several of them is
-[ta-ha.md](ta-ha.md).
+cluster is [operator.md](operator.md).
 
 ## Where it runs
 
@@ -33,7 +32,6 @@ cds-pin.json` carries into the release, and nothing else of it.
 | The operator's workstation | TA | the `--ta-address` port | `c8s install`, allowlist, route and secret writes, `c8s ta verify` |
 | the TA, every confidential node, and the operator's workstation | `kdsintf.amd.com`, `api.trustedservices.intel.com` | TCP 443 | the endorsement certificate for evidence that carries none, and revocation lists |
 | TA | the KMS of `c8s ta config new --kms-url`, when set | that URL's port | Pod CVM secret release ([pod-secrets.md](pod-secrets.md)) |
-| Each TA replica | the other replicas | TCP 8444 | the replicated log, HA only ([ta-ha.md](ta-ha.md#addresses)) |
 
 The TA dialing a node on 1019 is the flow a cloud network breaks. Each sandbox
 token names the node's own address and the TA dials that address, so the TA host
@@ -187,6 +185,4 @@ What that pin is worth, and what it costs:
   cluster to what that node reported and to no build you can audit.
 - A provider change that moves the digest stops issuance on the nodes that
   carry the new one, and re-pinning costs a new configuration, a new pin, a
-  TA relaunch and `c8s install --ta-pin` again — for a replicated TA too,
-  whose later `node-images` decrees take only entries that bind a launch
-  ([ta-ha.md](ta-ha.md#the-node-images-the-cluster-certifies)).
+  TA relaunch and `c8s install --ta-pin` again.

@@ -5,7 +5,7 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
 )
 
-// Inputs is everything one cluster's Trust Authority VM is configured with, as `c8s cds
+// Inputs is everything one cluster's Trust Authority VM is configured with, as `c8s ta
 // config new` fills it. Each embedded policy is the exact bytes its own parser
 // reads.
 type Inputs struct {
@@ -29,8 +29,6 @@ type Inputs struct {
 	// LeafDNSNames and LeafDNSPatterns are the DNS SAN rules Trust Authority issues under.
 	LeafDNSNames    []string
 	LeafDNSPatterns []string
-	// HA is the replica set the cluster's Trust Authority runs as; a zero one the singleton.
-	HA HA
 	// KMS is where pod secret release is brokered to; nil serves no pod secrets.
 	KMS *KMS
 	// ManifestPath, Family and VCPUs select the Trust Authority guest image the VM boots
@@ -59,7 +57,6 @@ func Build(in Inputs) (config, pin []byte, err error) {
 		NodeCIDRs:       in.NodeCIDRs,
 		LeafDNSNames:    in.LeafDNSNames,
 		LeafDNSPatterns: in.LeafDNSPatterns,
-		HA:              in.HA,
 		KMS:             in.KMS,
 	})
 	if err != nil {

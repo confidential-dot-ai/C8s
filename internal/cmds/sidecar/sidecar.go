@@ -114,8 +114,8 @@ func (c *Config) Validate() error {
 
 // ParsePins resolves the pins this sidecar holds its Trust Authority to: the node's policy
 // where the enforcer mounts it, otherwise --ta-image-policy-file.
-func (c *Config) ParsePins(ctx context.Context) (armtls.PinSource, error) {
-	return cmdsutil.ClientTAPins(ctx, workloadclaims.CDSPinsPath,
+func (c *Config) ParsePins() (armtls.Pins, error) {
+	return cmdsutil.ClientTAPins(workloadclaims.CDSPinsPath,
 		cmdsutil.ImagePolicySource{
 			File: c.MeasurementsConfig,
 			JSON: c.MeasurementsConfigJSON,

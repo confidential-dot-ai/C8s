@@ -53,13 +53,8 @@ func TestSeedWorkloads_AddsAllEntries(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	defer store.Close()
-	allowlistWrites := store.Local()
 
-	seed := parseSeed(t, map[string]string{
-		"cds": digestA,
-		"as":  digestB,
-	})
-	if err := seedWorkloads(allowlistWrites, seed); err != nil {
+	if err := seedWorkloads(&store, parseSeed(t, map[string]string{"cds": digestA, "as": digestB})); err != nil {
 		t.Fatalf("seedWorkloads: %v", err)
 	}
 
@@ -90,10 +85,9 @@ func TestSeedWorkloads_IdempotentDoesNotBumpVersion(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	defer store.Close()
-	allowlistWrites := store.Local()
 
 	seed := parseSeed(t, map[string]string{"cds": digestA})
-	if err := seedWorkloads(allowlistWrites, seed); err != nil {
+	if err := seedWorkloads(&store, seed); err != nil {
 		t.Fatalf("first seed: %v", err)
 	}
 	_, v1, err := store.LoadAll()
@@ -101,7 +95,7 @@ func TestSeedWorkloads_IdempotentDoesNotBumpVersion(t *testing.T) {
 		t.Fatalf("LoadAll: %v", err)
 	}
 
-	if err := seedWorkloads(allowlistWrites, seed); err != nil {
+	if err := seedWorkloads(&store, seed); err != nil {
 		t.Fatalf("second seed: %v", err)
 	}
 	_, v2, err := store.LoadAll()
@@ -121,22 +115,17 @@ func TestSeedWorkloads_PreservesExistingEntries(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	defer store.Close()
-	allowlistWrites := store.Local()
 
 	runtime := pkgallowlist.Workload{Containers: []pkgallowlist.Container{{Digest: digest(t, digestB)}}}
 	written := &pkgallowlist.Allowlist{
 		Schema:    pkgallowlist.Schema,
 		Workloads: map[string]pkgallowlist.Workload{"runtime": runtime},
 	}
-	if err := allowlistWrites.ReplaceAll(written, allowlist.OperatorWrite{}); err != nil {
+	if err := store.ReplaceAll(written, allowlist.OperatorWrite{}); err != nil {
 		t.Fatalf("the operator's write: %v", err)
 	}
 
-	seed := parseSeed(t, map[string]string{
-		"cds":     digestA,
-		"runtime": digestA,
-	})
-	if err := seedWorkloads(allowlistWrites, seed); err != nil {
+	if err := seedWorkloads(&store, parseSeed(t, map[string]string{"cds": digestA, "runtime": digestA})); err != nil {
 		t.Fatalf("seedWorkloads: %v", err)
 	}
 
@@ -158,11 +147,9 @@ func TestSeedWorkloads_FailsClosedOnStoreError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
-	allowlistWrites := store.Local()
 	_ = store.Close()
 
-	seed := parseSeed(t, map[string]string{"cds": digestA})
-	if err := seedWorkloads(allowlistWrites, seed); err == nil {
+	if err := seedWorkloads(&store, parseSeed(t, map[string]string{"cds": digestA})); err == nil {
 		t.Fatal("seedWorkloads succeeded on a closed store; want fail-closed error")
 	}
 }
@@ -179,7 +166,7 @@ func TestSeedWorkloads_RefusesAComponentsSection(t *testing.T) {
 
 	seed := parseSeed(t, map[string]string{"cds": digestA})
 	seed.Components = map[string]pkgallowlist.ComponentSet{"0.43.0": {Entries: map[string]pkgallowlist.Workload{}}}
-	err = seedWorkloads(store.Local(), seed)
+	err = seedWorkloads(&store, seed)
 	if err == nil {
 		t.Fatal("a seed carrying a components section was accepted")
 	}
