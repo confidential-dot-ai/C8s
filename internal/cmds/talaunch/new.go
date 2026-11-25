@@ -67,6 +67,7 @@ func write(opts options) error {
 		ManifestPath:    opts.manifest,
 		Family:          family,
 		VCPUs:           opts.vcpus,
+		HA:              haOf(opts.haEndpoints),
 	})
 	if err != nil {
 		return err
@@ -76,6 +77,13 @@ func write(opts options) error {
 		{Name: taconfig.ConfigFile, Data: config, Mode: 0o644},
 		{Name: taconfig.PinFile, Data: pin, Mode: 0o644},
 	})
+}
+
+func haOf(endpoints []string) *taconfig.HA {
+	if len(endpoints) == 0 {
+		return nil
+	}
+	return &taconfig.HA{Endpoints: endpoints}
 }
 
 func readOperatorKeys(path string) (operatorauth.KeyBundle, error) {

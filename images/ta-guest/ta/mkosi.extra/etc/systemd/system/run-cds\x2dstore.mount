@@ -1,0 +1,11 @@
+[Unit]
+Description=Trust Authority replica runtime disk (its chain store's etcd client file; not measured)
+# The host may rewrite it, which can only cost availability: it picks the
+# store the replica reads, and the replica adopts only entries that verify.
+ConditionPathExists=/dev/disk/by-label/cds-store
+
+[Mount]
+What=/dev/disk/by-label/cds-store
+Where=/run/cds-store
+Type=iso9660
+Options=ro,nosuid,nodev,noexec

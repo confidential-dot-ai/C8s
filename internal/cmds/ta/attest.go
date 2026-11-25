@@ -43,6 +43,10 @@ import (
 // claims the quote binds. Each gate is independent of the other and a set
 // that names no image admits nobody.
 type AttestHandler struct {
+	// Serving, set for a replica of a set, refuses issuance while the
+	// replica serves nothing.
+	Serving func(context.Context) error
+
 	Challenges        *attestation.ChallengeStore
 	AttestationClient remote.Client
 	MeshCA            *issuer.MeshCA
@@ -275,6 +279,17 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 			"remote_addr", r.RemoteAddr)
 		httputil.WriteError(w, http.StatusForbidden, types.ErrorCodeCSRDenied, "sandbox workload not authorized")
 		return
+	}
+	// A replica of a set signs only while it serves, checked last.
+	if h.Serving != nil {
+		if err := h.Serving(ctx); err != nil {
+			if ctx.Err() != nil {
+				httputil.WriteError(w, http.StatusGatewayTimeout, types.ErrorCodeTimeout, "request timeout")
+				return
+			}
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
 	}
 	// One read: the certificate that signs the leaf is the chain returned with it.
 	signing := h.MeshCA.Current()
