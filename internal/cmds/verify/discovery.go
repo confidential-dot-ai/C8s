@@ -160,7 +160,7 @@ func evidenceFromDiscovery(data []byte, source string, trust leafTrust, observed
 		return nil, fmt.Errorf("parse discovery document: %w", err)
 	}
 	switch d.PublicTLS.Mode {
-	case "", types.FrontDoorModeTA, types.FrontDoorModeWebPKI, types.FrontDoorModeACME:
+	case types.FrontDoorModeTA, types.FrontDoorModeWebPKI, types.FrontDoorModeACME:
 	default:
 		return nil, &securityError{err: fmt.Errorf(
 			"unknown public_tls.mode %q in discovery document (this build knows ta, webpki, and acme) — failing closed on a document it cannot classify", d.PublicTLS.Mode)}

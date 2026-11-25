@@ -79,7 +79,8 @@ func TestEvidenceFromDiscovery(t *testing.T) {
 
 	buildDoc := func(platform, cert string) []byte {
 		doc := map[string]any{
-			"ta_tls": map[string]any{"certificate_pem": cert},
+			"public_tls": map[string]any{"mode": "ta"},
+			"ta_tls":     map[string]any{"certificate_pem": cert},
 			"attestation": map[string]any{
 				"platform":  platform,
 				"challenge": base64.StdEncoding.EncodeToString(challenge),

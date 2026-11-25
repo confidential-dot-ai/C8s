@@ -217,11 +217,10 @@ func verifyDocument(ctx context.Context, data []byte, verify localverify.VerifyF
 	}
 
 	// Only a ta-mode front door serves the Trust Authority-issued leaf the evidence
-	// binds; empty means a pre-mode-field document (ta in practice). Anything
-	// else fails closed here rather than returning a client whose handshakes
-	// can never match the attested cert.
+	// binds. Anything else, an empty mode included, fails closed here rather
+	// than returning a client whose handshakes can never match the attested cert.
 	switch d.PublicTLS.Mode {
-	case "", types.FrontDoorModeTA:
+	case types.FrontDoorModeTA:
 	case types.FrontDoorModeWebPKI:
 		return nil, fmt.Errorf("front door public_tls.mode=webpki is not supported: it serves an operator WebPKI certificate this client cannot yet bind to the attestation evidence; use a ta-mode front door or port-forward Trust Authority directly")
 	case types.FrontDoorModeACME:

@@ -22,7 +22,7 @@ import (
 )
 
 // discoveryDocWithPublicTLS is discoveryDocWith plus the public_tls block
-// get-cert writes (empty mode omits the mode field, as a pre-mode document).
+// get-cert writes.
 func discoveryDocWithPublicTLS(t *testing.T, mode, certPEM string, challenge []byte, evidence string) []byte {
 	t.Helper()
 	var doc map[string]any
@@ -37,18 +37,17 @@ func discoveryDocWithPublicTLS(t *testing.T, mode, certPEM string, challenge []b
 	return data
 }
 
-// The discovery gather must classify public_tls.mode: ta (and its
-// pre-mode-field empty spelling) and webpki parse; anything else fails closed
-// as a security verdict — auto mode must not fall through past a document it
-// cannot classify. A parsed mode gates classification only — the verdict keys
-// on the live handshake observation, which a parsed-but-unprobed document
-// lacks.
+// The discovery gather must classify public_tls.mode: ta and webpki parse;
+// anything else, an empty mode included, fails closed as a security verdict:
+// auto mode must not fall through past a document it cannot classify. A parsed
+// mode gates classification only — the verdict keys on the live handshake
+// observation, which a parsed-but-unprobed document lacks.
 func TestDiscoveryPublicTLSModeParsing(t *testing.T) {
 	certPEM, _ := selfSignedCertPEM(t)
 	challenge := []byte("issuance-challenge")
 	evidence := `{"attestation_report":"AAAA","cert_chain":{"vcek":"BBBB"}}`
 
-	for _, mode := range []string{"", "ta", "webpki"} {
+	for _, mode := range []string{"ta", "webpki"} {
 		ev, err := evidenceFromDiscovery(discoveryDocWithPublicTLS(t, mode, certPEM, challenge, evidence), "test", leafTrust{}, nil)
 		if err != nil {
 			t.Fatalf("mode %q: %v", mode, err)
@@ -58,12 +57,14 @@ func TestDiscoveryPublicTLSModeParsing(t *testing.T) {
 		}
 	}
 
-	_, err := evidenceFromDiscovery(discoveryDocWithPublicTLS(t, "dns", certPEM, challenge, evidence), "test", leafTrust{}, nil)
-	if err == nil || !isSecurityError(err) {
-		t.Fatalf("an unknown public_tls.mode must fail closed as a security verdict, got %v", err)
-	}
-	if !strings.Contains(err.Error(), `public_tls.mode "dns"`) {
-		t.Errorf("error = %q, want it to name the unrecognized mode", err)
+	for _, mode := range []string{"", "dns"} {
+		_, err := evidenceFromDiscovery(discoveryDocWithPublicTLS(t, mode, certPEM, challenge, evidence), "test", leafTrust{}, nil)
+		if err == nil || !isSecurityError(err) {
+			t.Fatalf("public_tls.mode %q must fail closed as a security verdict, got %v", mode, err)
+		}
+		if !strings.Contains(err.Error(), fmt.Sprintf("public_tls.mode %q", mode)) {
+			t.Errorf("error = %q, want it to name the unrecognized mode", err)
+		}
 	}
 }
 
