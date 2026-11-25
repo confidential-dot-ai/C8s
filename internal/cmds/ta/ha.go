@@ -1,0 +1,332 @@
+package ta
+
+import (
+	"context"
+	"crypto/ecdsa"
+	"crypto/tls"
+	"crypto/x509"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"time"
+
+	etcdyaml "go.etcd.io/etcd/client/v3/yaml"
+
+	"github.com/confidential-dot-ai/attestation-go/refvalues"
+	"github.com/confidential-dot-ai/attestation-go/remote"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdschain"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/issuer"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/pendingattestation"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/sandboxledger"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/taconfig"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/taha"
+	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/cdspin"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/routes"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
+)
+
+// haConfig is a replica's flags: none of it is measured, and a wrong value
+// costs availability, not safety.
+type haConfig struct {
+	self         string
+	runtimeDir   string
+	storeEtcd    string
+	storeMemory  bool
+	gossip       time.Duration
+	peerTimeout  time.Duration
+	storeTimeout time.Duration
+	warnEntries  int
+	warnBytes    int64
+}
+
+// startHA builds this replica of the configured set over the Trust Authority's mesh CA,
+// allowlist store and serving certificate, and starts its gossip.
+func startHA(ctx context.Context, cfg config, mesh *issuer.MeshCA, store *allowlist.Store, serving *tls.Config, meshPeers *armtls.CertManager) (*taha.Replica, error) {
+	endpoints := cfg.measured.HA.Endpoints
+	self := cfg.ha.self
+	slot := slices.Index(endpoints, self)
+	switch {
+	case self == "" && len(endpoints) == 1:
+		slot = 0
+	case self == "":
+		slot = -1 // the replica asks the endpoints which one it is
+	case slot < 0:
+		return nil, fmt.Errorf("--ha-self %q is not one of the configured endpoints %v", self, endpoints)
+	}
+	chainStore, err := openChainStore(ctx, cfg, len(endpoints))
+	if err != nil {
+		return nil, err
+	}
+	policy := chainPolicyServer(store, cfg.measured.Workloads)
+	replica, err := taha.New(taha.Config{
+		Attested: func(pins armtls.Pins) (*http.Client, error) {
+			return armtls.NewVerifyingHTTPClient(pins, cfg.attestationApiURL)
+		},
+		Cluster:   cfg.measured.ClusterID,
+		Endpoints: endpoints,
+		Gossip:    cfg.ha.gossip,
+		Mesh:      mesh,
+		OnState: func(s *cdschain.State) error {
+			meshPeers.UpdateClientCA(mesh.Current().CA.Cert)
+			if err := policy(s); err != nil {
+				return fmt.Errorf("serving the chain's allowlist (version %s): %w", s.CurrentPolicyVersion(), err)
+			}
+			if err := serveRoutes(store, s); err != nil {
+				return fmt.Errorf("serving the chain's route manifest: %w", err)
+			}
+			return nil
+		},
+		OperatorKeys: cfg.measured.OperatorKeys.Keys(),
+		// Gossip is authenticated by member signatures, not by the channel.
+		Peer:        &http.Client{Transport: &http.Transport{TLSClientConfig: pendingattestation.TLSConfig("")}},
+		PeerTimeout: cfg.ha.peerTimeout,
+		Self:        slot,
+		SelfCheck: func(_ context.Context, measurements string) (bool, error) {
+			return ownBuildPasses(serving, measurements, cfg.attestationApiURL)
+		},
+		StoreTimeout: cfg.ha.storeTimeout,
+		Validate:     func(b cdschain.Body) error { return validateRoutes(b, mesh, store) },
+		WarnBytes:    cfg.ha.warnBytes,
+		WarnEntries:  cfg.ha.warnEntries,
+	}, chainStore)
+	if err != nil {
+		return nil, err
+	}
+	go replica.Run(ctx)
+	return replica, nil
+}
+
+// validateHAConfig holds the replica flags to values a replica can run with,
+// and refuses them on a Trust Authority whose configuration has no ha block.
+func validateHAConfig(cfg config) error {
+	ha := cfg.ha
+	if cfg.measured.HA == nil {
+		if ha.self != "" || ha.storeEtcd != "" || ha.storeMemory {
+			return errors.New("--ha-self, --ha-store-etcd and --ha-store-memory serve a replica set, and the configuration has no ha block")
+		}
+		return nil
+	}
+	switch {
+	case ha.gossip/2 <= 0:
+		return fmt.Errorf("--ha-gossip-interval (%v) must be positive", ha.gossip)
+	case ha.peerTimeout <= 0 || ha.peerTimeout > ha.gossip:
+		return fmt.Errorf("--ha-peer-timeout (%v) must be positive and at most --ha-gossip-interval (%v)", ha.peerTimeout, ha.gossip)
+	case ha.storeTimeout <= 0:
+		return fmt.Errorf("--ha-store-timeout (%v) must be positive", ha.storeTimeout)
+	}
+	return nil
+}
+
+func openChainStore(ctx context.Context, cfg config, replicas int) (taha.Store, error) {
+	if onDisk := filepath.Join(cfg.ha.runtimeDir, "etcd.yaml"); cfg.ha.storeEtcd == "" && cfg.ha.runtimeDir != "" {
+		if _, err := os.Stat(onDisk); err == nil {
+			cfg.ha.storeEtcd = onDisk
+		}
+	}
+	switch {
+	case cfg.ha.storeEtcd != "":
+		etcdCfg, err := etcdyaml.NewConfig(cfg.ha.storeEtcd)
+		if err != nil {
+			return nil, fmt.Errorf("--ha-store-etcd: %w", err)
+		}
+		etcdCfg.Context = ctx
+		return taha.OpenEtcd(*etcdCfg, cfg.measured.ClusterID)
+	case cfg.ha.storeMemory && replicas == 1:
+		slog.Warn("Trust Authority chain store is in memory: the chain dies with this replica")
+		return taha.NewMemory(), nil
+	case cfg.ha.storeMemory:
+		return nil, errors.New("--ha-store-memory serves a single replica")
+	}
+	slog.Warn("Trust Authority chain store waits for its credential (c8s ta ha store-credential)")
+	return nil, nil
+}
+
+// chainPolicyServer serves each state's allowlist once (servePolicy). Nodes
+// get nothing until the first one is served: before it, the store holds only
+// what the replica started with.
+func chainPolicyServer(store *allowlist.Store, seed *pkgallowlist.Allowlist) func(*cdschain.State) error {
+	store.HoldNodes()
+	served := ""
+	return func(s *cdschain.State) error {
+		v := s.CurrentPolicyVersion()
+		if v == served {
+			return nil
+		}
+		if err := servePolicy(store, s, seed, served == ""); err != nil {
+			return err
+		}
+		served = v
+		return nil
+	}
+}
+
+// servePolicy serves the chain's allowlist, or seed before a policy entry, at
+// the version every replica gives it. The first one a replica serves is
+// written now, so nodes get it once the node delay has passed (a restart adds
+// the delay, never skips it), and nothing older: until then they are told to
+// ask again (allowlist.ErrNotYetInEffect).
+func servePolicy(store *allowlist.Store, s *cdschain.State, seed *pkgallowlist.Allowlist, first bool) error {
+	doc := seed
+	if s.Policy != nil {
+		var err error
+		if doc, err = pkgallowlist.ParseJSON(s.Policy); err != nil {
+			return err
+		}
+	}
+	if err := store.ReplaceAll(doc, allowlist.OperatorWrite{SetVersion: s.CurrentPolicyVersion()}); err != nil {
+		return err
+	}
+	if first {
+		return store.FloorNodesAtHead()
+	}
+	return nil
+}
+
+// serveRoutes serves the chain's route manifest, none before a routes entry:
+// a resolve that drops a routes entry moves the manifest back. Routers keep
+// the highest revision they took until an operator publishes one above it.
+func serveRoutes(store *allowlist.Store, s *cdschain.State) error {
+	if s.Routes == nil {
+		warnRoutesBelowFloor(store, 0)
+		return store.SetRoutes(nil)
+	}
+	m, err := routes.Parse(s.Routes.Manifest)
+	if err != nil {
+		return err
+	}
+	warnRoutesBelowFloor(store, m.Revision)
+	return store.SetRoutes(&routes.Envelope{Manifest: s.Routes.Manifest, Token: s.Routes.Token})
+}
+
+func warnRoutesBelowFloor(store *allowlist.Store, revision uint64) {
+	if floor := store.RoutesFloor(); revision < floor {
+		slog.Error("Trust Authority route manifest moved back below a revision routers took; publish a routes entry above it", "revision", revision, "routers", floor)
+	}
+}
+
+// validateRoutes holds a routes entry to what PUT /routes checks.
+func validateRoutes(b cdschain.Body, mesh *issuer.MeshCA, store *allowlist.Store) error {
+	if b.Type != cdschain.TypeRoutes {
+		return nil
+	}
+	var p cdschain.Routes
+	if err := cdschain.DecodeStrict(b.Payload, &p); err != nil {
+		return err
+	}
+	m, err := routes.Parse(p.Manifest)
+	if err != nil {
+		return err
+	}
+	if err := m.CheckAnchorsExclude([]*x509.Certificate{mesh.Current().CA.Cert}); err != nil {
+		return err
+	}
+	// Not just above the stored manifest: a router keeps the highest one
+	// served, also after a resolve moved the stored one back.
+	if m.Revision <= store.RoutesFloor() {
+		return allowlist.ErrRevisionNotGreater
+	}
+	return nil
+}
+
+// ownBuildPasses holds this replica's own serving certificate to one build's
+// pins. A verifier that does not answer is an error, not a verdict.
+func ownBuildPasses(serving *tls.Config, measurements, attestationAPI string) (bool, error) {
+	values, err := refvalues.Parse([]byte(measurements))
+	if err != nil {
+		return false, nil
+	}
+	cert, err := serving.GetCertificate(&tls.ClientHelloInfo{})
+	if err != nil {
+		return false, err
+	}
+	leaf := cert.Leaf
+	if leaf == nil {
+		if leaf, err = x509.ParseCertificate(cert.Certificate[0]); err != nil {
+			return false, err
+		}
+	}
+	_, err = armtls.VerifyCert(leaf, armtls.Pins(values.Policy()).VerifyPolicy(attestationAPI), nil)
+	switch {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, armtls.ErrPolicyViolation):
+		return false, nil
+	}
+	return false, err
+}
+
+// haAuthorizer checks an HA operator request under the keys the replica
+// names, with the single-use token rule of every other operator write.
+func haAuthorizer(store *allowlist.Store, started time.Time, skew time.Duration) taha.Authorizer {
+	return func(r *http.Request, body []byte, keys []*ecdsa.PublicKey) error {
+		v := operatorauth.Verifier{Keys: keys, ClockSkew: skew}
+		return singleUse(v.AuthorizeIssuedAt, store, started, skew)(r, body)
+	}
+}
+
+// haGate serves a replica's Trust Authority routes only while it serves. A
+// replica set takes allowlist and routes writes as chain entries, never
+// through the old PUT routes; a single replica's PUT /secrets stays. An
+// allowlist document by digest is served whatever the replica's state: the
+// client checks the bytes against the digest it asked for.
+const objectsPath = "/allowlist/objects/sha256/"
+
+func haGate(replica *taha.Replica) func(http.Handler) http.Handler {
+	open := []string{"/healthz", "/readyz", "/metrics", "/ca", "/operator-keys", "/measurements"}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if id := replica.Identity(r.Header.Get(cdspin.Header)); id != "" {
+				w.Header().Set(cdspin.Header, id)
+			}
+			switch {
+			case strings.HasPrefix(r.URL.Path, "/ha/") || slices.Contains(open, r.URL.Path):
+			case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, objectsPath):
+			case r.Method == http.MethodPut && (r.URL.Path == "/allowlist" || r.URL.Path == routes.Path):
+				http.Error(w, "a Trust Authority replica set takes writes as chain entries (c8s ta ha, POST "+taha.EntriesPath+")", http.StatusConflict)
+				return
+			default:
+				if _, err := replica.Current(r.Context()); err != nil {
+					http.Error(w, err.Error(), http.StatusServiceUnavailable)
+					return
+				}
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// haServing is AttestHandler.Serving for a replica.
+func haServing(replica *taha.Replica) func(context.Context) error {
+	return func(ctx context.Context) error {
+		_, err := replica.Current(ctx)
+		return err
+	}
+}
+
+// haLedger is the sandbox ledger issuance records into: none for a replica
+// set of more than one replica, whose replicas could not share it.
+func haLedger(ha *taconfig.HA, ledger *sandboxledger.Ledger) sandboxBinder {
+	if ha != nil && len(ha.Endpoints) > 1 {
+		return nil
+	}
+	return ledger
+}
+
+// haSecrets is secretsEnabled, refused for a replica set of more than one
+// replica: secrets and the sandbox ledger wait for a broker a set can
+// share.
+func haSecrets(ha *taconfig.HA, images []remote.ImagePin, hosts workloadclaims.CIDRHosts) (bool, string) {
+	if ha != nil && len(ha.Endpoints) > 1 {
+		return false, "a Trust Authority replica set of more than one replica holds no secrets"
+	}
+	return secretsEnabled(images, hosts)
+}

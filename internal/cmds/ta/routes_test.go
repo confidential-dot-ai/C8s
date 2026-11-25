@@ -419,6 +419,7 @@ func TestValidateConfigRejectsUnsafeValues(t *testing.T) {
 		{name: "zero max request size", edit: func(c *config) { c.maxRequestSize = 0 }},
 		{name: "negative max request size", edit: func(c *config) { c.maxRequestSize = -1 }},
 		{name: "zero readiness interval", edit: func(c *config) { c.readinessInterval = 0 }},
+		{name: "replica flag without an ha block", edit: func(c *config) { c.ha.self = "ta-1:8443" }},
 		{name: "negative readiness interval", edit: func(c *config) { c.readinessInterval = -time.Second }},
 		{
 			name: "zero min ca validity",

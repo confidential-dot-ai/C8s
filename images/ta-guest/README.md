@@ -58,6 +58,13 @@ attests on, so the image carries no platform setting.
 [Kata TA deployments](../../docs/cloud-ta.md#under-a-kata-containers-runtime)
 use their own guest image and configuration mount.
 
+A replica of a set (a config with an `ha` block, docs/ta-ha.md) finds its
+own endpoint among `ha.endpoints` by asking each for its status. Its
+Kubernetes store credential arrives over the attested HA API
+(`c8s ta ha store-credential`). An etcd store instead needs a disk labelled
+`cds-store`, mounted read-only at `/run/cds-store` and not measured, holding
+the etcd client file `etcd.yaml`.
+
 No scratch disk is needed. The config is read-only, the allowlist store lives
 in the unit's runtime directory, and the mesh CA stays in memory: a restart
 re-bootstraps the trust root and a reboot leaves nothing behind.

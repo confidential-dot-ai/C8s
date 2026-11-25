@@ -72,8 +72,10 @@ image), `gke` or `aks`.
 - **TA.** A measured VM outside the cluster (`images/ta-guest`), booted on the
   configuration `c8s ta config new` writes and pinned by the `ta-pin.json`
   written with it. No chart deploys it, and only test harnesses run it as a
-  container. It runs as one VM. It calls back to each node's admission
-  inventory on TCP 1019.
+  container. It runs as one VM, or as a fixed set of replicas that hold no
+  state on disk and share a signed policy chain kept in an untrusted store
+  (`docs/ta-ha.md`). It calls back to each node's admission inventory on TCP
+  1019.
 - **Cloud.** `c8s install --platform aks-snp|aks-tdx|gke-snp` deploys
   `charts/cloud` onto the provider's confidential VMs (`docs/operator.md`;
   `docs/cloud-ta.md` for where that cluster's TA runs).
@@ -97,7 +99,7 @@ and the commands defined in `cmd/c8s` itself: `install`, `uninstall`, `operator`
 
 | Role | Runs in | Code |
 |---|---|---|
-| `ta` | the TA VM | `internal/cmds/ta`, `internal/issuer`, `internal/secrets`, `internal/allowlist` |
+| `ta` | the TA VM | `internal/cmds/ta`, `internal/taha`, `internal/issuer`, `internal/secrets`, `internal/allowlist` |
 | `operator`: controllers, `pod-injector`, `pod-validator`, Pod CVM provider | a cluster pod on cloud; a host process beside the control plane in a cluster of workers | `cmd/c8s/operator.go`, `internal/controller`, `internal/webhook`, `internal/podprovider` |
 | `nri-image-policy`: admission plugin, admission inventory, packet rules | the node host | `internal/cmds/nri-image-policy`, `internal/podmesh` |
 | `c8s-runc`: privilege floor, exec denial | measured images | `internal/cmds/c8srunc` |
@@ -154,9 +156,15 @@ Kubernetes mislead.
    versioned document under a single-use operator signature over the method,
    path and body. Nodes apply it after a delay, then stop any running container
    it no longer admits.
-8. **The TA keeps nothing across a restart.** Its state is in memory and on
-   a tmpfs: a restart loses the mesh CA, the secrets, operator-written entries
-   and the route manifest, and voids every leaf (`docs/operator.md`).
+8. **A TA outside a replica set keeps nothing across a restart.** Its state is
+   in memory and on a tmpfs: a restart loses the mesh CA, the secrets,
+   operator-written entries and the route manifest, and voids every leaf. A
+   replica set keeps its signed chain (allowlist, routes, accepted builds,
+   operator keys, members) in an external store (Kubernetes or etcd;
+   `--ha-store-memory` keeps none), and a running replica hands the mesh CA key
+   to one that joins. Once every replica is lost the key is gone, and the
+   cluster is re-rooted under a new cluster ID with re-pinned node launch
+   documents (`docs/operator.md`, `docs/ta-ha.md`).
 9. **The router routes application requests only by the operator-signed route
    manifest** (`docs/operator.md`, `docs/routes-evidence.md`).
 10. **A worker document is unsigned and holds no secret.** Its digest in the
