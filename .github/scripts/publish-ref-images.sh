@@ -54,7 +54,6 @@ branch=""
 dry_run=false
 receipt=""
 component_run_id=""
-component_run_attempt=""
 last_run_id=""
 
 die() {
@@ -231,7 +230,6 @@ else
   else
     dispatch_and_wait "$docker_workflow"
     component_run_id=$last_run_id
-    component_run_attempt=1
     still_missing=$(missing_components)
     [ -z "$still_missing" ] || die "$docker_workflow finished but tags are still missing: $still_missing"
   fi
@@ -282,9 +280,8 @@ if [ -n "$receipt" ]; then
   temporary=$(mktemp -- "$receipt_dir/.publication.XXXXXX")
   jq -n --arg source "$sha" --arg repository "$repo" --arg branch "$branch" \
     --arg components "$component_run_id" --arg guests "$image_run_id" --argjson images "$guests" \
-    --arg componentAttempt "$component_run_attempt" --arg guestAttempt 1 \
-    '{source: $source, repository: $repository, branch: $branch, componentRun: $components, componentAttempt: $componentAttempt,
-      guestRun: $guests, guestAttempt: $guestAttempt, images: $images}' >"$temporary"
+    '{source: $source, repository: $repository, branch: $branch, componentRun: $components,
+      componentAttempt: (if $components == "" then "" else "1" end), guestRun: $guests, guestAttempt: "1", images: $images}' >"$temporary"
   python3 - "$temporary" "$receipt" <<'PY'
 import os, sys
 os.link(sys.argv[1], sys.argv[2])

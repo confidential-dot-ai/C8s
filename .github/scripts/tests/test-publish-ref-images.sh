@@ -75,6 +75,7 @@ case "$1 $2" in
     fi
     workflow=${4%/dispatches}; workflow=${workflow##*/}
     cp "$FAKE_STATE/branch-sha" "$FAKE_STATE/dispatched-sha"
+    : >"$FAKE_STATE/pushed-tags"
     printf '%s\n' "$workflow" >>"$FAKE_STATE/runs"
     # docker publishes every component tag for the short sha; the image
     # workflow publishes both formats of both platforms, unless the fixture
@@ -84,13 +85,14 @@ case "$1 $2" in
     fi
     if [ "$workflow" = c8s-image-manual.yml ] && [ ! -e "$FAKE_STATE/image-publishes-nothing" ]; then
       for tee in tdx sev-snp; do
-        echo "guests/worker:sha-c7cf2f3-$tee" >>"$FAKE_STATE/present-tags"
-        echo "guests/worker:sha-c7cf2f3-$tee-kubevirt" >>"$FAKE_STATE/present-tags"
+        echo "guests/worker:sha-c7cf2f3-$tee" >>"$FAKE_STATE/pushed-tags"
+        echo "guests/worker:sha-c7cf2f3-$tee-kubevirt" >>"$FAKE_STATE/pushed-tags"
       done
       for tag in sha-c7cf2f3 sha-c7cf2f3-kubevirt; do
-        [ "$tag" = "$(cat "$FAKE_STATE/missing-ta" 2>/dev/null || true)" ] || echo "guests/ta:$tag" >>"$FAKE_STATE/present-tags"
+        [ "$tag" = "$(cat "$FAKE_STATE/missing-ta" 2>/dev/null || true)" ] || echo "guests/ta:$tag" >>"$FAKE_STATE/pushed-tags"
       done
     fi
+    cat "$FAKE_STATE/pushed-tags" >>"$FAKE_STATE/present-tags"
     if [ -e "$FAKE_STATE/missing-run-id" ]; then echo null; else echo 40001; fi ;;
   "run list") echo 'must not guess a dispatched run from a list' >&2; exit 1 ;;
   "run view")
@@ -99,7 +101,7 @@ case "$1 $2" in
     while read -r ref; do
       printf 'job\tstep\t2026-01-01T00:00:00Z Pushed [registry] ghcr.io/confidential-dot-ai/%s\n' "$ref"
       printf 'job\tstep\t2026-01-01T00:00:00Z Digest: sha256:%064d\n' 1
-    done < <(grep '^guests/' "$FAKE_STATE/present-tags" | sort -u)
+    done <"$FAKE_STATE/pushed-tags"
     if [ -e "$FAKE_STATE/conflicting-log" ]; then
       printf 'job\tstep\t2026-01-01T00:00:00Z Pushed [registry] ghcr.io/confidential-dot-ai/guests/worker:sha-c7cf2f3-tdx\n'
       printf 'job\tstep\t2026-01-01T00:00:00Z Digest: sha256:%064d\n' 2
@@ -134,12 +136,9 @@ esac
 EOF
 cat >"$fixture_dir/bin/jq" <<'EOF'
 #!/usr/bin/env bash
-if [ -e "$FAKE_STATE/receipt-fails" ] && [[ " $* " == *" --argjson images "* ]]; then
-  printf '{'
-  exit 1
-fi
-if [ -e "$FAKE_STATE/receipt-directory" ] && [[ " $* " == *" --argjson images "* ]]; then
-  mkdir "$(cat "$FAKE_STATE/receipt-directory")"
+if [[ " $* " == *" --argjson images "* ]]; then
+  if [ -e "$FAKE_STATE/receipt-fails" ]; then printf '{'; exit 1; fi
+  if [ -e "$FAKE_STATE/receipt-directory" ]; then mkdir "$(cat "$FAKE_STATE/receipt-directory")"; fi
 fi
 exec "$FAKE_REAL_JQ" "$@"
 EOF
@@ -225,7 +224,7 @@ touch "$state/commit-known" "$state/image-publishes-nothing"
 printf '%s' "$sha" >"$state/branch-sha"
 for c in c8s-operator nri-image-policy ta armtls-mesh volumed; do echo "$c:c7cf2f3" >>"$state/present-tags"; done
 echo 'guests/worker:sha-c7cf2f3-tdx' >>"$state/present-tags"
-expect_failure bash "$script" --sha "$sha" | grep -q 'missing expected image guests/worker:sha-c7cf2f3-tdx-kubevirt' \
+expect_failure bash "$script" --sha "$sha" | grep -q 'missing or conflicting publication digest' \
   || fail "a partial tag set was accepted"
 pass
 
@@ -346,10 +345,11 @@ done
 
 # --- mutable tags and conflicting build evidence cannot produce a receipt ---
 
-for failure in moved-tag conflicting-log; do
+for failure in moved-tag conflicting-log image-publishes-nothing; do
   for receipt_path in '' "$fixture_dir/race-receipt"; do
     reset
     touch "$state/commit-known" "$state/$failure"
+    [ "$failure" != image-publishes-nothing ] || jq -r '.images | keys[] | sub("ghcr.io/confidential-dot-ai/"; "")' "$fixture_dir/receipt.json" >"$state/present-tags"
     receipt_args=()
     [ -z "$receipt_path" ] || receipt_args=(--receipt "$receipt_path")
     expect_failure bash "$script" --sha "$sha" "${receipt_args[@]}" \
