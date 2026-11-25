@@ -4,8 +4,6 @@ import (
 	"os"
 	"testing"
 
-	"sigs.k8s.io/yaml"
-
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
 	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
@@ -18,11 +16,7 @@ func TestSampleWorkloadEntryLints(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	podJSON, err := yaml.YAMLToJSON(manifest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	spec, err := podSpecOf(podJSON)
+	spec, err := podSpecOf(manifest)
 	if err != nil {
 		t.Fatal(err)
 	}

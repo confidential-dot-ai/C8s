@@ -10,8 +10,13 @@ import (
 	"sync"
 
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
+	sigsjson "sigs.k8s.io/json"
+	kubeyaml "sigs.k8s.io/yaml"
 
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/crane"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/strictjson"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/yamlutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/types"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
@@ -106,9 +111,49 @@ func rootUIDWarnings(spec podTemplate) []string {
 	return out
 }
 
-// podSpecOf finds the pod spec in a Pod or in any workload that carries a pod
-// template, so `kubectl get deploy/x -o json` and `kubectl get pod/x -o json`
-// both work without the caller reaching for jq first.
+func workloadJSON(data []byte) ([]byte, error) {
+	if json.Valid(data) {
+		return data, strictjson.Validate(data)
+	}
+	tree, err := yamlutil.DecodeTree(data)
+	if err != nil {
+		return nil, err
+	}
+	if err := rejectPlainYAML11BooleanKeys(tree); err != nil {
+		return nil, err
+	}
+	return kubeyaml.YAMLToJSONStrict(data)
+}
+
+// Kubernetes interprets plain YAML 1.1 boolean keys as "true" or "false".
+func rejectPlainYAML11BooleanKeys(node *yaml.Node) error {
+	if node.Kind == yaml.MappingNode {
+		for i := 0; i < len(node.Content); i += 2 {
+			key := node.Content[i]
+			if isPlainLegacyBooleanKey(key) {
+				return fmt.Errorf("quote YAML mapping key %q on line %d to use it as a string", key.Value, key.Line)
+			}
+		}
+	}
+	for _, child := range node.Content {
+		if err := rejectPlainYAML11BooleanKeys(child); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func isPlainLegacyBooleanKey(key *yaml.Node) bool {
+	switch key.Value {
+	case "y", "Y", "yes", "Yes", "YES", "on", "On", "ON",
+		"n", "N", "no", "No", "NO", "off", "Off", "OFF":
+		return key.Style == 0 && key.Tag == "!!str"
+	default:
+		return false
+	}
+}
+
+// podSpecOf finds the pod spec on a Pod or its controller's template.
 func podSpecOf(data []byte) (podTemplate, error) {
 	type metadata struct {
 		Annotations map[string]string `json:"annotations"`
@@ -124,7 +169,11 @@ func podSpecOf(data []byte) (podTemplate, error) {
 			} `json:"template"`
 		} `json:"spec"`
 	}
-	if err := json.Unmarshal(data, &probe); err != nil {
+	object, err := workloadJSON(data)
+	if err != nil {
+		return podTemplate{}, fmt.Errorf("parse object: %w", err)
+	}
+	if err := sigsjson.UnmarshalCaseSensitivePreserveInts(object, &probe); err != nil {
 		return podTemplate{}, fmt.Errorf("parse object: %w", err)
 	}
 	if spec := probe.Spec.Template.Spec; len(spec.Containers) > 0 {
@@ -263,16 +312,14 @@ func newDeriveCmd(_ *options) *cobra.Command {
 	var f deriveFlags
 	cmd := &cobra.Command{
 		Use:   "derive <name> <file|->",
-		Short: "Build an entry from a live Kubernetes object",
+		Short: "Build an entry from a Kubernetes workload",
 		Long: `Emit an entry for <name> from a Pod, Deployment, StatefulSet or DaemonSet
-given as JSON in <file> (or stdin with '-'). Nothing is sent; pipe the result to
-'apply'.
+given as a single YAML or JSON document in <file> (or stdin with '-').
+Use explicit YAML fields and expand anchors, aliases and merge keys before deriving.
+The command writes the entry as JSON on stdout for 'allowlist apply'.
 
-Deriving from the live object keeps the entry from drifting away from what is
-actually running, and handles two things a hand-written entry usually gets
-wrong. Init containers are part of the set Trust Authority matches, so omitting them makes
-every release fail with "no workload entry matches the running containers". And
-a container with a command and no args needs an args policy of "deny", because
+Derive includes the init containers in the set the Trust Authority matches.
+A container with a command and no args needs an args policy of "deny", because
 "exact" requires a non-empty argv. A container that sets no command runs its
 image's Entrypoint, and its Cmd too when it sets no args; derive reads both from
 the registry with crane.
