@@ -101,7 +101,7 @@ case "$1 $2" in
     [ "$3" = 40002 ] || exit 1
     [[ " $* " == *" --attempt 1 --log "* ]] || { echo 'logs must name the successful attempt' >&2; exit 1; }
     while read -r ref; do
-      printf 'job\tstep\t2026-01-01T00:00:00Z Pushed [registry] ghcr.io/confidential-dot-ai/%s\njob\tstep\t2026-01-01T00:00:00Z Digest: sha256:%064d\n' "$ref" 1
+      printf 'job\tstep\t2026-01-01T00:00:00Z Pushed [registry] ghcr.io/confidential-dot-ai/%s\njob\tstep\t2026-01-01T00:00:00Z Digest: sha256:%064d\n' "$ref" "${#ref}"
     done <"$FAKE_STATE/pushed-tags-$3"
     if [ -e "$FAKE_STATE/conflicting-log" ]; then
       printf 'job\tstep\t2026-01-01T00:00:00Z Pushed [registry] ghcr.io/confidential-dot-ai/%s\njob\tstep\t2026-01-01T00:00:00Z Digest: sha256:%064d\n' guests/worker:sha-c7cf2f3-tdx 2
@@ -121,7 +121,7 @@ case "$url" in
     repository=${url#*/v2/confidential-dot-ai/}; repository=${repository%%/manifests/*}
     tag=${url##*/manifests/}
     if [[ " $* " == *" -fsSI "* ]]; then
-      value=1; [ ! -e "$FAKE_STATE/moved-tag" ] || value=2
+      ref="$repository:$tag"; value=${#ref}; [ ! -e "$FAKE_STATE/moved-tag" ] || value=2
       printf 'Docker-Content-Digest: sha256:%064d\r\n' "$value"
       exit 0
     fi
@@ -203,8 +203,9 @@ order=$(sed -n 's|.*actions/workflows/\([^/]*\)/dispatches.*|\1|p' "$calls" | tr
 grep -Fq 'actions/workflows/docker.yml/dispatches -H X-GitHub-Api-Version: 2022-11-28 -f ref=build/c7cf2f3 -F return_run_details=true' "$calls" || fail "docker dispatch did not use the build branch"
 grep -Fq 'actions/workflows/c8s-image-manual.yml/dispatches -H X-GitHub-Api-Version: 2022-11-28 -f ref=build/c7cf2f3 -F return_run_details=true -f inputs[c8s_ref]=c7cf2f3 -f inputs[expected_sha]=c7cf2f38de3b035fbce00fe22d2451e77cdcefa0 -f inputs[confos_ref]=af8cef0e937e4cc300ddd30c85af6ccd8cb9be91' "$calls" \
   || fail "image dispatch arguments differ: $(grep 'c8s-image-manual' "$calls")"
-grep -q 'guests/worker:sha-c7cf2f3-tdx ->' <<<"$out" || fail "artifact tag not printed"
-[ "$(grep -c ' -> .*@sha256:0\{63\}1$' <<<"$out")" -eq 6 ] || fail "verified guest pins not printed without a receipt"
+while read -r ref; do
+  grep -Fxq "  ghcr.io/confidential-dot-ai/$ref -> ghcr.io/confidential-dot-ai/${ref%:*}@$(printf 'sha256:%064d' "${#ref}")" <<<"$out" || fail "wrong verified pin for $ref"
+done <"$state/pushed-tags-40002"
 pass
 
 # --- a successful image run that published nothing is an error ---------------
@@ -246,7 +247,7 @@ touch "$state/commit-known"
 printf '%s' "$sha" >"$state/branch-sha"
 for c in c8s-operator nri-image-policy ta armtls-mesh volumed; do echo "$c:c7cf2f3" >>"$state/present-tags"; done
 out=$(bash "$script" --sha "$sha" --receipt "$fixture_dir/receipt.json")
-jq -e --arg sha "$sha" ' .source == $sha and .componentRun == "" and .componentAttempt == "" and .guestRun == "40002" and .guestAttempt == "1" and (.images | length) == 6 and ([.images[] | endswith("@sha256:" + ("0" * 63) + "1")] | all) ' "$fixture_dir/receipt.json" >/dev/null || fail "receipt did not identify dispatched build"
+jq -e --arg sha "$sha" ' .source == $sha and .componentRun == "" and .componentAttempt == "" and .guestRun == "40002" and .guestAttempt == "1" and (.images | length) == 6 and ([.images[] | split("@sha256:")[1]] | unique | length) == 6 ' "$fixture_dir/receipt.json" >/dev/null || fail "receipt did not identify dispatched build"
 ! grep -q '/tags/list' "$calls" || fail "publication depends on a paginated tag listing"
 grep -q 'branch build/c7cf2f3 already at c7cf2f3' <<<"$out" || fail "existing branch not reused"
 ! grep -q 'actions/workflows/docker.yml/dispatches' "$calls" || fail "docker dispatched although every tag exists"
@@ -345,7 +346,6 @@ for missing in sha-c7cf2f3 sha-c7cf2f3-kubevirt; do
 done
 
 # --- mutable tags and conflicting build evidence cannot produce a receipt ---
-
 for failure in moved-tag conflicting-log image-publishes-nothing; do
   for receipt_path in '' "$fixture_dir/race-receipt"; do
     reset
