@@ -478,11 +478,16 @@ mutable tag. `publish-ref-images.sh --receipt <file>` records the run IDs
 returned by dispatch and checks all six guest tags against that run's push
 logs. Its `images` map contains immutable digest references; use those pins
 after verification because another build can replace a tag at any time.
-The receipt is installed atomically and never overwrites an existing path.
+The `guestAttempt` and `componentAttempt` fields pin the successful attempts;
+read their logs with `gh run view <run> --attempt <attempt> --log --repo <repo>`.
+The component fields are empty when its tags already existed. The receipt
+requires Python 3 and is installed atomically without replacing an existing path.
 
-Older targets still publish and receive receipts, but only targets containing
-the sync log records support component-pin verification. The receipt's guest
-digests alone do not establish the component map inside those guests.
+Older targets publishing these worker and `guests/ta` references still receive
+receipts; targets using `guests/ta` require their corresponding publisher.
+Only targets containing the sync log records support component-pin verification.
+The receipt's guest digests alone do not establish the component map inside
+those guests.
 
 ## Physical host prerequisites
 

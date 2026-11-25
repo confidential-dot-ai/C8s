@@ -34,8 +34,8 @@
 #   --receipt      write source, dispatched run IDs and verified guest digest references
 #   --dry-run      resolve and check, print what would be dispatched, exit 0
 #
-# Needs: gh (authenticated), curl, jq. GH_TOKEN (or gh's own token) is used for
-# the ghcr token exchange so private component packages resolve too.
+# Needs: gh (authenticated), curl, jq; --receipt also needs python3.
+# GH_TOKEN (or gh's own token) authenticates private packages through ghcr.
 
 set -euo pipefail
 
@@ -54,8 +54,11 @@ branch=""
 dry_run=false
 receipt=""
 component_run_id=""
+component_run_attempt=""
 image_run_id=""
+image_run_attempt=""
 last_run_id=""
+last_run_attempt=""
 
 die() {
   echo "publish-ref-images: $*" >&2
@@ -92,6 +95,7 @@ if [[ ! "$branch" =~ ^[0-9A-Za-z][0-9A-Za-z._/-]{0,254}$ ]] || [[ "$branch" == *
   die "--branch is not a safe branch name"
 fi
 if [ -n "$receipt" ]; then
+  command -v python3 >/dev/null || die "--receipt requires python3"
   [ ! -e "$receipt" ] && [ ! -L "$receipt" ] || die "receipt already exists: $receipt"
   [ -d "$(dirname "$receipt")" ] && [ -w "$(dirname "$receipt")" ] || die "receipt directory is not writable"
 fi
@@ -177,16 +181,24 @@ missing_components() {
 # URL. Fails if the run fails.
 dispatch_and_wait() {
   local workflow=$1; shift
-  local run_id url
+  local run_id url details
+  [ "$(branch_sha)" = "$sha" ] || die "build branch changed before dispatch"
   run_id=$(gh api -X POST "repos/$repo/actions/workflows/$workflow/dispatches" \
     -H 'X-GitHub-Api-Version: 2022-11-28' -f "ref=$branch" -F return_run_details=true \
     "$@" --jq .workflow_run_id)
   [[ "$run_id" =~ ^[1-9][0-9]*$ ]] || die "dispatch did not return a run ID; do not retry without inspecting Actions"
+  details=$(gh api "repos/$repo/actions/runs/$run_id")
+  [ "$(jq -r .head_sha <<<"$details")" = "$sha" ] || die "dispatched run $run_id has a different source SHA"
   url="https://github.com/$repo/actions/runs/$run_id"
   echo "waiting for $workflow run $url"
   gh run watch "$run_id" --repo "$repo" --exit-status --interval "$poll_seconds" >/dev/null \
     || die "$workflow run failed: $url"
   echo "$workflow run succeeded: $url"
+  details=$(gh api "repos/$repo/actions/runs/$run_id")
+  jq -e --arg sha "$sha" '.head_sha == $sha and .status == "completed" and .conclusion == "success"' \
+    <<<"$details" >/dev/null || die "run $run_id changed or is no longer successful"
+  last_run_attempt=$(jq -r .run_attempt <<<"$details")
+  [[ "$last_run_attempt" =~ ^[1-9][0-9]*$ ]] || die "run $run_id has no valid attempt number"
   last_run_id=$run_id
 }
 
@@ -209,6 +221,7 @@ else
   else
     dispatch_and_wait "$docker_workflow"
     component_run_id=$last_run_id
+    component_run_attempt=$last_run_attempt
     still_missing=$(missing_components)
     [ -z "$still_missing" ] || die "$docker_workflow finished but tags are still missing: $still_missing"
   fi
@@ -224,6 +237,7 @@ if [ "$dry_run" = true ]; then
 else
   dispatch_and_wait "$image_workflow" "${image_args[@]}"
   image_run_id=$last_run_id
+  image_run_attempt=$last_run_attempt
 fi
 
 # Check exact references: GHCR may paginate its repository-wide tag listing.
@@ -245,7 +259,7 @@ if [ -n "$receipt" ] && [ "$dry_run" = false ]; then
   work=$(mktemp -d)
   temporary=""
   trap 'rm -rf -- "$work"; [ -z "$temporary" ] || rm -f -- "$temporary"' EXIT
-  gh run view "$image_run_id" --repo "$repo" --log >"$work/guest.log"
+  gh run view "$image_run_id" --repo "$repo" --attempt "$image_run_attempt" --log >"$work/guest.log"
   guests='{}'
   for expected in "guests/worker:sha-$short-tdx" "guests/worker:sha-$short-tdx-kubevirt" \
                   "guests/worker:sha-$short-sev-snp" "guests/worker:sha-$short-sev-snp-kubevirt" \
@@ -268,9 +282,11 @@ if [ -n "$receipt" ] && [ "$dry_run" = false ]; then
   temporary=$(mktemp "$(dirname "$receipt")/.publication.XXXXXX")
   jq -n --arg source "$sha" --arg repository "$repo" --arg branch "$branch" \
     --arg components "$component_run_id" --arg guests "$image_run_id" --argjson images "$guests" \
-    '{source: $source, repository: $repository, branch: $branch, componentRun: $components, guestRun: $guests, images: $images}' >"$temporary"
-  (
-    ln "$temporary" "$receipt"
-    [ "$temporary" -ef "$receipt" ] || die "receipt destination changed"
-  )
+    --arg componentAttempt "$component_run_attempt" --arg guestAttempt "$image_run_attempt" \
+    '{source: $source, repository: $repository, branch: $branch, componentRun: $components, componentAttempt: $componentAttempt,
+      guestRun: $guests, guestAttempt: $guestAttempt, images: $images}' >"$temporary"
+  python3 - "$temporary" "$receipt" <<'PY'
+import os, sys
+os.link(sys.argv[1], sys.argv[2])
+PY
 fi
