@@ -20,6 +20,7 @@ import (
 
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/taconn"
+	hacli "github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/taha"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
 	pkgroutes "github.com/confidential-dot-ai/confidential-kubernetes/pkg/routes"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/routesclient"
@@ -136,7 +137,14 @@ func (o *options) trustedKeys() ([]*ecdsa.PublicKey, error) {
 // put signs and writes manifest, sending ifMatch when not empty. On a
 // revision 409 or a 412 it appends rebase, the recovery step for the calling
 // command.
-func put(ctx context.Context, c routesclient.Client, manifest []byte, signer operatorauth.Authorizer, ifMatch, rebase string) error {
+func put(ctx context.Context, opts *taconn.Options, c routesclient.Client, manifest []byte, signer operatorauth.Authorizer, ifMatch, rebase string) error {
+	// A replica set takes the manifest as a chain entry.
+	if handled, err := hacli.WriteRoutes(ctx, opts, manifest, signer, ifMatch); handled {
+		if errors.Is(err, hacli.ErrRoutesChanged) {
+			return fmt.Errorf("%w; %s", err, rebase)
+		}
+		return err
+	}
 	err := c.Put(ctx, manifest, signer, ifMatch)
 	var se *operatorauth.StatusError
 	if errors.As(err, &se) {

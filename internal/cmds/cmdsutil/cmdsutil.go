@@ -56,6 +56,10 @@ type ExitStatusError struct {
 func (e *ExitStatusError) Error() string { return e.Err.Error() }
 func (e *ExitStatusError) Unwrap() error { return e.Err }
 
+// ExitNotConfirmed is the status of a Trust Authority write that may have been applied:
+// no answer confirmed or refused it.
+const ExitNotConfirmed = 3
+
 // ExitStatus is the status a failed run exits with: 1 unless err names one.
 func ExitStatus(err error) int {
 	var named *ExitStatusError

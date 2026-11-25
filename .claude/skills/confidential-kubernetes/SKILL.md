@@ -107,7 +107,7 @@ and the commands defined in `cmd/c8s` itself: `install`, `uninstall`, `operator`
 | `ta-attest`, `allowlist-proxy`, `acme` | the router pod (the attestation container is named `ta-attest`) | `internal/cmds/{taattest,allowlistproxy,acme}`, `pkg/overenc`, `pkg/routes` |
 | `volumed`, `attest-proxy`, `volume attach\|detach` | the node | `internal/cmds/{volumed,attestproxy,volume}` |
 | `worker stage`, `launch-config stage`, `node-services`, `pod-status` | guest boot | `internal/cmds/{worker,nodeservices,podstatus}`, `internal/podlaunch` |
-| Operator CLIs: `keys`, `measurements`, `allowlist`, `routes`, `secrets`, `volume create`, `verify`, `ta verify\|ca\|config` | the operator's machine | `internal/cmds/{keys,measurements,allowlist,routes,secrets,volume,verify,taca,talaunch,ta}`, with `internal/cmds/taconn` for the TA connection |
+| Operator CLIs: `keys`, `measurements`, `allowlist`, `routes`, `secrets`, `volume create`, `verify`, `ta verify\|ca\|config\|ha` | the operator's machine | `internal/cmds/{keys,measurements,allowlist,routes,secrets,volume,verify,taca,talaunch,ta,taha}`, with `internal/cmds/taconn` for the TA connection |
 
 Shared libraries: `pkg/armtls` (TLS configs, pins, certificate extensions),
 `pkg/workloadclaims` (inventory socket and sandbox token), `pkg/allowlist`
