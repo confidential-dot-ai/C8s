@@ -104,8 +104,7 @@ func TestRuntimeDiskSelectsTheEtcdStore(t *testing.T) {
 	}
 }
 
-// A replica set of more than one replica serves no secrets; a single
-// replica keeps the existing rule.
+// A single replica may acquire node identities after startup.
 func TestReplicaSetRefusesSecrets(t *testing.T) {
 	images := []remote.ImagePin{{Name: "node"}}
 	hosts, err := workloadclaims.ParseInventoryHosts([]string{"10.0.0.0/24"})
@@ -117,6 +116,27 @@ func TestReplicaSetRefusesSecrets(t *testing.T) {
 	}
 	if ok, why := haSecrets(&taconfig.HA{Endpoints: []string{"a:1"}}, images, hosts); !ok {
 		t.Fatalf("a single replica refuses secrets: %s", why)
+	}
+	for _, tc := range []struct {
+		ha    *taconfig.HA
+		hosts workloadclaims.CIDRHosts
+		want  bool
+	}{
+		{
+			ha:    &taconfig.HA{Endpoints: []string{"a:1"}},
+			hosts: hosts,
+			want:  true,
+		},
+		{ha: &taconfig.HA{Endpoints: []string{"a:1"}}},
+		{
+			ha:    &taconfig.HA{Endpoints: []string{"a:1", "b:1", "c:1"}},
+			hosts: hosts,
+		},
+		{hosts: hosts},
+	} {
+		if ok, why := haSecrets(tc.ha, nil, tc.hosts); ok != tc.want {
+			t.Fatalf("empty initial nodes: enabled = %v, want %v: %s", ok, tc.want, why)
+		}
 	}
 	ledger := sandboxledger.New(time.Hour, 10)
 	if haLedger(&taconfig.HA{Endpoints: []string{"a:1", "b:1", "c:1"}}, ledger) != nil {

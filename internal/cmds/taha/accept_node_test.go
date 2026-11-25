@@ -32,6 +32,7 @@ import (
 // nodeFixture is a one-replica chain whose accepted build pins a real Trust Authority
 // configuration, and a worker document that pins that build and the genesis.
 type nodeFixture struct {
+	key      *ecdsa.PrivateKey
 	chain    *verifiedChain
 	state    *cdschain.State
 	doc      worker.Document
@@ -40,6 +41,11 @@ type nodeFixture struct {
 }
 
 func newNodeFixture(t *testing.T) nodeFixture {
+	t.Helper()
+	return newNodeFixtureWithNodes(t, nil)
+}
+
+func newNodeFixtureWithNodes(t *testing.T, nodes []byte) nodeFixture {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -55,8 +61,11 @@ func newNodeFixture(t *testing.T) nodeFixture {
 		t.Fatal(err)
 	}
 	launched := remote.ImagePin{Name: "node", Digest: bytes.Repeat([]byte{0x11}, refvalues.DigestSize), Anchor: []byte(pub)}
-	nodes := mustFormat(t, refvalues.ReferenceValues{Family: teetypes.FamilySNP, Images: []remote.ImagePin{launched}})
+	if nodes == nil {
+		nodes = mustFormat(t, refvalues.ReferenceValues{Family: teetypes.FamilySNP, Images: []remote.ImagePin{launched}})
+	}
 	config, err := taconfig.Format(taconfig.Document{
+		HA:        &taconfig.HA{Endpoints: []string{"a:1"}},
 		ClusterID: "lane", OperatorKeys: keys, Workloads: workloads, Nodes: nodes,
 		NodeCIDRs: []string{"192.168.0.0/16"}, LeafDNSNames: []string{"c8s.acme.example"},
 	})
@@ -77,6 +86,7 @@ func newNodeFixture(t *testing.T) nodeFixture {
 		t.Fatal(err)
 	}
 	return nodeFixture{
+		key:   key,
 		chain: &verifiedChain{Genesis: genesis, Hashes: []cdschain.Hash{genesis.Hash()}, state: state},
 		state: state,
 		doc: worker.Document{
@@ -188,5 +198,46 @@ func TestAcceptNodeRefusesADocumentForAnotherSet(t *testing.T) {
 	}
 	if _, err := admitOnChain(f.chain, f.state, marshal(t, f.doc), f.image); err != nil {
 		t.Fatalf("negative control: %v", err)
+	}
+}
+
+func TestAcceptFirstNodeFromEmptyLaunchSet(t *testing.T) {
+	empty, err := refvalues.Render(refvalues.ReferenceValues{Family: teetypes.FamilySNP})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := newNodeFixtureWithNodes(t, empty)
+	document := marshal(t, f.doc)
+	a, err := admitOnChain(f.chain, f.state, document, f.image)
+	if err != nil {
+		t.Fatal(err)
+	}
+	set, err := refvalues.Parse(a.Nodes)
+	digest := sha256.Sum256(document)
+	if err != nil || len(set.Images) != 1 || !bytes.Equal(set.Images[0].LaunchFileDigest, digest[:]) {
+		t.Fatalf("first admission = %+v, %v", set, err)
+	}
+	apply := func(nodes []byte) (*cdschain.State, error) {
+		payload, err := json.Marshal(cdschain.Nodes{Nodes: string(nodes)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		entry, err := cdschain.Sign(f.key, cdschain.Body{
+			Cluster: f.state.Cluster,
+			Seq:     1,
+			Prev:    f.state.Head.Hash,
+			Type:    cdschain.TypeNodes,
+			Payload: payload,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return f.state.Apply(entry)
+	}
+	if _, err := apply(empty); err == nil {
+		t.Fatal("chain accepted a signed empty nodes entry")
+	}
+	if next, err := apply(a.Nodes); err != nil || next.Nodes != string(a.Nodes) {
+		t.Fatalf("chain refused first signed admission: %v", err)
 	}
 }

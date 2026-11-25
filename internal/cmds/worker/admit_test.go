@@ -395,3 +395,34 @@ func TestAdmittedEntriesAcceptTheWorkersRuntimeLog(t *testing.T) {
 		t.Fatal("a worker hiding its runtime log was admitted")
 	}
 }
+
+func TestAdmitFromTypedEmptySet(t *testing.T) {
+	for _, family := range workerFamilies {
+		f := newAdmitFixture(t, family)
+		empty, err := refvalues.Render(refvalues.ReferenceValues{Family: family})
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.in.Nodes = empty
+		a := admitted(t, f, f.document)
+		resp, platform := evidence(family, f.document, workerRTMRs)
+		if err := enforce(t, a, resp, platform); err != nil {
+			t.Fatalf("first %s worker rejected: %v", family, err)
+		}
+		other := teetypes.FamilySNP
+		if family == other {
+			other = teetypes.FamilyTDX
+		}
+		f.in.Nodes, err = refvalues.Render(refvalues.ReferenceValues{Family: other})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Admit(bytes.NewReader(f.document), f.in); err == nil {
+			t.Fatal("empty set silently changed TEE family")
+		}
+		f.in.Nodes = nil
+		if _, err := Admit(bytes.NewReader(f.document), f.in); err == nil {
+			t.Fatal("omitted set inferred a TEE family")
+		}
+	}
+}

@@ -51,7 +51,9 @@ the TA configuration that `ta.measurements` binds.
 The TA certifies a worker only under a node image entry bound to its exact
 document. On a Trust Authority replica set, the operator writes it into the chain's
 `nodes` entry ([ta-ha.md](ta-ha.md#the-chain)), and the command adds that
-entry itself:
+entry itself. For the first worker, the launch file may name an
+[empty node set](ta-ha.md#starting-without-workers) declaring the worker's TEE
+family. The command then creates the first nonempty set:
 
 ```sh
 c8s ta ha accept-node \
@@ -85,7 +87,7 @@ case), or none, writes nothing. Workers launched with the same document need
 no new entry; a changed document, such as one naming a new CA, is admitted
 beside the old one.
 
-A single Trust Authority certifies the node images its configuration's `nodes` names: add
+A standalone Trust Authority certifies the node images its configuration's `nodes` names: add
 the bound worker image entry there. On a replica set, every entry of the
 configuration's `nodes` must bind a launch (`approver_key`, `launch_file` or
 `launch_file_digest`), as every `nodes` entry of the chain does
