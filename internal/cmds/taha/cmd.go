@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -24,6 +25,8 @@ type options struct {
 	retryFor  time.Duration
 	// genesis pins the chain's genesis hash while the cluster has no record.
 	genesisPin string
+	// persist replaces fileutil.WriteAtomicDurable in tests.
+	persist func(path string, data []byte, mode os.FileMode) error
 }
 
 // NewCmd returns the `ha` subcommand.
