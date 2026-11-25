@@ -31,9 +31,6 @@ type options struct {
 	vcpus           []int
 	kmsURL          string
 	kmsTLSKey       string
-	// ha is the replica set the cluster's Trust Authority runs as, empty for a cluster
-	// whose Trust Authority is a singleton.
-	ha taconfig.HA
 }
 
 func NewCmd() *cobra.Command {
@@ -56,12 +53,7 @@ func newNewCmd() *cobra.Command {
   <out>/ta-pin.json      the measurements document its clients pin it with
 
 Each pin entry binds the configuration exactly; on SEV-SNP there is one entry
-per --vcpus count the VM may boot with.
-
-Every replica of a highly available Trust Authority boots these same bytes: --replica and
---voters describe the cluster, and nothing in the file names one replica.
-docs/ta-ha.md says which of its fields the replicas only start from and which
-fix the cluster for its life.`,
+per --vcpus count the VM may boot with.`,
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -92,7 +84,6 @@ fix the cluster for its life.`,
 		"regex a leaf's DNS SANs may match in full; repeatable (default the in-cluster Service DNS pattern)")
 	f.StringVar(&opts.kmsURL, "kms-url", "", "optional https URL of the key management service Trust Authority brokers pod secret release to (docs/pod-secrets.md); needs --pod-image-policy-file")
 	f.StringVar(&opts.kmsTLSKey, "kms-tls-key-sha256", "", "lowercase hex SHA-256 of the DER SubjectPublicKeyInfo of the KMS's TLS certificate; required with --kms-url")
-	taconfig.BindReplicaSetFlags(f, &opts.ha)
 	f.StringVar(&opts.manifest, "image-manifest", "", "manifest.json published with the Trust Authority guest image the VM boots")
 	f.StringVar(&opts.platform, "platform", "", "TEE platform the Trust Authority VM runs on: sev-snp or tdx")
 	f.IntSliceVar(&opts.vcpus, "vcpus", nil, "SEV-SNP only: a vCPU count the Trust Authority VM may boot with, one pin entry each; repeatable")

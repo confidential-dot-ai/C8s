@@ -50,8 +50,6 @@ var commandImportRules = importRules{
 	},
 	knownDebt: []string{
 		"internal/taconfig imports internal/cmds/cmdsutil",
-		"internal/tadecree imports internal/cmds/cmdsutil",
-		"internal/tapins imports internal/cmds/cmdsutil",
 		"internal/controller imports internal/cmds/cmdsutil",
 		"internal/podlaunch imports github.com/spf13/cobra",
 		"internal/podlaunch imports internal/cmds/cmdsutil",
@@ -59,7 +57,6 @@ var commandImportRules = importRules{
 		"internal/podprovider imports internal/cmds/podstatus",
 		"internal/webhook imports internal/cmds/volume",
 		"internal/cmds/c8srunc imports internal/cmds/nri-image-policy",
-		"internal/cmds/ta imports internal/cmds/worker",
 		"internal/cmds/getvolume imports internal/cmds/volume",
 		"internal/cmds/getvolume imports internal/cmds/volumed",
 		"internal/cmds/nri-image-policy imports internal/cmds/getcert",

@@ -18,14 +18,12 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/readutil"
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tadecree"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
 )
 
 // AdmitInputs are what a worker document is admitted against: the customer's
 // Trust Authority pin, the worker image's measurements, and the node images the cluster
-// certifies now, as the node-images decree's --ta-pin, --worker-image and
-// --nodes carry them.
+// certifies now.
 type AdmitInputs struct {
 	TAPin       []byte
 	WorkerImage []byte
@@ -59,20 +57,6 @@ func Admit(document io.Reader, in AdmitInputs) (Admission, error) {
 		return Admission{}, err
 	}
 	return admit(document, in.TAPin, image, nodes)
-}
-
-// AdmitFirst checks a worker document and returns the first node image set of
-// a cluster of workers: the workers launched with it, alone.
-func AdmitFirst(
-	document io.Reader,
-	taPin []byte,
-	workerImage []byte,
-) (Admission, error) {
-	image, err := parseWorkerImage(workerImage)
-	if err != nil {
-		return Admission{}, err
-	}
-	return admit(document, taPin, image, refvalues.ReferenceValues{Family: image.Family})
 }
 
 // admit adds the worker image, bound to the document, to nodes. It reads the
@@ -125,7 +109,7 @@ func parseWorkerImage(measurements []byte) (refvalues.ReferenceValues, error) {
 		return image, fmt.Errorf("--worker-image: %w", err)
 	}
 	for _, pin := range image.Images {
-		if tadecree.EntryBindsLaunch(pin) {
+		if bindsLaunch(pin) {
 			return image, fmt.Errorf("--worker-image entry %q binds a launch already: pass the image's measurements as 'c8s measurements derive' writes them", pin.Name)
 		}
 	}
@@ -170,7 +154,7 @@ func checkNotAdmitted(nodes refvalues.ReferenceValues, added []remote.ImagePin) 
 	return nil
 }
 
-// admittedSet is the node image set a node-images decree accepts, under the
+// admittedSet is the node image set that admits the worker, under the
 // schema that reads its launch file digests.
 func admittedSet(nodes refvalues.ReferenceValues) ([]byte, error) {
 	set, err := refvalues.Format(nodes)
@@ -186,14 +170,18 @@ func admittedSet(nodes refvalues.ReferenceValues) ([]byte, error) {
 	if declared.SchemaVersion != launchDigestSchema {
 		return nil, fmt.Errorf("schema_version is %q, want %q, which reads launch_file_digest", declared.SchemaVersion, launchDigestSchema)
 	}
-	images, err := tadecree.NewNodeImages(set)
-	if err != nil {
-		return nil, err
-	}
-	if err := images.RequireLaunchBindings(); err != nil {
-		return nil, err
+	for _, pin := range nodes.Images {
+		if !bindsLaunch(pin) {
+			return nil, fmt.Errorf("entry %q binds no launch: give it an approver_key, launch_file or launch_file_digest", pin.Name)
+		}
 	}
 	return set, nil
+}
+
+// bindsLaunch reports whether one entry binds the launch of the guests it
+// admits: by approver key, launch file or launch file digest.
+func bindsLaunch(image remote.ImagePin) bool {
+	return image.Anchor != nil || image.LaunchFile != nil || image.LaunchFileDigest != nil
 }
 
 // checkTAPin requires the document to pin the Trust Authority the customer pins: the
@@ -238,7 +226,6 @@ func (a Admission) Report(w io.Writer) error {
 	fact("Service range", k.ServiceCIDR)
 	fact("cluster DNS", k.ClusterDNS)
 	fact("Trust Authority address", a.document.TA.Address)
-	fact("Trust Authority pin floor", a.document.TA.PinFloor)
 	fact("router TLS SAN", a.document.TLSSAN)
 	fact("router hostnames", hostnames)
 	set, err := refvalues.Parse(a.Nodes)

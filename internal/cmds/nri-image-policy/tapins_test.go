@@ -17,19 +17,8 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/audit"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
-	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
-
-// nodeTAPins is the pin source Run builds from the node's configuration.
-func nodeTAPins(t *testing.T, p *plugin) armtls.PinSource {
-	t.Helper()
-	pins, _, err := p.cfg.Allowlist.Pull.taPinSource(discardLogger())
-	if err != nil {
-		t.Fatalf("the node's Trust Authority pins: %v", err)
-	}
-	return pins
-}
 
 // A node hands its Trust Authority pin on whole, so every injected client holds Trust Authority to the
 // same launch file the node does.
@@ -42,7 +31,7 @@ func TestPrepareTAPinsRendersTheConfiguredDocument(t *testing.T) {
 		Allowlist:      allowlistConfig{Pull: pullConfig{TAMeasurementsConfig: pin}},
 	})
 
-	if err := p.prepareTAPins(nodeTAPins(t, p)); err != nil {
+	if err := p.prepareTAPins(); err != nil {
 		t.Fatalf("prepareTAPins: %v", err)
 	}
 	if want := filepath.Join(enforcerRuntimeDir, renderedTAPinsName); p.taPins != want {
@@ -74,7 +63,7 @@ func TestPrepareTAPinsStagesACopyEveryClientCanRead(t *testing.T) {
 		Allowlist:      allowlistConfig{Pull: pullConfig{TAMeasurementsConfig: rootOnly}},
 	})
 
-	if err := p.prepareTAPins(nodeTAPins(t, p)); err != nil {
+	if err := p.prepareTAPins(); err != nil {
 		t.Fatalf("prepareTAPins: %v", err)
 	}
 	staged, err := os.Stat(p.taPins)
@@ -97,7 +86,7 @@ func TestPrepareTAPinsAcceptsTheTAVMsOwnFamily(t *testing.T) {
 		Allowlist:      allowlistConfig{Pull: pullConfig{TAMeasurementsConfig: testTAPinFile(t)}},
 	})
 
-	if err := p.prepareTAPins(nodeTAPins(t, p)); err != nil {
+	if err := p.prepareTAPins(); err != nil {
 		t.Fatalf("prepareTAPins: %v", err)
 	}
 	rendered, err := refvalues.Load(p.taPins)
@@ -113,7 +102,7 @@ func TestPrepareTAPinsAcceptsTheTAVMsOwnFamily(t *testing.T) {
 // nothing to render and nothing to mount.
 func TestPrepareTAPinsEmptyWithoutInventory(t *testing.T) {
 	p := testPlugin(t, &config{Allowlist: allowlistConfig{Pull: pullConfig{TAMeasurementsConfig: testTAPinFile(t)}}})
-	if err := p.prepareTAPins(nodeTAPins(t, p)); err != nil {
+	if err := p.prepareTAPins(); err != nil {
 		t.Fatalf("prepareTAPins: %v", err)
 	}
 	if p.taPins != "" {
@@ -133,7 +122,7 @@ func TestPrepareTAPinsRefusesAPinWithoutALaunchBinding(t *testing.T) {
 		Allowlist:      allowlistConfig{Pull: pullConfig{TAMeasurementsConfig: taPinFile(t, unbound)}},
 	})
 
-	if _, _, err := p.cfg.Allowlist.Pull.taPinSource(discardLogger()); err == nil || !strings.Contains(err.Error(), "launch file") {
+	if err := p.prepareTAPins(); err == nil || !strings.Contains(err.Error(), "launch file") {
 		t.Fatalf("prepareTAPins = %v, want a launch-binding refusal", err)
 	}
 }
@@ -148,7 +137,7 @@ func TestSidecarAdjustmentMountsTheNodePolicy(t *testing.T) {
 		WorkloadClaims: workloadClaimsConfig{SocketDir: dir},
 		Allowlist:      allowlistConfig{Pull: pullConfig{TAMeasurementsConfig: testTAPinFile(t)}},
 	})
-	if err := p.prepareTAPins(nodeTAPins(t, p)); err != nil {
+	if err := p.prepareTAPins(); err != nil {
 		t.Fatalf("prepareTAPins: %v", err)
 	}
 	pod := &api.PodSandbox{
@@ -229,7 +218,7 @@ func TestSidecarAdjustmentFollowsTheMeasuredCredentialsRole(t *testing.T) {
 		Allowlist:      allowlistConfig{Base: base, Pull: pullConfig{TAMeasurementsConfig: testTAPinFile(t)}},
 	})
 	p.policy = newPolicyStore(base, localClock())
-	if err := p.prepareTAPins(nodeTAPins(t, p)); err != nil {
+	if err := p.prepareTAPins(); err != nil {
 		t.Fatalf("prepareTAPins: %v", err)
 	}
 	pod := &api.PodSandbox{
@@ -284,8 +273,8 @@ func TestSidecarAdjustmentFollowsTheMeasuredCredentialsRole(t *testing.T) {
 // policy.
 func TestSidecarAdjustmentRefusedWithoutPins(t *testing.T) {
 	p := testPlugin(t, &config{WorkloadClaims: workloadClaimsConfig{SocketDir: t.TempDir()}})
-	if _, _, err := p.cfg.Allowlist.Pull.taPinSource(discardLogger()); err == nil || !strings.Contains(err.Error(), "pins no image") {
-		t.Fatalf("the node's Trust Authority pins = %v, want the unpinned-Trust Authority refusal", err)
+	if err := p.prepareTAPins(); err == nil || !strings.Contains(err.Error(), "pins no image") {
+		t.Fatalf("prepareTAPins() = %v, want the unpinned-Trust Authority refusal", err)
 	}
 	pod := &api.PodSandbox{
 		Id:          "sandbox",
@@ -347,7 +336,7 @@ func TestCertGateTakesNoSocketDirectory(t *testing.T) {
 	p.policy = newPolicyStore(base, localClock())
 	p.mountStorage = fixedStorage(allowlist.MountMemory)
 	p.inventory = newAdmissionInventory(t.TempDir())
-	if err := p.prepareTAPins(nodeTAPins(t, p)); err != nil {
+	if err := p.prepareTAPins(); err != nil {
 		t.Fatalf("prepareTAPins: %v", err)
 	}
 	pod := certGatePod()
@@ -436,7 +425,7 @@ func TestCredentialRoleFromAComponentSetInForce(t *testing.T) {
 	p.policy.apply(componentDocument(t, &allowlist.Retirement{Deadline: allowlist.Deadline{Time: deadline}}, entry), 1)
 	p.mountStorage = fixedStorage(allowlist.MountMemory)
 	p.inventory = newAdmissionInventory(t.TempDir())
-	if err := p.prepareTAPins(nodeTAPins(t, p)); err != nil {
+	if err := p.prepareTAPins(); err != nil {
 		t.Fatalf("prepareTAPins: %v", err)
 	}
 

@@ -130,7 +130,7 @@ func TestRenderPodRuntimeBindsTAPullAndKeepsOnlyMeasuredMeshAndSignedBase(t *tes
 	root := preparePodRoot(t)
 	withExemption := strings.Replace(podFloor, "  enforce_existing: true\n",
 		"  enforce_existing: true\n  exempt_repositories:\n    kube-system: [mcr.microsoft.com/oss/kubernetes/]\n", 1)
-	writeInput(t, root, "/usr/lib/c8s/image-policy.yaml", []byte(strings.Replace(withExemption, "    timeout: 30s", "    timeout: 30s\n    interval: 7s\n    ta_pin_floor: 1\n    measure_policies: false", 1)))
+	writeInput(t, root, "/usr/lib/c8s/image-policy.yaml", []byte(strings.Replace(withExemption, "    timeout: 30s", "    timeout: 30s\n    interval: 7s\n    measure_policies: false", 1)))
 	assigned := assignedPod(t, podManifest)
 	runtime, err := RenderPodRuntime(root, assigned)
 	if err != nil {
@@ -153,9 +153,6 @@ func TestRenderPodRuntimeBindsTAPullAndKeepsOnlyMeasuredMeshAndSignedBase(t *tes
 	pull, ok := a["pull"].(map[string]any)
 	if !ok || pull["url"] != cmdsutil.TAURL(assigned.TA.Address) || pull["ta_measurements_config"] != PublicDir+"/ta.json" || pull["timeout"] != "30s" || pull["interval"] != "7s" || pull["measure_policies"] != false {
 		t.Fatalf("pod Trust Authority pull = %v", pull)
-	}
-	if floor := publishedPinFloor(t, pull); floor != assigned.TA.PinFloor {
-		t.Fatalf("pod Trust Authority pin floor = %d, want signed floor %d", floor, assigned.TA.PinFloor)
 	}
 	writeInput(t, root, floorConfigPath, runtime.Policy)
 	mesh := stagedMeshPolicy(t, root)

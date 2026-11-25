@@ -758,12 +758,12 @@ func writeAndLoad(t *testing.T, body string) *config {
 	return cfg
 }
 
-// An unreadable pin document fails the node's pin source rather than
-// silently unpinning Trust Authority.
-func TestTheNodePinSourceRejectsAnUnreadablePin(t *testing.T) {
+// An unreadable pin document fails the pull-client build rather than silently
+// unpinning Trust Authority.
+func TestAllowlistPullHTTPClientRejectsAnUnreadablePin(t *testing.T) {
 	cfg := validConfig()
 	cfg.Allowlist.Pull.TAMeasurementsConfig = "missing-file"
-	if _, _, err := cfg.Allowlist.Pull.taPinSource(discardLogger()); err == nil {
+	if _, err := allowlistPullHTTPClient(cfg.Allowlist.Pull, testClusterDNS); err == nil {
 		t.Fatal("an unreadable Trust Authority pin was accepted")
 	}
 }

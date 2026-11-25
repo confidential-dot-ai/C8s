@@ -161,9 +161,6 @@ type pullConfig struct {
 	Timeout              time.Duration `yaml:"timeout"`                // per-request timeout; > 0 required when a Trust Authority is named
 	AttestationApiURL    string        `yaml:"attestation_api_url"`    // required for https pull
 	TAMeasurementsConfig string        `yaml:"ta_measurements_config"` // the Trust Authority pin document, every entry bound to the launch file Trust Authority runs on
-	// TAPinFloor is the lowest cluster version this node takes a Trust Authority pin
-	// decree at, from the launch document it booted.
-	TAPinFloor uint64 `yaml:"ta_pin_floor"`
 	// MeasurePolicies extends RTMR[3] (TDX) with each pulled policy before
 	// applying it. Off by default: verifiers on attestation-go predating
 	// runtime extensions, and flat RTMR[3] pins, still require the bare

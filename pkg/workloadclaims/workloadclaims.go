@@ -98,11 +98,6 @@ const (
 // itself, and keeps its own policy flag.
 const TAPinsPath = "/run/c8s/ta-pins.json"
 
-// RouterTAPinsPath is where the router's route-manifest poller reads the same
-// policy. The router runs on the upstream identity, so the credential
-// clients' path would hand it their trust root.
-const RouterTAPinsPath = "/run/c8s/router-ta-pins.json"
-
 // AttestationAPISocket is the node's own attestation-api as an injected
 // credential client sees it: the socket in the directory the NRI plugin
 // mounts. Compiled for the same reason as the paths above — the verifier

@@ -43,11 +43,7 @@ func TestTAHTTPClientRejectsPlainHTTP(t *testing.T) {
 	// A non-https --ta-url must be refused, not quietly served over a client
 	// that skips armTLS attestation of Trust Authority.
 	for _, scheme := range []string{"http://ta:8443", "ta:8443", "tcp://ta:8443"} {
-		cfg := config{
-			TAURL:             scheme,
-			AttestationApiURL: "http://attestation-api:8400",
-		}
-		if _, err := taHTTPClient(t.Context(), cfg); err == nil {
+		if _, err := taHTTPClient(config{TAURL: scheme, AttestationApiURL: "http://attestation-api:8400"}); err == nil {
 			t.Fatalf("taHTTPClient(%q) succeeded, want error for non-https scheme", scheme)
 		}
 	}
@@ -63,7 +59,7 @@ func TestRunRequiresATAEndpoint(t *testing.T) {
 }
 
 func TestTAHTTPClientUsesARMTLSForHTTPS(t *testing.T) {
-	client, err := taHTTPClient(t.Context(), config{
+	client, err := taHTTPClient(config{
 		TAURL:                  "https://ta:8443",
 		MeasurementsConfigJSON: testTAPin,
 		AttestationApiURL:      "http://attestation-api:8400",
@@ -74,13 +70,15 @@ func TestTAHTTPClientUsesARMTLSForHTTPS(t *testing.T) {
 	if client == http.DefaultClient {
 		t.Fatal("client = http.DefaultClient, want armTLS client")
 	}
-	// The client is the shared armTLS shape over a transport it rebuilds as
-	// the node's pins move; a plain one would verify Trust Authority by the system roots.
-	if _, plain := client.Transport.(*http.Transport); plain {
-		t.Fatalf("transport = %T, want the armTLS pin-following round-tripper", client.Transport)
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport = %T, want *http.Transport", client.Transport)
 	}
-	if armTLSClient := armtls.HTTPClient(nil); client.Timeout != armTLSClient.Timeout {
-		t.Fatalf("client timeout = %v, want the armTLS client shape's %v", client.Timeout, armTLSClient.Timeout)
+	if transport.TLSClientConfig == nil {
+		t.Fatal("TLSClientConfig is nil")
+	}
+	if !transport.TLSClientConfig.InsecureSkipVerify {
+		t.Fatal("TLSClientConfig.InsecureSkipVerify = false, want armTLS verification path")
 	}
 }
 
@@ -819,7 +817,7 @@ func TestBuildDiscoveryDocumentRejectsUnparseableCert(t *testing.T) {
 }
 
 func TestNewTAClientInvalidURL(t *testing.T) {
-	if _, _, err := newTAClient(t.Context(), config{TAURL: "://bad"}); err == nil {
+	if _, _, err := newTAClient(config{TAURL: "://bad"}); err == nil {
 		t.Fatal("newTAClient succeeded, want error for invalid URL")
 	}
 }

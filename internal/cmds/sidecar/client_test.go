@@ -1,6 +1,7 @@
 package sidecar
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/x509"
@@ -12,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/secrets"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
@@ -27,12 +27,8 @@ func write(t *testing.T, path string, b []byte) {
 
 // testPins name the guest the Trust Authority this sidecar talks to must be running,
 // which armTLS requires of every verifying client.
-func testPins() armtls.PinSource {
-	set, err := refvalues.Parse([]byte(testutil.TAPinDocument(testutil.TestMeasurement, testutil.TALaunchFile)))
-	if err != nil {
-		panic(err)
-	}
-	return armtls.FixedPins(set)
+func testPins() armtls.Pins {
+	return armtls.Pins{Measurements: [][]byte{bytes.Repeat([]byte{0x11}, armtls.SNPMeasurementSize)}}
 }
 
 func testConfig(url string) Config {

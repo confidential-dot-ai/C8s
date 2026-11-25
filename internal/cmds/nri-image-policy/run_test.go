@@ -27,7 +27,6 @@ import (
 	ctrdresolver "github.com/confidential-dot-ai/confidential-kubernetes/internal/containerd"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlistclient"
-	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
@@ -566,16 +565,11 @@ func holdNRISocket(t *testing.T) {
 
 func TestAllowlistPullHTTPClient_ValidPin(t *testing.T) {
 	timeout := 7 * time.Second
-	pulled := pullConfig{
+	client, err := allowlistPullHTTPClient(pullConfig{
 		TAMeasurementsConfig: testTAPinFile(t),
 		AttestationApiURL:    "http://127.0.0.1:30840",
 		Timeout:              timeout,
-	}
-	set, err := pulled.policySet()
-	if err != nil {
-		t.Fatal(err)
-	}
-	client, err := allowlistPullHTTPClient(pulled, armtls.FixedPins(set), testClusterDNS)
+	}, testClusterDNS)
 	if err != nil {
 		t.Fatalf("allowlistPullHTTPClient: %v", err)
 	}
@@ -585,12 +579,12 @@ func TestAllowlistPullHTTPClient_ValidPin(t *testing.T) {
 }
 
 // The plugin pulls its allowlist from a pinned Trust Authority: with no pin document the
-// node has no pin source, so no client is built against any attested peer.
-func TestTheNodePinSourceRefusesWithoutPins(t *testing.T) {
-	_, _, err := pullConfig{
+// client is refused rather than built against any attested peer.
+func TestAllowlistPullHTTPClient_RefusesWithoutPins(t *testing.T) {
+	_, err := allowlistPullHTTPClient(pullConfig{
 		AttestationApiURL: "http://127.0.0.1:30840",
 		Timeout:           time.Second,
-	}.taPinSource(discardLogger())
+	}, testClusterDNS)
 	if !errors.Is(err, cmdsutil.ErrTAPinUnbound) {
 		t.Fatalf("err = %v, want errors.Is cmdsutil.ErrTAPinUnbound", err)
 	}
@@ -872,12 +866,12 @@ func TestStartHealthServer_InvalidAddr(t *testing.T) {
 	}
 }
 
-func TestTheNodePinSourceRefusesAnInvalidPin(t *testing.T) {
-	_, _, err := pullConfig{
+func TestAllowlistPullHTTPClient_InvalidPin(t *testing.T) {
+	_, err := allowlistPullHTTPClient(pullConfig{
 		TAMeasurementsConfig: taPinFile(t, `{"schema_version":"1","tee":"sev-snp"}`),
 		AttestationApiURL:    "http://localhost:30840",
 		Timeout:              time.Second,
-	}.taPinSource(discardLogger())
+	}, testClusterDNS)
 	if err == nil {
 		t.Fatal("expected error for an unparseable Trust Authority pin")
 	}

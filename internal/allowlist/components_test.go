@@ -16,7 +16,7 @@ const componentDocument = `{"schema":"c8s.allowlist/v1","workloads":{"api":{"con
 	`{"digest":"` + digestB + `","role":"mesh","command":{"policy":"exact","argv":["/app/c8s","armtls-mesh"]},` +
 	`"args":{"policy":"any"},"mounts":{"policy":"exact","rules":[{"destination":"/run/c8s","kind":"emptyDir","source":"c8s-run"}]}}]}}}}}`
 
-func writeComponentDocument(t *testing.T, allowlist *Handle) *pkgallowlist.Allowlist {
+func writeComponentDocument(t *testing.T, allowlist *Store) *pkgallowlist.Allowlist {
 	t.Helper()
 	al, err := pkgallowlist.ParseJSON([]byte(componentDocument))
 	if err != nil {
@@ -36,7 +36,7 @@ func TestStoreCarriesComponentSets(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	allowlist := store.Local()
+	allowlist := &store
 	if err := allowlist.StartJournal(); err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +86,7 @@ func TestSeedWorkloadsKeepsComponentSets(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	allowlist := store.Local()
+	allowlist := &store
 	if err := allowlist.StartJournal(); err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +124,8 @@ const routerComponentDocument = `{"schema":"c8s.allowlist/v1","workloads":{"api"
 // declaration is the write that granted it, and a later write serving the same
 // set grants nothing.
 func TestAComponentSetEntryGrantsHostPrivilege(t *testing.T) {
-	store, allowlist := openJournaledStore(t)
+	store := openJournaled(t)
+	allowlist := store
 	write := func(document string) {
 		t.Helper()
 		al, err := pkgallowlist.ParseJSON([]byte(document))
