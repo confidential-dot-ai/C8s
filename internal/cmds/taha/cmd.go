@@ -36,13 +36,13 @@ func NewCmd() *cobra.Command {
 		Use:   "ha",
 		Short: "Operate a Trust Authority replica set",
 		Long: `Operate a Trust Authority replica set (docs/ta-ha.md): run its genesis, read its head,
-accept or evict Trust Authority builds, prepare and submit a signed policy entry, hand it
+accept or evict Trust Authority builds, prepare, submit or observe a signed policy entry, hand it
 the store credential and settle a fork.
 
 Each replica is reached over the attested connection the other operator
 commands use, pinned with --image-policy-file. --endpoints is the set's
 <host>:<port> list in slot order. The CLI records per cluster (--state-dir)
-the genesis and the last head a write was answered done for, and refuses a
+the genesis and the last confirmed head it acknowledged, and refuses a
 replica serving a chain without that head.`,
 		SilenceUsage: true,
 	}
@@ -51,8 +51,8 @@ replica serving a chain without that head.`,
 	pf.StringSliceVar(&o.endpoints, "endpoints", nil, "the replica set's <host>:<port> endpoints in slot order, in place of --url")
 	pf.StringVar(&o.stateDir, "state-dir", "", "directory of the per-cluster record (default c8s/ta-ha in the user config directory: $XDG_CONFIG_HOME on Linux)")
 	pf.DurationVar(&o.retryFor, "retry-for", time.Minute, "how long accept-image and raise-floor re-read and retry a write another write beat")
-	pf.StringVar(&o.genesisPin, "genesis", "", "the genesis hash a write, prepare-policy or submit-policy requires of the policy log; a write or prepare-policy records it when this CLI has no record of the cluster (required for prepare-policy and submit-policy)")
-	cmd.AddCommand(newStatusCmd(o), newGenesisCmd(o), newAcceptImageCmd(o), newRaiseFloorCmd(o), newStoreCredentialCmd(o), newResolveCmd(o), newPreparePolicyCmd(o), newSubmitPolicyCmd(o))
+	pf.StringVar(&o.genesisPin, "genesis", "", "the required genesis hash; mandatory for prepare-policy, submit-policy and observe-policy, including with an existing local record")
+	cmd.AddCommand(newStatusCmd(o), newGenesisCmd(o), newAcceptImageCmd(o), newRaiseFloorCmd(o), newStoreCredentialCmd(o), newResolveCmd(o), newPreparePolicyCmd(o), newSubmitPolicyCmd(o), newObservePolicyCmd(o))
 	for _, c := range operatorCommands {
 		cmd.AddCommand(c(o))
 	}
