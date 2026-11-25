@@ -41,8 +41,9 @@ const (
 	entryDomain = "c8s-cds-chain-entry-v1\x00"
 )
 
-// Hash identifies an entry: SHA-256 over its signed body. The signature is
-// outside it, so a re-encoded signature names the same entry.
+// Hash identifies an entry: SHA-256 over the entry-domain prefix and signed
+// body. The signature is outside it, so a re-encoded signature names the same
+// entry.
 type Hash [32]byte
 
 func (h Hash) String() string               { return hex.EncodeToString(h[:]) }
