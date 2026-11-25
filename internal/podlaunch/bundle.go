@@ -43,6 +43,8 @@ type PodBundleOptions struct {
 	LaunchKeyPath     string
 	TAAddress         string
 	TAImagePolicyPath string
+	// CDSChain, "<seq>:<hash>", pins a Trust Authority replica set by an entry of its chain.
+	CDSChain string
 }
 
 // NewPodBundle writes a signed role-pod document. It names no pod: the guest
@@ -56,7 +58,11 @@ func NewPodBundle(opts PodBundleOptions) (err error) {
 	if err != nil {
 		return fmt.Errorf("--cds-image-policy-file: %w", err)
 	}
-	ta := cmdsutil.TA{Address: opts.TAAddress, Measurements: string(taPolicy)}
+	ta := cmdsutil.TA{
+		Address:      opts.TAAddress,
+		Measurements: string(taPolicy),
+		Chain:        opts.CDSChain,
+	}
 	if _, err := ta.Parse(); err != nil {
 		return err
 	}

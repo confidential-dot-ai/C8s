@@ -53,6 +53,7 @@ launch-file-bound --ta-image-policy-file.`,
 	f.StringVar(&opts.TAAddress, "ta-address", "", "external Trust Authority host:port")
 	cmdsutil.AliasFlag(f, "ta-address", "cds-address")
 	f.StringVar(&opts.TAImagePolicyPath, "ta-image-policy-file", "", "measurements document binding the external Trust Authority image to its exact launch file")
+	f.StringVar(&opts.CDSChain, "cds-chain", "", "<seq>:<hash> of one entry of the Trust Authority replica set's chain the pod CVM pins (docs/ta-ha.md)")
 	cmdsutil.AliasFlag(f, "ta-image-policy-file", "cds-image-policy-file")
 	cmdsutil.RequireFlags(cmd, "out", "cluster-id", "image-manifest", "name", "ta-address", "ta-image-policy-file")
 	return cmd

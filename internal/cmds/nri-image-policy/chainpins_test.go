@@ -155,7 +155,7 @@ func slowChainPins(t *testing.T, url string, timeout time.Duration) *chainPins {
 // at the first timeout and starting from genesis again on the next pull.
 func TestALongChainIsReadWholeByThePullLoop(t *testing.T) {
 	srv, served := slowChain(t, 10, 40*time.Millisecond)
-	slowChainPins(t, srv.URL, 200*time.Millisecond).refresher()(context.Background())
+	slowChainPins(t, srv.URL, 200*time.Millisecond).createRefreshFn()(context.Background())
 	if got := served.Load(); got != 11 {
 		t.Fatalf("the follow read %d of 11 pages", got)
 	}
@@ -167,7 +167,7 @@ func TestAChainRequestTimesOut(t *testing.T) {
 	srv, _ := slowChain(t, 1, -1)
 	done := make(chan struct{})
 	go func() {
-		slowChainPins(t, srv.URL, 200*time.Millisecond).refresher()(context.Background())
+		slowChainPins(t, srv.URL, 200*time.Millisecond).createRefreshFn()(context.Background())
 		close(done)
 	}()
 	select {

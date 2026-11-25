@@ -19,6 +19,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdschain"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/podlaunch"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/certutil"
@@ -36,16 +37,19 @@ const (
 // Config is trusted operator configuration. Paths name mounted files, never
 // tenant annotations. LoadConfig reads their contents once before registration.
 type Config struct {
-	ProviderID                 string   `json:"providerID"`
-	NodeName                   string   `json:"nodeName"`
-	Namespace                  string   `json:"namespace"`
-	CloudURL                   string   `json:"cloudURL"`
-	CloudTokenFile             string   `json:"cloudTokenFile"`
-	Image                      string   `json:"image"`
-	ImageManifestFile          string   `json:"imageManifestFile"`
-	LaunchKeyFile              string   `json:"launchKeyFile"`
-	TAAddress                  string   `json:"cdsAddress"`
-	TAImagePolicyFile          string   `json:"cdsImagePolicyFile"`
+	ProviderID        string `json:"providerID"`
+	NodeName          string `json:"nodeName"`
+	Namespace         string `json:"namespace"`
+	CloudURL          string `json:"cloudURL"`
+	CloudTokenFile    string `json:"cloudTokenFile"`
+	Image             string `json:"image"`
+	ImageManifestFile string `json:"imageManifestFile"`
+	LaunchKeyFile     string `json:"launchKeyFile"`
+	TAAddress         string `json:"cdsAddress"`
+	TAImagePolicyFile string `json:"cdsImagePolicyFile"`
+	// CDSChain, "<seq>:<hash>", pins a Trust Authority replica set by an entry of its
+	// chain; every pod CVM's document carries it.
+	CDSChain                   string   `json:"cdsChain,omitempty"`
 	WorkloadsFile              string   `json:"workloadsFile"`
 	ClusterID                  string   `json:"clusterID"`
 	Size                       string   `json:"size"`
@@ -134,6 +138,11 @@ func (c *Config) validate() error {
 	if _, _, err := cmdsutil.SplitTAAddress(c.TAAddress); err != nil {
 		return fmt.Errorf("cdsAddress %w", err)
 	}
+	if c.CDSChain != "" {
+		if _, err := cdschain.ParsePin(c.CDSChain); err != nil {
+			return fmt.Errorf("cdsChain: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -172,7 +181,7 @@ func (c *Config) loadTrust() error {
 	if _, err := cmdsutil.TALaunchFile(pins); err != nil {
 		return fmt.Errorf("the Trust Authority image policy: %w", err)
 	}
-	c.ta = cmdsutil.TA{Address: c.TAAddress, Measurements: string(taPolicy)}
+	c.ta = cmdsutil.TA{Address: c.TAAddress, Measurements: string(taPolicy), Chain: c.CDSChain}
 	workloads, err := readFile(c.WorkloadsFile)
 	if err != nil {
 		return err

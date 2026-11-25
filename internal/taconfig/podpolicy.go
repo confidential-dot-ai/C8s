@@ -40,6 +40,12 @@ func ValidatePodNodeAuthorities(pods, nodes []remote.ImagePin) error {
 	return distinctPodAuthorities(pods, authorities)
 }
 
+// ValidatePodOperatorAuthorities refuses operator keys that name a Pod launch
+// key: a replica set's operator-keys entry is held to the launch file's rule.
+func ValidatePodOperatorAuthorities(pods []remote.ImagePin, keys []*ecdsa.PublicKey) error {
+	return distinctPodAuthorities(pods, keys)
+}
+
 func distinctPodAuthorities(pods []remote.ImagePin, authorities []*ecdsa.PublicKey) error {
 	for _, pod := range pods {
 		key, err := runtimemeasure.ParsePublicKeyPEM(pod.Anchor)
