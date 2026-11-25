@@ -322,7 +322,7 @@ func TestWorkerChartRouterReadsLaunchFiles(t *testing.T) {
 	assertContainerMount(t, acme, "c8s-certs", "/etc/c8s/certs")
 
 	// Discovery must report the mode the front door serves, never a
-	// build-time cds while the launch file selects acme.
+	// build-time ta while the launch file selects acme.
 	cert, ok := findContainer(renderedDeploymentInitContainers(t, out, "c8s-router"), "c8s-cert")
 	if !ok {
 		t.Fatal("router certificate sidecar missing")
@@ -402,7 +402,7 @@ func TestWorkerChartRouterRequestsWorkloadIdentity(t *testing.T) {
 
 // The router's credential clients hold the measured credentials role, so the
 // enforcer hands them the node's Trust Authority endpoint, pins and attestation-api, and
-// refuses an argument naming another (cmdsutil.ResolveCDSEndpoint,
+// refuses an argument naming another (cmdsutil.ResolveTAURL,
 // cmdsutil.ResolveTAPins, cmdsutil.RequireNodeVerifier). The chart passes no
 // endpoint and no pins and names the node's own verifier.
 func TestWorkerChartRouterTakesItsTAFromTheNode(t *testing.T) {

@@ -14,9 +14,9 @@ const digestB = "sha256:" + "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 const digestC = "sha256:" + "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 
 func TestParseJSON_Minimal(t *testing.T) {
-	al := mustParse(t, `{"schema":"c8s.allowlist/v1","workloads":{"cds":{"containers":[
+	al := mustParse(t, `{"schema":"c8s.allowlist/v1","workloads":{"ta":{"containers":[
 		{"digest":"`+digestA+`","command":{"policy":"any"},"args":{"policy":"any"}}]}}}`)
-	c := al.Workloads["cds"].Containers[0]
+	c := al.Workloads["ta"].Containers[0]
 	if c.Digest.String() != digestA || !c.AnyArgv() {
 		t.Fatalf("entry not parsed: %#v", al.Workloads)
 	}
@@ -37,7 +37,7 @@ func TestParseJSON_RejectsUnknownFields(t *testing.T) {
 
 // A pre-unification digests map is an unknown field on the write path.
 func TestParseJSON_RejectsLegacyDigestsField(t *testing.T) {
-	doc := `{"schema":"c8s.allowlist/v1","digests":{"` + digestA + `":"cds"},"workloads":{}}`
+	doc := `{"schema":"c8s.allowlist/v1","digests":{"` + digestA + `":"ta"},"workloads":{}}`
 	if _, err := ParseJSON([]byte(doc)); err == nil {
 		t.Fatal("expected the legacy digests field to be rejected")
 	}
@@ -117,13 +117,13 @@ func TestDigestEntryName(t *testing.T) {
 		t.Fatal(err)
 	}
 	for image, want := range map[string]string{
-		"ghcr.io/x/coredns:v1":                          "coredns-abcdef000000",
-		"ghcr.io/confidential-dot-ai/cds@" + d.String(): "cds-abcdef000000",
-		"registry:5000/team/app":                        "app-abcdef000000",
-		"busybox":                                       "busybox-abcdef000000",
-		"":                                              "image-abcdef000000",
-		"ghcr.io/x/not a name!":                         "image-abcdef000000",
-		"ghcr.io/x/" + strings.Repeat("y", 60):          strings.Repeat("y", 50) + "-abcdef000000",
+		"ghcr.io/x/coredns:v1":                         "coredns-abcdef000000",
+		"ghcr.io/confidential-dot-ai/ta@" + d.String(): "ta-abcdef000000",
+		"registry:5000/team/app":                       "app-abcdef000000",
+		"busybox":                                      "busybox-abcdef000000",
+		"":                                             "image-abcdef000000",
+		"ghcr.io/x/not a name!":                        "image-abcdef000000",
+		"ghcr.io/x/" + strings.Repeat("y", 60):         strings.Repeat("y", 50) + "-abcdef000000",
 	} {
 		if got := DigestEntryName(d, image); got != want {
 			t.Errorf("DigestEntryName(%q) = %q, want %q", image, got, want)

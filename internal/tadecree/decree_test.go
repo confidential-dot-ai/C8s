@@ -37,7 +37,7 @@ func taImages(t *testing.T, digest byte) []byte {
 	document, err := refvalues.Format(refvalues.ReferenceValues{
 		Family: teetypes.FamilySNP,
 		Images: []remote.ImagePin{{
-			Name:       "cds-smp4",
+			Name:       "ta-smp4",
 			Digest:     bytes.Repeat([]byte{digest}, refvalues.DigestSize),
 			LaunchFile: []byte(launchFile),
 		}},

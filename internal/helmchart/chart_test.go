@@ -598,7 +598,7 @@ func TestChartLeavesTheInjectedTAEndpointToTheNode(t *testing.T) {
 		if err := sigsyaml.Unmarshal(doc, &meta); err != nil {
 			t.Fatalf("decode rendered document: %v", err)
 		}
-		if strings.Contains(string(doc), baseCDSAddress) && meta.Metadata.Name != "c8s-measurements" {
+		if strings.Contains(string(doc), baseTAAddress) && meta.Metadata.Name != "c8s-measurements" {
 			t.Fatalf("%s %q names the Trust Authority address; only the ConfigMap the installer mounts may\n%s", meta.Kind, meta.Metadata.Name, doc)
 		}
 		return false
@@ -1647,8 +1647,8 @@ func TestChartRouterRoutePublication(t *testing.T) {
 	}
 }
 
-// TestChartRouterTAPins pins that ta-attest and allowlist-proxy verify the
-// same Trust Authority: both take their pins from router.cdsPinArgs.
+// TestChartRouterTAPins pins the pin file ta-attest holds its Trust Authority
+// to.
 func TestChartRouterTAPins(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -1718,7 +1718,7 @@ func TestChartRefusesUnpinnedTA(t *testing.T) {
 		{name: "ta.address and ta.measurementsConfig", args: baseTAPolicy(t)},
 		{
 			name: "a Trust Authority named by a DNS name",
-			args: []string{"--set-string", "ta.address=cds.example.com:8443", "--set-file", "ta.measurementsConfig=" + baseTAPin(t)},
+			args: []string{"--set-string", "ta.address=ta.example.com:8443", "--set-file", "ta.measurementsConfig=" + baseTAPin(t)},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1735,11 +1735,11 @@ func TestChartRefusesUnpinnedTA(t *testing.T) {
 		want string
 	}{
 		{name: "neither", want: "ta_pins_required"},
-		{name: "no pin", args: []string{"--set-string", "ta.address=" + baseCDSAddress}, want: "ta_pins_required"},
+		{name: "no pin", args: []string{"--set-string", "ta.address=" + baseTAAddress}, want: "ta_pins_required"},
 		{name: "no address", args: pin, want: "ta_address_required"},
 		{name: "no port", args: append(pin, "--set-string", "ta.address=10.9.9.9"), want: "ta_address_required"},
 		{name: "an uppercase name", args: append(pin, "--set-string", "ta.address=TA.example.com:8443"), want: "ta_address_required"},
-		{name: "a URL, not an endpoint", args: append(pin, "--set-string", "ta.address=https://cds.example.com:8443"), want: "ta_address_required"},
+		{name: "a URL, not an endpoint", args: append(pin, "--set-string", "ta.address=https://ta.example.com:8443"), want: "ta_address_required"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out, err := helmTemplateUnpinned(t, cloudChartDir, tc.args...)
@@ -2230,9 +2230,9 @@ func TestRouterDiscoveryRequiresAdvertisedMeshCA(t *testing.T) {
 		"--discovery-mesh-ca-url=/.well-known/mesh-ca.pem")
 }
 
-// TestRouterGetCertWritesMeshCABundle pins the mechanism that replaced the
-// c8s-cds-mesh-ca ConfigMap mount: the c8s-cert sidecar writes the mesh CA
-// bundle to /etc/c8s/certs/ca.crt (the c8s-certs volume that already holds the leaf).
+// TestRouterGetCertWritesMeshCABundle pins that the c8s-cert sidecar writes
+// the mesh CA bundle to /etc/c8s/certs/ca.crt (the c8s-certs volume that
+// already holds the leaf).
 func TestRouterGetCertWritesMeshCABundle(t *testing.T) {
 	t.Parallel()
 	out, err := helmTemplateRouter(t)
@@ -2472,13 +2472,13 @@ func hostPathVolume(t *testing.T, ds appsv1.DaemonSet, name string) string {
 const baseNRIDigest = "sha256:aaaa000000000000000000000000000000000000000000000000000000000000"
 
 // baseTADigest is the Trust Authority launch digest testdata/ta-pin.json carries, and
-// baseCDSAddress the endpoint the shared harness points a release at: the
+// baseTAAddress the endpoint the shared harness points a release at: the
 // chart refuses a release naming no Trust Authority (kind=ta_pins_required,
 // kind=ta_address_required).
 var baseTADigest = strings.Repeat("ab", armtls.SNPMeasurementSize)
 
 const (
-	baseCDSAddress = "10.9.9.9:8443"
+	baseTAAddress = "10.9.9.9:8443"
 	// baseTAPinPath is that Trust Authority as the pin document an operator passes: the
 	// image and the launch file its VM proves, schema 2 as every Trust Authority pin is.
 	baseTAPinPath = "../testdata/ta-pin.json"
@@ -2510,7 +2510,7 @@ func baseTAPinDocument(t *testing.T) string {
 // document, which is how every non-baked release names its Trust Authority.
 func baseTAPolicy(t *testing.T) []string {
 	t.Helper()
-	return []string{"--set-string", "ta.address=" + baseCDSAddress, "--set-file", "ta.measurementsConfig=" + baseTAPin(t)}
+	return []string{"--set-string", "ta.address=" + baseTAAddress, "--set-file", "ta.measurementsConfig=" + baseTAPin(t)}
 }
 
 // helmOutput keeps warnings outside the YAML. Failed commands keep diagnostics.
@@ -3970,7 +3970,7 @@ func bootConfigAsStagedOnANode(t *testing.T, body []byte) []byte {
 		t.Fatalf("boot config names no Trust Authority address file\n%s", body)
 	}
 	path := filepath.Join(t.TempDir(), "ta-address")
-	if err := os.WriteFile(path, []byte(baseCDSAddress), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(baseTAAddress), 0o600); err != nil {
 		t.Fatalf("stage the Trust Authority address file: %v", err)
 	}
 	staged := strings.Replace(string(body), named, path, 1)

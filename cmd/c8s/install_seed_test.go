@@ -25,7 +25,7 @@ import (
 // chartTAValues point a rendered release at a placeholder Trust Authority outside the
 // cluster: the chart refuses a release that names none.
 func chartTAValues() map[string]any {
-	pin := `{"schema_version":"2","tee":"sev-snp","measurements":[{"name":"cds","measurement":"` + strings.Repeat("ab", 48) + `","launch_file":"clusterID: test\n"}]}`
+	pin := `{"schema_version":"2","tee":"sev-snp","measurements":[{"name":"ta","measurement":"` + strings.Repeat("ab", 48) + `","launch_file":"clusterID: test\n"}]}`
 	return map[string]any{
 		"ta": map[string]any{
 			"address":            "10.9.9.9:8443",

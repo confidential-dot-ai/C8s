@@ -98,8 +98,8 @@ func testAllowlistApp(t *testing.T) (http.Handler, *readiness.Checker, *operator
 	return allowlistTestRouter(wh, checker.Ready), &checker, signer
 }
 
-// allowlistTestRouter mounts the allowlist routes on a chi router, as the cds
-// router serves them.
+// allowlistTestRouter mounts the allowlist routes on a chi router, as the Trust
+// Authority router serves them.
 func allowlistTestRouter(wh allowlist.Handler, ready attestation.ReadinessFunc) http.Handler {
 	r := chi.NewRouter()
 	r.Get("/readyz", attestation.HandleReadyz(ready))

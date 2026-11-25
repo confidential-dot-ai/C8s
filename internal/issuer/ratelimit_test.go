@@ -150,7 +150,7 @@ func TestRateLimitMiddlewareHandlesPortlessRemoteAddr(t *testing.T) {
 	}))
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.RemoteAddr = "/run/cds.sock" // no host:port
+	req.RemoteAddr = "/run/ta.sock" // no host:port
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("code = %d, want 200", rec.Code)
@@ -283,7 +283,7 @@ func TestClientPrefixChargesAnIPv6PrefixOnce(t *testing.T) {
 		{"another address in that /64", "2001:db8:1:2:aaaa:bbbb:cccc:dddd", "2001:db8:1:2::/64"},
 		{"the neighbouring /64", "2001:db8:1:3::1", "2001:db8:1:3::/64"},
 		{"IPv4 mapped into IPv6", "::ffff:203.0.113.7", "203.0.113.7"},
-		{"not an address", "/run/cds.sock", "/run/cds.sock"},
+		{"not an address", "/run/ta.sock", "/run/ta.sock"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := ClientPrefix(tc.addr); got != tc.want {

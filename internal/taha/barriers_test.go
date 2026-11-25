@@ -48,7 +48,7 @@ func TestABarrierTheStateMachineIsSlowOverIsNoRefusal(t *testing.T) {
 	const term = 7
 	var refused barrierRefusals
 
-	refused.record(term, errors.New("cds-ha: this leader's barrier did not pass within a read"))
+	refused.record(term, errors.New("ta-ha: this leader's barrier did not pass within a read"))
 
 	if refusedFor := refused.refusedFor(term, time.Now()); refusedFor != 0 {
 		t.Errorf("a barrier that did not finish counts as refused for %s", refusedFor)

@@ -36,7 +36,7 @@ func (m mapSource) Get(_ context.Context, name string) ([]byte, error) {
 	return []byte(v), nil
 }
 
-// cds stands in for one Trust Authority replica: its mesh CA and a broker certificate.
+// ta stands in for one Trust Authority replica: its mesh CA and a broker certificate.
 type ta struct {
 	mesh  *issuer.MeshCA
 	key   *ecdsa.PrivateKey

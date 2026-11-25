@@ -18,7 +18,7 @@ const NextTAImage = "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdc
 // document binding its one image, at measurement, to the exact launch file
 // that Trust Authority runs on.
 func TAPinDocument(measurement, launchFile string) string {
-	return `{"schema_version":"2","tee":"sev-snp","measurements":[{"name":"cds","measurement":"` +
+	return `{"schema_version":"2","tee":"sev-snp","measurements":[{"name":"ta","measurement":"` +
 		measurement + `","launch_file":` + strconv.Quote(launchFile) + `}]}`
 }
 

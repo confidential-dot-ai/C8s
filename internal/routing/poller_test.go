@@ -167,9 +167,9 @@ func TestW6TAKeySourceWithoutKeys(t *testing.T) {
 }
 
 func TestNewTAClientRejectsNonOrigins(t *testing.T) {
-	for _, base := range []string{"http://cds:8443", "https://cds:8443/x", "https://u@cds", "cds:8443", "https://cds?q"} {
+	for _, base := range []string{"http://ta:8443", "https://ta:8443/x", "https://u@ta", "ta:8443", "https://ta?q"} {
 		if _, err := NewTAClient(base, http.DefaultClient); err == nil {
-			t.Errorf("NewCDSClient(%q) = nil error, want one", base)
+			t.Errorf("NewTAClient(%q) = nil error, want one", base)
 		}
 	}
 }

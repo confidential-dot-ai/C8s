@@ -18,7 +18,7 @@ func podBundleOptions(t *testing.T) PodBundleOptions {
 		ClusterID:         "cluster-one",
 		ManifestPath:      writeManifest(t, "tdx"),
 		NodeName:          "p-1",
-		TAAddress:         "cds.example.org:8443",
+		TAAddress:         "ta.example.org:8443",
 		TAImagePolicyPath: writePodTAPin(t),
 	}
 }

@@ -63,10 +63,10 @@ func TestPinsBindOneLaunchFile(t *testing.T) {
 		name   string
 		images []remote.ImagePin
 	}{
-		{"no launch file", []remote.ImagePin{{Name: "cds", Digest: register(0x11)}}},
+		{"no launch file", []remote.ImagePin{{Name: "ta", Digest: register(0x11)}}},
 		{"two launch files", []remote.ImagePin{
-			{Name: "cds-smp2", Digest: register(0x11), LaunchFile: []byte(launchFile)},
-			{Name: "cds-smp4", Digest: register(0x22), LaunchFile: []byte("other")},
+			{Name: "ta-smp2", Digest: register(0x11), LaunchFile: []byte(launchFile)},
+			{Name: "ta-smp4", Digest: register(0x22), LaunchFile: []byte("other")},
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

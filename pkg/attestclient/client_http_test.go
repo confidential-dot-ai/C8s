@@ -198,7 +198,7 @@ func TestGenerateEvidenceSuccess(t *testing.T) {
 	defer srv.Close()
 
 	// httpClient is shared by GenerateEvidenceContext's inner remote.
-	c := NewClientWithHTTP("http://cds.invalid", srv.Client())
+	c := NewClientWithHTTP("http://ta.invalid", srv.Client())
 	resp, err := c.GenerateEvidenceContext(context.Background(), srv.URL, []byte("report-data"))
 	if err != nil {
 		t.Fatalf("GenerateEvidenceContext: %v", err)
@@ -209,7 +209,7 @@ func TestGenerateEvidenceSuccess(t *testing.T) {
 }
 
 func TestGenerateEvidenceError(t *testing.T) {
-	c := NewClient("http://cds.invalid")
+	c := NewClient("http://ta.invalid")
 	if _, err := c.GenerateEvidenceContext(context.Background(), unreachableURL, []byte("x")); err == nil {
 		t.Fatal("expected error from unreachable attestation-api")
 	}
@@ -415,7 +415,7 @@ func TestMakeSNPARMTLSAttestFuncSuccess(t *testing.T) {
 	}))
 	defer api.Close()
 
-	c := NewClientWithHTTP("http://cds.invalid", api.Client())
+	c := NewClientWithHTTP("http://ta.invalid", api.Client())
 	fn := MakeSNPARMTLSAttestFunc(c, api.URL)
 
 	// customData must be hex-encoded and at least sha512.Size384 (48) bytes.
@@ -430,7 +430,7 @@ func TestMakeSNPARMTLSAttestFuncSuccess(t *testing.T) {
 }
 
 func TestMakeSNPARMTLSAttestFuncBadHex(t *testing.T) {
-	c := NewClient("http://cds.invalid")
+	c := NewClient("http://ta.invalid")
 	fn := MakeSNPARMTLSAttestFunc(c, "http://api.invalid")
 	_, err := fn(context.Background(), "not-hex")
 	if err == nil || !strings.Contains(err.Error(), "decode report data hex") {
@@ -439,7 +439,7 @@ func TestMakeSNPARMTLSAttestFuncBadHex(t *testing.T) {
 }
 
 func TestMakeSNPARMTLSAttestFuncAPIError(t *testing.T) {
-	c := NewClient("http://cds.invalid")
+	c := NewClient("http://ta.invalid")
 	fn := MakeSNPARMTLSAttestFunc(c, unreachableURL)
 	customData := strings.Repeat("cd", 48)
 	_, err := fn(context.Background(), customData)

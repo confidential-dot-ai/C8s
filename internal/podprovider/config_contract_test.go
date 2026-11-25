@@ -14,7 +14,7 @@ import (
 )
 
 func TestLoadConfigRefusesUnsafeInputs(t *testing.T) {
-	for _, kind := range []string{"invalid-key", "wrong-curve", "unbound-cds-policy"} {
+	for _, kind := range []string{"invalid-key", "wrong-curve", "unbound-ta-policy"} {
 		t.Run(kind, func(t *testing.T) {
 			cfg := fixtureConfig(t)
 			path := filepath.Join(filepath.Dir(cfg.CloudTokenFile), "config.json")
@@ -35,7 +35,7 @@ func TestLoadConfigRefusesUnsafeInputs(t *testing.T) {
 				}
 				target = cfg.LaunchKeyFile
 				data = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: der})
-			case "unbound-cds-policy":
+			case "unbound-ta-policy":
 				target, data = cfg.TAImagePolicyFile, providerTAPolicy(t, nil)
 			}
 			if target != "" {

@@ -414,7 +414,7 @@ func TestNodeImageRenderRejectsBadInputsBeforeHelm(t *testing.T) {
 func bootstrapTAPin(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	manifest := filepath.Join(dir, "cds-manifest.json")
+	manifest := filepath.Join(dir, "ta-manifest.json")
 	body := fmt.Sprintf(`{"snp_variants":[{"smp":4,"measurement":{"algorithm":"sha384","snp_launch_digest":%q}}]}`,
 		strings.Repeat("50", refvalues.DigestSize))
 	if err := os.WriteFile(manifest, []byte(body), 0o600); err != nil {

@@ -123,7 +123,7 @@ func TestCheckNamedTAReturnsUnknownPolicyWhenUnreadable(t *testing.T) {
 	values := map[string]any{"ta": map[string]any{"address": installTAAddressUnreachable}}
 	served, warn, err := checkNamedTA(context.Background(), seedRender{chart: s.release}, installTA, values)
 	if err != nil || served != nil || !strings.Contains(warn, "cannot read the allowlist") {
-		t.Fatalf("checkNamedCDS = (%v, %q, %v), want unknown policy and a warning", served, warn, err)
+		t.Fatalf("checkNamedTA = (%v, %q, %v), want unknown policy and a warning", served, warn, err)
 	}
 }
 

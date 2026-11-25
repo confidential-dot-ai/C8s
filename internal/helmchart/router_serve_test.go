@@ -219,7 +219,7 @@ func TestCloudRouterServeWithoutFrontDoorModeServesTheMeshLeaf(t *testing.T) {
 		t.Fatalf("nginx started %d times, want once", starts)
 	}
 	if log := scriptLog(t, run.log); log != "" {
-		t.Fatalf("the entrypoint logged on the cds path:\n%s", log)
+		t.Fatalf("the entrypoint logged on the ta path:\n%s", log)
 	}
 	run.withdrawAndRestore(t, filepath.Join(run.tlsDir, "tls.crt"))
 }

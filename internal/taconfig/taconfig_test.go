@@ -67,7 +67,7 @@ func testDocument(t *testing.T, operatorPEM, anchorPEM string) wire {
 		Workloads:          testWorkloads,
 		Nodes:              testNodePins(t, anchorPEM),
 		NodeCIDRs:          []string{"10.0.0.0/24"},
-		LeafDNSNames:       []string{"cds.acme.example"},
+		LeafDNSNames:       []string{"ta.acme.example"},
 		LeafDNSPatterns:    []string{testServicePattern},
 	}
 }
@@ -116,7 +116,7 @@ func TestParseReturnsEverySettingParsed(t *testing.T) {
 		t.Fatal("lost the document's service DNS pattern")
 	}
 	// A leaf name is a literal identity: it matches whole, or not at all.
-	if !cfg.DNSSANPatterns[1].MatchString("cds.acme.example") || cfg.DNSSANPatterns[1].MatchString("evil.cds.acme.example") {
+	if !cfg.DNSSANPatterns[1].MatchString("ta.acme.example") || cfg.DNSSANPatterns[1].MatchString("evil.ta.acme.example") {
 		t.Fatal("leaf name is not matched as a whole name")
 	}
 }

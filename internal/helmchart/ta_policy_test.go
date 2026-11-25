@@ -34,8 +34,8 @@ func TestChartHandsTheNodeItsTAAddress(t *testing.T) {
 	if data["ta.json"] == "" {
 		t.Fatal("the Trust Authority pin reaches no node")
 	}
-	if got := data["ta-address"]; got != baseCDSAddress {
-		t.Fatalf("ta-address = %q, want %q", got, baseCDSAddress)
+	if got := data["ta-address"]; got != baseTAAddress {
+		t.Fatalf("ta-address = %q, want %q", got, baseTAAddress)
 	}
 }
 
@@ -43,8 +43,8 @@ func TestChartHandsTheNodeItsTAAddress(t *testing.T) {
 // binding a Trust Authority VM to the configuration it serves.
 func TestChartRefusesATAPinThatBindsNoLaunchFile(t *testing.T) {
 	t.Parallel()
-	flat := writeMeasurementsConfig(t, `{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"cds","measurement":"`+baseTADigest+`"}]}`)
-	out, err := helmTemplateUnpinned(t, cloudChartDir, "--set-string", "ta.address="+baseCDSAddress, "--set-file", "ta.measurementsConfig="+flat)
+	flat := writeMeasurementsConfig(t, `{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"ta","measurement":"`+baseTADigest+`"}]}`)
+	out, err := helmTemplateUnpinned(t, cloudChartDir, "--set-string", "ta.address="+baseTAAddress, "--set-file", "ta.measurementsConfig="+flat)
 	if err == nil {
 		t.Fatalf("helm template accepted a pin binding no launch file\n%s", out)
 	}

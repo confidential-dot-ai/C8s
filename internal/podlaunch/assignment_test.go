@@ -105,7 +105,7 @@ func TestPodBundleIsGeneric(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := filepath.Join(t.TempDir(), "bundle")
-			args := append([]string{"new-pod", "--out", dir, "--cluster-id", "cluster-one", "--image-manifest", manifest, "--ta-address", "cds.example.org:8443", "--ta-image-policy-file", taPolicy}, tc.args...)
+			args := append([]string{"new-pod", "--out", dir, "--cluster-id", "cluster-one", "--image-manifest", manifest, "--ta-address", "ta.example.org:8443", "--ta-image-policy-file", taPolicy}, tc.args...)
 			err := runBundleCmd(t, args...)
 			if (err == nil) != tc.valid {
 				t.Fatalf("bundle validity: %v", err)
@@ -117,7 +117,7 @@ func TestPodBundleIsGeneric(t *testing.T) {
 				return
 			}
 			doc, _ := readBundleDocument(t, dir, podDir)
-			if doc.Node.Name != "p-1" || doc.TA.Address != "cds.example.org:8443" || doc.TA.Measurements == "" {
+			if doc.Node.Name != "p-1" || doc.TA.Address != "ta.example.org:8443" || doc.TA.Measurements == "" {
 				t.Fatal("generic bundle lost its identity or trust")
 			}
 			stageBundleNode(t, dir, podDir)
