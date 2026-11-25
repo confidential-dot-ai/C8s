@@ -311,8 +311,9 @@ pass
 reset
 touch "$state/commit-known"
 yq '.jobs.build-and-push.needs = ["verify-source"]' "$FAKE_MANUAL_WORKFLOW" >"$state/workflow"
-(cd "$fixture_dir" && bash "$script" --sha "$sha" --receipt '-publication.json') >/dev/null
-jq -e '.guestAttempt == "1"' "$fixture_dir/-publication.json" >/dev/null || fail "list dependency or leading-dash receipt failed"
+mkdir "$fixture_dir/-out"
+(cd "$fixture_dir" && bash "$script" --sha "$sha" --receipt '-out/-publication.json') >/dev/null
+jq -e '.guestAttempt == "1"' "$fixture_dir/-out/-publication.json" >/dev/null || fail "list dependency or leading-dash receipt failed"
 pass
 
 # --- attempt one stays pinned through polling and later reruns ----------------

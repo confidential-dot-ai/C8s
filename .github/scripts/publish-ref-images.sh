@@ -288,7 +288,7 @@ if [ -n "$receipt" ] && [ "$dry_run" = false ]; then
     [ "$current" = "$published" ] || die "guest tag changed since run $image_run_id: $reference"
     guests=$(jq -c --arg tag "$reference" --arg pin "${reference%:*}@$published" '. + {($tag): $pin}' <<<"$guests")
   done
-  temporary=$(mktemp "$receipt_dir/.publication.XXXXXX")
+  temporary=$(mktemp -- "$receipt_dir/.publication.XXXXXX")
   jq -n --arg source "$sha" --arg repository "$repo" --arg branch "$branch" \
     --arg components "$component_run_id" --arg guests "$image_run_id" --argjson images "$guests" \
     --arg componentAttempt "$component_run_attempt" --arg guestAttempt "$image_run_attempt" \
