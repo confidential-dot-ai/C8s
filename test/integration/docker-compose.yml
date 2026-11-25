@@ -6,7 +6,7 @@ services:
     environment:
       PORT: "8400"
       # The launch binding every report carries: run.sh derives it from the
-      # same bytes cds-pin.json pins as the mock TA's launch file.
+      # same bytes ta-pin.json pins as the mock TA's launch file.
       HOST_DATA: ${TA_HOST_DATA:?run this through test/integration/run.sh}
 
   mock-ta:
@@ -60,7 +60,7 @@ services:
     command:
       - --ta-url=https://mock-ta:8080
       - --attestation-api-url=http://mock-attestation:8400
-      - --ta-image-policy-file=/pin/cds-pin.json
+      - --ta-image-policy-file=/pin/ta-pin.json
       - --san=nginx-lb
       - --cert-path=/tls/cert.pem
       - --key-path=/tls/key.pem
@@ -68,7 +68,7 @@ services:
       - --verbose
     volumes:
       - tls-certs:/tls
-      - ${TA_PIN:?run this through test/integration/run.sh}:/pin/cds-pin.json:ro
+      - ${TA_PIN:?run this through test/integration/run.sh}:/pin/ta-pin.json:ro
       # The inventory socket arrives read-only, as the NRI plugin mounts it.
       - workload-claims:/run/c8s/workload-claims:ro
     depends_on:

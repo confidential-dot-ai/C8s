@@ -36,7 +36,7 @@ func TestOperatorDocHelmTemplateExamples(t *testing.T) {
 	// chart and its files relative to the repository, so they run in a
 	// directory holding that pin against the charts' absolute paths.
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "cds-pin.json"), []byte(baseTAPinDocument(t)), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "ta-pin.json"), []byte(baseTAPinDocument(t)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	chart := "helm template c8s " + cloudChartDir

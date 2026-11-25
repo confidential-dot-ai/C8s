@@ -30,8 +30,8 @@ Typical bootstrap flow on a fresh cluster:
 
     c8s install <install flags> --allowlist-seed-out seed.json
     c8s ta config new --allowlist-seed seed.json --out ta ...
-    # launch the Trust Authority VM on ta/cds-config.yaml, then:
-    c8s install <install flags> --ta-address <host:port> --ta-pin ta/cds-pin.json
+    # launch the Trust Authority VM on ta/ta-config.yaml, then:
+    c8s install <install flags> --ta-address <host:port> --ta-pin ta/ta-pin.json
 
 Both installs take the same flags, such as --platform, -f values.yaml and
 --workload-ref, which adopts a workload. Any other workload opts in with the

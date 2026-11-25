@@ -75,7 +75,7 @@ helm template c8s ./c8s-cloud \
   -f ./c8s-cloud/values-<PLATFORM>.yaml \
   -f values.yaml \
   --set-string ta.address=<TA_ADDRESS> \
-  --set-file ta.measurementsConfig=cds-pin.json \
+  --set-file ta.measurementsConfig=ta-pin.json \
   --set-file ta.operatorKeys=c8s-operator-pub.pem \
   --show-only templates/allowlist-seed.yaml |
   yq '.data["allowlist-seed.json"]' > seed.json
@@ -109,7 +109,7 @@ can be below the version the node enforces now.
 ```sh
 c8s allowlist apply seed.json \
   --url "$TA" \
-  --image-policy-file cds-pin.json \
+  --image-policy-file ta-pin.json \
   --operator-key c8s-operator.key
 ```
 
@@ -126,7 +126,7 @@ happens to the one it replaces:
 ```sh
 c8s allowlist components add component-set-<PLATFORM>.json \
   --url "$TA" \
-  --image-policy-file cds-pin.json \
+  --image-policy-file ta-pin.json \
   --operator-key c8s-operator.key \
   --retire <X.Y.Z>=<DEADLINE>
 ```
@@ -143,7 +143,7 @@ neither flag, before its first pod
 ```sh
 c8s allowlist list \
   --url "$TA" \
-  --image-policy-file cds-pin.json
+  --image-policy-file ta-pin.json
 ```
 
 ```text

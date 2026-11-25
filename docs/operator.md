@@ -415,7 +415,7 @@ below use the same guest contract.
 ```sh
 c8s launch-config new-pod --out pod1 --cluster-id demo --name pod-1 \
   --image-manifest manifest.json \
-  --ta-address ta.example.com:8443 --ta-image-policy-file cds-pin.json
+  --ta-address ta.example.com:8443 --ta-image-policy-file ta-pin.json
 ```
 
 This writes a generic `role: pod` document, naming no pod, signed by a separate pod launch key
@@ -606,7 +606,7 @@ image digests from a `-f` file, beside the mesh file every install takes:
 ```sh
 c8s install --platform aks-snp --chart charts/cloud \
   -f images.yaml -f values.yaml \
-  --ta-address 10.0.0.9:8443 --ta-pin cds-pin.json \
+  --ta-address 10.0.0.9:8443 --ta-pin ta-pin.json \
   --operator-keys operator.pub
 ```
 
@@ -650,7 +650,7 @@ helm template c8s charts/cloud \
   --namespace c8s-system --kube-version 1.31.0 \
   -f charts/cloud/values-aks-snp.yaml \
   --set ta.address=10.0.0.9:8443 \
-  --set-file ta.measurementsConfig=cds-pin.json \
+  --set-file ta.measurementsConfig=ta-pin.json \
   --set image.tag=main \
   --set attestationApi.image.tag=main \
   --set armtlsMesh.image.tag=main \
@@ -659,5 +659,5 @@ helm template c8s charts/cloud \
   --set 'nriImagePolicy.mesh.clusterRanges={10.244.0.0/16,10.96.0.0/12}'
 ```
 
-The address is this cluster's TA and `cds-pin.json` the document
+The address is this cluster's TA and `ta-pin.json` the document
 `c8s ta config new` wrote beside its configuration.

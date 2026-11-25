@@ -69,7 +69,7 @@ func taPinFile(t *testing.T, entries []string, subnets string) string {
 // writePin puts a pin document in a file of its own.
 func writePin(t *testing.T, document string) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "cds-pin.json")
+	path := filepath.Join(t.TempDir(), "ta-pin.json")
 	if err := os.WriteFile(path, []byte(document), 0o600); err != nil {
 		t.Fatal(err)
 	}

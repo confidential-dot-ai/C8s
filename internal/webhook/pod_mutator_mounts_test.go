@@ -41,7 +41,7 @@ func chartSeed(t *testing.T) *allowlist.Allowlist {
 		"--namespace", "c8s-system",
 		"--show-only", "templates/allowlist-seed.yaml",
 		"--set-string", "ta.address=10.9.9.9:8443",
-		"--set-file", "ta.measurementsConfig=../testdata/cds-pin.json",
+		"--set-file", "ta.measurementsConfig=../testdata/ta-pin.json",
 		"--set", "image.digest="+chartOperatorDigest,
 		"--set", "attestationApi.image.tag=dev",
 		"--set", "armtlsMesh.image.digest="+chartMeshDigest,

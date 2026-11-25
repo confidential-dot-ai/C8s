@@ -65,7 +65,7 @@ public keys you trust. 'show' verifies against them when given; 'add' and
 routes.
 
 Point --url at Trust Authority itself, with no path, because the router does not relay
-/routes, and pin Trust Authority with --image-policy-file cds-pin.json, the pin
+/routes, and pin Trust Authority with --image-policy-file ta-pin.json, the pin
 'c8s ta config new' wrote.`,
 		SilenceUsage: true,
 	}

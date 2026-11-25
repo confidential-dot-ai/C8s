@@ -17,8 +17,8 @@ import (
 // The pair an operator launches and verifies a Trust Authority VM with, named the same by
 // every generator that writes them.
 const (
-	ConfigFile = "cds-config.yaml"
-	PinFile    = "cds-pin.json"
+	ConfigFile = "ta-config.yaml"
+	PinFile    = "ta-pin.json"
 )
 
 // Document is one cluster's Trust Authority settings as a launch file carries them: each

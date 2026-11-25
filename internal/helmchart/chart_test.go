@@ -2471,7 +2471,7 @@ func hostPathVolume(t *testing.T, ds appsv1.DaemonSet, name string) string {
 // the seed admits it argv-pinned, so the default fail-closed render is valid.
 const baseNRIDigest = "sha256:aaaa000000000000000000000000000000000000000000000000000000000000"
 
-// baseTADigest is the Trust Authority launch digest testdata/cds-pin.json carries, and
+// baseTADigest is the Trust Authority launch digest testdata/ta-pin.json carries, and
 // baseCDSAddress the endpoint the shared harness points a release at: the
 // chart refuses a release naming no Trust Authority (kind=cds_pins_required,
 // kind=cds_address_required).
@@ -2481,7 +2481,7 @@ const (
 	baseCDSAddress = "10.9.9.9:8443"
 	// baseTAPinPath is that Trust Authority as the pin document an operator passes: the
 	// image and the launch file its VM proves, schema 2 as every Trust Authority pin is.
-	baseTAPinPath = "../testdata/cds-pin.json"
+	baseTAPinPath = "../testdata/ta-pin.json"
 )
 
 // baseTAPin is that document where a render running in any directory reads

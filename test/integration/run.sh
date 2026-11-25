@@ -36,8 +36,8 @@ docker compose version >/dev/null 2>&1 || { echo "FAIL: docker compose (v2) not 
 # the mock attestation-api reports SHA-256 of that same file as HOST_DATA.
 # The measurement is the mock's all-zero launch digest.
 MOCK_MEASUREMENT=000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-TA_CONFIG="$WORKDIR/cds-config.yaml"
-TA_PIN="$WORKDIR/cds-pin.json"
+TA_CONFIG="$WORKDIR/ta-config.yaml"
+TA_PIN="$WORKDIR/ta-pin.json"
 printf 'clusterID: integration\n' > "$TA_CONFIG"
 TA_HOST_DATA="$(openssl dgst -sha256 "$TA_CONFIG" | cut -d' ' -f2)"
 jq -Rs --arg measurement "$MOCK_MEASUREMENT" \

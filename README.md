@@ -183,7 +183,7 @@ on GKE ([guarantees](docs/guarantees.md#only-allowlisted-code-runs)).
   the admission inventory's `SO_PEERPIDFD` checks.
 - An external TA CVM, or capacity to launch one before installing. Its measured
   configuration must pin your operator public key; installation needs its
-  address and `cds-pin.json` (see [operator docs](docs/operator.md)). On AKS and
+  address and `ta-pin.json` (see [operator docs](docs/operator.md)). On AKS and
   GKE it runs on SEV-SNP or TDX hardware you hold, beside the cluster
   ([a cloud cluster's TA](docs/cloud-ta.md)).
 - Helm 3, `kubectl`, and `crane` on PATH.
@@ -232,7 +232,7 @@ to render without both keys — including the render behind
 TA exists ([bootstrap policy](docs/allowlist-and-capabilities.md#bootstrap)).
 
 For an existing TA, reuse the operator keypair matching its measured
-configuration and its `cds-pin.json`. For a new TA, generate the keypair first:
+configuration and its `ta-pin.json`. For a new TA, generate the keypair first:
 
 ```sh
 openssl ecparam -name prime256v1 -genkey -noout -out operator.key
@@ -249,7 +249,7 @@ covers node measurements, and
 [a cloud cluster's TA](docs/cloud-ta.md#node-pins-on-aks-and-gke) covers them
 on AKS and GKE. Launch the external CVM with the resulting configuration, following the
 [TA launch requirements](images/ta-guest/README.md#launch-requirements),
-then continue with its address and the generated `cds-pin.json`.
+then continue with its address and the generated `ta-pin.json`.
 
 This example assumes an existing Deployment `serving` in namespace `vllm`,
 listening on port 8443. `--workload-ref` uses
@@ -259,7 +259,7 @@ listening on port 8443. `--workload-ref` uses
 # Install and adopt the workload; follow install's route-manifest instructions
 c8s install --platform=aks-snp --namespace c8s-system -f values.yaml \
   --operator-keys operator.pub \
-  --ta-address <ip:port of your TA> --ta-pin cds-pin.json \
+  --ta-address <ip:port of your TA> --ta-pin ta-pin.json \
   --pod-cidr 10.244.0.0/16 \
   --workload-ref vllm=vllm/deployment/serving:8443 \
   --upstream vllm
@@ -459,7 +459,7 @@ from the trusted node image's build `manifest.json`, following
 For TDX, use the derived `--image-policy-file` to pin the kernel and rootfs
 registers too. The CLI reads the router's discovery document and verifies its
 attestation automatically.
-For a direct TA URL, pass `--image-policy-file cds-pin.json`, which binds its
+For a direct TA URL, pass `--image-policy-file ta-pin.json`, which binds its
 image and measured launch configuration.
 
 An empty set is **refused**, reads included: the request, and any operator
@@ -494,7 +494,7 @@ certificate, so it cannot be substituted in transit
 
 ```sh
 c8s ta verify https://<ta>:8443 \
-  --image-policy-file cds-pin.json \
+  --image-policy-file ta-pin.json \
   --operator-keys operator.pub
 ```
 

@@ -14,7 +14,7 @@ import (
 func newFiles(t *testing.T, nodeSubnet string) (pinPath, caPath string) {
 	t.Helper()
 	dir := t.TempDir()
-	pinPath = filepath.Join(dir, "cds-pin.json")
+	pinPath = filepath.Join(dir, "ta-pin.json")
 	caPath = filepath.Join(dir, "ca.crt")
 	if err := os.WriteFile(pinPath, []byte(testTAPin(t, taConfig(t, nodeSubnet))), 0o600); err != nil {
 		t.Fatal(err)

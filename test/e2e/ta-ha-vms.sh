@@ -122,18 +122,18 @@ c8s ta config new \
 
 # Each replica's opkeydata disk holds that one file, under the name the lane's
 # TA secret gives it: the initrd binds those bytes to the VM's attestation,
-# and launch/cds-pin.json names the digest every client checks.
+# and launch/ta-pin.json names the digest every client checks.
 key=$(kubectl -n "$NS" get secret "$TA_VM-opkey" -o json |
   jq -er '.data | keys | if length == 1 then .[0] else error("want one file on the TA opkeydata disk") end')
 for name in "${names[@]}"; do
   kubectl -n "$NS" create secret generic "$name-opkey" \
-    --from-file="$key=launch/cds-config.yaml"
+    --from-file="$key=launch/ta-config.yaml"
 done
 
 # Every replica is the lane's TA VM with its own opkeydata secret and the
 # label both Services select it by.
 creating=()
-host_data=$(openssl dgst -sha256 -binary launch/cds-config.yaml | base64 -w0)
+host_data=$(openssl dgst -sha256 -binary launch/ta-config.yaml | base64 -w0)
 for name in "${names[@]}"; do
   kubectl -n "$NS" get vm "$TA_VM" -o json | jq --arg name "$name" --arg cluster "$cluster" --arg host_data "$host_data" --argjson port "$port" '
     {apiVersion, kind,
@@ -163,7 +163,7 @@ for i in "${!names[@]}"; do
 done
 echo "every replica answers, and none of them holds a cluster"
 
-ha() { c8s ta ha "$@" --config launch/cds-config.yaml --ta-pin launch/cds-pin.json; }
+ha() { c8s ta ha "$@" --config launch/ta-config.yaml --ta-pin launch/ta-pin.json; }
 
 routing_ready() {
   kubectl -n "$NS" get endpointslices.discovery.k8s.io -l "kubernetes.io/service-name=$cluster" -o json > endpoints.json || return
@@ -188,8 +188,8 @@ jq -e 'length == 3 and all(.[]; .status != null and .status.joined == false)' un
 # process would install, both read over the attested channel, and is posted
 # back to that replica on the same channel.
 c8s ta ha decree genesis \
-  --config launch/cds-config.yaml --operator-key operator.key \
-  --target "${addresses[0]}:$port" --ta-pin launch/cds-pin.json \
+  --config launch/ta-config.yaml --operator-key operator.key \
+  --target "${addresses[0]}:$port" --ta-pin launch/ta-pin.json \
   --platform sev-snp --vcpus "$SMP" --image-manifest "$TA_IMAGE_MANIFEST" \
   --nodes "$TA_NODE_PINS" \
   --resume-version 0 \
@@ -211,7 +211,7 @@ ha decrees | grep -q "$intent" || fail "the record of applied decrees does not n
 # `ta ca` pins TA with --ta-image-policy-file, the same document the ha
 # commands take as --ta-pin.
 mesh_ca() {
-  c8s ta ca --ta-url "https://$served:$port" --ta-image-policy-file launch/cds-pin.json --out "$1" \
+  c8s ta ca --ta-url "https://$served:$port" --ta-image-policy-file launch/ta-pin.json --out "$1" \
     || fail "no mesh CA from the cluster at $served:$port"
   openssl x509 -in "$1" -outform DER | openssl dgst -sha256 -r | cut -d' ' -f1
 }
@@ -309,7 +309,7 @@ cat endpoints.json
 for name in "${names[@]}"; do printf '%s readiness: ' "$name"; cat "ready-$name.txt"; done
 printf 'clock-routing-regression\n' > clock-value
 for i in $(seq 1 98); do
-  c8s secrets put "/clock-$i" --ta-url "https://$served:$port" --ta-image-policy-file launch/cds-pin.json \
+  c8s secrets put "/clock-$i" --ta-url "https://$served:$port" --ta-image-policy-file launch/ta-pin.json \
     --mesh-ca mesh-ca.pem --operator-key operator.key --from-file clock-value || fail "aggregate write $i failed"
 done
 clock_lag_verified || fail "clock state changed during fresh writes"

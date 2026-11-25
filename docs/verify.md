@@ -59,11 +59,11 @@ refuses `--mesh-ca`, `--sandbox-id`, `--workload`, `--client-document` and
 bundle from the TA:
 
 ```sh
-c8s ta ca --ta-url https://<TA_ADDRESS> --ta-image-policy-file cds-pin.json --out mesh-ca.pem
+c8s ta ca --ta-url https://<TA_ADDRESS> --ta-image-policy-file ta-pin.json --out mesh-ca.pem
 ```
 
 `<TA_ADDRESS>` is the `<host>:<port>` the install named with `--ta-address`,
-and `cds-pin.json` the document it named with `--ta-pin`, which pins the guest
+and `ta-pin.json` the document it named with `--ta-pin`, which pins the guest
 the TA runs. These commands take that document and no launch digest of their own.
 The certificate SHA-256 digests print on stderr; record them: a TA restart
 replaces the bundle.
@@ -113,7 +113,7 @@ identities it serves with `--served-policy-file` to check the set the TA says it
 enforces:
 
 ```sh
-c8s ta verify https://<TA_ADDRESS> --image-policy-file cds-pin.json \
+c8s ta verify https://<TA_ADDRESS> --image-policy-file ta-pin.json \
     --served-policy-file measurements.json
 ```
 
@@ -135,7 +135,7 @@ verified, not WebPKI.
 c8s verify https://<ROUTER_HOST> --kind lb --mode attest-lb \
     --measurements <NODE_MEASUREMENT> --mesh-ca mesh-ca.pem \
     --route-digest <ROUTE_DIGEST>
-c8s ta verify https://<TA_ADDRESS> --image-policy-file cds-pin.json
+c8s ta verify https://<TA_ADDRESS> --image-policy-file ta-pin.json
 ```
 
 `<ROUTER_HOST>` is the router's public host and `<ROUTE_DIGEST>` a digest from
@@ -149,7 +149,7 @@ Supply the VM's expected image policy to check its measurements in the same
 invocation. For example, to check the TA, run
 
 ```sh
-c8s ta verify https://<TA_ADDRESS> --image-policy-file cds-pin.json \
+c8s ta verify https://<TA_ADDRESS> --image-policy-file ta-pin.json \
     --tdx-tcb-status UpToDate
 ```
 
@@ -274,7 +274,7 @@ Get a digest from the operator who wrote the manifest, from a manifest file
 with `c8s routes digest FILE`, or from the TA, which refuses an unpinned endpoint:
 
 ```sh
-c8s routes show --url https://<TA_ADDRESS> --image-policy-file cds-pin.json
+c8s routes show --url https://<TA_ADDRESS> --image-policy-file ta-pin.json
 ```
 
 [releases.md](releases.md) shows which commit a release tag names.

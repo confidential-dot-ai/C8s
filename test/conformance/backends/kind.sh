@@ -190,7 +190,7 @@ attest_direct() {
     local bin="$C8S_ROOT/build/c8s"
     [ -x "$bin" ] || make -C "$C8S_ROOT" build-c8s >&2 || return 1
     "$bin" get-cert --ta-url "$(ta_url)" --attestation-api-url "$(ta_mock_attestation_url)" \
-        --ta-image-policy-file "$WORKDIR/ta/cds-pin.json" --san "requester.$NS.svc" 2>/dev/null
+        --ta-image-policy-file "$WORKDIR/ta/ta-pin.json" --san "requester.$NS.svc" 2>/dev/null
 }
 
 # The mock issues a version-2 SNP report over any report data, with an

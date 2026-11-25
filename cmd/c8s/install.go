@@ -746,7 +746,7 @@ func applyRelease(
 }
 
 func printInstallVerifyHint(values map[string]any, storedRouteDigest string) {
-	verifyURL, verifyPin := "https://<ta-address>", "<cds-pin.json>"
+	verifyURL, verifyPin := "https://<ta-address>", "<ta-pin.json>"
 	if url, err := installTAURL(values); err == nil {
 		verifyURL = url
 	}
