@@ -126,7 +126,7 @@ func TestPrepareTAPinsEmptyWithoutInventory(t *testing.T) {
 // injects would otherwise admit any Trust Authority VM.
 func TestPrepareTAPinsRefusesAPinWithoutALaunchBinding(t *testing.T) {
 	renderInTempDir(t)
-	unbound := `{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"cds","measurement":"` + testutil.TestMeasurement + `"}]}`
+	unbound := `{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"ta","measurement":"` + testutil.TestMeasurement + `"}]}`
 	p := testPlugin(t, &config{
 		Platform:       "sev-snp",
 		WorkloadClaims: workloadClaimsConfig{SocketDir: t.TempDir()},
@@ -134,7 +134,7 @@ func TestPrepareTAPinsRefusesAPinWithoutALaunchBinding(t *testing.T) {
 	})
 
 	if _, _, err := p.cfg.Allowlist.Pull.taPinSource(discardLogger()); err == nil || !strings.Contains(err.Error(), "launch file") {
-		t.Fatalf("prepareCDSPins = %v, want a launch-binding refusal", err)
+		t.Fatalf("prepareTAPins = %v, want a launch-binding refusal", err)
 	}
 }
 

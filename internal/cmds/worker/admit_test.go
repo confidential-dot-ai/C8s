@@ -159,7 +159,7 @@ func TestAdmitPrintsTheFactsTheDocumentCarries(t *testing.T) {
 		"pod range                     10.52.0.0/16\n",
 		"Service range                 10.53.0.0/16\n",
 		"cluster DNS                   10.53.0.10\n",
-		"Trust Authority address       cds.acme.example:8443\n",
+		"Trust Authority address       ta.acme.example:8443\n",
 		"Trust Authority pin floor     1\n",
 		"router TLS SAN                c8s.acme.example\n",
 		"router hostnames              api.acme.example\n",
@@ -409,7 +409,7 @@ func TestAdmittedEntriesAdmitTheWorkerImageWithThatDocumentOnly(t *testing.T) {
 			}
 			for name, change := range map[string]func(*Document){
 				"CA":                      func(d *Document) { d.Kubernetes.CACertificate = selfSigned(t, caTemplate()) },
-				"Trust Authority address": func(d *Document) { d.TA.Address = "cds2.acme.example:8443" },
+				"Trust Authority address": func(d *Document) { d.TA.Address = "ta2.acme.example:8443" },
 				"pod range":               func(d *Document) { d.Kubernetes.PodCIDR = "10.54.0.0/16" },
 			} {
 				doc := f.doc

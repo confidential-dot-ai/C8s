@@ -30,7 +30,7 @@ func TestAReplicaServesAtItsOwnAddress(t *testing.T) {
 	}
 	for name, host := range map[string]string{
 		"every address": "0.0.0.0",
-		"a name":        "cds.example.com",
+		"a name":        "ta.example.com",
 		"nothing":       "",
 	} {
 		t.Run(name, func(t *testing.T) {

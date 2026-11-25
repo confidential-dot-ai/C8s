@@ -147,7 +147,7 @@ func newHealthyAttestationApi(t *testing.T) *httptest.Server {
 func validRunConfig(t *testing.T, attestationURL string) config {
 	t.Helper()
 	return config{
-		measured:                   measuredConfig(t, cluster{operatorPEM: operatorKeysPEM(t), workloads: map[string]string{"cds": digestA}}),
+		measured:                   measuredConfig(t, cluster{operatorPEM: operatorKeysPEM(t), workloads: map[string]string{"ta": digestA}}),
 		host:                       "127.0.0.1",
 		port:                       0,
 		logLevel:                   "error",
@@ -300,7 +300,7 @@ func TestRun_ServesAndShutsDownWhenCancelled(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	if !up {
-		t.Fatal("cds never became healthy")
+		t.Fatal("the Trust Authority never became healthy")
 	}
 
 	// The seeded allowlist must be served before shutdown.
@@ -317,7 +317,7 @@ func TestRun_ServesAndShutsDownWhenCancelled(t *testing.T) {
 	if decodeErr != nil {
 		t.Fatalf("decode /allowlist: %v", decodeErr)
 	}
-	if _, ok := listing.Workloads["cds"]; !ok {
+	if _, ok := listing.Workloads["ta"]; !ok {
 		t.Errorf("seeded entry missing from /allowlist: %v", listing.Workloads)
 	}
 
@@ -364,7 +364,7 @@ func startRunServerOn(t *testing.T, cfg config, base string, client *http.Client
 	deadline := time.Now().Add(15 * time.Second)
 	for {
 		if time.Now().After(deadline) {
-			t.Fatal("cds never became healthy")
+			t.Fatal("the Trust Authority never became healthy")
 		}
 		select {
 		case err := <-errCh:
@@ -437,7 +437,7 @@ func TestRun_ServesNodeImagesWithDifferentRegisters(t *testing.T) {
 	cfg := armTLSRunConfig(t)
 	cfg.measured = measuredConfig(t, cluster{
 		operatorPEM: operatorKeysPEM(t),
-		workloads:   map[string]string{"cds": digestA},
+		workloads:   map[string]string{"ta": digestA},
 		nodes:       upgradingNodesDocument,
 	})
 	startRunServer(t, cfg)
@@ -466,7 +466,7 @@ func TestRun_RestartServesTheNewConfigurationsNodeImages(t *testing.T) {
 			cfg := armTLSRunConfig(t)
 			cfg.measured = measuredConfig(t, cluster{
 				operatorPEM: operatorKeysPEM(t),
-				workloads:   map[string]string{"cds": digestA},
+				workloads:   map[string]string{"ta": digestA},
 				nodes:       document,
 			})
 			base, client := startRunServer(t, cfg)
@@ -496,11 +496,11 @@ func TestRun_RestartServesTheNewConfigurationsNodeImages(t *testing.T) {
 func TestRun_AllowlistWriteAcceptsClockSkewedToken(t *testing.T) {
 	operatorKey, keysPEM := operatorKeyPair(t)
 	cfg := armTLSRunConfig(t) // jwtClockSkew: 30
-	cfg.measured = measuredConfig(t, cluster{operatorPEM: keysPEM, workloads: map[string]string{"cds": digestA}})
+	cfg.measured = measuredConfig(t, cluster{operatorPEM: keysPEM, workloads: map[string]string{"ta": digestA}})
 	cfg.allowlistPersistent = true // a non-persistent store refuses tokens for --jwt-clock-skew after start
 	base, client := startRunServer(t, cfg)
 
-	body := []byte(anySeed(map[string]string{"cds": digestA}))
+	body := []byte(anySeed(map[string]string{"ta": digestA}))
 	sum := sha256.Sum256(body)
 	issued := time.Now().Add(10 * time.Second) // inside the 30s leeway
 	token, err := jwt.NewWithClaims(jwt.SigningMethodES256, jwt.MapClaims{
@@ -535,10 +535,10 @@ func TestRun_AllowlistWriteAcceptsClockSkewedToken(t *testing.T) {
 func TestRun_NonPersistentStoreRefusesTokensAfterStart(t *testing.T) {
 	operatorKey, keysPEM := operatorKeyPair(t)
 	cfg := armTLSRunConfig(t) // jwtClockSkew: 30, not persistent
-	cfg.measured = measuredConfig(t, cluster{operatorPEM: keysPEM, workloads: map[string]string{"cds": digestA}})
+	cfg.measured = measuredConfig(t, cluster{operatorPEM: keysPEM, workloads: map[string]string{"ta": digestA}})
 	base, client := startRunServer(t, cfg)
 
-	body := []byte(anySeed(map[string]string{"cds": digestA}))
+	body := []byte(anySeed(map[string]string{"ta": digestA}))
 	sum := sha256.Sum256(body)
 	token, err := jwt.NewWithClaims(jwt.SigningMethodES256, jwt.MapClaims{
 		"iat": time.Now().Unix(),
@@ -571,7 +571,7 @@ func TestRun_NonPersistentStoreRefusesTokensAfterStart(t *testing.T) {
 func TestRun_AllowlistWriteTokenSignsOnce(t *testing.T) {
 	operatorKey, keysPEM := operatorKeyPair(t)
 	cfg := armTLSRunConfig(t)
-	cfg.measured = measuredConfig(t, cluster{operatorPEM: keysPEM, workloads: map[string]string{"cds": digestA}})
+	cfg.measured = measuredConfig(t, cluster{operatorPEM: keysPEM, workloads: map[string]string{"ta": digestA}})
 	cfg.allowlistPersistent = true // a non-persistent store refuses tokens for --jwt-clock-skew after start
 	base, client := startRunServer(t, cfg)
 
@@ -755,7 +755,7 @@ func TestRun_ARMTLSServesPublishedDocumentsToCertlessClients(t *testing.T) {
 			if err := json.Unmarshal(body, &listing); err != nil {
 				t.Fatalf("decode /allowlist: %v", err)
 			}
-			if _, ok := listing.Workloads["cds"]; !ok {
+			if _, ok := listing.Workloads["ta"]; !ok {
 				t.Fatalf("seeded entry missing from /allowlist: %v", listing.Workloads)
 			}
 		}},
@@ -868,7 +868,7 @@ func TestRun_ARMTLSRefusesPlainHTTP(t *testing.T) {
 func TestRun_SecretsOperatorTokenSpendsOnce(t *testing.T) {
 	cfg := armTLSRunConfig(t)
 	operatorKey, keysPEM := operatorKeyPair(t)
-	cfg.measured = measuredConfig(t, cluster{operatorPEM: keysPEM, workloads: map[string]string{"cds": digestA}})
+	cfg.measured = measuredConfig(t, cluster{operatorPEM: keysPEM, workloads: map[string]string{"ta": digestA}})
 	cfg.allowlistPersistent = true // a non-persistent store refuses tokens for --jwt-clock-skew after start
 	base := fmt.Sprintf("https://127.0.0.1:%d", cfg.port)
 	client := armTLSClient(nil)

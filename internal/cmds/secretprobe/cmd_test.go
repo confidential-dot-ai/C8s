@@ -468,10 +468,10 @@ func TestUsageErrorsExit2(t *testing.T) {
 		})
 	}
 	for name, args := range map[string][]string{
-		"no cds-url":         {"--cert", "c", "--key", "k", "challenge"},
-		"no cert":            {"--ta-url", "https://cds.example", "challenge"},
-		"bad url":            {"--ta-url", "cds.example", "--cert", "c", "--key", "k", "challenge"},
-		"no attestation api": {"--ta-url", "https://cds.example", "--cert", "c", "--key", "k", "challenge"},
+		"no ta-url":          {"--cert", "c", "--key", "k", "challenge"},
+		"no cert":            {"--ta-url", "https://ta.example", "challenge"},
+		"bad url":            {"--ta-url", "ta.example", "--cert", "c", "--key", "k", "challenge"},
+		"no attestation api": {"--ta-url", "https://ta.example", "--cert", "c", "--key", "k", "challenge"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if code, _, errOut := execute(t, args...); code != exitUsage || errOut == "" {

@@ -137,7 +137,7 @@ func TestImagePinVerifierRequiresGuestRegisters(t *testing.T) {
 	digest := bytes.Repeat([]byte{0xa1}, refvalues.DigestSize)
 	register := func(b byte) []byte { return bytes.Repeat([]byte{b}, refvalues.DigestSize) }
 	tdxImage := func(registers map[int][]byte) refvalues.ReferenceValues {
-		return refvalues.ReferenceValues{Family: teetypes.FamilyTDX, Images: []remote.ImagePin{{Name: "cds", Digest: digest, Registers: registers}}}
+		return refvalues.ReferenceValues{Family: teetypes.FamilyTDX, Images: []remote.ImagePin{{Name: "ta", Digest: digest, Registers: registers}}}
 	}
 	for _, tc := range []struct {
 		name     string

@@ -126,7 +126,7 @@ func podRoleInputs(t *testing.T) (string, *podlaunch.AssignedPod) {
 	assigned := &podlaunch.AssignedPod{
 		Document: podlaunch.Document{
 			Role:                 podlaunch.Pod,
-			TA:                   cmdsutil.TA{Address: "cds.example.test:8443", Measurements: taPolicy},
+			TA:                   cmdsutil.TA{Address: "ta.example.test:8443", Measurements: taPolicy},
 			PodOperatorPublicKey: podKey,
 			Image:                podlaunch.Image{Platform: "tdx"},
 			Node:                 podlaunch.Node{Name: "p-pod"},

@@ -61,12 +61,12 @@ func measuredTAPolicy(port uint16) *meshPolicy {
 func TestMeasuredPolicyDecidesTheCredentialPort(t *testing.T) {
 	cfg := &config{
 		WorkloadClaims: workloadClaimsConfig{SocketDir: nodeDir(t, "10.0.0.7")},
-		Allowlist:      installedTAAddress(t, "cds.example.org:8443"),
+		Allowlist:      installedTAAddress(t, "ta.example.org:8443"),
 		Mesh:           measuredTAPolicy(30808),
 	}
 	address, err := loadTAAddress(cfg.Allowlist.Pull)
 	if err != nil {
-		t.Fatalf("loadCDSAddress: %v", err)
+		t.Fatalf("loadTAAddress: %v", err)
 	}
 	cfg.taAddress = address
 	if err := bindCredentialRole(cfg); err != nil {
@@ -81,7 +81,7 @@ func TestMeasuredPolicyDecidesTheCredentialPort(t *testing.T) {
 	if err := p.prepareTAAddress(); err != nil {
 		t.Fatalf("prepareTAAddress: %v", err)
 	}
-	if got := readAddress(t, p.taAddress); got != "cds.example.org:8443" {
+	if got := readAddress(t, p.taAddress); got != "ta.example.org:8443" {
 		t.Fatalf("handed address = %q, want the Trust Authority this node reaches", got)
 	}
 }
@@ -92,15 +92,15 @@ func TestMeasuredPolicyDecidesTheCredentialPort(t *testing.T) {
 func TestInstallBindsTheCredentialRoleToItsAddressFile(t *testing.T) {
 	cfg := &config{
 		WorkloadClaims: workloadClaimsConfig{SocketDir: nodeDir(t, "10.0.0.7")},
-		Allowlist:      installedTAAddress(t, "cds.example.org:8443"),
+		Allowlist:      installedTAAddress(t, "ta.example.org:8443"),
 		Mesh:           meshRoles(),
 	}
 	address, err := loadTAAddress(cfg.Allowlist.Pull)
 	if err != nil {
-		t.Fatalf("loadCDSAddress: %v", err)
+		t.Fatalf("loadTAAddress: %v", err)
 	}
 	cfg.taAddress = address
-	if got := cfg.pullURL(); got != "https://cds.example.org:8443" {
+	if got := cfg.pullURL(); got != "https://ta.example.org:8443" {
 		t.Fatalf("pull URL = %q, want the endpoint the file names", got)
 	}
 	if err := bindCredentialRole(cfg); err != nil {
@@ -121,7 +121,7 @@ func TestInstallBindsTheCredentialRoleToItsAddressFile(t *testing.T) {
 	if err := p.prepareTAAddress(); err != nil {
 		t.Fatalf("prepareTAAddress: %v", err)
 	}
-	if got := readAddress(t, p.taAddress); got != "cds.example.org:8443" {
+	if got := readAddress(t, p.taAddress); got != "ta.example.org:8443" {
 		t.Fatalf("handed address = %q, want the Trust Authority the address file names", got)
 	}
 }
@@ -149,9 +149,9 @@ func TestAddressFileMustNameAnEndpoint(t *testing.T) {
 		name    string
 		address string
 	}{
-		{name: "no port", address: "cds.cluster.local"},
+		{name: "no port", address: "ta.cluster.local"},
 		{name: "port 0", address: "10.9.9.9:0"},
-		{name: "a URL", address: "https://cds.cluster.local:8443"},
+		{name: "a URL", address: "https://ta.cluster.local:8443"},
 		{name: "empty", address: ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -174,13 +174,13 @@ func TestRenderedDocumentsAreOutsideTheMountedSocketDirectory(t *testing.T) {
 	cfg := &config{
 		Platform:       "sev-snp",
 		WorkloadClaims: workloadClaimsConfig{SocketDir: socketDir},
-		Allowlist:      installedTAAddress(t, "cds.example.org:8443"),
+		Allowlist:      installedTAAddress(t, "ta.example.org:8443"),
 		Mesh:           meshRoles(),
 	}
 	cfg.Allowlist.Pull.TAMeasurementsConfig = testTAPinFile(t)
 	address, err := loadTAAddress(cfg.Allowlist.Pull)
 	if err != nil {
-		t.Fatalf("loadCDSAddress: %v", err)
+		t.Fatalf("loadTAAddress: %v", err)
 	}
 	cfg.taAddress = address
 	if err := bindCredentialRole(cfg); err != nil {
@@ -189,7 +189,7 @@ func TestRenderedDocumentsAreOutsideTheMountedSocketDirectory(t *testing.T) {
 	renderInTempDir(t)
 	p := &plugin{cfg: cfg}
 	if err := p.prepareTAPins(nodeTAPins(t, p)); err != nil {
-		t.Fatalf("prepareCDSPins: %v", err)
+		t.Fatalf("prepareTAPins: %v", err)
 	}
 	if err := p.prepareTAAddress(); err != nil {
 		t.Fatalf("prepareTAAddress: %v", err)

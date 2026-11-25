@@ -253,7 +253,7 @@ func admittedPodJSON() string {
       "spec": {
         "initContainers": [
           {"name": "c8s-cert", "image": "ghcr.io/confidential-dot-ai/c8s:v0.23.0",
-           "args": ["--san=c8s-busybox-secret.default.svc", "--cds-measurements=abc"]},
+           "args": ["--san=c8s-busybox-secret.default.svc"]},
           {"name": "c8s-cert-wait", "image": "` + testImage + `",
            "command": ["/c8s", "probe-file", "--wait", "/tls/cert.pem"]},
           {"name": "c8s-secret", "image": "` + testImage + `", "args": ["--measurements=abc"]},

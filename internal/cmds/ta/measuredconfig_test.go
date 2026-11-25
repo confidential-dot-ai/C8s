@@ -77,7 +77,7 @@ func measuredDocument(t *testing.T, c cluster) []byte {
 		"workloads":          anySeed(c.workloads),
 		"nodes":              c.nodePins(),
 		"nodeCIDRs":          []string{"10.0.0.0/24"},
-		"leafDNSNames":       []string{"cds.example.com"},
+		"leafDNSNames":       []string{"ta.example.com"},
 		"leafDNSPatterns":    []string{`^[a-z0-9-]+[.][a-z0-9-]+[.]svc$`},
 	})
 	if err != nil {

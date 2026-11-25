@@ -74,9 +74,9 @@ func TestAReplicaNamedByDNSIsReachedWithItsNameAsSNI(t *testing.T) {
 func TestAReplicaBaseKeepsAnEntrysNameAndPort(t *testing.T) {
 	address := netip.MustParseAddrPort("10.0.0.7:8443")
 	for entry, want := range map[string]string{
-		"r0.lane.cds.example.org":      "https://r0.lane.cds.example.org:8443",
-		"r0.lane.cds.example.org:9443": "https://r0.lane.cds.example.org:9443",
-		"10.0.0.7":                     "https://10.0.0.7:8443",
+		"r0.lane.ta.example.org":      "https://r0.lane.ta.example.org:8443",
+		"r0.lane.ta.example.org:9443": "https://r0.lane.ta.example.org:9443",
+		"10.0.0.7":                    "https://10.0.0.7:8443",
 	} {
 		got, err := replicaBase(entry, address)
 		if err != nil || got != want {
@@ -99,8 +99,8 @@ func TestReplicasSharingAFrontDoorStayDistinct(t *testing.T) {
 		answering []netip.AddrPort
 		want      []string
 	}{
-		{entry: "r0.lane.cds.example.org", answering: door, want: []string{"r0.lane.cds.example.org"}},
-		{entry: "r1.lane.cds.example.org", answering: door, want: []string{"r1.lane.cds.example.org"}},
+		{entry: "r0.lane.ta.example.org", answering: door, want: []string{"r0.lane.ta.example.org"}},
+		{entry: "r1.lane.ta.example.org", answering: door, want: []string{"r1.lane.ta.example.org"}},
 		{entry: "replicas.lane.svc", answering: pool, want: []string{"10.0.0.7:8443", "10.0.0.8:8443"}},
 		{entry: "10.0.0.7", answering: pool[:1], want: []string{"10.0.0.7:8443"}},
 	} {

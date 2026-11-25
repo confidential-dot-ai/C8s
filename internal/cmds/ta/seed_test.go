@@ -56,8 +56,8 @@ func TestSeedWorkloads_AddsAllEntries(t *testing.T) {
 	allowlistWrites := store.Local()
 
 	seed := parseSeed(t, map[string]string{
-		"cds": digestA,
-		"as":  digestB,
+		"ta": digestA,
+		"as": digestB,
 	})
 	if err := seedWorkloads(allowlistWrites, seed); err != nil {
 		t.Fatalf("seedWorkloads: %v", err)
@@ -70,8 +70,8 @@ func TestSeedWorkloads_AddsAllEntries(t *testing.T) {
 	if len(doc.Workloads) != 2 {
 		t.Fatalf("seeded %d entries, want 2: %v", len(doc.Workloads), doc.Workloads)
 	}
-	if got := doc.Workloads["cds"].Label; got != "ghcr.io/x/cds:v1" {
-		t.Errorf("cds label = %q, want ghcr.io/x/cds:v1", got)
+	if got := doc.Workloads["ta"].Label; got != "ghcr.io/x/ta:v1" {
+		t.Errorf("ta label = %q, want ghcr.io/x/ta:v1", got)
 	}
 	// Each seeded container digest is admitted via the workload index.
 	for _, d := range []string{digestA, digestB} {
@@ -92,7 +92,7 @@ func TestSeedWorkloads_IdempotentDoesNotBumpVersion(t *testing.T) {
 	defer store.Close()
 	allowlistWrites := store.Local()
 
-	seed := parseSeed(t, map[string]string{"cds": digestA})
+	seed := parseSeed(t, map[string]string{"ta": digestA})
 	if err := seedWorkloads(allowlistWrites, seed); err != nil {
 		t.Fatalf("first seed: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestSeedWorkloads_PreservesExistingEntries(t *testing.T) {
 	}
 
 	seed := parseSeed(t, map[string]string{
-		"cds":     digestA,
+		"ta":      digestA,
 		"runtime": digestA,
 	})
 	if err := seedWorkloads(allowlistWrites, seed); err != nil {
@@ -144,7 +144,7 @@ func TestSeedWorkloads_PreservesExistingEntries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadAll: %v", err)
 	}
-	if _, ok := doc.Workloads["cds"]; !ok {
+	if _, ok := doc.Workloads["ta"]; !ok {
 		t.Errorf("seed entry missing: %v", doc.Workloads)
 	}
 	if got := doc.Workloads["runtime"].Containers[0].Digest.String(); got != digestB {
@@ -161,7 +161,7 @@ func TestSeedWorkloads_FailsClosedOnStoreError(t *testing.T) {
 	allowlistWrites := store.Local()
 	_ = store.Close()
 
-	seed := parseSeed(t, map[string]string{"cds": digestA})
+	seed := parseSeed(t, map[string]string{"ta": digestA})
 	if err := seedWorkloads(allowlistWrites, seed); err == nil {
 		t.Fatal("seedWorkloads succeeded on a closed store; want fail-closed error")
 	}
@@ -177,7 +177,7 @@ func TestSeedWorkloads_RefusesAComponentsSection(t *testing.T) {
 	}
 	defer store.Close()
 
-	seed := parseSeed(t, map[string]string{"cds": digestA})
+	seed := parseSeed(t, map[string]string{"ta": digestA})
 	seed.Components = map[string]pkgallowlist.ComponentSet{"0.43.0": {Entries: map[string]pkgallowlist.Workload{}}}
 	err = seedWorkloads(store.Local(), seed)
 	if err == nil {

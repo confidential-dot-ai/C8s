@@ -461,7 +461,7 @@ func TestStampedPolicyStale(t *testing.T) {
 		})
 	}
 
-	t.Run("cds error", func(t *testing.T) {
+	t.Run("Trust Authority error", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "store down", http.StatusInternalServerError)
 		}))
@@ -503,7 +503,7 @@ func TestPolicyRenewDelay(t *testing.T) {
 // the default and validation as RunE does.
 func TestTAWatchInterval(t *testing.T) {
 	base := config{
-		TAURL:             "https://cds:8443",
+		TAURL:             "https://ta:8443",
 		AttestationApiURL: "http://localhost:8400",
 		SAN:               "router.example.com",
 		RenewInterval:     time.Hour,
@@ -538,7 +538,7 @@ func TestTAWatchInterval(t *testing.T) {
 			tt.mutate(&cfg)
 			applyTAWatchDefault(&cfg, flags)
 			if cfg.CAWatchInterval != tt.want {
-				t.Errorf("applyCDSWatchDefault(%v) interval = %v, want %v", tt.args, cfg.CAWatchInterval, tt.want)
+				t.Errorf("applyTAWatchDefault(%v) interval = %v, want %v", tt.args, cfg.CAWatchInterval, tt.want)
 			}
 			if err := validateConfig(cfg); !errors.Is(err, tt.wantErr) {
 				t.Fatalf("validateConfig() = %v, want %v", err, tt.wantErr)
@@ -566,7 +566,7 @@ func TestRenewLoopSkipsWatchUntilFirstGeneration(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 	if got := requests.Load(); got != 0 {
-		t.Fatalf("%d cds requests while nothing was published, want 0", got)
+		t.Fatalf("%d Trust Authority requests while nothing was published, want 0", got)
 	}
 	if got := len(attempts()); got != 0 {
 		t.Fatalf("%d certificate attempts on an hour-long initial retry, want 0", got)

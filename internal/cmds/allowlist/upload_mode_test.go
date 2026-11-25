@@ -26,7 +26,7 @@ func TestUploadDeploymentMode(t *testing.T) {
 		{name: "force bypasses missing component", flags: []string{"--cvm-mode=bare-metal", "--force"}, missing: "nginx"},
 		{name: "unknown mode", flags: []string{"--cvm-mode=typo"}, wantErr: "--cvm-mode must be one of"},
 		{name: "force cannot bypass unknown mode", flags: []string{"--cvm-mode=typo", "--force"}, wantErr: "--cvm-mode must be one of"},
-		{name: "require cannot bypass unknown mode", flags: []string{"--cvm-mode=typo", "--require=cds"}, wantErr: "--cvm-mode must be one of"},
+		{name: "require cannot bypass unknown mode", flags: []string{"--cvm-mode=typo", "--require=ta"}, wantErr: "--cvm-mode must be one of"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			images := coreImages()

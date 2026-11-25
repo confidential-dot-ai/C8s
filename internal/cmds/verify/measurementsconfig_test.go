@@ -137,7 +137,7 @@ func TestCheckServedMeasurementsNeverPassesUnchecked(t *testing.T) {
 	want := mcSet(t, `{"name":"a","measurement":"00`+mcDigestA+`"}`)
 
 	fail, msgs := collectFailures()
-	checkServedMeasurements(want, measurementsReport{note: "target kind is not cds"}, fail)
+	checkServedMeasurements(want, measurementsReport{note: "target kind is not ta"}, fail)
 	if len(*msgs) != 1 || !strings.Contains((*msgs)[0], "cannot be checked") {
 		t.Errorf("unfetched check did not fail: %v", *msgs)
 	}
@@ -259,7 +259,7 @@ func TestCheckServedPolicyUsesTheServedPolicyFile(t *testing.T) {
 	}
 }
 
-// A --served-policy-file check against a non-cds target fails closed and
+// A --served-policy-file check against a non-ta target fails closed and
 // names the flag whose file could not be compared.
 func TestCheckServedPolicyNamesTheFlagOnAnUncheckedTarget(t *testing.T) {
 	want := mcSet(t, `{"name":"a","measurement":"00`+mcDigestA+`"}`)
@@ -276,7 +276,7 @@ func TestCheckServedPolicyNamesTheFlagOnAnUncheckedTarget(t *testing.T) {
 func TestGatherMeasurementsRunsForServedPolicyFileAlone(t *testing.T) {
 	report := gatherMeasurements(context.Background(), config{kind: "lb"}, &verifyPlan{served: &refvalues.ReferenceValues{}}, &evidence{}, fetchAttested)
 	if report.note == "" {
-		t.Fatal("a non-cds target must record why the check could not run")
+		t.Fatal("a non-ta target must record why the check could not run")
 	}
 	if got := gatherMeasurements(context.Background(), config{kind: "ta"}, &verifyPlan{}, &evidence{}, fetchAttested); got.fetched || got.note != "" || got.fetchErr != nil {
 		t.Fatalf("no policy flag means no fetch: %+v", got)

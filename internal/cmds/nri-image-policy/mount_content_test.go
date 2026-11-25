@@ -52,7 +52,7 @@ func TestNodeRootProvenanceAdmitsBeforeCreation(t *testing.T) {
 	t.Cleanup(func() { nodeRootEvidence = original })
 	for _, measured := range []bool{true, false} {
 		nodeRootEvidence = func(string) bool { return measured }
-		p, _ := newCachedPlugin(&config{Policy: policyConfig{Mode: ModeFailClosed}, Allowlist: allowlistConfig{Pull: pullConfig{URL: "https://cds"}}}, al)
+		p, _ := newCachedPlugin(&config{Policy: policyConfig{Mode: ModeFailClosed}, Allowlist: allowlistConfig{Pull: pullConfig{URL: "https://ta"}}}, al)
 		p.SetReady()
 		pod := makePod("default", "pod")
 		pod.Uid = "pod-uid"
@@ -123,7 +123,7 @@ func TestNodeRootMissingOnlyForNodeRootEntries(t *testing.T) {
 			if err := al.Normalize(); err != nil {
 				t.Fatal(err)
 			}
-			p, _ := newCachedPlugin(&config{Policy: policyConfig{Mode: ModeFailClosed}, Allowlist: allowlistConfig{Pull: pullConfig{URL: "https://cds"}}}, al)
+			p, _ := newCachedPlugin(&config{Policy: policyConfig{Mode: ModeFailClosed}, Allowlist: allowlistConfig{Pull: pullConfig{URL: "https://ta"}}}, al)
 			var logs bytes.Buffer
 			p.logger = slog.New(slog.NewTextHandler(&logs, nil))
 			digest, err := allowlist.HostSourceDigest(file)

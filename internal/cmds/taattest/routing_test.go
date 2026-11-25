@@ -539,7 +539,7 @@ func TestCheckRoutingFlags(t *testing.T) {
 	base := config{attestationAPIURL: "http://127.0.0.1:9"}
 	routed := func(edit func(*config)) config {
 		c := base
-		c.routing = routingConfig{taURL: "https://cds:8443", pollInterval: time.Second, backendTimeout: time.Hour, host: "127.0.0.1", port: 8802}
+		c.routing = routingConfig{taURL: "https://ta:8443", pollInterval: time.Second, backendTimeout: time.Hour, host: "127.0.0.1", port: 8802}
 		if edit != nil {
 			edit(&c)
 		}
@@ -551,9 +551,9 @@ func TestCheckRoutingFlags(t *testing.T) {
 		wantSub string
 	}{
 		{"routed", routed(nil), ""},
-		{"no cds", routed(func(c *config) { c.routing.taURL = "" }), "--ta-url is required"},
+		{"no Trust Authority", routed(func(c *config) { c.routing.taURL = "" }), "--ta-url is required"},
 		{"tunnel budget under one request", routed(func(c *config) { c.routing.tunnelBudget = quantityFlag{bytes: oneRequestBudget - 1, set: true} }), "--tunnel-budget"},
-		{"cds without attestation api", routed(func(c *config) { c.attestationAPIURL = "" }), "--attestation-api-url"},
+		{"Trust Authority without attestation api", routed(func(c *config) { c.attestationAPIURL = "" }), "--attestation-api-url"},
 		{"non-loopback routing host", routed(func(c *config) { c.routing.host = "0.0.0.0" }), "loopback"},
 		{"routing port above 65535", routed(func(c *config) { c.routing.port = 65536 }), "--routing-port must be between"},
 		{"negative routing port", routed(func(c *config) { c.routing.port = -1 }), "--routing-port must be between"},
@@ -561,7 +561,7 @@ func TestCheckRoutingFlags(t *testing.T) {
 		{"zero backend timeout", routed(func(c *config) { c.routing.backendTimeout = 0 }), "--backend-timeout"},
 		{"negative backend timeout", routed(func(c *config) { c.routing.backendTimeout = -time.Second }), "--backend-timeout"},
 		{"publish routes", routed(func(c *config) { c.routing.publish = true }), ""},
-		{"publish routes without cds", routed(func(c *config) { c.routing.publish = true; c.routing.taURL = "" }), "--publish-routes requires --ta-url"},
+		{"publish routes without a Trust Authority", routed(func(c *config) { c.routing.publish = true; c.routing.taURL = "" }), "--publish-routes requires --ta-url"},
 		{"measured policies", routed(func(c *config) { c.measuredPolicies = "/run/nri/measured-policies" }), ""},
 		{"default reserved paths", routed(func(c *config) { c.routing.reservedPaths = defaultReservedPaths }), ""},
 		{"reserved path /a//b", routed(func(c *config) { c.routing.reservedPaths = []string{"/ok", "/a//b"} }), "--reserved-paths"},
@@ -587,7 +587,7 @@ func TestCheckRoutingFlags(t *testing.T) {
 }
 
 func TestW6OperatorKeySource(t *testing.T) {
-	ta, err := routing.NewTAClient("https://cds:8443", http.DefaultClient)
+	ta, err := routing.NewTAClient("https://ta:8443", http.DefaultClient)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -646,7 +646,7 @@ func TestRoutingRefusesAnUnpinnedTA(t *testing.T) {
 	cfg := routedRunConfig(t, freePort(t))
 	cfg.routing.imagePolicyFile = ""
 	if _, err := newRoutingEngine(t.Context(), cfg, NewBindings(), slog.New(slog.DiscardHandler)); !errors.Is(err, cmdsutil.ErrTAPinUnbound) {
-		t.Fatalf("newRoutingEngine() = %v, want errors.Is cmdsutil.ErrCDSPinUnbound", err)
+		t.Fatalf("newRoutingEngine() = %v, want errors.Is cmdsutil.ErrTAPinUnbound", err)
 	}
 }
 

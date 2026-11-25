@@ -48,7 +48,7 @@ func TestParsePinsAcceptsAPinnedTA(t *testing.T) {
 // A Trust Authority is pinned to the configuration it runs on, so a document naming only
 // its image admits any Trust Authority VM.
 func TestParsePinsRejectsAPinWithoutALaunchBinding(t *testing.T) {
-	unbound := `{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"cds","measurement":"` + testutil.TestMeasurement + `"}]}`
+	unbound := `{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"ta","measurement":"` + testutil.TestMeasurement + `"}]}`
 	cfg := Config{MeasurementsConfigJSON: unbound}
 	if _, err := cfg.ParsePins(t.Context()); err == nil || !strings.Contains(err.Error(), "launch file") {
 		t.Fatalf("error = %v, want a launch-binding refusal", err)

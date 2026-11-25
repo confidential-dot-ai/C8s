@@ -42,13 +42,13 @@ import (
 func TestTAHTTPClientRejectsPlainHTTP(t *testing.T) {
 	// A non-https --ta-url must be refused, not quietly served over a client
 	// that skips armTLS attestation of Trust Authority.
-	for _, scheme := range []string{"http://cds:8443", "cds:8443", "tcp://cds:8443"} {
+	for _, scheme := range []string{"http://ta:8443", "ta:8443", "tcp://ta:8443"} {
 		cfg := config{
 			TAURL:             scheme,
 			AttestationApiURL: "http://attestation-api:8400",
 		}
 		if _, err := taHTTPClient(t.Context(), cfg); err == nil {
-			t.Fatalf("cdsHTTPClient(%q) succeeded, want error for non-https scheme", scheme)
+			t.Fatalf("taHTTPClient(%q) succeeded, want error for non-https scheme", scheme)
 		}
 	}
 }
@@ -64,12 +64,12 @@ func TestRunRequiresATAEndpoint(t *testing.T) {
 
 func TestTAHTTPClientUsesARMTLSForHTTPS(t *testing.T) {
 	client, err := taHTTPClient(t.Context(), config{
-		TAURL:                  "https://cds:8443",
+		TAURL:                  "https://ta:8443",
 		MeasurementsConfigJSON: testTAPin,
 		AttestationApiURL:      "http://attestation-api:8400",
 	})
 	if err != nil {
-		t.Fatalf("cdsHTTPClient: %v", err)
+		t.Fatalf("taHTTPClient: %v", err)
 	}
 	if client == http.DefaultClient {
 		t.Fatal("client = http.DefaultClient, want armTLS client")
@@ -142,7 +142,7 @@ func TestBuildDiscoveryDocumentIncludesCertificateAndEvidence(t *testing.T) {
 
 func TestValidateConfigRejectsInvalidDiscoveryPublicTLSMode(t *testing.T) {
 	err := validateConfig(config{
-		TAURL:                  "http://cds:8443",
+		TAURL:                  "http://ta:8443",
 		AttestationApiURL:      "http://attestation-api:8400",
 		SAN:                    "confidential-gke.confidential.ai",
 		DiscoveryOutPath:       "/tmp/discovery.json",
@@ -160,7 +160,7 @@ func TestValidateConfigRejectsInvalidDiscoveryPublicTLSMode(t *testing.T) {
 // it.
 func TestValidateConfigAcceptsACMEDiscoveryPublicTLSMode(t *testing.T) {
 	err := validateConfig(config{
-		TAURL:                  "http://cds:8443",
+		TAURL:                  "http://ta:8443",
 		AttestationApiURL:      "http://attestation-api:8400",
 		SAN:                    "confidential-gke.confidential.ai",
 		DiscoveryOutPath:       "/tmp/discovery.json",
@@ -194,7 +194,7 @@ func TestResolveDiscoveryPublicTLSModeFile(t *testing.T) {
 	}
 	// The file's value still passes validateConfig's mode check.
 	cfg = config{
-		TAURL:                      "http://cds:8443",
+		TAURL:                      "http://ta:8443",
 		AttestationApiURL:          "http://attestation-api:8400",
 		SAN:                        "c8s.local",
 		DiscoveryOutPath:           "/tmp/discovery.json",
@@ -262,7 +262,7 @@ func TestDiscoveryLaunchHostnamesFailClosed(t *testing.T) {
 
 func TestValidateConfigRejectsContinueOnInitialErrorWithoutRenewInterval(t *testing.T) {
 	err := validateConfig(config{
-		TAURL:                  "http://cds:8443",
+		TAURL:                  "http://ta:8443",
 		AttestationApiURL:      "http://attestation-api:8400",
 		SAN:                    "confidential-gke.confidential.ai",
 		ContinueOnInitialError: true,
@@ -400,7 +400,7 @@ func TestValidateConfigAccepts(t *testing.T) {
 		{
 			name: "minimal",
 			cfg: config{
-				TAURL:             "http://cds:8443",
+				TAURL:             "http://ta:8443",
 				AttestationApiURL: "http://attestation-api:8400",
 				SAN:               "confidential-gke.confidential.ai",
 			},
@@ -409,14 +409,14 @@ func TestValidateConfigAccepts(t *testing.T) {
 			// A pod the injector selected no SAN for requests none.
 			name: "no san",
 			cfg: config{
-				TAURL:             "http://cds:8443",
+				TAURL:             "http://ta:8443",
 				AttestationApiURL: "http://attestation-api:8400",
 			},
 		},
 		{
 			name: "ip san",
 			cfg: config{
-				TAURL:             "https://cds:8443",
+				TAURL:             "https://ta:8443",
 				AttestationApiURL: "http://attestation-api:8400",
 				SAN:               "10.0.0.1",
 			},
@@ -424,7 +424,7 @@ func TestValidateConfigAccepts(t *testing.T) {
 		{
 			name: "expected workload with an assertion and renew",
 			cfg: config{
-				TAURL:             "https://cds:8443",
+				TAURL:             "https://ta:8443",
 				AttestationApiURL: "http://attestation-api:8400",
 				SAN:               "host.example.com",
 				RenewInterval:     time.Hour,
@@ -434,7 +434,7 @@ func TestValidateConfigAccepts(t *testing.T) {
 		{
 			name: "continue on initial error with renew",
 			cfg: config{
-				TAURL:                  "http://cds:8443",
+				TAURL:                  "http://ta:8443",
 				AttestationApiURL:      "http://attestation-api:8400",
 				SAN:                    "host.example.com",
 				ContinueOnInitialError: true,
@@ -444,7 +444,7 @@ func TestValidateConfigAccepts(t *testing.T) {
 		{
 			name: "discovery webpki",
 			cfg: config{
-				TAURL:                  "http://cds:8443",
+				TAURL:                  "http://ta:8443",
 				AttestationApiURL:      "http://attestation-api:8400",
 				SAN:                    "host.example.com",
 				DiscoveryOutPath:       "/tmp/d.json",
@@ -454,7 +454,7 @@ func TestValidateConfigAccepts(t *testing.T) {
 		{
 			name: "ca watch with ca-out and renew",
 			cfg: config{
-				TAURL:             "http://cds:8443",
+				TAURL:             "http://ta:8443",
 				AttestationApiURL: "http://attestation-api:8400",
 				SAN:               "host.example.com",
 				CAPath:            "/tls/ca.pem",
@@ -474,7 +474,7 @@ func TestValidateConfigAccepts(t *testing.T) {
 
 func TestValidateConfigRejects(t *testing.T) {
 	base := config{
-		TAURL:             "http://cds:8443",
+		TAURL:             "http://ta:8443",
 		AttestationApiURL: "http://attestation-api:8400",
 		SAN:               "host.example.com",
 	}
@@ -483,8 +483,8 @@ func TestValidateConfigRejects(t *testing.T) {
 		mutate func(*config)
 		want   error // nil accepts any error
 	}{
-		{"empty cds url", func(c *config) { c.TAURL = "" }, nil},
-		{"bad cds url", func(c *config) { c.TAURL = "://nope" }, nil},
+		{"empty Trust Authority URL", func(c *config) { c.TAURL = "" }, nil},
+		{"bad Trust Authority URL", func(c *config) { c.TAURL = "://nope" }, nil},
 		{"empty attestation url", func(c *config) { c.AttestationApiURL = "" }, nil},
 		{"url san", func(c *config) { c.SAN = "https://host.example.com" }, nil},
 		{"negative ca watch interval", func(c *config) {
@@ -820,7 +820,7 @@ func TestBuildDiscoveryDocumentRejectsUnparseableCert(t *testing.T) {
 
 func TestNewTAClientInvalidURL(t *testing.T) {
 	if _, _, err := newTAClient(t.Context(), config{TAURL: "://bad"}); err == nil {
-		t.Fatal("newCDSClient succeeded, want error for invalid URL")
+		t.Fatal("newTAClient succeeded, want error for invalid URL")
 	}
 }
 
@@ -1187,7 +1187,7 @@ func TestRunFailsFastWithoutClaimsSocketDir(t *testing.T) {
 	}
 	dir := ramBackedDir(t)
 	err := run(t.Context(), config{
-		TAURL:                  "https://cds:8443",
+		TAURL:                  "https://ta:8443",
 		MeasurementsConfigJSON: testTAPin,
 		AttestationApiURL:      "http://attestation-api:8400",
 		SAN:                    "host.example.com",
@@ -1202,8 +1202,8 @@ func TestRunFailsFastWithoutClaimsSocketDir(t *testing.T) {
 
 func TestRunFailsOnATAPinWithoutALaunchBinding(t *testing.T) {
 	cfg := stagePodEnvironment(t, config{
-		TAURL:                  "https://cds:8443",
-		MeasurementsConfigJSON: `{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"cds","measurement":"` + testutil.TestMeasurement + `"}]}`,
+		TAURL:                  "https://ta:8443",
+		MeasurementsConfigJSON: `{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"ta","measurement":"` + testutil.TestMeasurement + `"}]}`,
 		AttestationApiURL:      "http://attestation-api:8400",
 		SAN:                    "host.example.com",
 	})
@@ -1214,7 +1214,7 @@ func TestRunFailsOnATAPinWithoutALaunchBinding(t *testing.T) {
 
 func TestRunFailsOnUnwritableOutputPath(t *testing.T) {
 	cfg := stagePodEnvironment(t, config{
-		TAURL:             "https://cds:8443",
+		TAURL:             "https://ta:8443",
 		AttestationApiURL: "http://attestation-api:8400",
 		SAN:               "host.example.com",
 	})
@@ -1229,7 +1229,7 @@ func TestRunFailsOnUnwritableOutputPath(t *testing.T) {
 
 func TestRunRejectsASplitCredentialVolume(t *testing.T) {
 	cfg := stagePodEnvironment(t, config{
-		TAURL:             "https://cds:8443",
+		TAURL:             "https://ta:8443",
 		AttestationApiURL: "http://attestation-api:8400",
 		SAN:               "host.example.com",
 	})
@@ -1463,7 +1463,7 @@ func TestMeasuredPoliciesFileDefaultsToSidecarJournal(t *testing.T) {
 func TestRunWithdrawsWhenResumingFails(t *testing.T) {
 	v, _, _ := publishedVolume(t, newTestCA(t))
 	cfg := config{
-		TAURL:                  "https://cds:8443",
+		TAURL:                  "https://ta:8443",
 		MeasurementsConfigJSON: testTAPin,
 		AttestationApiURL:      "http://attestation-api:8400",
 		SAN:                    "host.example.com",

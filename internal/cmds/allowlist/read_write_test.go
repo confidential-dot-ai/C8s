@@ -72,7 +72,7 @@ func listFailingTA(t *testing.T) (url string, methods *[]string) {
 // --- validate / client flag handling ---
 
 func TestValidateRejectsBadOutputFormat(t *testing.T) {
-	_, _, err := runCmd("list", "--url", "http://cds.example", "--insecure", "-o", "yaml")
+	_, _, err := runCmd("list", "--url", "http://ta.example", "--insecure", "-o", "yaml")
 	if err == nil || !strings.Contains(err.Error(), "--output must be text or json") {
 		t.Fatalf("expected an output-format error, got %v", err)
 	}
@@ -86,7 +86,7 @@ func TestClientRejectsInvalidURL(t *testing.T) {
 }
 
 func TestClientRejectsUnknownScheme(t *testing.T) {
-	_, _, err := runCmd("list", "--url", "ftp://cds.example")
+	_, _, err := runCmd("list", "--url", "ftp://ta.example")
 	if err == nil || !strings.Contains(err.Error(), "scheme must be http or https") {
 		t.Fatalf("expected a scheme error, got %v", err)
 	}
@@ -463,7 +463,7 @@ func TestUploadGuardOnByDefault(t *testing.T) {
 }
 
 func TestUploadRejectsBadFile(t *testing.T) {
-	if _, _, err := runCmd("upload", filepath.Join(t.TempDir(), "nope.json"), "--url", "http://cds.example", "--insecure"); err == nil {
+	if _, _, err := runCmd("upload", filepath.Join(t.TempDir(), "nope.json"), "--url", "http://ta.example", "--insecure"); err == nil {
 		t.Fatal("expected a missing upload file to fail")
 	}
 }

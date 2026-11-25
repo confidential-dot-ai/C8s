@@ -22,7 +22,7 @@ func TestTAPinsRequireALaunchBinding(t *testing.T) {
 		t.Fatal("complete policy produced a second flat fallback")
 	}
 
-	unbound := `{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"cds","measurement":"` + testutil.TestMeasurement + `"}]}`
+	unbound := `{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"ta","measurement":"` + testutil.TestMeasurement + `"}]}`
 	for name, cfg := range map[string]config{
 		"no launch file":   {MeasurementsConfigJSON: unbound},
 		"no pin at all":    {},

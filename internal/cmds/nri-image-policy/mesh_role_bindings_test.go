@@ -15,7 +15,7 @@ func TestMeshRoleBindingsAfterCredentialEndpoint(t *testing.T) {
 	cfg.Allowlist.NodeTCB = false
 	cfg.Allowlist.Base = roleBase(t, pushDigestB, allowlist.RoleCredentials, []string{"/usr/local/bin/c8s", "get-cert"})
 	cfg.WorkloadClaims.AdvertiseHost = "10.0.0.7"
-	cfg.Allowlist.Pull = installedTAAddress(t, "cds.example.org:8443").Pull
+	cfg.Allowlist.Pull = installedTAAddress(t, "ta.example.org:8443").Pull
 	cfg.Allowlist.Pull.Interval = time.Second
 	cfg.Allowlist.Pull.Timeout = time.Second
 	cfg.Allowlist.Pull.AttestationApiURL = "http://127.0.0.1:8400"

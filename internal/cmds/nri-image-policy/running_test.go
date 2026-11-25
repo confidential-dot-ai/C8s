@@ -508,7 +508,7 @@ func TestEveryStartInAPodOffItsSetsIsRefused(t *testing.T) {
 func freshnessPlugin(t *testing.T) (*plugin, *[]string) {
 	t.Helper()
 	p, _, killed := revocationPlugin(enforcing)
-	p.cfg.Allowlist.Pull.URL = "https://cds.example"
+	p.cfg.Allowlist.Pull.URL = "https://ta.example"
 	p.policy.freshness = newFreshness(p.policy.clock.local)
 	return p, killed
 }

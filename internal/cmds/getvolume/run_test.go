@@ -48,7 +48,7 @@ func TestParseVolumeSpecAcceptsTheLongestServableName(t *testing.T) {
 
 func validConfig() config {
 	return config{
-		TAURL:                  "https://cds.example",
+		TAURL:                  "https://ta.example",
 		AttestationApiURL:      "http://127.0.0.1:8400",
 		MeasurementsConfigJSON: testutil.TAPinDocument(testutil.TestMeasurement, testutil.TALaunchFile),
 		Attempts:               0,
@@ -67,15 +67,15 @@ func TestValidate(t *testing.T) {
 	}
 
 	for name, mutate := range map[string]func(*config){
-		"cds url":           func(c *config) { c.TAURL = "" },
-		"plaintext cds url": func(c *config) { c.TAURL = "http://cds.example" },
-		"attestation api":   func(c *config) { c.AttestationApiURL = "" },
-		"no volumes":        func(c *config) { c.Volumes = nil },
-		"socket dir":        func(c *config) { c.SocketDir = "" },
-		"attempts":          func(c *config) { c.Attempts = -1 },
-		"retry interval":    func(c *config) { c.RetryInterval = 0 },
-		"request timeout":   func(c *config) { c.RequestTimeout = 0 },
-		"inventory timeout": func(c *config) { c.InventoryTimeout = 0 },
+		"Trust Authority URL":           func(c *config) { c.TAURL = "" },
+		"plaintext Trust Authority URL": func(c *config) { c.TAURL = "http://ta.example" },
+		"attestation api":               func(c *config) { c.AttestationApiURL = "" },
+		"no volumes":                    func(c *config) { c.Volumes = nil },
+		"socket dir":                    func(c *config) { c.SocketDir = "" },
+		"attempts":                      func(c *config) { c.Attempts = -1 },
+		"retry interval":                func(c *config) { c.RetryInterval = 0 },
+		"request timeout":               func(c *config) { c.RequestTimeout = 0 },
+		"inventory timeout":             func(c *config) { c.InventoryTimeout = 0 },
 		"repeated name": func(c *config) {
 			c.Volumes = append(c.Volumes, volumeRequest{Name: "weights", Path: "/tenant-a/volumes/other"})
 		},
@@ -90,12 +90,12 @@ func TestValidate(t *testing.T) {
 
 func TestValidateTrimsURL(t *testing.T) {
 	cfg := validConfig()
-	cfg.TAURL = "https://cds.example/"
+	cfg.TAURL = "https://ta.example/"
 	if err := validate(&cfg); err != nil {
 		t.Fatalf("validate: %v", err)
 	}
-	if cfg.TAURL != "https://cds.example" {
-		t.Fatalf("CDSURL = %q, want the trailing slash gone", cfg.TAURL)
+	if cfg.TAURL != "https://ta.example" {
+		t.Fatalf("TAURL = %q, want the trailing slash gone", cfg.TAURL)
 	}
 }
 
@@ -135,7 +135,7 @@ func TestDaemonClientSelectsCompiledShape(t *testing.T) {
 // pinning nothing is not an acceptable fallback for it.
 func TestRunRejectsAPinWithoutALaunchBinding(t *testing.T) {
 	cfg := validConfig()
-	cfg.MeasurementsConfigJSON = `{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"cds","measurement":"` + testutil.TestMeasurement + `"}]}`
+	cfg.MeasurementsConfigJSON = `{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"ta","measurement":"` + testutil.TestMeasurement + `"}]}`
 	if err := run(t.Context(), cfg); err == nil || !strings.Contains(err.Error(), "launch file") {
 		t.Fatalf("err = %v, want a launch-binding refusal", err)
 	}

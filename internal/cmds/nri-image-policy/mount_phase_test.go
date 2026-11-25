@@ -28,7 +28,7 @@ func TestMountAdmissionUsesFinalStartSpec(t *testing.T) {
 			al.Workloads["w"].Containers[0].Mounts = tc.policy
 			p, _ := newCachedPlugin(&config{
 				Policy:    policyConfig{Mode: ModeFailClosed},
-				Allowlist: allowlistConfig{Pull: pullConfig{URL: "https://cds"}},
+				Allowlist: allowlistConfig{Pull: pullConfig{URL: "https://ta"}},
 			}, al)
 			p.SetReady()
 			p.inventory = newAdmissionInventory(t.TempDir())
@@ -101,7 +101,7 @@ func TestExactHostMountAdmissionUsesFinalStartSpec(t *testing.T) {
 			}
 			p, _ := newCachedPlugin(&config{
 				Policy:    policyConfig{Mode: ModeFailClosed},
-				Allowlist: allowlistConfig{Pull: pullConfig{URL: "https://cds"}},
+				Allowlist: allowlistConfig{Pull: pullConfig{URL: "https://ta"}},
 			}, al)
 			p.SetReady()
 			p.inventory = newAdmissionInventory(t.TempDir())

@@ -644,7 +644,7 @@ func TestMalformedChainBlockOnlyRefusesAttestLB(t *testing.T) {
 	if b := fetchBundle(t, ts.URL, ck, bytes.Repeat([]byte{0x5a}, 32)); b.Version != types.BindingAttestPQ {
 		t.Fatalf("attest-pq bundle version = %q, want %q", b.Version, types.BindingAttestPQ)
 	}
-	// The attest-lb refusal itself is the "cds malformed chain block" case of
+	// The attest-lb refusal itself is the "ta malformed chain block" case of
 	// TestAttestLBServingLeafAdmission.
 }
 

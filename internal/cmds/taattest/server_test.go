@@ -499,7 +499,7 @@ func TestTACertRouteAbsentWithoutCert(t *testing.T) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404 when no cds cert is configured", resp.StatusCode)
+		t.Fatalf("status = %d, want 404 when no Trust Authority cert is configured", resp.StatusCode)
 	}
 }
 

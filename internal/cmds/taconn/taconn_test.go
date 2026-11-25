@@ -33,7 +33,7 @@ func TestValidateRequiresURL(t *testing.T) {
 	if err := o.Validate(); err == nil {
 		t.Fatal("whitespace-only --url was accepted")
 	}
-	o.URL = "https://cds.example"
+	o.URL = "https://ta.example"
 	if err := o.Validate(); err != nil {
 		t.Fatalf("a real --url was rejected: %v", err)
 	}
@@ -42,7 +42,7 @@ func TestValidateRequiresURL(t *testing.T) {
 // Plaintext http reaches an endpoint that has proved nothing, so it needs
 // --insecure. This is the gate both operator CLIs depend on.
 func TestHTTPClientRefusesPlaintextWithoutInsecure(t *testing.T) {
-	o := Options{URL: "http://cds.example:8080"}
+	o := Options{URL: "http://ta.example:8080"}
 	if _, err := o.HTTPClient(context.Background()); err == nil || !strings.Contains(err.Error(), "refusing plaintext") {
 		t.Fatalf("expected a plaintext refusal, got %v", err)
 	}
@@ -99,7 +99,7 @@ func closedAddr(t *testing.T) string {
 func TestHTTPClientRejectsBadURL(t *testing.T) {
 	for _, tc := range []struct{ name, url, want string }{
 		{"no host", "https://", "invalid --url"},
-		{"unknown scheme", "ftp://cds.example", "scheme must be http or https"},
+		{"unknown scheme", "ftp://ta.example", "scheme must be http or https"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			o := Options{URL: tc.url}
@@ -235,10 +235,10 @@ func TestBindFlagsNamesEveryOption(t *testing.T) {
 	if fs.Lookup("measurements-config") != nil {
 		t.Fatal("removed --measurements-config alias is still bound")
 	}
-	if err := fs.Parse([]string{"--url", "https://cds.example", "--operator-key", "/k.pem", "--image-policy-file", "policy.json"}); err != nil {
+	if err := fs.Parse([]string{"--url", "https://ta.example", "--operator-key", "/k.pem", "--image-policy-file", "policy.json"}); err != nil {
 		t.Fatal(err)
 	}
-	if o.URL != "https://cds.example" || o.OperatorKey != "/k.pem" || o.MeasurementsConfig != "policy.json" {
+	if o.URL != "https://ta.example" || o.OperatorKey != "/k.pem" || o.MeasurementsConfig != "policy.json" {
 		t.Fatalf("parsed into %+v", o)
 	}
 }
@@ -250,7 +250,7 @@ func TestBindFlagsNamesEveryOption(t *testing.T) {
 func TestSignerRefusesAnUnpinnedEndpoint(t *testing.T) {
 	key := writeTestKey(t)
 
-	o := Options{URL: "https://cds.example:8443", OperatorKey: key}
+	o := Options{URL: "https://ta.example:8443", OperatorKey: key}
 	_, err := o.Signer()
 	if err == nil || !strings.Contains(err.Error(), "unpinned endpoint") {
 		t.Fatalf("err = %v, want a refusal naming the unpinned endpoint", err)
@@ -278,7 +278,7 @@ func TestSignerRefusesAnUnpinnedEndpoint(t *testing.T) {
 	// Plaintext is HTTPClient's call, not this gate's: without --insecure it is
 	// refused there, and that error is the specific one.
 	o.MeasurementsFile = ""
-	o.URL = "http://cds.example:8080"
+	o.URL = "http://ta.example:8080"
 	if _, err := o.Signer(); err != nil {
 		t.Fatalf("plaintext must fall through to the HTTPClient refusal, got %v", err)
 	}
@@ -289,14 +289,14 @@ func TestSignerRefusesAnUnpinnedEndpoint(t *testing.T) {
 // digest names only an image.
 func TestHTTPClientRequiresALaunchBoundPinForADirectTA(t *testing.T) {
 	unbound := filepath.Join(t.TempDir(), "unbound.json")
-	document := `{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"cds","measurement":"` + testutil.TestMeasurement + `"}]}`
+	document := `{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"ta","measurement":"` + testutil.TestMeasurement + `"}]}`
 	if err := os.WriteFile(unbound, []byte(document), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	for name, o := range map[string]Options{
-		"image only":  {URL: "https://cds.example:8443", MeasurementsConfig: unbound, DirectTA: true},
-		"flat digest": {URL: "https://cds.example:8443", Measurements: []string{strings.Repeat("ab", 48)}, DirectTA: true},
-		"digest file": {URL: "https://cds.example:8443", MeasurementsFile: writeMeasurementsFile(t, strings.Repeat("cd", 48)), DirectTA: true},
+		"image only":  {URL: "https://ta.example:8443", MeasurementsConfig: unbound, DirectTA: true},
+		"flat digest": {URL: "https://ta.example:8443", Measurements: []string{strings.Repeat("ab", 48)}, DirectTA: true},
+		"digest file": {URL: "https://ta.example:8443", MeasurementsFile: writeMeasurementsFile(t, strings.Repeat("cd", 48)), DirectTA: true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			o.Timeout = time.Second
@@ -336,7 +336,7 @@ func writeMeasurementsFile(t *testing.T, hexes ...string) string {
 func TestCheckEndpointRefusesWithoutNetwork(t *testing.T) {
 	for name, o := range map[string]Options{
 		"plaintext without insecure": {URL: "http://" + closedAddr(t)},
-		"unknown scheme":             {URL: "ftp://cds.example"},
+		"unknown scheme":             {URL: "ftp://ta.example"},
 		"no host":                    {URL: "https://"},
 		"bad measurement":            {URL: "https://" + closedAddr(t), Measurements: []string{"nothex"}},
 		"unpinned https":             {URL: "https://" + closedAddr(t)},
