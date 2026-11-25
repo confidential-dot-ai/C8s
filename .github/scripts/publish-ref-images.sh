@@ -227,7 +227,7 @@ else
   fi
 fi
 
-image_args=(-f "inputs[c8s_ref]=$short")
+image_args=(-f "inputs[c8s_ref]=$short" -f "inputs[expected_sha]=$sha")
 if [ -n "$confos_ref" ]; then
   image_args+=(-f "inputs[confos_ref]=$confos_ref")
 fi

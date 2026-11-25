@@ -483,8 +483,9 @@ read their logs with `gh run view <run> --attempt <attempt> --log --repo <repo>`
 The component fields are empty when its tags already existed. The receipt
 requires Python 3 and is installed atomically without replacing an existing path.
 
-Older targets publishing these worker and `guests/ta` references still receive
-receipts; targets using `guests/ta` require their corresponding publisher.
+This publisher requires the manual workflow's `expected_sha` input and source
+guard: a moved dispatch branch fails before any guest build or push. Older
+targets without that input require their corresponding publisher.
 Only targets containing the sync log records support component-pin verification.
 The receipt's guest digests alone do not establish the component map inside
 those guests.

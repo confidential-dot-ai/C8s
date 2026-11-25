@@ -5,6 +5,10 @@ run-name: c8s-image (manual dispatch)
 on:
   workflow_dispatch:
     inputs:
+      expected_sha:
+        description: "Require this full workflow source SHA and its matching component ref before building."
+        type: string
+        default: ""
       c8s_ref:
         description: "Bake c8s components from this published commit (short SHA) instead of the triggering commit. Rebuilds a release against the current CONFOS_REF; pushes only the :sha-<ref>-<tee>[-kubevirt] tags, leaving the floating tags alone."
         required: false
@@ -27,7 +31,23 @@ concurrency:
   group: c8s-image-entrypoint-${{ github.run_id }}
   cancel-in-progress: false
 jobs:
+  verify-source:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify the requested source
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          SOURCE_SHA: ${{ github.sha }}
+          C8S_REF: ${{ inputs.c8s_ref }}
+        run: |
+          if [[ -n "$EXPECTED_SHA" ]]; then
+            if [[ ! "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ || "$SOURCE_SHA" != "$EXPECTED_SHA" || "$C8S_REF" != "${EXPECTED_SHA:0:7}" ]]; then
+              echo '::error::workflow source and component ref must match the requested SHA'
+              exit 1
+            fi
+          fi
   build-and-push:
+    needs: verify-source
     permissions:
       contents: read
       packages: write

@@ -197,7 +197,7 @@ grep -q 'component tags missing at :c7cf2f3' <<<"$out" || fail "missing componen
 order=$(sed -n 's|.*actions/workflows/\([^/]*\)/dispatches.*|\1|p' "$calls" | tr '\n' ' ')
 [ "$order" = "docker.yml c8s-image-manual.yml " ] || fail "dispatch order: $order"
 grep -Fq 'actions/workflows/docker.yml/dispatches -H X-GitHub-Api-Version: 2022-11-28 -f ref=build/c7cf2f3 -F return_run_details=true' "$calls" || fail "docker dispatch did not use the build branch"
-grep -Fq 'actions/workflows/c8s-image-manual.yml/dispatches -H X-GitHub-Api-Version: 2022-11-28 -f ref=build/c7cf2f3 -F return_run_details=true -f inputs[c8s_ref]=c7cf2f3 -f inputs[confos_ref]=af8cef0e937e4cc300ddd30c85af6ccd8cb9be91' "$calls" \
+grep -Fq 'actions/workflows/c8s-image-manual.yml/dispatches -H X-GitHub-Api-Version: 2022-11-28 -f ref=build/c7cf2f3 -F return_run_details=true -f inputs[c8s_ref]=c7cf2f3 -f inputs[expected_sha]=c7cf2f38de3b035fbce00fe22d2451e77cdcefa0 -f inputs[confos_ref]=af8cef0e937e4cc300ddd30c85af6ccd8cb9be91' "$calls" \
   || fail "image dispatch arguments differ: $(grep 'c8s-image-manual' "$calls")"
 grep -q 'guests/worker:sha-c7cf2f3-tdx$' <<<"$out" || fail "artifact tag not printed"
 grep -q 'guests/worker:sha-c7cf2f3-sev-snp-kubevirt$' <<<"$out" || fail "KubeVirt tag not printed"
@@ -246,7 +246,7 @@ jq -e --arg sha "$sha" ' .source == $sha and .componentRun == "" and .componentA
 ! grep -q '/tags/list' "$calls" || fail "publication depends on a paginated tag listing"
 grep -q 'branch build/c7cf2f3 already at c7cf2f3' <<<"$out" || fail "existing branch not reused"
 ! grep -q 'actions/workflows/docker.yml/dispatches' "$calls" || fail "docker dispatched although every tag exists"
-grep -Fq 'actions/workflows/c8s-image-manual.yml/dispatches -H X-GitHub-Api-Version: 2022-11-28 -f ref=build/c7cf2f3 -F return_run_details=true -f inputs[c8s_ref]=c7cf2f3 --jq .workflow_run_id' "$calls" || fail "production image dispatch differs"
+grep -Fq 'actions/workflows/c8s-image-manual.yml/dispatches -H X-GitHub-Api-Version: 2022-11-28 -f ref=build/c7cf2f3 -F return_run_details=true -f inputs[c8s_ref]=c7cf2f3 -f inputs[expected_sha]=c7cf2f38de3b035fbce00fe22d2451e77cdcefa0 --jq .workflow_run_id' "$calls" || fail "production image dispatch differs"
 grep -q 'guests/worker:sha-c7cf2f3-tdx$' <<<"$out" || fail "production artifact tag not printed"
 pass
 
