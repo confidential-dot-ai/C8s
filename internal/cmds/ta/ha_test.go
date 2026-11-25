@@ -469,6 +469,7 @@ func TestValidateHAConfig(t *testing.T) {
 		"zero store timeout":                    {set, func(h *haConfig) { h.storeTimeout = 0 }},
 		"negative store timeout":                {set, func(h *haConfig) { h.storeTimeout = -time.Second }},
 		"--ha-self without an ha block":         {&taconfig.Config{}, func(h *haConfig) { h.self = "a:1" }},
+		"input without an ha block":             {&taconfig.Config{}, func(h *haConfig) { h.inputConfigMap = "policy-input" }},
 		"--ha-store-etcd without an ha block":   {&taconfig.Config{}, func(h *haConfig) { h.storeEtcd = "etcd.yaml" }},
 		"--ha-store-memory without an ha block": {&taconfig.Config{}, func(h *haConfig) { h.storeMemory = true }},
 	} {
