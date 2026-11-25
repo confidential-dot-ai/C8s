@@ -168,6 +168,9 @@ reset
 expect_failure bash "$script" --sha c7cf2f38 | grep -q 'full 40-hex' || fail "short --sha accepted"
 expect_failure bash "$script" --sha "$sha" --branch '../x' | grep -q 'safe branch' || fail "unsafe branch accepted"
 expect_failure bash "$script" --sha "$sha" --confos-ref '@{bad}' | grep -q 'safe Git ref' || fail "unsafe confos ref accepted"
+for path in '' --dry-run --sha --repo --branch --confos-ref --receipt -h --help 'publication.json/'; do
+  expect_failure bash "$script" --sha "$sha" --receipt "$path" | grep -q 'needs a file path' || fail "invalid receipt accepted: $path"
+done
 touch "$fixture_dir/existing-receipt"
 expect_failure bash "$script" --sha "$sha" --receipt "$fixture_dir/existing-receipt" | grep -q 'receipt already exists' || fail "existing receipt accepted"
 ln -s "$fixture_dir/absent" "$fixture_dir/symlink-receipt"
@@ -296,8 +299,6 @@ expect_failure bash "$script" --sha "$sha" | grep -q 'dispatch did not return a 
 ! grep -q 'gh run list\|gh run watch' "$calls" || fail "another run could be selected"
 pass
 
-# --- unsupported workflow versions cause no partial publication -------------
-
 for missing in '.on.workflow_dispatch.inputs.expected_sha' '.jobs.verify-source' '.jobs.build-and-push.needs'; do
   reset
   touch "$state/commit-known"
@@ -312,11 +313,11 @@ reset
 touch "$state/commit-known"
 yq '.jobs.build-and-push.needs = ["verify-source"]' "$FAKE_MANUAL_WORKFLOW" >"$state/workflow"
 mkdir "$fixture_dir/-out"
-(cd "$fixture_dir" && bash "$script" --sha "$sha" --receipt '-out/-publication.json') >/dev/null
-jq -e '.guestAttempt == "1"' "$fixture_dir/-out/-publication.json" >/dev/null || fail "list dependency or leading-dash receipt failed"
+for path in '-out/-publication.json' './--dry-run'; do
+  (cd "$fixture_dir" && bash "$script" --sha "$sha" --receipt "$path") >/dev/null
+  jq -e '.guestAttempt == "1"' "$fixture_dir/$path" >/dev/null || fail "list dependency or leading-dash receipt failed"
+done
 pass
-
-# --- attempt one stays pinned through polling and later reruns ----------------
 
 reset
 touch "$state/commit-known" "$state/attempt-pending"
@@ -356,8 +357,6 @@ for failure in moved-tag conflicting-log; do
   [ ! -e "$fixture_dir/race-receipt" ] || fail "mismatched publication wrote a receipt"
   pass
 done
-
-# --- an interrupted JSON writer leaves the receipt destination absent -------
 
 reset
 touch "$state/commit-known" "$state/receipt-fails"

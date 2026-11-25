@@ -76,7 +76,10 @@ while [ $# -gt 0 ]; do
     --confos-ref) confos_ref="${2:-}"; shift 2 ;;
     --branch) branch="${2:-}"; shift 2 ;;
     --repo) repo="${2:-}"; shift 2 ;;
-    --receipt) receipt="${2:-}"; [ -n "$receipt" ] || die "--receipt needs a path"; shift 2 ;;
+    --receipt)
+      receipt="${2:-}"
+      case "$receipt" in ''|*/|--sha|--repo|--branch|--confos-ref|--receipt|--dry-run|-h|--help) die "--receipt needs a file path; use ./ for option-shaped names" ;; esac
+      shift 2 ;;
     --dry-run) dry_run=true; shift ;;
     -h|--help) usage ;;
     *) die "unknown argument: $1" ;;
