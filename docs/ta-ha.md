@@ -58,7 +58,7 @@ file with no `--replica` runs one TA, which is the deployment
 | Where | Syntax | Who reads it |
 |---|---|---|
 | `ha.replicas` entry | a DNS name or an IPv4 address, no port | every replica, to find the others |
-| `cds.address` in a node document | `<host>:<port>` | a node's credential clients |
+| `ta.address` in a node document | `<host>:<port>` | a node's credential clients |
 | `--url`, `--target`, `--cluster` of the `ha` commands | `<host>[:8443]` | the operator's CLI |
 
 A replica entry must resolve to the replicas themselves. One name may resolve
@@ -77,7 +77,7 @@ still tells them apart. armTLS authenticates a replica by its evidence, never
 by the name. A name that resolves to several addresses is reached at each of
 them, as before.
 
-A node names its cluster's TA by one `cds.address`. Several replicas behind
+A node names its cluster's TA by one `ta.address`. Several replicas behind
 that one name, or a load balancer in front of them, is what makes a client's
 request survive the loss of a replica: ordinary DNS resolution and the
 client's own retry do the failover.

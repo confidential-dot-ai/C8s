@@ -64,7 +64,7 @@ func TestTAParseRefusesAPinThatIsNoIdentity(t *testing.T) {
 		measurements string
 		want         string
 	}{
-		{name: "malformed measurements", measurements: "{", want: "cds.measurements"},
+		{name: "malformed measurements", measurements: "{", want: "ta.measurements"},
 		{name: "pin without a launch file", measurements: digestOnlyPin, want: "launch file"},
 		{name: "tdx pin by mrtd alone", measurements: tdxPin(`[null,null,null,null]`), want: "leaves RTMR[1] unpinned"},
 		{name: "tdx pin without rtmr2", measurements: tdxPin(fmt.Sprintf(`[null,%q,null,null]`, testutil.TestMeasurement)), want: "leaves RTMR[2] unpinned"},

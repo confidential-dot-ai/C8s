@@ -35,12 +35,12 @@ func cluster(t *testing.T, key *ecdsa.PrivateKey) []byte {
 		Type:  "PUBLIC KEY",
 		Bytes: der,
 	})
-	return []byte("schemaVersion: c8s-cds/v1\nclusterID: " + clusterID + "\noperatorPublicKeys: |\n  " +
+	return []byte("schemaVersion: c8s-ta/v1\nclusterID: " + clusterID + "\noperatorPublicKeys: |\n  " +
 		strings.ReplaceAll(strings.TrimRight(string(block), "\n"), "\n", "\n  ") + "\nha:\n  voters: 3\n")
 }
 
 // singleTA is the launch file of a Trust Authority that runs alone.
-const singleTA = "schemaVersion: c8s-cds/v1\nclusterID: " + clusterID + "\n"
+const singleTA = "schemaVersion: c8s-ta/v1\nclusterID: " + clusterID + "\n"
 
 func operatorKey(t *testing.T) *ecdsa.PrivateKey {
 	t.Helper()

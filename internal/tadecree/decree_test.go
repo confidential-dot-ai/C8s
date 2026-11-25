@@ -18,7 +18,7 @@ import (
 
 const (
 	clusterID  = "lane"
-	launchFile = "schemaVersion: c8s-cds/v1\nclusterID: lane\n"
+	launchFile = "schemaVersion: c8s-ta/v1\nclusterID: lane\n"
 )
 
 func operatorKey(t *testing.T) (*ecdsa.PrivateKey, []*ecdsa.PublicKey) {

@@ -9,7 +9,7 @@ import (
 
 // TALaunchFile is the configuration document a test Trust Authority VM is launched with.
 // Its contents matter only to a test that also reports the matching binding.
-const TALaunchFile = "schemaVersion: c8s-cds/v1\nclusterID: lane\n"
+const TALaunchFile = "schemaVersion: c8s-ta/v1\nclusterID: lane\n"
 
 // NextTAImage is the image a Trust Authority pin decree moves a test cluster to.
 const NextTAImage = "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"

@@ -44,7 +44,7 @@ func clusterLaunchFile(t *testing.T, key *ecdsa.PrivateKey) string {
 		Type:  "PUBLIC KEY",
 		Bytes: der,
 	})), "\n")
-	return "schemaVersion: c8s-cds/v1\nclusterID: " + decreeClusterID + "\noperatorPublicKeys: |\n  " +
+	return "schemaVersion: c8s-ta/v1\nclusterID: " + decreeClusterID + "\noperatorPublicKeys: |\n  " +
 		strings.ReplaceAll(block, "\n", "\n  ") + "\nha:\n  voters: 3\n"
 }
 

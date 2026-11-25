@@ -26,7 +26,7 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
 )
 
-const taLaunchFile = "schemaVersion: c8s-cds/v1\nclusterID: cluster-one\n"
+const taLaunchFile = "schemaVersion: c8s-ta/v1\nclusterID: cluster-one\n"
 
 func testKey(t *testing.T) (*ecdsa.PrivateKey, string) {
 	t.Helper()

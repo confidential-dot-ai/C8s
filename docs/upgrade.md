@@ -9,6 +9,10 @@ entries reach the nodes only if you publish them through the running TA first,
 which is why the steps are ordered this way
 ([allowlist-and-capabilities.md](allowlist-and-capabilities.md#bootstrap)).
 
+This release reads only a TA launch file whose `schemaVersion` is `c8s-ta/v1`.
+Reinstall a cluster whose TA was launched on another schema, together with its
+TA: this release refuses that launch file, the TA pin and the node documents.
+
 ## Prerequisites
 
 - The operator private key matching the public keys in the TA's measured

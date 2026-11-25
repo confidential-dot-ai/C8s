@@ -21,7 +21,7 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
-const SchemaVersion = "c8s-cds/v1"
+const SchemaVersion = "c8s-ta/v1"
 
 type Config struct {
 	// ClusterID names the cluster. Two clusters sharing an image and operator

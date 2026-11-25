@@ -235,7 +235,7 @@ pod_cvm_secret() {
     mkdir -p "$dir"
     openssl ecparam -genkey -name prime256v1 -noout -out "$dir/pod.key" 2>/dev/null
     echo c8s-it-cloud-token > "$dir/cloud-token"
-    jq --arg cluster "$CLUSTER" '.measurements[].launch_file = "schemaVersion: c8s-cds/v1\nclusterID: \($cluster)\n"' \
+    jq --arg cluster "$CLUSTER" '.measurements[].launch_file = "schemaVersion: c8s-ta/v1\nclusterID: \($cluster)\n"' \
         "$WORKDIR/ta/ta-pin.json" > "$dir/ta.json"
     register="$(printf '%096d' 0)"
     jq -n --arg r "$register" \
@@ -249,7 +249,7 @@ pod_cvm_secret() {
         --argjson memory "$POD_CVM_MEMORY_MIB" \
         '{providerID: $provider, nodeName: $node, namespace: $ns, cloudURL: $cloud,
           cloudTokenFile: "cloud-token", image: "c8s-pod@it", imageManifestFile: "manifest.json",
-          launchKeyFile: "pod.key", cdsAddress: $ta, cdsImagePolicyFile: "ta.json",
+          launchKeyFile: "pod.key", taAddress: $ta, taImagePolicyFile: "ta.json",
           workloadsFile: "workloads.json", clusterID: $cluster, size: "it", location: "it",
           vCPUs: 4, memoryMiB: $memory, maxPods: $pods, verificationTimeoutSeconds: $deadline}' \
         > "$dir/config.json"
