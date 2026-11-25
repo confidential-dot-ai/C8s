@@ -12,6 +12,7 @@ import (
 
 	"golang.org/x/time/rate"
 
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/issuer"
 	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
@@ -281,6 +282,35 @@ func TestWholeDocumentWriteUnconfirmed(t *testing.T) {
 				!strings.Contains(err.Error(), "still serves version "+version+" without it") ||
 				strings.Contains(err.Error(), "nothing was") {
 				t.Fatalf("err = %v, want it to say the write is unconfirmed at version %s", err, version)
+			}
+			if got := cmdsutil.ExitStatus(err); got != cmdsutil.ExitNotConfirmed {
+				t.Fatalf("an unconfirmed write exits %d, want %d", got, cmdsutil.ExitNotConfirmed)
+			}
+		})
+	}
+}
+
+// A write answered 500 whose read-back fails too may have landed: it exits
+// as unconfirmed, not as refused.
+func TestWholeDocumentWriteUnconfirmedWhenTheReadBackFails(t *testing.T) {
+	for _, command := range []string{"upload", "apply"} {
+		t.Run(command, func(t *testing.T) {
+			dir := t.TempDir()
+			keyPath, pub := newOperatorKeypair(t, dir, "op.key")
+			srv, ta := taTestServer(t, []*ecdsa.PublicKey{pub})
+			ta.lost500 = 1
+			ta.afterReplace = func() {
+				ta.mu.Lock()
+				ta.failReads = true
+				ta.mu.Unlock()
+			}
+
+			_, _, err := runCmd(append(wholeDocArgs(t, command), "--url", srv.URL, "--insecure", "--operator-key", keyPath)...)
+			if err == nil || !strings.Contains(err.Error(), "not confirmed") {
+				t.Fatalf("err = %v, want it to say the write is unconfirmed", err)
+			}
+			if got := cmdsutil.ExitStatus(err); got != cmdsutil.ExitNotConfirmed {
+				t.Fatalf("a write whose answer and read-back both failed exits %d, want %d", got, cmdsutil.ExitNotConfirmed)
 			}
 		})
 	}

@@ -61,6 +61,8 @@ type fakeTA struct {
 	lost500 int
 	// fail500 answers this many writes 500 without applying them.
 	fail500 int
+	// failReads answers every read 500.
+	failReads bool
 }
 
 func newFakeTA(pinned []*ecdsa.PublicKey) *fakeTA {
@@ -85,7 +87,12 @@ func (f *fakeTA) handleList(w http.ResponseWriter, _ *http.Request) {
 	f.mu.Lock()
 	body, err := f.al.Canonical()
 	version := f.version
+	failReads := f.failReads
 	f.mu.Unlock()
+	if failReads {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

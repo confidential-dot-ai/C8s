@@ -361,8 +361,7 @@ func conditionalWrite(cmd *cobra.Command, c allowlistclient.Client, doc *pkgallo
 // own heading, since it may still land, anything else under what the command
 // did not do.
 func writeFailure(unconfirmedHeading, refusedHeading string, err error) error {
-	var unconfirmed *unconfirmedError
-	if errors.As(err, &unconfirmed) {
+	if cmdsutil.ExitStatus(err) == cmdsutil.ExitNotConfirmed {
 		return fmt.Errorf("%s: %w", unconfirmedHeading, err)
 	}
 	return fmt.Errorf("%s: %w", refusedHeading, err)
