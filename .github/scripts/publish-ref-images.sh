@@ -26,11 +26,12 @@
 #
 # Usage:
 #   publish-ref-images.sh --sha <40-hex> [--confos-ref <ref>]
-#       [--branch <name>] [--repo <owner/name>] [--dry-run]
+#       [--branch <name>] [--repo <owner/name>] [--receipt <file>] [--dry-run]
 #
 #   --confos-ref   build with this confos commit instead of the pinned one
 #   --branch       build branch name (default: build/<short-sha>)
 #   --repo         GitHub repository (default: confidential-dot-ai/confidential-kubernetes)
+#   --receipt      write source and exact dispatched run IDs after publication succeeds
 #   --dry-run      resolve and check, print what would be dispatched, exit 0
 #
 # Needs: gh (authenticated), curl, jq. GH_TOKEN (or gh's own token) is used for
@@ -41,10 +42,7 @@ set -euo pipefail
 registry_host=ghcr.io
 registry_namespace=confidential-dot-ai
 # The repositories images/node-guest/worker/mkosi.sync resolves at C8S_REF.
-components=(c8s-operator nri-image-policy ta armtls-mesh)
-image_repo=guests/worker
-# One oras artifact and one KubeVirt image per TEE, per commit.
-ref_tags_expected=4
+components=(c8s-operator nri-image-policy ta armtls-mesh volumed)
 docker_workflow=docker.yml
 image_workflow=c8s-image-manual.yml
 poll_seconds="${PUBLISH_REF_IMAGES_POLL_SECONDS:-30}"
@@ -55,6 +53,10 @@ sha=""
 confos_ref=""
 branch=""
 dry_run=false
+receipt=""
+component_run_id=""
+image_run_id=""
+last_run_id=""
 
 die() {
   echo "publish-ref-images: $*" >&2
@@ -72,6 +74,7 @@ while [ $# -gt 0 ]; do
     --confos-ref) confos_ref="${2:-}"; shift 2 ;;
     --branch) branch="${2:-}"; shift 2 ;;
     --repo) repo="${2:-}"; shift 2 ;;
+    --receipt) receipt="${2:-}"; [ -n "$receipt" ] || die "--receipt needs a path"; shift 2 ;;
     --dry-run) dry_run=true; shift ;;
     -h|--help) usage ;;
     *) die "unknown argument: $1" ;;
@@ -88,6 +91,10 @@ short="${sha:0:7}"
 branch="${branch:-build/$short}"
 if [[ ! "$branch" =~ ^[0-9A-Za-z][0-9A-Za-z._/-]{0,254}$ ]] || [[ "$branch" == *..* ]]; then
   die "--branch is not a safe branch name"
+fi
+if [ -n "$receipt" ]; then
+  [ ! -e "$receipt" ] && [ ! -L "$receipt" ] || die "receipt already exists: $receipt"
+  [ -d "$(dirname "$receipt")" ] && [ -w "$(dirname "$receipt")" ] || die "receipt directory is not writable"
 fi
 
 for tool in gh curl jq; do
@@ -141,19 +148,6 @@ registry_token() {
     | jq -r '.token // empty'
 }
 
-# ref_tags <repository> <prefix>: the repository's tags that start with prefix.
-# The listing is checked on its own, so an unreadable package is not a missing
-# tag.
-ref_tags() {
-  local repository=$1 prefix=$2 token listing
-  token=$(registry_token "$repository")
-  [ -n "$token" ] || die "no registry token for $registry_namespace/$repository"
-  listing=$(curl -fsS -H "Authorization: Bearer $token" \
-    "https://$registry_host/v2/$registry_namespace/$repository/tags/list") \
-    || die "cannot list $registry_namespace/$repository"
-  jq -r --arg prefix "$prefix" '.tags[]? | select(startswith($prefix))' <<< "$listing" | sort
-}
-
 # tag_exists <repository> <tag>: HEAD on the manifest, any media type.
 tag_exists() {
   local repository=$1 tag=$2 token code
@@ -201,16 +195,18 @@ dispatch_and_wait() {
   gh run watch "$run_id" --repo "$repo" --exit-status --interval "$poll_seconds" >/dev/null \
     || die "$workflow run failed: $url"
   echo "$workflow run succeeded: $url"
+  last_run_id=$run_id
 }
 
 # --- main -------------------------------------------------------------------
 
 ensure_branch
 
+missing_text=$(missing_components)
 missing=()
 while IFS= read -r component; do
   [ -n "$component" ] && missing+=("$component")
-done < <(missing_components)
+done <<< "$missing_text"
 
 if [ "${#missing[@]}" -eq 0 ]; then
   echo "component tags present: ${components[*]} at :$short"
@@ -220,6 +216,7 @@ else
     echo "would dispatch $docker_workflow on $branch"
   else
     dispatch_and_wait "$docker_workflow"
+    component_run_id=$last_run_id
     still_missing=$(missing_components)
     [ -z "$still_missing" ] || die "$docker_workflow finished but tags are still missing: $still_missing"
   fi
@@ -234,23 +231,27 @@ if [ "$dry_run" = true ]; then
   echo "would dispatch $image_workflow on $branch with: ${image_args[*]}"
 else
   dispatch_and_wait "$image_workflow" "${image_args[@]}"
+  image_run_id=$last_run_id
 fi
 
-# The commit's tags as the registry lists them, so a tag spelled differently
-# than c8s-image.yml pushes it is a count error rather than a bad hint.
+# Check exact references: GHCR may paginate its repository-wide tag listing.
 echo "images for $short (profile and components from the same commit):"
-tag_prefix="sha-$short-"
-if [ "$dry_run" = true ]; then
-  echo "  would publish $ref_tags_expected $registry_host/$registry_namespace/$image_repo:$tag_prefix* tags"
-else
-  listing=$(ref_tags "$image_repo" "$tag_prefix")
-  published=()
-  while IFS= read -r tag; do
-    [ -n "$tag" ] && published+=("$tag")
-  done <<< "$listing"
-  [ "${#published[@]}" -eq "$ref_tags_expected" ] \
-    || die "$image_workflow succeeded but $image_repo has ${#published[@]} :$tag_prefix* tags, expected $ref_tags_expected: ${published[*]:-none}"
-  for tag in "${published[@]}"; do
-    echo "  $registry_host/$registry_namespace/$image_repo:$tag"
-  done
+for expected in "guests/worker:sha-$short-tdx" "guests/worker:sha-$short-tdx-kubevirt" \
+                "guests/worker:sha-$short-sev-snp" "guests/worker:sha-$short-sev-snp-kubevirt" \
+                "guests/ta:sha-$short" "guests/ta:sha-$short-kubevirt"; do
+  if [ "$dry_run" = true ]; then
+    echo "  would publish $registry_host/$registry_namespace/$expected"
+  else
+    tag_exists "${expected%%:*}" "${expected#*:}" || die "missing expected image $expected"
+    echo "  $registry_host/$registry_namespace/$expected"
+  fi
+done
+
+if [ -n "$receipt" ] && [ "$dry_run" = false ]; then
+  (
+    set -o noclobber
+    jq -n --arg source "$sha" --arg repository "$repo" --arg branch "$branch" \
+      --arg components "$component_run_id" --arg guests "$image_run_id" \
+      '{source: $source, repository: $repository, branch: $branch, componentRun: $components, guestRun: $guests}' >"$receipt"
+  )
 fi

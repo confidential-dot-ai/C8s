@@ -21,6 +21,8 @@ C8S_REF=abc1234 images/ta-guest/build   # -> output/ta/ in the confos checkout
 The build writes `disk.raw`, `uki.efi`, `manifest.json`, `roothash` and one
 `guest-smp<N>.igvm` per vCPU count. `manifest.json` carries the SNP launch
 digests and the TDX measurement block a Trust Authority pin is derived from.
+The sync log records the selected C8s operator image as
+`C8S_BUILD_COMPONENT <repository> <digest>`, before staging its binary.
 
 ## What the image contains
 

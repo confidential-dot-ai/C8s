@@ -96,8 +96,10 @@ ATTESTATION_API_DIGEST=$(sync_input attestation-api-digest)
 # `c8s ta` is the service the image runs; its image is this repository's own
 # build at C8S_REF, published by the run that builds this image.
 C8S_OPERATOR_REPO=ghcr.io/confidential-dot-ai/c8s-operator
+C8S_OPERATOR_DIGEST=$(resolve_published "$C8S_OPERATOR_REPO" "$C8S_REF")
+printf 'C8S_BUILD_COMPONENT %s %s\n' "$C8S_OPERATOR_REPO" "$C8S_OPERATOR_DIGEST"
 stage_published_binary "$C8S_OPERATOR_REPO" \
-    "$(resolve_published "$C8S_OPERATOR_REPO" "$C8S_REF")" \
+    "$C8S_OPERATOR_DIGEST" \
     "$STAGE_DIR/usr/local/bin/c8s"
 # The attestation-api is pinned by digest in .github/build-pins.json, so the
 # pin and not the registry decides which bytes are measured; pin-hygiene

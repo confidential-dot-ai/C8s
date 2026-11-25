@@ -471,6 +471,12 @@ Published builds resolve C8s container digests from the registry tag
 static pod pins record those digests. A rebuild after a mutable `C8S_REF` tag
 moves will not match.
 
+The sync log emits `C8S_BUILD_COMPONENT <repository> <digest>` for each
+resolved core image, including the plugin supplying the binary. Compare these
+records with deployment image pins; source SHAs alone do not detect a rebuilt
+mutable tag. `publish-ref-images.sh --receipt <file>` records the exact
+dispatched workflow IDs after all expected guest references resolve.
+
 ## Physical host prerequisites
 
 ### TDX
