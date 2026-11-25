@@ -126,8 +126,8 @@ their bytes cannot be reproduced outside the build.
 Verify the router's attested handshake, which binds the connection you opened
 and the routes the router serves ([routes-evidence.md](routes-evidence.md)
 explains `attest-lb` and `attest-pq`). The router serves `attest-lb` on an
-installed cluster, where its public TLS mode is `cds`, and on a baked node
-whose launch file selects `cds` or `acme`. The TA answers on its own endpoint,
+installed cluster, where its public TLS mode is `ta`, and on a baked node
+whose launch file selects `ta` or `acme`. The TA answers on its own endpoint,
 where a hostname or chain mismatch does not fail the run: the evidence is
 verified, not WebPKI.
 

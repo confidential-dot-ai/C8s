@@ -174,14 +174,14 @@ type Config struct {
 	Evidence EvidenceProvider
 	// FrontDoorMode says which credential terminates public TLS in front of
 	// this sidecar. Both endpoints commit it into their report_data
-	// transcripts; anything but cds or acme — including an unset mode —
+	// transcripts; anything but ta or acme — including an unset mode —
 	// refuses attest-lb, so a misconfiguration can never serve a transport
 	// binding for a host-visible key.
 	FrontDoorMode types.FrontDoorMode
 	// ServingCertFile is the path to the LB serving-leaf PEM (the cert nginx
 	// presents on the wire). Only acme front-door mode reads it: GET
 	// .../attest-lb binds report_data to this exact leaf DER, refused outside
-	// its validity window, plus the mesh identity. A cds front door serves the
+	// its validity window, plus the mesh identity. A ta front door serves the
 	// mesh identity leaf, which attest-lb binds directly. Re-read per request
 	// so a renewal is picked up without restarting the sidecar.
 	ServingCertFile string
@@ -594,7 +594,7 @@ func (s *Server) handleAttestPQ(w http.ResponseWriter, r *http.Request) {
 		Generation:       generation,
 		Nonce:            req.Nonce,
 		Evidence:         evidence,
-		CDSCertPEM:       string(identity.bundlePEM),
+		TACertPEM:        string(identity.bundlePEM),
 		FrontDoorMode:    s.cfg.FrontDoorMode,
 		XWingEK:          req.XWingEK,
 		XWingCT:          base64.RawURLEncoding.EncodeToString(xwingCT),
@@ -631,10 +631,10 @@ func (s *Server) handleAttestLB(w http.ResponseWriter, r *http.Request) {
 	// The exact-DER binding detects leaf substitution, not key sharing: a
 	// WebPKI Secret's serving key is host-visible, so the host could terminate
 	// the client's TLS with the same leaf and proxy this request. Only a
-	// TEE-held (cds or acme) serving key supports transport binding.
-	if s.cfg.FrontDoorMode != types.FrontDoorModeCDS && s.cfg.FrontDoorMode != types.FrontDoorModeACME {
+	// TEE-held (ta or acme) serving key supports transport binding.
+	if s.cfg.FrontDoorMode != types.FrontDoorModeTA && s.cfg.FrontDoorMode != types.FrontDoorModeACME {
 		writeErr(w, http.StatusBadRequest, types.ErrorCodeExternalTLS,
-			"attest-lb requires a TEE-held serving key (public_tls.mode=cds or acme); this front door is attest-pq-only")
+			"attest-lb requires a TEE-held serving key (public_tls.mode=ta or acme); this front door is attest-pq-only")
 		return
 	}
 	// Before the report, as for attest-pq.
@@ -687,7 +687,7 @@ func (s *Server) handleAttestLB(w http.ResponseWriter, r *http.Request) {
 		Generation:        generation,
 		Nonce:             nonceB64,
 		Evidence:          evidence,
-		CDSCertPEM:        string(identity.bundlePEM),
+		TACertPEM:         string(identity.bundlePEM),
 		FrontDoorMode:     s.cfg.FrontDoorMode,
 		IdentityProof:     proof,
 		ServingLeafSHA256: base64.RawURLEncoding.EncodeToString(servingLeafHash[:]),
@@ -763,7 +763,7 @@ func (s *Server) meshIdentity() (*meshIdentity, error) {
 // refusal. nginx reads its certificate per TLS handshake, so a connection
 // keeps the leaf it opened with across renewals: for a bound connection that
 // is the leaf its binding attested, while kept and unexpired; otherwise the
-// leaf nginx serves new connections now. A cds front door serves the mesh
+// leaf nginx serves new connections now. A ta front door serves the mesh
 // identity leaf, taken from identity so it cannot race a rotation; an acme
 // one serves --serving-cert-file, admitted inside its and its chain's
 // validity windows.

@@ -51,7 +51,7 @@ func routedLBServer(t *testing.T, id *endpointIdentity, bindLeaf, routeDigest, p
 		if leaf == nil {
 			leaf = ts.Certificate().Raw
 		}
-		transcript, err := overenc.LBTranscriptHash(types.FrontDoorModeCDS, nonce, leaf, id.leaf.Raw, id.ca.Raw, routeDigest)
+		transcript, err := overenc.LBTranscriptHash(types.FrontDoorModeTA, nonce, leaf, id.leaf.Raw, id.ca.Raw, routeDigest)
 		if err != nil {
 			t.Error(err)
 		}
@@ -60,8 +60,8 @@ func routedLBServer(t *testing.T, id *endpointIdentity, bindLeaf, routeDigest, p
 			"platform":          "snp",
 			"nonce":             base64.RawURLEncoding.EncodeToString(nonce),
 			"evidence":          map[string]any{"attestation_report": "AAAA"},
-			"front_door_mode":   "cds",
-			"cds_cert_pem":      id.chainPEM,
+			"front_door_mode":   "ta",
+			"ta_cert_pem":       id.chainPEM,
 			"identity_proof":    id.proofJSON(t, transcript),
 			"measured_policies": []string{testPolicyP},
 			"route_digest":      hex.EncodeToString(routeDigest),

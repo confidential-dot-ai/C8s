@@ -32,8 +32,8 @@ const (
 	// ErrorCodeServingLeafRejected: attest-lb refuses (503) a serving leaf
 	// that loads but cannot be bound: an acme leaf outside its validity
 	// window, or a leaf served with a chain that has expired (tls.crt for
-	// cds, --serving-cert-file for acme). An unreadable or unparsable serving
-	// file, and in cds mode a mesh leaf or CA outside its validity window or
+	// ta, --serving-cert-file for acme). An unreadable or unparsable serving
+	// file, and in ta mode a mesh leaf or CA outside its validity window or
 	// a tls.crt chain block nginx cannot load, get
 	// ErrorCodeBindingUnavailable.
 	ErrorCodeServingLeafRejected = "serving_leaf_rejected"

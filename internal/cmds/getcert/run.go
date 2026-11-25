@@ -152,7 +152,7 @@ consumers that read that volume.`,
 	flags.StringVar(&cfg.DiscoveryOutPath, "discovery-out", "", "Path to write JSON discovery metadata for the issued certificate and attestation evidence")
 	flags.StringVar(&cfg.DiscoveryTACertURL, "discovery-ta-cert-url", "", "Public URL path where the Trust Authority certificate PEM is served")
 	flags.StringVar(&cfg.DiscoveryMeshCAURL, "discovery-mesh-ca-url", "", "Public URL path where the mesh CA PEM is served")
-	flags.StringVar(&cfg.DiscoveryPublicTLSMode, "discovery-public-tls-mode", "cds", "Public TLS mode to report in discovery metadata (cds, webpki, or acme)")
+	flags.StringVar(&cfg.DiscoveryPublicTLSMode, "discovery-public-tls-mode", "ta", "Public TLS mode to report in discovery metadata (ta, webpki, or acme)")
 	flags.StringVar(&cfg.DiscoveryPublicTLSModeFile, "discovery-public-tls-mode-file", "", "File holding the public TLS mode to report in discovery metadata, read at start; replaces --discovery-public-tls-mode")
 	flags.StringVar(&cfg.DiscoveryPublicTLSHostnamesFile, "discovery-public-tls-hostnames-file", "", "File holding launch-selected public hostnames; report the first name in discovery without changing the Trust Authority certificate SAN")
 	flags.DurationVar(&cfg.WorkloadClaimsTimeout, "workload-claims-timeout", 5*time.Second, "Timeout for the admission inventory request")
@@ -547,9 +547,9 @@ func validateConfig(cfg config) error {
 	}
 	if cfg.DiscoveryOutPath != "" {
 		switch discoveryPublicTLSMode(cfg.DiscoveryPublicTLSMode) {
-		case types.FrontDoorModeCDS, types.FrontDoorModeWebPKI, types.FrontDoorModeACME:
+		case types.FrontDoorModeTA, types.FrontDoorModeWebPKI, types.FrontDoorModeACME:
 		default:
-			return fmt.Errorf("%w: --discovery-public-tls-mode must be 'cds', 'webpki', or 'acme', got %q", errInvalidDiscoveryPublicTLSMode, cfg.DiscoveryPublicTLSMode)
+			return fmt.Errorf("%w: --discovery-public-tls-mode must be 'ta', 'webpki', or 'acme', got %q", errInvalidDiscoveryPublicTLSMode, cfg.DiscoveryPublicTLSMode)
 		}
 	}
 	// Each tick is a Trust Authority round-trip, so a sub-second watch is never what an
@@ -806,7 +806,7 @@ func buildDiscoveryDocument(cfg config, result attestclient.CertificateResult) (
 			Hostname: hostname,
 			Mode:     discoveryPublicTLSMode(cfg.DiscoveryPublicTLSMode),
 		},
-		CDSTLS: types.CDSTLSDiscovery{
+		TATLS: types.TATLSDiscovery{
 			CertificatePEM:    result.Certificate,
 			CertificateSHA256: hex.EncodeToString(fingerprint[:]),
 			CertificateURL:    cfg.DiscoveryTACertURL,
@@ -834,7 +834,7 @@ func resolveDiscoveryPublicTLSHostname(cfg *config) error {
 	}
 	names := strings.Fields(string(data))
 	if len(names) == 0 {
-		if discoveryPublicTLSMode(cfg.DiscoveryPublicTLSMode) != types.FrontDoorModeCDS {
+		if discoveryPublicTLSMode(cfg.DiscoveryPublicTLSMode) != types.FrontDoorModeTA {
 			return fmt.Errorf("--discovery-public-tls-hostnames-file: public TLS mode requires a hostname")
 		}
 		cfg.DiscoveryPublicTLSHostname = cfg.SAN
@@ -845,7 +845,7 @@ func resolveDiscoveryPublicTLSHostname(cfg *config) error {
 			return fmt.Errorf("--discovery-public-tls-hostnames-file: %w", err)
 		}
 	}
-	if discoveryPublicTLSMode(cfg.DiscoveryPublicTLSMode) == types.FrontDoorModeCDS {
+	if discoveryPublicTLSMode(cfg.DiscoveryPublicTLSMode) == types.FrontDoorModeTA {
 		cfg.DiscoveryPublicTLSHostname = cfg.SAN
 	} else {
 		cfg.DiscoveryPublicTLSHostname = names[0]
@@ -855,7 +855,7 @@ func resolveDiscoveryPublicTLSHostname(cfg *config) error {
 
 func discoveryPublicTLSMode(mode string) types.FrontDoorMode {
 	if mode == "" {
-		return types.FrontDoorModeCDS
+		return types.FrontDoorModeTA
 	}
 	return types.FrontDoorMode(mode)
 }

@@ -274,7 +274,7 @@ func TestMutatePodSupportsRouterProfile(t *testing.T) {
 			AnnotationRenewInterval:          "1h",
 			AnnotationDiscoveryVolume:        "discovery",
 			AnnotationDiscoveryOut:           "/run/c8s/discovery/discovery.json",
-			AnnotationDiscoveryTACertURL:     "/.well-known/cds-cert.pem",
+			AnnotationDiscoveryTACertURL:     "/.well-known/ta-cert.pem",
 			AnnotationDiscoveryMeshCAURL:     "/.well-known/mesh-ca.pem",
 			AnnotationDiscoveryPublicTLSMode: "webpki",
 			AnnotationGetCertVerbose:         "true",
@@ -317,7 +317,7 @@ func TestMutatePodSupportsRouterProfile(t *testing.T) {
 		"--ca-path=/etc/c8s/certs/ca.crt",
 		"--renew-interval=1h0m0s",
 		"--discovery-out=/run/c8s/discovery/discovery.json",
-		"--discovery-ta-cert-url=/.well-known/cds-cert.pem",
+		"--discovery-ta-cert-url=/.well-known/ta-cert.pem",
 		"--discovery-public-tls-mode=webpki",
 		"--discovery-mesh-ca-url=/.well-known/mesh-ca.pem",
 		"--verbose",
@@ -398,7 +398,7 @@ func TestParseAnnotationsRejectsIncompleteDiscovery(t *testing.T) {
 	_, err := parseAnnotations(&corev1.Pod{
 		Annotations: map[string]string{
 			AnnotationWorkload:           "api",
-			AnnotationDiscoveryTACertURL: "/.well-known/cds-cert.pem",
+			AnnotationDiscoveryTACertURL: "/.well-known/ta-cert.pem",
 		},
 	}, "")
 	if !errors.Is(err, errInvalidInjectionAnnotation) {
@@ -414,14 +414,14 @@ func TestParseAnnotationsRefusesACMEDiscoveryPublicTLSMode(t *testing.T) {
 			AnnotationWorkload:               "api",
 			AnnotationDiscoveryVolume:        "discovery",
 			AnnotationDiscoveryOut:           "/run/c8s/discovery/discovery.json",
-			AnnotationDiscoveryTACertURL:     "/.well-known/cds-cert.pem",
+			AnnotationDiscoveryTACertURL:     "/.well-known/ta-cert.pem",
 			AnnotationDiscoveryPublicTLSMode: "acme",
 		},
 	}, "")
 	if !errors.Is(err, errInvalidInjectionAnnotation) {
 		t.Fatalf("parseAnnotations error = %v, want invalid annotation", err)
 	}
-	if !strings.Contains(err.Error(), `must be "cds" or "webpki", got "acme"`) {
+	if !strings.Contains(err.Error(), `must be "ta" or "webpki", got "acme"`) {
 		t.Fatalf("error = %q, want it to name the two accepted modes", err)
 	}
 }
@@ -432,7 +432,7 @@ func TestParseAnnotationsRejectsInvalidDiscoveryPublicTLSMode(t *testing.T) {
 			AnnotationWorkload:               "api",
 			AnnotationDiscoveryVolume:        "discovery",
 			AnnotationDiscoveryOut:           "/run/c8s/discovery/discovery.json",
-			AnnotationDiscoveryTACertURL:     "/.well-known/cds-cert.pem",
+			AnnotationDiscoveryTACertURL:     "/.well-known/ta-cert.pem",
 			AnnotationDiscoveryPublicTLSMode: "invalid",
 		},
 	}, "")
@@ -475,8 +475,8 @@ func TestParseAnnotationsPinsSidecarDestinations(t *testing.T) {
 func TestParseAnnotationsKeepsSidecarFilesInTheirMounts(t *testing.T) {
 	discovery := map[string]string{
 		AnnotationDiscoveryVolume:        "discovery",
-		AnnotationDiscoveryTACertURL:     "/.well-known/cds-cert.pem",
-		AnnotationDiscoveryPublicTLSMode: "cds",
+		AnnotationDiscoveryTACertURL:     "/.well-known/ta-cert.pem",
+		AnnotationDiscoveryPublicTLSMode: "ta",
 	}
 	for _, tc := range []struct {
 		name        string
@@ -521,8 +521,8 @@ func TestParseAnnotationsRejectsDiscoveryVolumeAliases(t *testing.T) {
 				AnnotationWorkload:               "api",
 				AnnotationDiscoveryVolume:        tc.volume,
 				AnnotationDiscoveryOut:           discoveryMountPath + "/tls.key",
-				AnnotationDiscoveryTACertURL:     "/.well-known/cds-cert.pem",
-				AnnotationDiscoveryPublicTLSMode: "cds",
+				AnnotationDiscoveryTACertURL:     "/.well-known/ta-cert.pem",
+				AnnotationDiscoveryPublicTLSMode: "ta",
 			}
 			if tc.certVolume != "" {
 				annotations[AnnotationCertVolume] = tc.certVolume

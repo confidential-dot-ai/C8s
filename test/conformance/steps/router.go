@@ -178,7 +178,7 @@ func taCredentialSelected(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if mode != "cds" {
+	if mode != "ta" {
 		return skipf("the router presents its %s credential here, not the Trust Authority-issued one", mode)
 	}
 	return nil

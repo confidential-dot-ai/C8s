@@ -23,7 +23,7 @@
 {{- $dir := include "router.configDir" . -}}
 {{- $files := include "c8s.routerNginxFiles" (dict "root" . "dir" $dir) | fromJson -}}
 {{- $_ := set $files "request-body.conf" "client_max_body_size 1048576;\n" -}}
-{{- $_ := set $files "tls.conf" (printf "include %s/tls-cds.conf;\n" $dir) -}}
+{{- $_ := set $files "tls.conf" (printf "include %s/tls-ta.conf;\n" $dir) -}}
 {{- $files | toJson -}}
 {{- end -}}
 
@@ -59,7 +59,7 @@
   (printf "--platform=%s" .Values.router.attest.platform)
   (printf "--generation=%s" .Values.router.attest.generation)
   (printf "--attestation-api-url=%s" (include "c8s.attestationApiURL" .))
-  "--front-door-mode=cds"
+  "--front-door-mode=ta"
   (printf "--serving-cert-file=%s" (include "c8s.certFile" .))
   (printf "--measured-policies-file=%s/measured-policies" (include "nri-image-policy.runtimeDir" .))
   "--image-policy-file=/mnt/c8s-data/measurements/ta.json" -}}
@@ -107,7 +107,7 @@ unix://{{ include "router.inventoryDir" . }}/attestation-api.sock
 {{- list
   (printf "--discovery-out=%s" (include "router.discoveryFilePath" .))
   (printf "--discovery-ta-cert-url=%s" (include "router.taCertPath" .))
-  "--discovery-public-tls-mode=cds"
+  "--discovery-public-tls-mode=ta"
   (printf "--discovery-mesh-ca-url=%s" (include "router.meshCAPath" .))
   "--ca-watch-interval=1m"
   | toJson -}}

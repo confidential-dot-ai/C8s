@@ -66,7 +66,7 @@ func TestBundlesCarryMeasuredPolicies(t *testing.T) {
 			cfg := Config{
 				Routes:               testRoutes(t),
 				Evidence:             prov,
-				FrontDoorMode:        types.FrontDoorModeCDS,
+				FrontDoorMode:        types.FrontDoorModeTA,
 				ServingCertFile:      identity.certFile,
 				MeshIdentityCertFile: identity.certFile,
 				MeshIdentityKeyFile:  identity.keyFile,

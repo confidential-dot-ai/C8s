@@ -296,7 +296,7 @@ func TestWorkerChartRouterReadsLaunchFiles(t *testing.T) {
 	route.assertNoDirective(t, "client_max_body_size")
 
 	for key, want := range map[string]string{
-		"tls-cds.conf":  "ssl_certificate     /etc/c8s/certs/tls.crt$per_handshake;\nssl_certificate_key /etc/c8s/certs/tls.key$per_handshake;",
+		"tls-ta.conf":   "ssl_certificate     /etc/c8s/certs/tls.crt$per_handshake;\nssl_certificate_key /etc/c8s/certs/tls.key$per_handshake;",
 		"tls-acme.conf": "ssl_certificate     /etc/c8s-acme-tls/cert.pem$per_handshake;\nssl_certificate_key /etc/c8s-acme-key/key.pem$per_handshake;",
 	} {
 		if snippets[key] != want {

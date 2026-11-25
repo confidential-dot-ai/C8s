@@ -422,7 +422,7 @@ make clean
 The TA serves the image-digest allowlist that `nri-image-policy` consumes alongside
 its node policy. The `c8s allowlist` command reads and mutates it. By default,
 router publishes the complete `/allowlist` API and verifies the TA's attestation before forwarding requests.
-When router serves the TA-issued public certificate (discovery mode `cds`),
+When router serves the TA-issued public certificate (discovery mode `ta`),
 point the CLI at the same router URL used for application traffic; no
 port-forward is required.
 

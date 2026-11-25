@@ -323,7 +323,7 @@ error strings. Do not reintroduce them.
 | `internal/helmchart/c8s`, `c8sComponents` | `charts/`, `charts/lib/files/components.yaml` |
 | The `node-guest-image/` directory | `images/node-guest/` |
 | `confos-pod-exec`, `cw-label-integrity`, `hostNamespacePolicy.*` | Kubelet handlers off plus `c8s-runc`; `pod-validator`; the cloud chart's `<release>-deny-host-namespaces`, which has no switch |
-| `router.publicTLS.mode` | The front-door mode; the charts set `cds` or `acme` |
+| `router.publicTLS.mode` | The front-door mode; the charts set `ta` or `acme` |
 | Evidence fallback in the mesh, `RequireCAEvidence`, `CheckWorkloadPin` | The chain path alone; `MatchedWorkloadFromCert` |
 | Empty pins meaning "any genuine TEE" inside the cluster | Empty pins are refused there |
 | kata, peer-pods, `tls-lb`, `tee-proxy`, `/sign-csr`, `/attest-key`, `/handshake`, EAR and JWKS signing, OID arc `59888`, the admission plugin's push mode | Nothing; the per-pod VM today is the Pod CVM |

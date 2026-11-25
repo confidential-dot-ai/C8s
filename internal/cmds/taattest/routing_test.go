@@ -132,7 +132,7 @@ func newRoutedServer(t *testing.T, opts ...func(*routing.ProxyConfig, *Config)) 
 	srvCfg := Config{
 		Logger:          slog.New(slog.DiscardHandler),
 		Evidence:        fixedEvidence{},
-		FrontDoorMode:   types.FrontDoorModeCDS,
+		FrontDoorMode:   types.FrontDoorModeTA,
 		ServingCertFile: volumeFile(meshDir, "tls.crt"),
 		// The attestation endpoints bind the leaf the router dials with, as
 		// the chart mounts one credential for both.

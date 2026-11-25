@@ -386,7 +386,7 @@ func TestStagePublishesTheRoutersFilesWithoutARouterBlock(t *testing.T) {
 		t.Fatal(err)
 	}
 	public := filepath.Join(root, nodeservices.PublicDir)
-	for name, want := range map[string]string{"router/front-door-mode": "cds\n", "router/hostnames": "", "tls-san": "c8s.acme.example\n"} {
+	for name, want := range map[string]string{"router/front-door-mode": "ta\n", "router/hostnames": "", "tls-san": "c8s.acme.example\n"} {
 		if got, err := os.ReadFile(filepath.Join(public, name)); err != nil || string(got) != want {
 			t.Errorf("%s = %q, %v; want %q", name, got, err, want)
 		}

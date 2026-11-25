@@ -37,7 +37,7 @@ const (
 )
 
 // MeshIdentityProof authenticates the PQ session transcript with the private
-// key corresponding to the mesh leaf in AttestationBundle.CDSCertPEM. Hashes
+// key corresponding to the mesh leaf in AttestationBundle.TACertPEM. Hashes
 // are unpadded base64url SHA-256; Signature is unpadded base64url ASN.1 DER
 // ECDSA (minimal DER, as emitted by ecdsa.SignASN1 — the JS verifier rejects
 // redundant integer padding).
@@ -49,14 +49,14 @@ type MeshIdentityProof struct {
 }
 
 // FrontDoorMode names the credential model terminating public TLS in front of
-// an attestation endpoint: cds (TEE-held mesh-issued serving key), acme
+// an attestation endpoint: ta (TEE-held mesh-issued serving key), acme
 // (TEE-held in-guest ACME serving key), or webpki (host-visible Secret).
 // attest-lb's transport binding rests on the serving key being TEE-held, so
-// it is served only in the cds and acme shapes.
+// it is served only in the ta and acme shapes.
 type FrontDoorMode string
 
 const (
-	FrontDoorModeCDS    FrontDoorMode = "cds"
+	FrontDoorModeTA     FrontDoorMode = "ta"
 	FrontDoorModeWebPKI FrontDoorMode = "webpki"
 	FrontDoorModeACME   FrontDoorMode = "acme"
 )
@@ -71,12 +71,12 @@ const (
 // binding identifier (BindingAttestPQ / BindingAttestLB); a client requires
 // the one its endpoint mode selects.
 type AttestationBundle struct {
-	Version    string          `json:"version"`      // BindingAttestPQ | BindingAttestLB
-	Platform   string          `json:"platform"`     // "snp" | "az-snp" | "az-tdx" | "tdx"
-	Generation string          `json:"generation"`   // AMD gen for "snp": milan|genoa|turin; empty otherwise
-	Nonce      string          `json:"nonce"`        // echoed client nonce (b64url)
-	Evidence   json.RawMessage `json:"evidence"`     // platform-shaped attestation-rs evidence
-	CDSCertPEM string          `json:"cds_cert_pem"` // exact mesh leaf + issuing CA committed by report_data
+	Version    string          `json:"version"`     // BindingAttestPQ | BindingAttestLB
+	Platform   string          `json:"platform"`    // "snp" | "az-snp" | "az-tdx" | "tdx"
+	Generation string          `json:"generation"`  // AMD gen for "snp": milan|genoa|turin; empty otherwise
+	Nonce      string          `json:"nonce"`       // echoed client nonce (b64url)
+	Evidence   json.RawMessage `json:"evidence"`    // platform-shaped attestation-rs evidence
+	TACertPEM  string          `json:"ta_cert_pem"` // exact mesh leaf + issuing CA committed by report_data
 	// FrontDoorMode is the credential model terminating public TLS in front
 	// of the responder, committed by the endpoint's report_data transcript.
 	FrontDoorMode FrontDoorMode `json:"front_door_mode"`

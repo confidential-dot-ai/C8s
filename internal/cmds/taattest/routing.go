@@ -36,7 +36,7 @@ const nodeOperatorKeysFile = nodeservices.PublicDir + "/operator-pubkey"
 var defaultReservedPaths = []string{
 	"/allowlist",
 	"/.well-known/c8s/",
-	"/.well-known/cds-cert.pem",
+	"/.well-known/ta-cert.pem",
 	"/.well-known/mesh-ca.pem",
 	"/.well-known/acme-challenge/",
 	"/v1/discovery",

@@ -97,7 +97,7 @@ func TestBuildDiscoveryDocumentIncludesCertificateAndEvidence(t *testing.T) {
 
 	doc, err := buildDiscoveryDocument(config{
 		SAN:                    "confidential-gke.confidential.ai",
-		DiscoveryTACertURL:     "/.well-known/cds-cert.pem",
+		DiscoveryTACertURL:     "/.well-known/ta-cert.pem",
 		DiscoveryMeshCAURL:     "/.well-known/mesh-ca.pem",
 		DiscoveryPublicTLSMode: "webpki",
 	}, result)
@@ -114,17 +114,17 @@ func TestBuildDiscoveryDocumentIncludesCertificateAndEvidence(t *testing.T) {
 	if doc.PublicTLS.Mode != "webpki" {
 		t.Fatalf("public tls mode = %q, want webpki", doc.PublicTLS.Mode)
 	}
-	if doc.CDSTLS.CertificatePEM != certPEM {
+	if doc.TATLS.CertificatePEM != certPEM {
 		t.Fatal("Trust Authority certificate PEM not preserved")
 	}
-	if len(doc.CDSTLS.CertificateSHA256) != 64 {
-		t.Fatalf("certificate sha256 = %q, want 64 hex chars", doc.CDSTLS.CertificateSHA256)
+	if len(doc.TATLS.CertificateSHA256) != 64 {
+		t.Fatalf("certificate sha256 = %q, want 64 hex chars", doc.TATLS.CertificateSHA256)
 	}
-	if doc.CDSTLS.CertificateURL != "/.well-known/cds-cert.pem" {
-		t.Fatalf("certificate URL = %q", doc.CDSTLS.CertificateURL)
+	if doc.TATLS.CertificateURL != "/.well-known/ta-cert.pem" {
+		t.Fatalf("certificate URL = %q", doc.TATLS.CertificateURL)
 	}
-	if doc.CDSTLS.MeshCAURL != "/.well-known/mesh-ca.pem" {
-		t.Fatalf("mesh CA URL = %q", doc.CDSTLS.MeshCAURL)
+	if doc.TATLS.MeshCAURL != "/.well-known/mesh-ca.pem" {
+		t.Fatalf("mesh CA URL = %q", doc.TATLS.MeshCAURL)
 	}
 	if doc.Attestation.Challenge != result.Challenge {
 		t.Fatalf("challenge = %q", doc.Attestation.Challenge)
@@ -180,11 +180,11 @@ func TestResolveDiscoveryPublicTLSModeFile(t *testing.T) {
 		}
 		return path
 	}
-	cfg := config{DiscoveryPublicTLSMode: "cds", DiscoveryPublicTLSModeFile: write("mode", "acme\n")}
+	cfg := config{DiscoveryPublicTLSMode: "ta", DiscoveryPublicTLSModeFile: write("mode", "acme\n")}
 	if err := resolveDiscoveryPublicTLSMode(&cfg); err != nil || cfg.DiscoveryPublicTLSMode != "acme" {
-		t.Fatalf("mode = %q, %v; want the file's acme over the flag's cds", cfg.DiscoveryPublicTLSMode, err)
+		t.Fatalf("mode = %q, %v; want the file's acme over the flag's ta", cfg.DiscoveryPublicTLSMode, err)
 	}
-	cfg = config{DiscoveryPublicTLSMode: "cds", DiscoveryPublicTLSModeFile: write("empty", "")}
+	cfg = config{DiscoveryPublicTLSMode: "ta", DiscoveryPublicTLSModeFile: write("empty", "")}
 	if err := resolveDiscoveryPublicTLSMode(&cfg); !errors.Is(err, errInvalidDiscoveryPublicTLSMode) {
 		t.Fatalf("empty file: %v", err)
 	}
@@ -223,11 +223,11 @@ func TestDiscoveryLaunchHostnamesDoNotReplaceMeshIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if doc.PublicTLS.Hostname != "api.confidential.ai" || cfg.SAN != "c8s.local" || doc.CDSTLS.CertificatePEM != cert {
+	if doc.PublicTLS.Hostname != "api.confidential.ai" || cfg.SAN != "c8s.local" || doc.TATLS.CertificatePEM != cert {
 		t.Fatalf("public identity and Trust Authority identity were mixed: hostname=%q SAN=%q", doc.PublicTLS.Hostname, cfg.SAN)
 	}
 	// A Trust Authority front door still serves the Trust Authority certificate, even if names exist.
-	cfg.DiscoveryPublicTLSMode = "cds"
+	cfg.DiscoveryPublicTLSMode = "ta"
 	if err := resolveDiscoveryPublicTLSHostname(&cfg); err != nil || cfg.DiscoveryPublicTLSHostname != cfg.SAN {
 		t.Fatalf("Trust Authority mode: %q, %v", cfg.DiscoveryPublicTLSHostname, err)
 	}
@@ -239,7 +239,7 @@ func TestDiscoveryLaunchHostnamesFailClosed(t *testing.T) {
 		wantError        bool
 	}{
 		{"empty acme", "", "acme", true},
-		{"empty cds", "", "cds", false},
+		{"empty ta", "", "ta", false},
 		{"invalid second name", "api.confidential.ai\nhttps://candidate.api.confidential.ai\n", "acme", true},
 		{"wildcard", "*.confidential.ai\n", "acme", true},
 	} {
@@ -553,8 +553,8 @@ func TestValidateSAN(t *testing.T) {
 }
 
 func TestDiscoveryPublicTLSMode(t *testing.T) {
-	if got := discoveryPublicTLSMode(""); got != "cds" {
-		t.Fatalf("empty = %q, want cds", got)
+	if got := discoveryPublicTLSMode(""); got != "ta" {
+		t.Fatalf("empty = %q, want ta", got)
 	}
 	if got := discoveryPublicTLSMode("webpki"); got != "webpki" {
 		t.Fatalf("webpki = %q, want webpki", got)
@@ -1413,7 +1413,7 @@ func TestWriteDiscoveryDocument(t *testing.T) {
 	cfg := config{
 		SAN:                    "host.example.com",
 		DiscoveryOutPath:       filepath.Join(dir, "discovery.json"),
-		DiscoveryPublicTLSMode: "cds",
+		DiscoveryPublicTLSMode: "ta",
 	}
 	result := attestclient.CertificateResult{
 		Certificate: testCertificatePEM(t),
@@ -1432,7 +1432,7 @@ func TestWriteDiscoveryDocument(t *testing.T) {
 	if err := json.Unmarshal(data, &doc); err != nil {
 		t.Fatalf("discovery json: %v", err)
 	}
-	if doc.PublicTLS.Hostname != "host.example.com" || doc.CDSTLS.CertificatePEM != result.Certificate {
+	if doc.PublicTLS.Hostname != "host.example.com" || doc.TATLS.CertificatePEM != result.Certificate {
 		t.Fatalf("discovery document does not name the published certificate: %+v", doc)
 	}
 	if err := writeDiscoveryDocument(config{}, result); err != nil {

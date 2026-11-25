@@ -68,12 +68,12 @@ func TestAttestLBServedOnACMEFrontDoor(t *testing.T) {
 	if !bytes.Equal(prov.lastReportData, want) {
 		t.Fatal("report_data does not commit the acme-mode lb transcript")
 	}
-	other, err := overenc.LBTranscriptHash(types.FrontDoorModeCDS, nonce, servingDER, identity.leaf.Raw, identity.ca.Raw, testRouteDigest[:])
+	other, err := overenc.LBTranscriptHash(types.FrontDoorModeTA, nonce, servingDER, identity.leaf.Raw, identity.ca.Raw, testRouteDigest[:])
 	if err != nil {
 		t.Fatal(err)
 	}
 	if bytes.Equal(prov.lastReportData, other) {
-		t.Fatal("acme and cds transcripts collide: the mode is not bound")
+		t.Fatal("acme and ta transcripts collide: the mode is not bound")
 	}
 }
 

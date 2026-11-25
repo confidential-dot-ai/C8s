@@ -79,7 +79,7 @@ func TestEvidenceFromDiscovery(t *testing.T) {
 
 	buildDoc := func(platform, cert string) []byte {
 		doc := map[string]any{
-			"cds_tls": map[string]any{"certificate_pem": cert},
+			"ta_tls": map[string]any{"certificate_pem": cert},
 			"attestation": map[string]any{
 				"platform":  platform,
 				"challenge": base64.StdEncoding.EncodeToString(challenge),
@@ -411,7 +411,7 @@ func fakeSession(fill byte) testSession {
 // this identity and session.
 func (id *endpointIdentity) transcript(t *testing.T, nonce []byte, s testSession) []byte {
 	t.Helper()
-	erd, err := overenc.IdentityTranscriptHash("cds", s.ek, s.ct, s.sid, nonce, id.leaf.Raw, id.ca.Raw, testRouteDigest)
+	erd, err := overenc.IdentityTranscriptHash("ta", s.ek, s.ct, s.sid, nonce, id.leaf.Raw, id.ca.Raw, testRouteDigest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -457,7 +457,7 @@ func buildEndpointJSONWithEvidence(t *testing.T, id *endpointIdentity, nonce []b
 		"platform":          "snp",
 		"nonce":             b64u(nonce),
 		"evidence":          evidence,
-		"front_door_mode":   "cds",
+		"front_door_mode":   "ta",
 		"xwing_ek":          b64u(s.ek),
 		"xwing_ct":          b64u(s.ct),
 		"session_id":        b64u(s.sid),
@@ -465,7 +465,7 @@ func buildEndpointJSONWithEvidence(t *testing.T, id *endpointIdentity, nonce []b
 		"route_digest":      hex.EncodeToString(testRouteDigest),
 	}
 	if id != nil {
-		resp["cds_cert_pem"] = id.chainPEM
+		resp["ta_cert_pem"] = id.chainPEM
 		resp["identity_proof"] = id.proofJSON(t, id.transcript(t, nonce, s))
 	}
 	data, err := json.Marshal(resp)
@@ -615,13 +615,13 @@ func TestEvidenceFromEndpointJSON(t *testing.T) {
 			if err := json.Unmarshal(data, &obj); err != nil {
 				t.Fatal(err)
 			}
-			obj["cds_cert_pem"] = chain
+			obj["ta_cert_pem"] = chain
 			mutated, err := json.Marshal(obj)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := evidenceFromEndpointJSON(mutated, nonce, sess.ek, testRoute, "test"); err == nil || !strings.Contains(err.Error(), "cds_cert_pem") {
-				t.Errorf("%s chain: err = %v, want a cds_cert_pem error", name, err)
+			if _, err := evidenceFromEndpointJSON(mutated, nonce, sess.ek, testRoute, "test"); err == nil || !strings.Contains(err.Error(), "ta_cert_pem") {
+				t.Errorf("%s chain: err = %v, want a ta_cert_pem error", name, err)
 			}
 		}
 	})
@@ -652,7 +652,7 @@ func TestEvidenceFromEndpointJSON(t *testing.T) {
 		// issuing relationship, which must fail closed.
 		other := mintEndpointIdentity(t)
 		b64u := base64.RawURLEncoding.EncodeToString
-		erd, err := overenc.IdentityTranscriptHash("cds", sess.ek, sess.ct, sess.sid, nonce, id.leaf.Raw, other.ca.Raw, testRouteDigest)
+		erd, err := overenc.IdentityTranscriptHash("ta", sess.ek, sess.ct, sess.sid, nonce, id.leaf.Raw, other.ca.Raw, testRouteDigest)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -667,7 +667,7 @@ func TestEvidenceFromEndpointJSON(t *testing.T) {
 		if err := json.Unmarshal(data, &obj); err != nil {
 			t.Fatal(err)
 		}
-		obj["cds_cert_pem"] = string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: id.leaf.Raw})) +
+		obj["ta_cert_pem"] = string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: id.leaf.Raw})) +
 			string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: other.ca.Raw}))
 		obj["identity_proof"] = map[string]any{
 			"algorithm":      "ecdsa-sha384",
@@ -824,8 +824,8 @@ func TestEvidenceFromEndpointJSON_RealShape(t *testing.T) {
     "attestation_report": %q,
     "cert_chain": { "vcek": %q }
   },
-  "cds_cert_pem": %q,
-  "front_door_mode": "cds",
+  "ta_cert_pem": %q,
+  "front_door_mode": "ta",
   "xwing_ek": %q,
   "xwing_ct": %q,
   "session_id": %q,

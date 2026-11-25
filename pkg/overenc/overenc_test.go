@@ -545,7 +545,7 @@ func writeChannelVectors(t *testing.T) {
 	nonce := bytes.Repeat([]byte{0x33}, 32)
 	sessionID := bytes.Repeat([]byte{0x44}, SessionIDBytes)
 	routeDigest := bytes.Repeat([]byte{0x55}, RouteDigestBytes)
-	th, err := IdentityTranscriptHash("cds", ck.EncapsulationKey(), ct, sessionID, nonce, leafDER, caDER, routeDigest)
+	th, err := IdentityTranscriptHash("ta", ck.EncapsulationKey(), ct, sessionID, nonce, leafDER, caDER, routeDigest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -572,7 +572,7 @@ func writeChannelVectors(t *testing.T) {
 	}
 	v := channelVectors{
 		Description:       "c8s attest-pq channel golden vector: X-Wing decapsulation from seed, identity transcript, HKDF schedule, one record per direction. Shared verbatim with c8s-verify-js.",
-		FrontDoorMode:     "cds",
+		FrontDoorMode:     "ta",
 		XWingSeed:         hex.EncodeToString(seed),
 		XWingEK:           hex.EncodeToString(ck.EncapsulationKey()),
 		XWingCT:           hex.EncodeToString(ct),

@@ -125,8 +125,8 @@ func routerDocument(t testing.TB, leaf *x509.Certificate) []byte {
 	}
 	doc, err := json.Marshal(types.DiscoveryDocument{
 		Version:   "1",
-		PublicTLS: types.PublicTLSDiscovery{Mode: "cds"},
-		CDSTLS: types.CDSTLSDiscovery{
+		PublicTLS: types.PublicTLSDiscovery{Mode: "ta"},
+		TATLS: types.TATLSDiscovery{
 			CertificatePEM: string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leaf.Raw})),
 		},
 		Attestation: types.AttestationDiscovery{

@@ -73,7 +73,7 @@ func discoveryDoc(t *testing.T, cert *x509.Certificate, challenge []byte, mode, 
 		PublicTLS: types.PublicTLSDiscovery{
 			Mode: types.FrontDoorMode(mode),
 		},
-		CDSTLS: types.CDSTLSDiscovery{
+		TATLS: types.TATLSDiscovery{
 			CertificatePEM: string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw})),
 		},
 		Attestation: types.AttestationDiscovery{
@@ -143,7 +143,7 @@ func approvingVerify(measurement []byte) localverify.VerifyFunc {
 func TestNewVerifiedHTTPClient_EndToEnd(t *testing.T) {
 	servingCert, leaf := plainServingCert(t)
 	challenge := []byte("issuance-challenge")
-	doc := discoveryDoc(t, leaf, challenge, "cds", string(teetypes.PlatformAzSNP), `{"hcl_report":"fake"}`)
+	doc := discoveryDoc(t, leaf, challenge, "ta", string(teetypes.PlatformAzSNP), `{"hcl_report":"fake"}`)
 	lb := fakeLB(t, servingCert, doc)
 
 	measurement := bytes.Repeat([]byte{0x42}, armtls.SNPMeasurementSize)
@@ -193,7 +193,7 @@ func TestNewVerifiedHTTPClient_EndToEnd(t *testing.T) {
 func TestNewVerifiedHTTPClient_PassesRuntimeExtensions(t *testing.T) {
 	servingCert, leaf := plainServingCert(t)
 	var d types.DiscoveryDocument
-	if err := json.Unmarshal(discoveryDoc(t, leaf, []byte("issuance-challenge"), "cds", string(teetypes.PlatformTDX), `{"quote":"fake"}`), &d); err != nil {
+	if err := json.Unmarshal(discoveryDoc(t, leaf, []byte("issuance-challenge"), "ta", string(teetypes.PlatformTDX), `{"quote":"fake"}`), &d); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{"sha256:" + strings.Repeat("1", 64)}
@@ -272,7 +272,7 @@ func TestNewVerifiedHTTPClient_BindsDocCertToConnection(t *testing.T) {
 	servingCert, _ := plainServingCert(t)
 	_, otherLeaf := plainServingCert(t)
 	// The doc attests otherLeaf; the server presents servingCert.
-	doc := discoveryDoc(t, otherLeaf, []byte("challenge"), "cds", string(teetypes.PlatformAzSNP), `{"hcl_report":"fake"}`)
+	doc := discoveryDoc(t, otherLeaf, []byte("challenge"), "ta", string(teetypes.PlatformAzSNP), `{"hcl_report":"fake"}`)
 	lb := fakeLB(t, servingCert, doc)
 
 	_, err := NewVerifiedHTTPClient(context.Background(), lb.URL, nil, approvingVerify(nil))
@@ -286,7 +286,7 @@ func TestNewVerifiedHTTPClient_BindsDocCertToConnection(t *testing.T) {
 }
 
 // TestNewVerifiedHTTPClient_PublicTLSModes proves the client accepts only the
-// modes whose serving cert the evidence binds: cds (and empty, a pre-mode-field
+// modes whose serving cert the evidence binds: ta (and empty, a pre-mode-field
 // document), rejecting webpki, acme, and unknown modes with clear errors
 // instead of returning a client whose handshakes can never match.
 func TestNewVerifiedHTTPClient_PublicTLSModes(t *testing.T) {
@@ -295,7 +295,7 @@ func TestNewVerifiedHTTPClient_PublicTLSModes(t *testing.T) {
 		mode    string
 		wantErr string // empty = success
 	}{
-		{"cds", ""},
+		{"ta", ""},
 		{"", ""},
 		{"webpki", "public_tls.mode=webpki is not supported"},
 		{"acme", "public_tls.mode=acme is not supported"},
@@ -334,7 +334,7 @@ func TestNewVerifiedHTTPClient_PublicTLSModes(t *testing.T) {
 // so the attestation covers the new connection as it did the first.
 func TestNewVerifiedHTTPClient_RedialsToTheAttestedLeaf(t *testing.T) {
 	servingCert, leaf := plainServingCert(t)
-	doc := discoveryDoc(t, leaf, []byte("challenge"), "cds", string(teetypes.PlatformAzSNP), `{"hcl_report":"fake"}`)
+	doc := discoveryDoc(t, leaf, []byte("challenge"), "ta", string(teetypes.PlatformAzSNP), `{"hcl_report":"fake"}`)
 	lb := fakeLB(t, servingCert, doc)
 	measurement := bytes.Repeat([]byte{0x42}, armtls.SNPMeasurementSize)
 
@@ -513,7 +513,7 @@ func TestNewVerifiedHTTPClient_RejectsExpiredServingCert(t *testing.T) {
 	}
 	servingCert := tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key, Leaf: leaf}
 
-	doc := discoveryDoc(t, leaf, []byte("challenge"), "cds", string(teetypes.PlatformAzSNP), `{"hcl_report":"fake"}`)
+	doc := discoveryDoc(t, leaf, []byte("challenge"), "ta", string(teetypes.PlatformAzSNP), `{"hcl_report":"fake"}`)
 	lb := fakeLB(t, servingCert, doc)
 
 	verifyCalls := 0
@@ -541,7 +541,7 @@ func TestNewVerifiedHTTPClient_RejectsExpiredServingCert(t *testing.T) {
 func TestNewVerifiedHTTPClient_RefusesRedialToAnotherLeaf(t *testing.T) {
 	servingCert, leaf := plainServingCert(t)
 	otherCert, _ := plainServingCert(t)
-	doc := discoveryDoc(t, leaf, []byte("challenge"), "cds", string(teetypes.PlatformAzSNP), `{"hcl_report":"fake"}`)
+	doc := discoveryDoc(t, leaf, []byte("challenge"), "ta", string(teetypes.PlatformAzSNP), `{"hcl_report":"fake"}`)
 	var handshakes, callerRequests atomic.Int32
 	router := routerHandler(doc)
 	// GetConfigForClient, not GetCertificate: the client dials an IP, so
@@ -598,7 +598,7 @@ func isBareDiscoveryFetch(r *http.Request) bool {
 // presents the attested leaf.
 func TestNewVerifiedHTTPClient_RedialsPerRequestWhenEveryResponseCloses(t *testing.T) {
 	servingCert, leaf := plainServingCert(t)
-	doc := discoveryDoc(t, leaf, []byte("challenge"), "cds", string(teetypes.PlatformAzSNP), `{"hcl_report":"fake"}`)
+	doc := discoveryDoc(t, leaf, []byte("challenge"), "ta", string(teetypes.PlatformAzSNP), `{"hcl_report":"fake"}`)
 	measurement := bytes.Repeat([]byte{0x42}, armtls.SNPMeasurementSize)
 	var handshakes atomic.Int32
 	lb := lbServer(t, &tls.Config{GetConfigForClient: func(*tls.ClientHelloInfo) (*tls.Config, error) {
