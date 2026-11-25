@@ -227,9 +227,16 @@ type orphanWorker struct{ reconciler *Reconciler }
 
 func (*orphanWorker) NeedLeaderElection() bool { return true }
 func (w *orphanWorker) Start(ctx context.Context) error {
+	var listed time.Time
 	for {
 		if err := w.reconciler.sweep(ctx); err != nil {
 			ctrl.LoggerFrom(ctx).Error(err, "Pod CVM orphan recovery failed")
+		}
+		if time.Since(listed) >= instanceSweepInterval {
+			listed = time.Now()
+			if err := w.reconciler.sweepInstances(ctx); err != nil {
+				ctrl.LoggerFrom(ctx).Error(err, "Pod CVM instance sweep failed")
+			}
 		}
 		select {
 		case <-ctx.Done():
