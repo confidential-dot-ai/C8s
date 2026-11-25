@@ -114,6 +114,9 @@ type pullLoopArgs struct {
 	timeout  time.Duration
 	etag     string
 	logger   *slog.Logger
+
+	// refresh, if set, runs before each pull.
+	refresh func(context.Context)
 }
 
 // runPullLoop polls Trust Authority with If-None-Match. 200 rebuilds the index from the
@@ -145,6 +148,9 @@ func runPullLoop(ctx context.Context, args pullLoopArgs) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			if args.refresh != nil {
+				args.refresh(ctx)
+			}
 			loop.poll(ctx)
 			loop.reportFreshness()
 			loop.target.endSets(ctx)

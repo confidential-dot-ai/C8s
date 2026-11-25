@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/netip"
 
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdschain"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/nodeservices"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/issuer"
@@ -70,6 +71,11 @@ func (d Document) validate() error {
 	ta, err := d.TA.Parse()
 	if err != nil {
 		return err
+	}
+	if d.TA.Chain != "" {
+		if _, err := cdschain.ParsePin(d.TA.Chain); err != nil {
+			return fmt.Errorf("ta.chain: %w", err)
+		}
 	}
 	config, err := taconfig.ParseForFamily(ta.LaunchFile, ta.Pins.Family)
 	if err != nil {

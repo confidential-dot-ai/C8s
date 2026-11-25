@@ -64,6 +64,7 @@ parses it with, then written to --out, or to stdout without one.`,
 	f := cmd.Flags()
 	f.StringVar(&d.out, "out", "", "file to write the document to, which must not exist (default stdout)")
 	f.StringVar(&d.ta.Address, "ta-address", "", "<host>:<port> the cluster's Trust Authority serves on, the host a DNS name its clients resolve or an IPv4 address")
+	f.StringVar(&d.ta.Chain, "cds-chain", "", "<seq>:<hash> of one entry of the Trust Authority replica set's chain the worker pins (docs/ta-ha.md)")
 	f.StringVar(&d.taPinPath, "ta-pin", "", "measurements document pinning the cluster's Trust Authority VM to its configuration, as 'c8s ta config new' writes it")
 	f.StringVar(&d.tlsSAN, "tls-san", "", "DNS name of the router's front-door certificate, one the pinned Trust Authority configuration lets a leaf carry")
 	nodeservices.BindRouterFlags(f, &d.router)

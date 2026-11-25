@@ -25,7 +25,7 @@ func (p *plugin) prepareTAAddress() error {
 	if p.cfg.taAddress == "" {
 		return fmt.Errorf("nothing names the Trust Authority this node reaches: a measured config names it in allowlist.pull.url, and an install in allowlist.pull.ta_address_file")
 	}
-	path, err := renderNodeDocument(renderedTAAddressName, cmdsutil.FormatTAAddress(p.cfg.taAddress))
+	path, err := renderNodeDocument(renderedTAAddressName, cmdsutil.FormatTAAddress(p.cfg.taAddress, p.cfg.Allowlist.Pull.CDSChain))
 	if err != nil {
 		return err
 	}
