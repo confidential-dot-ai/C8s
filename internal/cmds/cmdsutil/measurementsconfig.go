@@ -84,28 +84,35 @@ func (s ImagePolicySource) ValuesExcluding(pins MeasurementPins) (refvalues.Refe
 // ErrTAPinUnbound marks a pin set that does not name one Trust Authority VM.
 var ErrTAPinUnbound = errors.New("is not one Trust Authority VM's identity")
 
-// TALaunchFile is the configuration a pin set identifies its Trust Authority by: every
-// entry must pin the registers its family identifies a guest by, and bind the
-// same launch file; a set binding none, or two, names no one VM. A Trust Authority is the
-// cluster's trust root, and its image alone says nothing about the cluster it
-// serves — the configuration does, and the launch binding is what proves it.
+// TALaunchFile is the configuration a pin set identifies its Trust Authority by
+// (CheckCDSPins).
 func TALaunchFile(values refvalues.ReferenceValues) ([]byte, error) {
+	if err := CheckCDSPins(values); err != nil {
+		return nil, err
+	}
+	return values.Images[0].LaunchFile, nil
+}
+
+// CheckCDSPins requires every image to pin its family's guest registers and
+// bind the same Trust Authority launch file. The launch binding identifies the cluster;
+// an image alone does not.
+func CheckCDSPins(values refvalues.ReferenceValues) error {
 	if values.Empty() {
-		return nil, fmt.Errorf("%w: it pins no image, so nothing tells this cluster's Trust Authority from any other attested TEE", ErrTAPinUnbound)
+		return fmt.Errorf("%w: it pins no image, so nothing tells this cluster's Trust Authority from any other attested TEE", ErrTAPinUnbound)
 	}
 	if err := armtls.RequireImageRegisters(values.Family, values.Images); err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrTAPinUnbound, err)
+		return fmt.Errorf("%w: %w", ErrTAPinUnbound, err)
 	}
 	file := values.Images[0].LaunchFile
 	for _, image := range values.Images {
 		if len(image.LaunchFile) == 0 {
-			return nil, fmt.Errorf("%w: entry %q binds no launch file, and a Trust Authority is pinned to the configuration it runs on", ErrTAPinUnbound, image.Name)
+			return fmt.Errorf("%w: entry %q binds no launch file, and a Trust Authority is pinned to the configuration it runs on", ErrTAPinUnbound, image.Name)
 		}
 		if !bytes.Equal(image.LaunchFile, file) {
-			return nil, fmt.Errorf("%w: entry %q binds another configuration, and one pin names one Trust Authority", ErrTAPinUnbound, image.Name)
+			return fmt.Errorf("%w: entry %q binds another configuration, and one pin names one Trust Authority", ErrTAPinUnbound, image.Name)
 		}
 	}
-	return file, nil
+	return nil
 }
 
 // ResolveTAPins returns the pins a client holds its Trust Authority to, and whether the
@@ -120,7 +127,7 @@ func ResolveTAPins(nodePolicy string, source ImagePolicySource) (remote.Policy, 
 			return remote.Policy{}, false, err
 		}
 	}
-	if _, err := TALaunchFile(values); err != nil {
+	if err := CheckCDSPins(values); err != nil {
 		return remote.Policy{}, fromNode, fmt.Errorf("%s %w", taPinSource(nodePolicy, fromNode, source), err)
 	}
 	return values.Policy(), fromNode, nil
