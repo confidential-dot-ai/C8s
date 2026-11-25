@@ -483,7 +483,7 @@ read their logs with `gh run view <run> --attempt <attempt> --log --repo <repo>`
 The component fields are empty when its tags already existed. The receipt
 requires Python 3 and is installed atomically without replacing an existing path.
 
-This publisher requires the manual workflow's `expected_sha` input and source
+This publisher requires yq v4 and the manual workflow's `expected_sha` input and source
 guard: a moved dispatch branch fails before any guest build or push. Older
 targets without that input are rejected before mutation and need their matching publisher.
 Only targets containing the sync log records support component-pin verification.

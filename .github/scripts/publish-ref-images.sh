@@ -34,7 +34,7 @@
 #   --receipt      write source, dispatched run IDs and verified guest digest references
 #   --dry-run      resolve and check, print what would be dispatched, exit 0
 #
-# Needs: gh (authenticated), curl, jq; --receipt also needs python3.
+# Needs: gh (authenticated), curl, jq, yq v4; --receipt also needs python3.
 # GH_TOKEN (or gh's own token) authenticates private packages through ghcr.
 
 set -euo pipefail
@@ -97,10 +97,11 @@ fi
 if [ -n "$receipt" ]; then
   command -v python3 >/dev/null || die "--receipt requires python3"
   [ ! -e "$receipt" ] && [ ! -L "$receipt" ] || die "receipt already exists: $receipt"
-  [ -d "$(dirname "$receipt")" ] && [ -w "$(dirname "$receipt")" ] || die "receipt directory is not writable"
+  receipt_dir=$(dirname -- "$receipt")
+  [ -d "$receipt_dir" ] && [ -w "$receipt_dir" ] || die "receipt directory is not writable"
 fi
 
-for tool in gh curl jq; do
+for tool in gh curl jq yq; do
   command -v "$tool" >/dev/null || die "$tool is required"
 done
 
@@ -206,7 +207,10 @@ dispatch_and_wait() {
 commit_exists || die "commit $sha is not on $repo; push it to a branch first"
 manual=$(gh api "repos/$repo/contents/.github/workflows/$image_workflow?ref=$sha" \
   -H 'Accept: application/vnd.github.raw+json')
-if ! grep -Fq 'expected_sha:' <<<"$manual" || ! grep -Fq 'needs: verify-source' <<<"$manual"; then
+if ! yq -o=json <<<"$manual" | jq -e '
+  (.on.workflow_dispatch.inputs | has("expected_sha")) and (.jobs | has("verify-source")) and
+  (.jobs["build-and-push"].needs | if type == "array" then index("verify-source") != null else . == "verify-source" end)
+' >/dev/null; then
   die "target lacks the guest source guard; use that revision's publisher"
 fi
 ensure_branch
@@ -284,7 +288,7 @@ if [ -n "$receipt" ] && [ "$dry_run" = false ]; then
     [ "$current" = "$published" ] || die "guest tag changed since run $image_run_id: $reference"
     guests=$(jq -c --arg tag "$reference" --arg pin "${reference%:*}@$published" '. + {($tag): $pin}' <<<"$guests")
   done
-  temporary=$(mktemp "$(dirname "$receipt")/.publication.XXXXXX")
+  temporary=$(mktemp "$receipt_dir/.publication.XXXXXX")
   jq -n --arg source "$sha" --arg repository "$repo" --arg branch "$branch" \
     --arg components "$component_run_id" --arg guests "$image_run_id" --argjson images "$guests" \
     --arg componentAttempt "$component_run_attempt" --arg guestAttempt "$image_run_attempt" \

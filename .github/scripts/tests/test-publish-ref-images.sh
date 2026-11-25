@@ -30,6 +30,7 @@ export FAKE_REAL_JQ
 FAKE_REAL_JQ=$(command -v jq)
 export PATH="$fixture_dir/bin:$PATH"
 export FAKE_CALLS="$calls" FAKE_STATE="$state"
+export FAKE_MANUAL_WORKFLOW="$repo_dir/.github/workflows/c8s-image-manual.yml"
 export PUBLISH_REF_IMAGES_POLL_SECONDS=0
 
 # Fixture files under $state:
@@ -52,7 +53,7 @@ case "$1 $2" in
       */git/commits/*) [ -e "$FAKE_STATE/commit-known" ] || { echo "{\"message\":\"Not Found\",\"status\":\"404\"}"; exit 1; } ; echo "${path##*/}" ;;
       */git/ref/heads/*) [ -e "$FAKE_STATE/branch-sha" ] || { echo "{\"message\":\"Not Found\",\"status\":\"404\"}"; exit 1; } ; cat "$FAKE_STATE/branch-sha" ;;
       */contents/.github/workflows/c8s-image-manual.yml\?ref=*)
-        [ -e "$FAKE_STATE/old-workflow" ] || printf 'expected_sha:\nneeds: verify-source\n' ;;
+        if [ -e "$FAKE_STATE/workflow" ]; then cat "$FAKE_STATE/workflow"; else cat "$FAKE_MANUAL_WORKFLOW"; fi ;;
       */actions/runs/40001/attempts/1)
         sha=$(cat "$FAKE_STATE/dispatched-sha")
         [ ! -e "$FAKE_STATE/wrong-run-sha" ] || sha=3eddfb9ed4909133cfc0844ad4913b3b02d6a9fe
@@ -297,10 +298,21 @@ pass
 
 # --- unsupported workflow versions cause no partial publication -------------
 
+for missing in '.on.workflow_dispatch.inputs.expected_sha' '.jobs.verify-source' '.jobs.build-and-push.needs'; do
+  reset
+  touch "$state/commit-known"
+  yq "del($missing)" "$FAKE_MANUAL_WORKFLOW" >"$state/workflow"
+  printf '\n# expected_sha:\n# needs: verify-source\n' >>"$state/workflow"
+  expect_failure bash "$script" --sha "$sha" | grep -q 'target lacks the guest source guard' || fail "unsupported target accepted"
+  ! grep -q 'api -X POST' "$calls" || fail "unsupported target mutated remote state"
+done
+pass
+
 reset
-touch "$state/commit-known" "$state/old-workflow"
-expect_failure bash "$script" --sha "$sha" | grep -q 'target lacks the guest source guard' || fail "unsupported target accepted"
-! grep -q 'api -X POST' "$calls" || fail "unsupported target mutated remote state"
+touch "$state/commit-known"
+yq '.jobs.build-and-push.needs = ["verify-source"]' "$FAKE_MANUAL_WORKFLOW" >"$state/workflow"
+(cd "$fixture_dir" && bash "$script" --sha "$sha" --receipt '-publication.json') >/dev/null
+jq -e '.guestAttempt == "1"' "$fixture_dir/-publication.json" >/dev/null || fail "list dependency or leading-dash receipt failed"
 pass
 
 # --- attempt one stays pinned through polling and later reruns ----------------
