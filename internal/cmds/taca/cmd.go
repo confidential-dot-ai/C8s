@@ -1,9 +1,9 @@
-// Package cdsca implements `c8s ta ca`: read the Trust Authority mesh CA bundle over the
+// Package taca implements `c8s ta ca`: read the Trust Authority mesh CA bundle over the
 // attested connection.
 //
 // The bundle is the anchor `--mesh-ca` takes on `c8s secrets put`,
 // `c8s volume create` and `c8s verify`. It is read from the same `GET /ca`
-// route that gate compares against, over the armTLS channel cdsconn builds to a
+// route that gate compares against, over the armTLS channel taconn builds to a
 // direct Trust Authority URL. A router front door does not relay /ca and is refused.
 package taca
 

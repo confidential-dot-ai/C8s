@@ -183,7 +183,7 @@ func preflightUpstreamRoutes() error {
 	if installOperatorKeyPath() == "" {
 		return nil
 	}
-	o := installTAConn("https://cds")
+	o := installTAConn("https://ta")
 	signer, err := o.Signer()
 	if err != nil {
 		return err

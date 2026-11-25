@@ -1,4 +1,4 @@
-// Package cdspins keeps a node's Trust Authority pin set current across a Trust Authority image roll.
+// Package tapins keeps a node's Trust Authority pin set current across a Trust Authority image roll.
 //
 // A node starts from the Trust Authority pins its launch document carries. The operator
 // moves a cluster to a new Trust Authority image with a signed decree the replicas apply
@@ -39,9 +39,9 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tadecree"
 )
 
-var ErrSingleTA = errors.New("cdspins: the launch file names a single Trust Authority, which issues no pin decrees")
+var ErrSingleTA = errors.New("tapins: the launch file names a single Trust Authority, which issues no pin decrees")
 
-var errBelowFloor = errors.New("cdspins: the pin decree is below this node's floor")
+var errBelowFloor = errors.New("tapins: the pin decree is below this node's floor")
 
 // lookBudget bounds one look, every ask it makes together.
 const lookBudget = 10 * time.Second
@@ -70,9 +70,9 @@ type Config struct {
 func (c Config) check() error {
 	switch {
 	case c.Attested == nil || c.Fetch == nil:
-		return errors.New("cdspins: a source reads decrees from a pinned replica and from an unverified fetch, and needs both")
+		return errors.New("tapins: a source reads decrees from a pinned replica and from an unverified fetch, and needs both")
 	case c.StateFile == "":
-		return errors.New("cdspins: a source keeps the decree it follows in a state file, and needs its path")
+		return errors.New("tapins: a source keeps the decree it follows in a state file, and needs its path")
 	}
 	return nil
 }
@@ -113,11 +113,11 @@ func New(cfg Config) (*Source, error) {
 	}
 	launchFile, err := cmdsutil.TALaunchFile(cfg.Bootstrap)
 	if err != nil {
-		return nil, fmt.Errorf("cdspins: the bootstrap pin set %w", err)
+		return nil, fmt.Errorf("tapins: the bootstrap pin set %w", err)
 	}
 	cluster, err := taconfig.ReadCluster(launchFile)
 	if err != nil {
-		return nil, fmt.Errorf("cdspins: the launch file the bootstrap set pins: %w", err)
+		return nil, fmt.Errorf("tapins: the launch file the bootstrap set pins: %w", err)
 	}
 	if !cluster.Replicated {
 		return nil, ErrSingleTA
@@ -266,11 +266,11 @@ func (s *Source) newerThanHeld(taken checked) bool {
 // hold s.mu, so what is checked is what is installed.
 func (s *Source) check(served *tadecree.Signed) (checked, error) {
 	if err := tadecree.Verify(*served, s.keys, s.clusterID); err != nil {
-		return checked{}, fmt.Errorf("cdspins: %w", err)
+		return checked{}, fmt.Errorf("tapins: %w", err)
 	}
 	decree := served.Decree
 	if decree.TAPins == nil {
-		return checked{}, fmt.Errorf("cdspins: the %s decree pins no Trust Authority image", decree.Kind)
+		return checked{}, fmt.Errorf("tapins: the %s decree pins no Trust Authority image", decree.Kind)
 	}
 	version := decree.AppliesAt()
 	if belowFloor(version, s.cfg.Floor) {
@@ -278,7 +278,7 @@ func (s *Source) check(served *tadecree.Signed) (checked, error) {
 	}
 	pins, err := decree.TAPins.WithLaunchFile(s.launchFile)
 	if err != nil {
-		return checked{}, fmt.Errorf("cdspins: %w", err)
+		return checked{}, fmt.Errorf("tapins: %w", err)
 	}
 	return checked{
 		signed:  served,
@@ -322,10 +322,10 @@ func (s *Source) save(inForce, attested checked) error {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(s.cfg.StateFile), 0o700); err != nil {
-		return fmt.Errorf("cdspins: state: %w", err)
+		return fmt.Errorf("tapins: state: %w", err)
 	}
 	if err := fileutil.WriteAtomic(s.cfg.StateFile, data, 0o600); err != nil {
-		return fmt.Errorf("cdspins: state: %w", err)
+		return fmt.Errorf("tapins: state: %w", err)
 	}
 	return nil
 }
@@ -361,16 +361,16 @@ func (s *Source) storedState() (state, error) {
 		return state{}, nil
 	}
 	if err != nil {
-		return state{}, fmt.Errorf("cdspins: state: %w", err)
+		return state{}, fmt.Errorf("tapins: state: %w", err)
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	var held state
 	if err := decoder.Decode(&held); err != nil {
-		return state{}, fmt.Errorf("cdspins: state %s: %w", s.cfg.StateFile, err)
+		return state{}, fmt.Errorf("tapins: state %s: %w", s.cfg.StateFile, err)
 	}
 	if held.InForce == nil {
-		return state{}, fmt.Errorf("cdspins: state %s names no decree in force", s.cfg.StateFile)
+		return state{}, fmt.Errorf("tapins: state %s names no decree in force", s.cfg.StateFile)
 	}
 	return held, nil
 }

@@ -18,7 +18,7 @@ import (
 func pinFirstPeer(hc *http.Client) (*http.Client, error) {
 	tr, ok := hc.Transport.(*http.Transport)
 	if !ok || tr.TLSClientConfig == nil {
-		return nil, fmt.Errorf("cdsconn: armTLS client has no TLS transport to pin the peer on")
+		return nil, fmt.Errorf("taconn: armTLS client has no TLS transport to pin the peer on")
 	}
 	var (
 		mu     sync.Mutex
@@ -27,7 +27,7 @@ func pinFirstPeer(hc *http.Client) (*http.Client, error) {
 	// The client has not dialled yet, so setting the hook races nothing.
 	tr.TLSClientConfig.VerifyConnection = func(cs tls.ConnectionState) error {
 		if len(cs.PeerCertificates) == 0 {
-			return fmt.Errorf("cdsconn: peer presented no certificate")
+			return fmt.Errorf("taconn: peer presented no certificate")
 		}
 		leaf := cs.PeerCertificates[0].Raw
 		mu.Lock()
@@ -37,7 +37,7 @@ func pinFirstPeer(hc *http.Client) (*http.Client, error) {
 			return nil
 		}
 		if !bytes.Equal(pinned, leaf) {
-			return fmt.Errorf("cdsconn: the connection to the Trust Authority was re-established and the peer presented a different serving certificate " +
+			return fmt.Errorf("taconn: the connection to the Trust Authority was re-established and the peer presented a different serving certificate " +
 				"than the one this command already verified; it may not be the same Trust Authority. Nothing was sent to it. Re-run the command")
 		}
 		return nil

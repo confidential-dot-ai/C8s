@@ -50,7 +50,7 @@ func HTTPFetch(taURL string) Fetcher {
 func getDecree(ctx context.Context, client *http.Client, taURL string) (*tadecree.Signed, error) {
 	route, err := url.JoinPath(taURL, pinDecreePath)
 	if err != nil {
-		return nil, fmt.Errorf("cdspins: the Trust Authority endpoint %q: %w", taURL, err)
+		return nil, fmt.Errorf("tapins: the Trust Authority endpoint %q: %w", taURL, err)
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, route, nil)
 	if err != nil {
@@ -66,15 +66,15 @@ func getDecree(ctx context.Context, client *http.Client, taURL string) (*tadecre
 	case http.StatusNotFound:
 		return nil, nil
 	default:
-		return nil, fmt.Errorf("cdspins: GET %s: %s", pinDecreePath, response.Status)
+		return nil, fmt.Errorf("tapins: GET %s: %s", pinDecreePath, response.Status)
 	}
 	body, err := readutil.ReadAll(response.Body, maxDecree)
 	if err != nil {
-		return nil, fmt.Errorf("cdspins: GET %s: %w", pinDecreePath, err)
+		return nil, fmt.Errorf("tapins: GET %s: %w", pinDecreePath, err)
 	}
 	served, err := tadecree.Parse(body)
 	if err != nil {
-		return nil, fmt.Errorf("cdspins: GET %s: %w", pinDecreePath, err)
+		return nil, fmt.Errorf("tapins: GET %s: %w", pinDecreePath, err)
 	}
 	return &served, nil
 }

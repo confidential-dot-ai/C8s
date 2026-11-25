@@ -24,7 +24,7 @@ import (
 
 // The process exits on it, and the restart rejoins the cluster as a new
 // member with the cluster's state (internal/cmds/ta).
-var ErrLeftItsCluster = errors.New("cds-ha: this replica left its cluster")
+var ErrLeftItsCluster = errors.New("ta-ha: this replica left its cluster")
 
 // Often enough that an alarm over a window of time sees it.
 const stuckAlarmEvery = time.Minute
@@ -62,7 +62,7 @@ func (n *Node) alarmStuckWithTheLog(reason string) {
 		return
 	}
 	n.stuckAlarmed = time.Now()
-	slog.Error("cds-ha: ALARM: this replica stopped following the log, and the replicas that follow it are no majority without it; it serves nothing and keeps its log",
+	slog.Error("ta-ha: ALARM: this replica stopped following the log, and the replicas that follow it are no majority without it; it serves nothing and keeps its log",
 		"reason", reason, "for", n.fsm.stuckFor().Round(time.Second))
 }
 

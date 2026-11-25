@@ -222,7 +222,7 @@ func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health
 		return fmt.Errorf("prepare the Trust Authority pins handed to injected clients: %w", err)
 	}
 	holdContainersForFirstDecree(plugin, decrees)
-	if err := plugin.prepareCDSAddress(); err != nil {
+	if err := plugin.prepareTAAddress(); err != nil {
 		return fmt.Errorf("prepare the Trust Authority address handed to injected clients: %w", err)
 	}
 	logger.Info("Trust Authority policy for injected clients", "pins", plugin.taPins, "address", plugin.taAddress)

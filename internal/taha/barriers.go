@@ -64,7 +64,7 @@ func (n *Node) wedged() error {
 	if refusedFor <= n.cfg.Timing.DeadAfter {
 		return nil
 	}
-	slog.Error("cds-ha: ALARM: this leader's Raft refuses every barrier of its term although its heartbeats reach a majority; it exits so another replica takes the cluster over",
+	slog.Error("ta-ha: ALARM: this leader's Raft refuses every barrier of its term although its heartbeats reach a majority; it exits so another replica takes the cluster over",
 		"refused_for", refusedFor.Round(time.Millisecond),
 		"term", led.term,
 		"commit_index", n.raft.CommitIndex(),

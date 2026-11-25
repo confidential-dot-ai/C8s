@@ -74,7 +74,7 @@ func (f *followedPins) handToClients() {
 }
 
 // taDecrees asks a replica the node already pins first, and falls back to an
-// unverified fetch only where none answers. It answers [cdspins.ErrSingleTA]
+// unverified fetch only where none answers. It answers [tapins.ErrSingleTA]
 // where the launch file this node pins names one Trust Authority.
 func (c pullConfig) taDecrees(bootstrap refvalues.ReferenceValues, logger *slog.Logger) (*followedPins, error) {
 	url := strings.TrimRight(c.URL, "/")

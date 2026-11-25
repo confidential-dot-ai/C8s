@@ -1046,7 +1046,7 @@ func (w *world) request(p *pod, method, logical string) (*answer, error) {
 	case s.token != nil:
 		args = append(args, "--token", string(s.token))
 	}
-	// The Trust Authority meters the workload secret routes per sandbox (cds
+	// The Trust Authority meters the workload secret routes per sandbox (ta
 	// --rate-limit, 10 a second by default); a scenario that asks many
 	// times in a row, such as filling the holder quota, is paced by the
 	// limiter, not judged by it, so a 429 is retried after a pause.

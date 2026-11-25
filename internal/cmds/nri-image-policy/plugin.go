@@ -100,7 +100,7 @@ type plugin struct {
 
 	// taAddress is the node-side path of the Trust Authority endpoint handed to those
 	// same clients, or "" when no pod of this node is injected.
-	// prepareCDSAddress sets it before any container can be created
+	// prepareTAAddress sets it before any container can be created
 	// (taaddress.go).
 	taAddress string
 

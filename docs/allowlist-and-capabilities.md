@@ -410,12 +410,13 @@ rechecks its running containers as an applied document does.
 
 A pod is on the component sets that admit every C8s component container it has
 run — the containers a role is bound to. A node computes that from the
-containers it has recorded for the sandbox, each judged at the CDS's time, and
-keeps nothing beside those records, so a restart recovers the membership with
-the containers. One set must admit them all: a component container the pod's
-sets do not admit is refused, and the refusal names the sets, so a pod cannot
-mix two releases' components. A pod whose component containers the measured
-base alone admits is on no set, and is judged as a pod without them.
+containers it has recorded for the sandbox, each judged at the Trust Authority's
+time, and keeps nothing beside those records, so a restart recovers the
+membership with the containers. One set must admit them all: a component
+container the pod's sets do not admit is refused, and the refusal names the
+sets, so a pod cannot mix two releases' components. A pod whose component
+containers the measured base alone admits is on no set, and is judged as a pod
+without them.
 
 Once no set a pod is on is in force — its deadline has passed, or a write
 removed it — the node refuses the pod every further start, the tenant's own

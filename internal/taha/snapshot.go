@@ -72,7 +72,7 @@ func (s *Snapshot) Index() uint64 {
 // during is refused.
 func (f *FSM) Snapshot() (*Snapshot, error) {
 	if reason := f.Stuck(); reason != "" {
-		return nil, fmt.Errorf("cds-ha: this replica stopped applying the log, so what it holds is no snapshot of the cluster: %s", reason)
+		return nil, fmt.Errorf("ta-ha: this replica stopped applying the log, so what it holds is no snapshot of the cluster: %s", reason)
 	}
 	sn, err := f.state()
 	if err != nil {
@@ -135,7 +135,7 @@ func (f *FSM) capturedDigests(sn snapshot) (Digests, error) {
 // the two moves the applied index or leaves the state machine inside Apply.
 func (f *FSM) stillAt(index uint64) error {
 	if f.applied.Load() != index || f.ApplyingFor() != 0 {
-		return fmt.Errorf("cds-ha: the log moved while this replica captured its state at index %d", index)
+		return fmt.Errorf("ta-ha: the log moved while this replica captured its state at index %d", index)
 	}
 	return nil
 }
@@ -235,7 +235,7 @@ func (f *FSM) Install(r io.Reader) error {
 		}
 		return err
 	}
-	slog.Info("cds-ha: this replica installed a snapshot of the cluster's state", "index", sn.Index, "took", time.Since(start).Round(time.Millisecond))
+	slog.Info("ta-ha: this replica installed a snapshot of the cluster's state", "index", sn.Index, "took", time.Since(start).Round(time.Millisecond))
 	return nil
 }
 
@@ -352,10 +352,10 @@ func snapshotCA(sn snapshot) (*issuer.CA, error) {
 }
 
 // ErrStaleSnapshot refuses a snapshot older than the state already applied.
-var ErrStaleSnapshot = errors.New("cds-ha: refusing a snapshot older than the applied state")
+var ErrStaleSnapshot = errors.New("ta-ha: refusing a snapshot older than the applied state")
 
 // ErrSnapshotDigest is a snapshot whose content is not what its header names.
-var ErrSnapshotDigest = errors.New("cds-ha: the snapshot does not match the digest it carries")
+var ErrSnapshotDigest = errors.New("ta-ha: the snapshot does not match the digest it carries")
 
 // decodeSnapshot reads a snapshot in a format from baseFormat to readable,
 // and checks its database image against the digest its header carries before

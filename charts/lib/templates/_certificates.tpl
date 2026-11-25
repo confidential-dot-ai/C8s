@@ -14,7 +14,7 @@
   command: {{ include "c8s.entrypoint" (dict "root" $root "valuePath" "image") }}
   {{- /* This container holds the credentials role, so the node hands it the
          one Trust Authority its pod may reach and refuses an argument naming another
-         (cmdsutil.ResolveCDSEndpoint). */}}
+         (cmdsutil.ResolveTAURL). */}}
   args:
     - get-cert
     - --attestation-api-url={{ .attestationApiURL }}
@@ -26,8 +26,9 @@
     - --cert-path={{ $certOut }}
     - --key-path={{ include "c8s.keyFile" $root }}
     - --ca-path={{ include "c8s.caFile" $root }}
-    # Retry CDS in-process during a roll instead of exiting into kubelet
-    # CrashLoopBackOff; still fails closed once the timeout elapses.
+    # Retry the Trust Authority in-process during a roll instead of exiting
+    # into kubelet CrashLoopBackOff; still fails closed once the timeout
+    # elapses.
     - --initial-retry-timeout=2m
     - --renew-interval={{ .renewInterval }}
     - --continue-on-initial-error

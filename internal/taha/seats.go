@@ -219,7 +219,7 @@ func (n *Node) takeOutDeadNonVoter(seen seating) bool {
 	if !n.takeOut(leaving.ID) {
 		return false
 	}
-	slog.Info("cds-ha: a non-voter of this cluster stopped answering and left it",
+	slog.Info("ta-ha: a non-voter of this cluster stopped answering and left it",
 		"member", leaving.ID)
 	return true
 }
@@ -235,12 +235,12 @@ func (n *Node) fillFreeSeat(seen seating) bool {
 	// INVARIANT: the seat is taken at the configuration's own address; a
 	// member that answers elsewhere moves as a non-voter (members.go).
 	if err := n.enqueueMutation(func() raft.Future { return n.raft.AddVoter(candidate.ID, candidate.Address, 0, n.cfg.Timing.Apply) }); err != nil {
-		slog.Warn("cds-ha: this leader could not seat a voter of its cluster",
+		slog.Warn("ta-ha: this leader could not seat a voter of its cluster",
 			"member", candidate.ID,
 			"error", err)
 		return false
 	}
-	slog.Info("cds-ha: a replica of this cluster took a voter seat",
+	slog.Info("ta-ha: a replica of this cluster took a voter seat",
 		"member", candidate.ID,
 		"seats", seen.seats)
 	return true
@@ -311,7 +311,7 @@ func (n *Node) caughtUp(member raft.ServerID) bool {
 	appliedBeforeAsking := n.fsm.AppliedIndex()
 	answer, err := n.askStanding(member)
 	if err != nil {
-		slog.Info("cds-ha: this leader could not ask a replica how far it has followed the log",
+		slog.Info("ta-ha: this leader could not ask a replica how far it has followed the log",
 			"member", member,
 			"error", err)
 		return false
@@ -329,7 +329,7 @@ func (n *Node) retireDeadVoter(seen seating) bool {
 	if !n.takeOut(retiring.ID) {
 		return false
 	}
-	slog.Info("cds-ha: a dead voter of this cluster gave up its seat",
+	slog.Info("ta-ha: a dead voter of this cluster gave up its seat",
 		"audit", true,
 		"member", retiring.ID)
 	return true
@@ -344,12 +344,12 @@ func (n *Node) demoteSurplusVoter(seen seating) bool {
 		return false
 	}
 	if err := n.enqueueMutation(func() raft.Future { return n.raft.DemoteVoter(surplus.ID, 0, n.cfg.Timing.Apply) }); err != nil {
-		slog.Warn("cds-ha: this leader could not take the vote of a surplus voter",
+		slog.Warn("ta-ha: this leader could not take the vote of a surplus voter",
 			"member", surplus.ID,
 			"error", err)
 		return false
 	}
-	slog.Info("cds-ha: a voter of this cluster gave up its seat; the cluster holds fewer",
+	slog.Info("ta-ha: a voter of this cluster gave up its seat; the cluster holds fewer",
 		"member", surplus.ID,
 		"seats", seen.seats)
 	return true
@@ -375,7 +375,7 @@ func (n *Node) quietestVoter(seen seating) (raft.Server, bool) {
 
 func (n *Node) takeOut(member raft.ServerID) bool {
 	if err := n.enqueueMutation(func() raft.Future { return n.raft.RemoveServer(member, 0, n.cfg.Timing.Apply) }); err != nil {
-		slog.Warn("cds-ha: this leader could not take a member out of its cluster",
+		slog.Warn("ta-ha: this leader could not take a member out of its cluster",
 			"member", member,
 			"error", err)
 		return false
@@ -414,7 +414,7 @@ func (n *Node) everyStayingVoterHolds(seen seating, voters []raft.ServerID) bool
 func (n *Node) memberHoldsVoters(member raft.ServerID, voters []raft.ServerID) bool {
 	answer, err := n.askStanding(member)
 	if err != nil {
-		slog.Info("cds-ha: this leader could not ask a voter which voters it holds",
+		slog.Info("ta-ha: this leader could not ask a voter which voters it holds",
 			"member", member,
 			"error", err)
 		return false
@@ -434,7 +434,7 @@ func holdsEvery(held []string, voters []raft.ServerID) bool {
 func (n *Node) askStanding(member raft.ServerID) (controlAnswer, error) {
 	held, reached := n.peers.knownAt(string(member))
 	if !reached {
-		return controlAnswer{}, fmt.Errorf("cds-ha: this replica has reached no member %s", member)
+		return controlAnswer{}, fmt.Errorf("ta-ha: this replica has reached no member %s", member)
 	}
 	return held.control.exchange(controlRequest{Op: opStanding}, controlTimeout)
 }

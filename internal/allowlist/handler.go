@@ -19,7 +19,7 @@ import (
 
 // DefaultMaxWriteBodyBytes caps a mutation body when Handler.MaxWriteBodyBytes
 // is zero. One entry fits; the deployed handler raises this so a full document
-// fits (see the cds router's allowlist write cap).
+// fits (see the Trust Authority router's allowlist write cap).
 const DefaultMaxWriteBodyBytes int64 = 64 * 1024
 
 // Handler holds the dependencies for allowlist HTTP handlers.

@@ -1,4 +1,4 @@
-// Package cdsconfig is the Trust Authority VM's launch file: one document holding every
+// Package taconfig is the Trust Authority VM's launch file: one document holding every
 // per-cluster setting Trust Authority runs on, bound to its VM by the launch measurement.
 // The host can read a launch file, so it carries no secrets.
 package taconfig

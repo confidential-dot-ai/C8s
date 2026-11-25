@@ -82,9 +82,9 @@ func (c client) put(ctx context.Context, path string, value []byte, overwrite bo
 	case resp.StatusCode == http.StatusOK:
 		// 200 answers a replacement. Reading it as anything else would let the
 		// CLI report a refusal for a write that landed.
-		return result{}, fmt.Errorf("cds replaced a value for a request that did not ask to: %s", path)
+		return result{}, fmt.Errorf("the Trust Authority replaced a value for a request that did not ask to: %s", path)
 	default:
-		return result{}, fmt.Errorf("cds returned %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+		return result{}, fmt.Errorf("the Trust Authority returned %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
 	}
 }
 
@@ -108,7 +108,7 @@ func (c client) explain(ctx context.Context, sandboxID string, auth authorizer) 
 		return out, fmt.Errorf("read response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return out, fmt.Errorf("cds returned %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+		return out, fmt.Errorf("the Trust Authority returned %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
 	}
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return out, fmt.Errorf("decode response: %w", err)

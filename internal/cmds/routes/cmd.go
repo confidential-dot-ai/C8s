@@ -148,7 +148,7 @@ func put(ctx context.Context, c routesclient.Client, manifest []byte, signer ope
 		case se.Status == http.StatusConflict, se.Status == http.StatusPreconditionFailed:
 			return fmt.Errorf("%w; %s", err, rebase)
 		case se.Status == http.StatusUnauthorized:
-			return fmt.Errorf("%w; check that the public key of --operator-key is in cds.operatorKeys", err)
+			return fmt.Errorf("%w; check that the public key of --operator-key is in ta.operatorKeys", err)
 		}
 	}
 	return err

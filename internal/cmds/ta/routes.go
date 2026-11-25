@@ -19,7 +19,7 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/secretbroker"
 )
 
-// dependencies bundles everything the cds router needs.
+// dependencies bundles everything the Trust Authority router needs.
 type dependencies struct {
 	AttestHandler     AttestHandler
 	AllowlistHandler  allowlist.Handler
@@ -41,22 +41,22 @@ type dependencies struct {
 
 func newRouter(deps dependencies) http.Handler {
 	if deps.MaxRequestSize <= 0 {
-		panic("cds: dependencies.MaxRequestSize must be positive")
+		panic("ta: dependencies.MaxRequestSize must be positive")
 	}
 	if deps.RateLimiter == nil {
-		panic("cds: dependencies.RateLimiter must be set")
+		panic("ta: dependencies.RateLimiter must be set")
 	}
 	if deps.ChallengeLimiter == nil {
-		panic("cds: dependencies.ChallengeLimiter must be set")
+		panic("ta: dependencies.ChallengeLimiter must be set")
 	}
 	if deps.ChallengeLimiter == deps.RateLimiter {
-		panic("cds: dependencies.ChallengeLimiter must be a limiter of its own, not the attestation one")
+		panic("ta: dependencies.ChallengeLimiter must be a limiter of its own, not the attestation one")
 	}
 	if deps.MeshCA == nil {
-		panic("cds: dependencies.MeshCA must be set")
+		panic("ta: dependencies.MeshCA must be set")
 	}
 	if deps.NodeImages == nil {
-		panic("cds: dependencies.NodeImages must be set")
+		panic("ta: dependencies.NodeImages must be set")
 	}
 	// One CA for the whole router: the handler signs with the certificate
 	// /ca publishes, and the route policy excludes that same certificate.
@@ -95,7 +95,7 @@ func newRouter(deps dependencies) http.Handler {
 	// body-bound operator token an allowlist mutation does.
 	if deps.SecretsHandler != nil {
 		if deps.SecretsOperator == nil || deps.SecretsExplain == nil {
-			panic("cds: dependencies.SecretsOperator and SecretsExplain must be set alongside SecretsHandler")
+			panic("ta: dependencies.SecretsOperator and SecretsExplain must be set alongside SecretsHandler")
 		}
 		r.Method(http.MethodPost, secrets.ChallengeRoute, deps.perSandbox(attestation.HandleAuthenticate(deps.SecretsChallenges)))
 		r.Method(http.MethodGet, secrets.Route, deps.perSandbox(deps.SecretsHandler))

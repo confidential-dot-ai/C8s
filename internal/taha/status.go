@@ -60,7 +60,7 @@ func (n *Node) Status() Status {
 	}
 	genesisCA, err := n.GenesisCA()
 	if err != nil {
-		slog.Error("cds-ha: this replica could not mint the mesh CA a Genesis decree would name", "error", err)
+		slog.Error("ta-ha: this replica could not mint the mesh CA a Genesis decree would name", "error", err)
 	}
 	status.GenesisCA = genesisCA
 	if n.raft == nil {

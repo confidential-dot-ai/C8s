@@ -41,7 +41,7 @@ func (d digest) MarshalText() ([]byte, error) {
 func (d *digest) UnmarshalText(text []byte) error {
 	raw, err := hex.DecodeString(string(text))
 	if err != nil || len(raw) != len(d) {
-		return fmt.Errorf("cds-ha: %q is no SHA-256 digest", text)
+		return fmt.Errorf("ta-ha: %q is no SHA-256 digest", text)
 	}
 	*d = digest(raw)
 	return nil

@@ -93,7 +93,7 @@ const (
 // TAPinsPath is where an injected credential client reads the Trust Authority attestation
 // policy it holds the Trust Authority to. Compiled for the same reason as the socket path:
 // the node bind-mounts its own policy there, so neither the pod nor the control
-// plane can name another source (see cmdsutil.ResolveCDSPins). The path is the
+// plane can name another source (see cmdsutil.ResolveTAPins). The path is the
 // enforcer's alone — a chart-rendered client reads the node config it mounts
 // itself, and keeps its own policy flag.
 const TAPinsPath = "/run/c8s/ta-pins.json"
@@ -114,7 +114,7 @@ const AttestationAPISocket = SidecarSocketDir + "/attestation-api.sock"
 // it dials, as <addr>:<port>. Compiled for the same reason as the pins: the
 // node writes the address its pod ruleset admits for the credential role, so a
 // client reaches the one Trust Authority it is permitted to reach and never an address the
-// control plane names (see cmdsutil.ResolveCDSEndpoint).
+// control plane names (see cmdsutil.ResolveTAURL).
 const TAAddressPath = "/run/c8s/ta-address"
 
 // AnnotationInjected is stamped on a pod by the mutating webhook after
