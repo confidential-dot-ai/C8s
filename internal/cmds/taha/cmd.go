@@ -49,8 +49,14 @@ replica serving a chain without that head.`,
 	pf.DurationVar(&o.retryFor, "retry-for", time.Minute, "how long accept-image and raise-floor re-read and retry a write another write beat")
 	pf.StringVar(&o.genesisPin, "genesis", "", "the set's genesis hash, which a write holds the chain to while this CLI has no record of the cluster (an operator who did not sign the genesis)")
 	cmd.AddCommand(newStatusCmd(o), newGenesisCmd(o), newAcceptImageCmd(o), newRaiseFloorCmd(o), newStoreCredentialCmd(o), newResolveCmd(o))
+	for _, c := range operatorCommands {
+		cmd.AddCommand(c(o))
+	}
 	return cmd
 }
+
+// operatorCommands are the commands only the operator build carries.
+var operatorCommands []func(*options) *cobra.Command
 
 func (o *options) urls() ([]string, error) {
 	if (o.URL != "") == (len(o.endpoints) > 0) {

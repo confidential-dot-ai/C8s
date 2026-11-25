@@ -60,6 +60,7 @@ var commandImportRules = importRules{
 		"internal/webhook imports internal/cmds/volume",
 		"internal/cmds/allowlist imports internal/cmds/taha",
 		"internal/cmds/c8srunc imports internal/cmds/nri-image-policy",
+		"internal/cmds/taha imports internal/cmds/worker",
 		"internal/cmds/getvolume imports internal/cmds/volume",
 		"internal/cmds/getvolume imports internal/cmds/volumed",
 		"internal/cmds/nri-image-policy imports internal/cmds/getcert",
