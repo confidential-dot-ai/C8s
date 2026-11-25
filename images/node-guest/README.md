@@ -478,14 +478,14 @@ mutable tag. `publish-ref-images.sh --receipt <file>` records the run IDs
 returned by dispatch and checks all six guest tags against that run's push
 logs. Its `images` map contains immutable digest references; use those pins
 after verification because another build can replace a tag at any time.
-The `guestAttempt` and `componentAttempt` fields pin the successful attempts;
+The `guestAttempt` and `componentAttempt` fields pin each dispatch's first attempt;
 read their logs with `gh run view <run> --attempt <attempt> --log --repo <repo>`.
 The component fields are empty when its tags already existed. The receipt
 requires Python 3 and is installed atomically without replacing an existing path.
 
 This publisher requires the manual workflow's `expected_sha` input and source
 guard: a moved dispatch branch fails before any guest build or push. Older
-targets without that input require their corresponding publisher.
+targets without that input are rejected before mutation and need their matching publisher.
 Only targets containing the sync log records support component-pin verification.
 The receipt's guest digests alone do not establish the component map inside
 those guests.

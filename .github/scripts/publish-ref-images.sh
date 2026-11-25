@@ -130,7 +130,6 @@ ensure_branch() {
     echo "branch $branch already at $short"
     return
   fi
-  commit_exists || die "commit $sha is not on $repo; push it to a branch first"
   if [ "$dry_run" = true ]; then
     echo "would create branch $branch at $short"
     return
@@ -187,23 +186,29 @@ dispatch_and_wait() {
     -H 'X-GitHub-Api-Version: 2022-11-28' -f "ref=$branch" -F return_run_details=true \
     "$@" --jq .workflow_run_id)
   [[ "$run_id" =~ ^[1-9][0-9]*$ ]] || die "dispatch did not return a run ID; do not retry without inspecting Actions"
-  details=$(gh api "repos/$repo/actions/runs/$run_id")
-  [ "$(jq -r .head_sha <<<"$details")" = "$sha" ] || die "dispatched run $run_id has a different source SHA"
   url="https://github.com/$repo/actions/runs/$run_id"
   echo "waiting for $workflow run $url"
-  gh run watch "$run_id" --repo "$repo" --exit-status --interval "$poll_seconds" >/dev/null \
-    || die "$workflow run failed: $url"
+  while true; do
+    details=$(gh api "repos/$repo/actions/runs/$run_id/attempts/1")
+    jq -e --arg sha "$sha" '.head_sha == $sha and .run_attempt == 1' <<<"$details" >/dev/null \
+      || die "dispatched run $run_id has a different source SHA or attempt"
+    [ "$(jq -r .status <<<"$details")" != completed ] || break
+    sleep "$poll_seconds"
+  done
+  [ "$(jq -r .conclusion <<<"$details")" = success ] || die "$workflow run failed: $url"
   echo "$workflow run succeeded: $url"
-  details=$(gh api "repos/$repo/actions/runs/$run_id")
-  jq -e --arg sha "$sha" '.head_sha == $sha and .status == "completed" and .conclusion == "success"' \
-    <<<"$details" >/dev/null || die "run $run_id changed or is no longer successful"
-  last_run_attempt=$(jq -r .run_attempt <<<"$details")
-  [[ "$last_run_attempt" =~ ^[1-9][0-9]*$ ]] || die "run $run_id has no valid attempt number"
+  last_run_attempt=1
   last_run_id=$run_id
 }
 
 # --- main -------------------------------------------------------------------
 
+commit_exists || die "commit $sha is not on $repo; push it to a branch first"
+manual=$(gh api "repos/$repo/contents/.github/workflows/$image_workflow?ref=$sha" \
+  -H 'Accept: application/vnd.github.raw+json')
+if ! grep -Fq 'expected_sha:' <<<"$manual" || ! grep -Fq 'needs: verify-source' <<<"$manual"; then
+  die "target lacks the guest source guard; use that revision's publisher"
+fi
 ensure_branch
 
 missing_text=$(missing_components)

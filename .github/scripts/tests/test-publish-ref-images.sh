@@ -51,11 +51,19 @@ case "$1 $2" in
     case "$path" in
       */git/commits/*) [ -e "$FAKE_STATE/commit-known" ] || { echo "{\"message\":\"Not Found\",\"status\":\"404\"}"; exit 1; } ; echo "${path##*/}" ;;
       */git/ref/heads/*) [ -e "$FAKE_STATE/branch-sha" ] || { echo "{\"message\":\"Not Found\",\"status\":\"404\"}"; exit 1; } ; cat "$FAKE_STATE/branch-sha" ;;
-      */actions/runs/40001)
+      */contents/.github/workflows/c8s-image-manual.yml\?ref=*)
+        [ -e "$FAKE_STATE/old-workflow" ] || printf 'expected_sha:\nneeds: verify-source\n' ;;
+      */actions/runs/40001/attempts/1)
         sha=$(cat "$FAKE_STATE/dispatched-sha")
         [ ! -e "$FAKE_STATE/wrong-run-sha" ] || sha=3eddfb9ed4909133cfc0844ad4913b3b02d6a9fe
-        status=completed; [ ! -e "$FAKE_STATE/rerun-started" ] || status=in_progress
-        jq -nc --arg sha "$sha" --arg status "$status" '{head_sha:$sha,status:$status,conclusion:"success",run_attempt:2}' ;;
+        status=completed
+        if [ -e "$FAKE_STATE/attempt-pending" ]; then status=in_progress; rm "$FAKE_STATE/attempt-pending"; fi
+        conclusion=$(cat "$FAKE_STATE/run-conclusion" 2>/dev/null || echo success)
+        if [ -e "$FAKE_STATE/move-branch" ]; then
+          echo 3eddfb9ed4909133cfc0844ad4913b3b02d6a9fe >"$FAKE_STATE/branch-sha"
+        fi
+        jq -nc --arg sha "$sha" --arg status "$status" --arg conclusion "$conclusion" '{head_sha:$sha,status:$status,conclusion:$conclusion,run_attempt:1}' ;;
+      */actions/runs/40001) echo 'must not follow a mutable latest attempt' >&2; exit 1 ;;
       *) echo "unexpected api path $path" >&2; exit 1 ;;
     esac ;;
   "api -X")
@@ -86,7 +94,7 @@ case "$1 $2" in
   "run list") echo 'must not guess a dispatched run from a list' >&2; exit 1 ;;
   "run view")
     [ "$3" = 40001 ] || exit 1
-    [[ " $* " == *" --attempt 2 --log "* ]] || { echo 'logs must name the successful attempt' >&2; exit 1; }
+    [[ " $* " == *" --attempt 1 --log "* ]] || { echo 'logs must name the successful attempt' >&2; exit 1; }
     for tee in tdx sev-snp; do
       for suffix in "" -kubevirt; do echo "guests/worker:sha-c7cf2f3-$tee$suffix"; done
     done >"$FAKE_STATE/log-tags"
@@ -99,11 +107,6 @@ case "$1 $2" in
       printf 'job\tstep\t2026-01-01T00:00:00Z Pushed [registry] ghcr.io/confidential-dot-ai/guests/worker:sha-c7cf2f3-tdx\n'
       printf 'job\tstep\t2026-01-01T00:00:00Z Digest: sha256:%064d\n' 2
     fi ;;
-  "run watch")
-    if [ -e "$FAKE_STATE/move-branch" ]; then
-      echo 3eddfb9ed4909133cfc0844ad4913b3b02d6a9fe >"$FAKE_STATE/branch-sha"
-    fi
-    [ "$(cat "$FAKE_STATE/run-conclusion" 2>/dev/null || echo success)" = success ] ;;
   *) echo "unexpected gh call: $*" >&2; exit 1 ;;
 esac
 EOF
@@ -182,6 +185,7 @@ pass
 # --- a build branch at another commit is refused -----------------------------
 
 reset
+touch "$state/commit-known"
 printf '%s' "$other" >"$state/branch-sha"
 expect_failure bash "$script" --sha "$sha" | grep -q "exists at $other" || fail "branch at another commit was accepted"
 ! grep -q '/dispatches' "$calls" || fail "a workflow was dispatched despite the branch mismatch"
@@ -242,7 +246,7 @@ touch "$state/commit-known"
 printf '%s' "$sha" >"$state/branch-sha"
 for c in c8s-operator nri-image-policy ta armtls-mesh volumed; do echo "$c:c7cf2f3" >>"$state/present-tags"; done
 out=$(bash "$script" --sha "$sha" --receipt "$fixture_dir/receipt.json")
-jq -e --arg sha "$sha" ' .source == $sha and .componentRun == "" and .componentAttempt == "" and .guestRun == "40001" and .guestAttempt == "2" and (.images | length) == 6 and ([.images[] | endswith("@sha256:" + ("0" * 63) + "1")] | all) ' "$fixture_dir/receipt.json" >/dev/null || fail "receipt did not identify dispatched build"
+jq -e --arg sha "$sha" ' .source == $sha and .componentRun == "" and .componentAttempt == "" and .guestRun == "40001" and .guestAttempt == "1" and (.images | length) == 6 and ([.images[] | endswith("@sha256:" + ("0" * 63) + "1")] | all) ' "$fixture_dir/receipt.json" >/dev/null || fail "receipt did not identify dispatched build"
 ! grep -q '/tags/list' "$calls" || fail "publication depends on a paginated tag listing"
 grep -q 'branch build/c7cf2f3 already at c7cf2f3' <<<"$out" || fail "existing branch not reused"
 ! grep -q 'actions/workflows/docker.yml/dispatches' "$calls" || fail "docker dispatched although every tag exists"
@@ -291,9 +295,25 @@ expect_failure bash "$script" --sha "$sha" | grep -q 'dispatch did not return a 
 ! grep -q 'gh run list\|gh run watch' "$calls" || fail "another run could be selected"
 pass
 
-# --- both TA formats are required even when every worker tag exists ----------
+# --- unsupported workflow versions cause no partial publication -------------
 
-for failure in move-branch wrong-run-sha rerun-started; do
+reset
+touch "$state/commit-known" "$state/old-workflow"
+expect_failure bash "$script" --sha "$sha" | grep -q 'target lacks the guest source guard' || fail "unsupported target accepted"
+! grep -q 'api -X POST' "$calls" || fail "unsupported target mutated remote state"
+pass
+
+# --- attempt one stays pinned through polling and later reruns ----------------
+
+reset
+touch "$state/commit-known" "$state/attempt-pending"
+bash "$script" --sha "$sha" --receipt "$fixture_dir/attempt-receipt" >/dev/null
+jq -e '.componentAttempt == "1" and .guestAttempt == "1"' "$fixture_dir/attempt-receipt" >/dev/null || fail "attempt identity changed"
+pass
+
+# --- changed sources and missing TA formats fail -----------------------------
+
+for failure in move-branch wrong-run-sha; do
   reset
   touch "$state/commit-known" "$state/$failure"
   expect_failure bash "$script" --sha "$sha" --receipt "$fixture_dir/source-receipt" \
