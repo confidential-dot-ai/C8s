@@ -474,8 +474,15 @@ moves will not match.
 The sync log emits `C8S_BUILD_COMPONENT <repository> <digest>` for each
 resolved core image, including the plugin supplying the binary. Compare these
 records with deployment image pins; source SHAs alone do not detect a rebuilt
-mutable tag. `publish-ref-images.sh --receipt <file>` records the exact
-dispatched workflow IDs after all expected guest references resolve.
+mutable tag. `publish-ref-images.sh --receipt <file>` records the run IDs
+returned by dispatch and checks all six guest tags against that run's push
+logs. Its `images` map contains immutable digest references; use those pins
+after verification because another build can replace a tag at any time.
+The receipt is installed atomically and never overwrites an existing path.
+
+Older targets still publish and receive receipts, but only targets containing
+the sync log records support component-pin verification. The receipt's guest
+digests alone do not establish the component map inside those guests.
 
 ## Physical host prerequisites
 

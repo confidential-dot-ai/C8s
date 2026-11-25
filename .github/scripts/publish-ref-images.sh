@@ -31,7 +31,7 @@
 #   --confos-ref   build with this confos commit instead of the pinned one
 #   --branch       build branch name (default: build/<short-sha>)
 #   --repo         GitHub repository (default: confidential-dot-ai/confidential-kubernetes)
-#   --receipt      write source and exact dispatched run IDs after publication succeeds
+#   --receipt      write source, dispatched run IDs and verified guest digest references
 #   --dry-run      resolve and check, print what would be dispatched, exit 0
 #
 # Needs: gh (authenticated), curl, jq. GH_TOKEN (or gh's own token) is used for
@@ -46,7 +46,6 @@ components=(c8s-operator nri-image-policy ta armtls-mesh volumed)
 docker_workflow=docker.yml
 image_workflow=c8s-image-manual.yml
 poll_seconds="${PUBLISH_REF_IMAGES_POLL_SECONDS:-30}"
-find_run_attempts="${PUBLISH_REF_IMAGES_FIND_ATTEMPTS:-20}"
 
 repo=confidential-dot-ai/confidential-kubernetes
 sha=""
@@ -178,18 +177,11 @@ missing_components() {
 # URL. Fails if the run fails.
 dispatch_and_wait() {
   local workflow=$1; shift
-  local since run_id url attempt
-  since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  gh workflow run "$workflow" --repo "$repo" --ref "$branch" "$@"
-  run_id=""
-  for ((attempt = 0; attempt < find_run_attempts; attempt++)); do
-    sleep "$poll_seconds"
-    # shellcheck disable=SC2016 # $since is a jq variable
-    run_id=$(gh run list --repo "$repo" --workflow "$workflow" --branch "$branch" --limit 5 --json databaseId,createdAt \
-      | jq -r --arg since "$since" '[.[] | select(.createdAt >= $since)] | sort_by(.createdAt) | last | .databaseId // empty')
-    [ -n "$run_id" ] && break
-  done
-  [ -n "$run_id" ] || die "no $workflow run appeared on $branch after dispatch"
+  local run_id url
+  run_id=$(gh api -X POST "repos/$repo/actions/workflows/$workflow/dispatches" \
+    -H 'X-GitHub-Api-Version: 2022-11-28' -f "ref=$branch" -F return_run_details=true \
+    "$@" --jq .workflow_run_id)
+  [[ "$run_id" =~ ^[1-9][0-9]*$ ]] || die "dispatch did not return a run ID; do not retry without inspecting Actions"
   url="https://github.com/$repo/actions/runs/$run_id"
   echo "waiting for $workflow run $url"
   gh run watch "$run_id" --repo "$repo" --exit-status --interval "$poll_seconds" >/dev/null \
@@ -222,9 +214,9 @@ else
   fi
 fi
 
-image_args=(-f "c8s_ref=$short")
+image_args=(-f "inputs[c8s_ref]=$short")
 if [ -n "$confos_ref" ]; then
-  image_args+=(-f "confos_ref=$confos_ref")
+  image_args+=(-f "inputs[confos_ref]=$confos_ref")
 fi
 
 if [ "$dry_run" = true ]; then
@@ -248,10 +240,37 @@ for expected in "guests/worker:sha-$short-tdx" "guests/worker:sha-$short-tdx-kub
 done
 
 if [ -n "$receipt" ] && [ "$dry_run" = false ]; then
+  # confos reports the pushed reference and digest together. Read the selected
+  # run's logs, never a later build's mutable tags as publication evidence.
+  work=$(mktemp -d)
+  temporary=""
+  trap 'rm -rf -- "$work"; [ -z "$temporary" ] || rm -f -- "$temporary"' EXIT
+  gh run view "$image_run_id" --repo "$repo" --log >"$work/guest.log"
+  guests='{}'
+  for expected in "guests/worker:sha-$short-tdx" "guests/worker:sha-$short-tdx-kubevirt" \
+                  "guests/worker:sha-$short-sev-snp" "guests/worker:sha-$short-sev-snp-kubevirt" \
+                  "guests/ta:sha-$short" "guests/ta:sha-$short-kubevirt"; do
+    reference="$registry_host/$registry_namespace/$expected"
+    published=$(awk -F '\t' -v ref="$reference" '
+      /Pushed \[registry\] / {line=$NF; sub(/^.*Pushed \[registry\] /, "", line); selected[$1]=(line==ref)}
+      / Digest: sha256:[0-9a-f]+$/ && selected[$1] {
+        line=$NF; sub(/^.* Digest: /, "", line); print line; selected[$1]=0
+      }' "$work/guest.log" | sort -u)
+    [[ "$published" =~ ^sha256:[0-9a-f]{64}$ ]] || die "missing or conflicting publication digest for $reference"
+    token=$(registry_token "${expected%%:*}")
+    curl -fsSI -H "Authorization: Bearer $token" \
+      -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json' \
+      "https://$registry_host/v2/$registry_namespace/${expected%%:*}/manifests/${expected#*:}" >"$work/headers"
+    current=$(awk 'tolower($1)=="docker-content-digest:" {gsub(/\r/, "", $2); print $2}' "$work/headers")
+    [ "$current" = "$published" ] || die "guest tag changed since run $image_run_id: $reference"
+    guests=$(jq -c --arg tag "$reference" --arg pin "${reference%:*}@$published" '. + {($tag): $pin}' <<<"$guests")
+  done
+  temporary=$(mktemp "$(dirname "$receipt")/.publication.XXXXXX")
+  jq -n --arg source "$sha" --arg repository "$repo" --arg branch "$branch" \
+    --arg components "$component_run_id" --arg guests "$image_run_id" --argjson images "$guests" \
+    '{source: $source, repository: $repository, branch: $branch, componentRun: $components, guestRun: $guests, images: $images}' >"$temporary"
   (
-    set -o noclobber
-    jq -n --arg source "$sha" --arg repository "$repo" --arg branch "$branch" \
-      --arg components "$component_run_id" --arg guests "$image_run_id" \
-      '{source: $source, repository: $repository, branch: $branch, componentRun: $components, guestRun: $guests}' >"$receipt"
+    ln "$temporary" "$receipt"
+    [ "$temporary" -ef "$receipt" ] || die "receipt destination changed"
   )
 fi
