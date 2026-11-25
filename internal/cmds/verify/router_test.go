@@ -52,7 +52,7 @@ func writePEM(t *testing.T, name, blockType string, der []byte) string {
 	return path
 }
 
-// productionRouter serves the production cds-attest handler over TLS with the
+// productionRouter serves the production ta-attest handler over TLS with the
 // manifest at revision 1 applied and published. afterResponse, when set, runs
 // after each response.
 func productionRouter(t *testing.T, operator operatorSigner, afterResponse func(*routing.State)) (string, *recordingProvider, []byte) {
@@ -100,7 +100,7 @@ func productionRouter(t *testing.T, operator operatorSigner, afterResponse func(
 }
 
 // TestProductionRouterAgainstVerifier runs the verifier's gather path against
-// the production cds-attest handler: the report_data the verifier expects
+// the production ta-attest handler: the report_data the verifier expects
 // must be what the handler asked the TEE to attest.
 func TestProductionRouterAgainstVerifier(t *testing.T) {
 	operator := newOperatorSigner(t)

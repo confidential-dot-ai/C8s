@@ -242,8 +242,8 @@ volume opens once its consumer's entry and its key are both back
 ## The router
 
 The router is the cluster's only public entry point, in its own `c8s-router`
-namespace. Its pod holds nginx, `cds-attest`, the allowlist-route proxy and the
-member shape the chart renders rather than injects. The `cds-attest` container
+namespace. Its pod holds nginx, `ta-attest`, the allowlist-route proxy and the
+member shape the chart renders rather than injects. The `ta-attest` container
 provides the `c8s ta-attest` command's router services. Its front-door mode
 selects what terminates public TLS: `ta` on an installed cluster, and on a
 baked node whichever its signed launch file names:
@@ -255,7 +255,7 @@ baked node whichever its signed launch file names:
 
 The two attested handshakes, attest-pq and attest-lb, are
 [routes-evidence.md](routes-evidence.md)'s. The mode is a trust statement:
-`cds-attest` commits it into both transcripts and refuses attest-lb unless the
+`ta-attest` commits it into both transcripts and refuses attest-lb unless the
 serving key is TEE-held, since a host holding the key could terminate a client's
 TLS with the same leaf. For the same reason `c8s allowlist` and `c8s routes`
 refuse a front door outside mode `ta`, wanting a direct TA URL.
@@ -284,7 +284,7 @@ the old one.
 
 The TA stores one operator-signed `c8s.routes/v1` manifest at `/routes`, in the
 same store as the served allowlist, so it shares its lifetime; there is no route
-seed. `cds-attest` polls `GET /routes` every `router.routing.pollInterval` (30s)
+seed. `ta-attest` polls `GET /routes` every `router.routing.pollInterval` (30s)
 over armTLS against the same TA pins, verifies the manifest's write token under
 the operator keys, and routes by nothing else. A baked node takes those keys
 from the TA configuration its document pins; elsewhere they are Kubernetes
@@ -375,7 +375,7 @@ and remove it with `c8s routes rm-pattern --host-suffix <suffix>`.
   workload and the label in the peer's leaf; a wrong or forged annotation
   costs a 502, never a request at the wrong agent. A label no pod publishes
   gets 404.
-- The router's upstream identity (`cds-attest`) carries its own TCP out of
+- The router's upstream identity (`ta-attest`) carries its own TCP out of
   the router pod uncaptured, wherever it goes: a pod CVM's endpoint lies
   outside the cluster's ranges, on whatever port its cloud published, and a
   captured dial would be wrapped in a second mesh handshake. Every

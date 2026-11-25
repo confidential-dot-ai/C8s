@@ -231,7 +231,7 @@ matched.
 | Container | Declared as |
 |---|---|
 | nginx | main |
-| cds-attest | main |
+| ta-attest | main |
 | allowlist-proxy | main |
 | acme, `c8s-cert`, `c8s-cert-wait` | init |
 

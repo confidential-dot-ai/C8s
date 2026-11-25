@@ -168,7 +168,7 @@ func TestWorkerChartRouterLaunchContract(t *testing.T) {
 	}
 	// The Trust Authority every client verifies is the VM the signed launch file names, so
 	// the one component argv naming a policy reads it from the staged copy.
-	wantPolicies := map[string]string{"c8s-router/cds-attest": "ta.json"}
+	wantPolicies := map[string]string{"c8s-router/ta-attest": "ta.json"}
 	workloads := renderedPodSpecs(t, out)
 	if len(workloads) != 2 {
 		t.Fatalf("the worker chart should contain the router and volumed; got %d workloads", len(workloads))
@@ -226,11 +226,11 @@ func TestWorkerChartRouterLaunchContract(t *testing.T) {
 	}
 	assertContainerHasArg(t, "c8s-cert", cert.Args, "--san-file=/run/c8s-node/tls-san")
 	assertContainerNoArgPrefix(t, "c8s-cert", cert.Args, "--san=")
-	attest := renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")
-	assertContainerHasArg(t, "cds-attest", attest.Args, "--operator-keys-file=/run/c8s-node/operator-pubkey")
-	assertContainerHasArg(t, "cds-attest", attest.Args, "--measured-policies-file=/run/nri-image-policy/measured-policies")
+	attest := renderedDeploymentContainer(t, out, "c8s-router", "ta-attest")
+	assertContainerHasArg(t, "ta-attest", attest.Args, "--operator-keys-file=/run/c8s-node/operator-pubkey")
+	assertContainerHasArg(t, "ta-attest", attest.Args, "--measured-policies-file=/run/nri-image-policy/measured-policies")
 	if !slices.ContainsFunc(attest.VolumeMounts, func(m corev1.VolumeMount) bool { return m.MountPath == "/run/nri-image-policy" && m.ReadOnly }) {
-		t.Error("cds-attest reads the measured-policy journal without mounting /run/nri-image-policy read-only")
+		t.Error("ta-attest reads the measured-policy journal without mounting /run/nri-image-policy read-only")
 	}
 	if got, want := expectedWorkloadArg(cert), routerEntryName(t, renderedSeed(t, out)); want == "" || got != want {
 		t.Errorf("c8s-cert --expected-workload = %q, want the seeded router entry %q", got, want)
@@ -348,16 +348,16 @@ func TestWorkerChartRouterReadsLaunchFiles(t *testing.T) {
 	}
 	assertRouterFrontDoorPorts(t, out, conf)
 
-	attest := renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")
+	attest := renderedDeploymentContainer(t, out, "c8s-router", "ta-attest")
 	for _, arg := range []string{
 		"--front-door-mode-file=/run/c8s-node/router/front-door-mode",
 		"--serving-cert-file=/etc/c8s/certs/tls.crt",
 		"--acme-serving-cert-file=/etc/c8s-acme-tls/cert.pem",
 	} {
-		assertContainerHasArg(t, "cds-attest", attest.Args, arg)
+		assertContainerHasArg(t, "ta-attest", attest.Args, arg)
 	}
-	assertContainerNoArgPrefix(t, "cds-attest", attest.Args, "--front-door-mode=")
-	assertContainerNoArgPrefix(t, "cds-attest", attest.Args, "--upstream")
+	assertContainerNoArgPrefix(t, "ta-attest", attest.Args, "--front-door-mode=")
+	assertContainerNoArgPrefix(t, "ta-attest", attest.Args, "--upstream")
 	assertContainerMount(t, attest, "node-config", "/run/c8s-node")
 }
 

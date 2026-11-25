@@ -377,7 +377,7 @@ func clusterKey(node *taha.Node, purpose string) attestation.ClusterKey {
 		if err != nil {
 			return nil
 		}
-		key, err := hkdf.Key(sha256.New, secret, nil, "c8s-cds-challenge-key-v1/"+purpose, sha256.Size)
+		key, err := hkdf.Key(sha256.New, secret, nil, "c8s-ta-challenge-key-v1/"+purpose, sha256.Size)
 		if err != nil {
 			return nil
 		}

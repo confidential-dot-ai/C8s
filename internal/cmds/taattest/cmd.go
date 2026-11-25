@@ -126,7 +126,7 @@ func run(ctx context.Context, cfg config) error {
 		return err
 	}
 	cfg.routing.taURL = taURL
-	logger.Info("Trust Authority endpoint resolved", "cds_url", cfg.routing.taURL, "from_node", fromNode)
+	logger.Info("Trust Authority endpoint resolved", "ta_url", cfg.routing.taURL, "from_node", fromNode)
 	if err := checkRoutingFlags(cfg); err != nil {
 		return err
 	}

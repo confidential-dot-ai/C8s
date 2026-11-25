@@ -83,14 +83,14 @@ diagnostics() {
     kubectl get events -A --sort-by=.lastTimestamp 2>&1 | tail -40 || true
     kubectl -n "$ROUTER_NS" describe pods 2>&1 | tail -60 || true
     kubectl -n "$ROUTER_NS" get pods -o json 2>&1 || true
-    kubectl -n "$ROUTER_NS" logs deploy/c8s-router -c cds-attest --tail=40 2>&1 || true
+    kubectl -n "$ROUTER_NS" logs deploy/c8s-router -c ta-attest --tail=40 2>&1 || true
     docker logs "$TA_CONTAINER" --tail 40 2>&1 || true
     kubectl -n "$NS" logs deploy/c8s-operator --tail=40 2>&1 || true
     kubectl -n "$NS" logs ds/c8s-nri-image-policy-worker -c install --tail=80 2>&1 || true
     if [ -n "$NODE" ]; then
         node_exec journalctl -u containerd --no-pager -n 100 2>&1 || true
         node_exec cat /etc/nri/conf.d/image-policy.yaml 2>&1 || true
-        node_exec sh -c 'for id in $(crictl ps --name cds-attest -q); do crictl inspect "$id"; done' 2>&1 || true
+        node_exec sh -c 'for id in $(crictl ps --name ta-attest -q); do crictl inspect "$id"; done' 2>&1 || true
         node_exec sh -c 'for p in /var/lib/kubelet/pods/*/volumes/*/*; do stat -f -c "%T %n" "$p"; done' 2>&1 || true
     fi
 }

@@ -143,7 +143,7 @@ uncaptured:
   port 15021.
 - **Platform-role sockets**: the credential clients that reach the TA, the
   endpoint itself, and, in the router's pod, the route authority
-  (`cds-attest`), which authenticates each backend itself
+  (`ta-attest`), which authenticates each backend itself
   ([operator.md](operator.md#pattern-rules)).
 - **Declared egress**: what the pod's workload entry declares, once the pod
   matches that entry ([allowlist-entries.md](allowlist-entries.md)).

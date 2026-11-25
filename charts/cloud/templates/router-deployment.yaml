@@ -11,7 +11,7 @@ nodeSelector:
        grants it, and runs as that role's reserved identity: c8s.meshUID for
        the endpoint, c8s.credentialsUID for get-cert, the probe-file gate and
        the allowlist proxy, c8s.routerUID for nginx, c8s.upstreamUID for
-       cds-attest. The volume group (c8s.certFsGroup) is what lets a role
+       ta-attest. The volume group (c8s.certFsGroup) is what lets a role
        read what another role wrote. */}}
 initContainers:
   {{- /* The endpoint leads: the enforcer gates the rest of the pod on its
@@ -31,8 +31,8 @@ containers:
     "allowlistProxyMounts" (include "router.inventoryMount" .)
     "attestationApiMounts" (include "c8s.attestationApiSocketMount" .)
     "attestationApiURL" (include "router.attestationApiURL" .)
-    "cdsAttestArgs" (include "router.taAttestArgs" . | fromJsonArray)
-    "cdsAttestMounts" (include "router.taAttestMounts" . | fromYamlArray)
+    "taAttestArgs" (include "router.taAttestArgs" . | fromJsonArray)
+    "taAttestMounts" (include "router.taAttestMounts" . | fromYamlArray)
     "config" (include "router.configDir" .)
     "ports" (include "router.publicPorts" . | fromJsonArray)
     "sandboxGateMounts" (include "router.pluginReadyGate" .)

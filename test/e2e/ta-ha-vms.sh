@@ -83,7 +83,7 @@ metadata:
   namespace: $NS
 spec:
   publishNotReadyAddresses: false
-  selector: {ci.confidential.ai/cds-cluster: $cluster}
+  selector: {ci.confidential.ai/ta-cluster: $cluster}
   ports: [{port: $port, targetPort: $port}]
 EOF
 
@@ -141,7 +141,7 @@ for name in "${names[@]}"; do
      spec: (.spec
        | .template.metadata.annotations["snp.confidential.ai/host-data"] = $host_data
        | .template.metadata.labels["kubevirt.io/domain"] = $name
-       | .template.metadata.labels["ci.confidential.ai/cds-cluster"] = $cluster
+       | .template.metadata.labels["ci.confidential.ai/ta-cluster"] = $cluster
        | .template.spec.readinessProbe = {httpGet: {path: "/readyz", port: $port, scheme: "HTTPS"},
            initialDelaySeconds: 0, periodSeconds: 2, timeoutSeconds: 2, failureThreshold: 1, successThreshold: 1}
        | .template.spec.volumes |= map(
@@ -167,7 +167,7 @@ ha() { c8s ta ha "$@" --config launch/ta-config.yaml --ta-pin launch/ta-pin.json
 
 routing_ready() {
   kubectl -n "$NS" get endpointslices.discovery.k8s.io -l "kubernetes.io/service-name=$cluster" -o json > endpoints.json || return
-  kubectl -n "$NS" get pods -l "ci.confidential.ai/cds-cluster=$cluster" -o json > launchers.json || return
+  kubectl -n "$NS" get pods -l "ci.confidential.ai/ta-cluster=$cluster" -o json > launchers.json || return
   jq -e --argjson count "$1" --slurpfile slices endpoints.json '
     [.items[] | select(any(.status.conditions[]?; .type == "Ready" and .status == "True")) | .metadata.name] | sort as $ready |
     length == $count and ($slices[0] | [.items[].endpoints[]? | select(.conditions.ready == true) | .targetRef.name] | unique | sort) == $ready

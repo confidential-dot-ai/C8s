@@ -1265,7 +1265,7 @@ func (r *memRegister) Extension() ([]byte, error) {
 }
 
 // The hook extends each digest once and leaves the journal readable by the
-// router's non-root cds-attest, also after a failed extend rewrote it 0600.
+// router's non-root ta-attest, also after a failed extend rewrote it 0600.
 func TestPolicyMeasurerMeasures(t *testing.T) {
 	anchor := []byte("operator key")
 	origKey := readOperatorKey

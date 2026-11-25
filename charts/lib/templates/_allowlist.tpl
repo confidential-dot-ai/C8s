@@ -646,7 +646,7 @@ null
 {{- $argvs = append $argvs (dict "role" "credentials" "container" (get (dict "get-cert" "c8s-cert" "probe-file" "c8s-cert-wait") $mode | default "") "argv" (list "/c8s" $mode) "args" (get $args $mode) "mounts" (get $tables $mode)) -}}
 {{- end -}}
 {{- $argvs = append $argvs (dict "role" "credentials" "container" "allowlist-proxy" "argv" (list "/c8s" "allowlist-proxy") "pinnedOnly" true) -}}
-{{- $argvs = append $argvs (dict "role" "upstream" "container" "cds-attest" "argv" (list "/c8s" "ta-attest")) -}}
+{{- $argvs = append $argvs (dict "role" "upstream" "container" "ta-attest" "argv" (list "/c8s" "ta-attest")) -}}
 {{- $argvs = append $argvs (dict "role" "acme" "container" "acme" "argv" (list "/c8s" "acme")) -}}
 {{- else if eq $repository (include "c8s.imageRepository" (include "c8s.routerNginxPin" $root | fromJson).image.repository) -}}
 {{- $argvs = list (dict "role" "router" "container" "nginx" "argv" (include "c8s.routerNginxArgv" $root | fromJsonArray)) -}}
@@ -842,7 +842,7 @@ null
 
 {{- /* c8s-router-<12 hex of sha256 over the entry>, so a changed digest, argv
        or mount seeds a new entry. The entry's own name sits inside its argv
-       (cds-attest's gate, c8s-cert's --expected-workload), so the hash renders
+       (ta-attest's gate, c8s-cert's --expected-workload), so the hash renders
        the pod with routerNamePlaceholder set, under which this returns a fixed
        placeholder. */ -}}
 {{- define "c8s.routerWorkloadName" -}}

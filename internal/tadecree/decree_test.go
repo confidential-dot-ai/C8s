@@ -98,7 +98,7 @@ func setField(t *testing.T, d *Decree, name string) {
 	switch name {
 	case "base_version":
 		d.BaseVersion = 7
-	case "cds_pins":
+	case "ta_pins":
 		d.TAPins = taPins(t, 0x11)
 	case "node_pins":
 		d.NodePins = nodeImages(t)
@@ -362,7 +362,7 @@ func clearField(t *testing.T, d *Decree, name string) {
 	switch name {
 	case "base_version":
 		d.BaseVersion = 0
-	case "cds_pins":
+	case "ta_pins":
 		d.TAPins = nil
 	case "node_pins":
 		d.NodePins = nil

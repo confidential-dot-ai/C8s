@@ -340,7 +340,7 @@ allowlist:
       # the cluster. It binds the leaf the front door presents, so it mounts
       # the chain and never the key beside it.
       c8s-router-upstream:
-        label: "c8s cds-attest"
+        label: "c8s ta-attest"
         containers:
           - digest: "@OPERATOR_DIGEST@"
             image: "@OPERATOR_REPO@@@OPERATOR_DIGEST@"

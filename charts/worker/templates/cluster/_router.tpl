@@ -43,8 +43,8 @@ containers:
     "attestationApiMounts" (include "router.attestationApiMount" .)
     "attestationApiURL" $inventoryURL
     "certificateMounts" (include "router.acmeCertificateMounts" . | fromYamlArray)
-    "cdsAttestArgs" (include "router.taAttestArgs" . | fromJsonArray)
-    "cdsAttestMounts" (include "router.taAttestMounts" . | fromYamlArray)
+    "taAttestArgs" (include "router.taAttestArgs" . | fromJsonArray)
+    "taAttestMounts" (include "router.taAttestMounts" . | fromYamlArray)
     "config" (include "router.configDir" .)
     "ports" (include "router.publicPorts" . | fromJsonArray)
     "settingsMounts" (include "router.nodeConfigMount" . | fromYamlArray)
@@ -91,7 +91,7 @@ volumes:
       type: Directory
   {{- /* The inventory and the attestation-api serve their sockets in one
          host directory, which get-cert and the allowlist proxy read at the
-         path they compile and cds-attest at the node's own. */}}
+         path they compile and ta-attest at the node's own. */}}
   - name: workload-claims
     hostPath:
       path: {{ include "worker.runtimeDir" . }}
@@ -157,7 +157,7 @@ securityContext:
   | toJson -}}
 {{- end -}}
 
-{{/* cds-attest takes the front-door mode, the Trust Authority pin and the operator keys
+{{/* ta-attest takes the front-door mode, the Trust Authority pin and the operator keys
      from the launch staging, naming each so a missing file is fatal. */}}
 {{- define "router.taAttestArgs" -}}
 {{- $node := include "c8s.nodeConfigDir" . -}}

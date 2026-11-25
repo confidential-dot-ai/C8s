@@ -95,7 +95,7 @@ func WithRuntimeExtensions(att *Attestation, journal *Journal) *Attestation {
 //   - each digest extended at most once per boot, so the list replays the
 //     register exactly;
 //   - owned by root with mode 0644 at all times, so non-root readers such as
-//     cds-attest and get-cert can read it;
+//     ta-attest and get-cert can read it;
 //   - on a tmpfs, so it lives exactly as long as the register;
 //   - at most [MaxRuntimeExtensions] entries per boot. Producers send no list
 //     beyond that, and verifiers reject the node until it reboots.

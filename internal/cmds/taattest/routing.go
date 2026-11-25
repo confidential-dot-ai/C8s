@@ -106,7 +106,7 @@ func checkRoutingFlags(cfg config) error {
 	return nil
 }
 
-// routingEngine is the manifest routing a cds-attest process runs: the poller,
+// routingEngine is the manifest routing a ta-attest process runs: the poller,
 // the proxy the tunnel shares, and the routing listener.
 type routingEngine struct {
 	cfg    routingConfig

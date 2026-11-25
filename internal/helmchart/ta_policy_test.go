@@ -13,7 +13,7 @@ func TestChartComponentsCarryNoPolicyFlags(t *testing.T) {
 	}
 	for _, workload := range renderedPodSpecs(t, out) {
 		for _, container := range append(workload.spec.Containers, workload.spec.InitContainers...) {
-			if container.Name == "cds-attest" {
+			if container.Name == "ta-attest" {
 				continue
 			}
 			assertNoArgWithPrefix(t, workload.name+"/"+container.Name, container.Args,
