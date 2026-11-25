@@ -62,7 +62,7 @@
   "--front-door-mode=cds"
   (printf "--serving-cert-file=%s" (include "c8s.certFile" .))
   (printf "--measured-policies-file=%s/measured-policies" (include "nri-image-policy.runtimeDir" .))
-  "--image-policy-file=/mnt/c8s-data/measurements/cds.json" -}}
+  "--image-policy-file=/mnt/c8s-data/measurements/ta.json" -}}
 {{- if $ta.operatorKeys -}}
 {{- $args = append $args "--operator-keys-file=/mnt/c8s-data/operator-keys/keys.pem" -}}
 {{- end -}}

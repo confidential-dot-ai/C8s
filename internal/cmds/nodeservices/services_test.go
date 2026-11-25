@@ -96,12 +96,12 @@ func TestPreparePreservesTheMeasuredFloor(t *testing.T) {
 		t.Fatalf("chart components missing from bootstrap base: %v", base.Workloads)
 	}
 	pull := ga["pull"].(map[string]any)
-	if pull["url"] != cmdsutil.TAURL(ta.Address) || pull["cds_measurements_config"] != PublicDir+"/cds.json" || pull["timeout"] != "30s" {
+	if pull["url"] != cmdsutil.TAURL(ta.Address) || pull["ta_measurements_config"] != PublicDir+"/ta.json" || pull["timeout"] != "30s" {
 		t.Fatalf("bad pull config: %v", pull)
 	}
 	// The floor must arrive as the number the enforcer reads.
 	if floor := publishedPinFloor(t, pull); floor != ta.PinFloor {
-		t.Fatalf("pull cds_pin_floor = %d, want the document's %d", floor, ta.PinFloor)
+		t.Fatalf("pull ta_pin_floor = %d, want the document's %d", floor, ta.PinFloor)
 	}
 }
 
@@ -433,7 +433,7 @@ func publishedPinFloor(t *testing.T, pull map[string]any) cmdsutil.ClusterVersio
 		t.Fatal(err)
 	}
 	var read struct {
-		PinFloor cmdsutil.ClusterVersion `yaml:"cds_pin_floor"`
+		PinFloor cmdsutil.ClusterVersion `yaml:"ta_pin_floor"`
 	}
 	if err := yaml.Unmarshal(data, &read); err != nil {
 		t.Fatal(err)

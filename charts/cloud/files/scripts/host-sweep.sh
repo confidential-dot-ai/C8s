@@ -80,8 +80,8 @@ rm -f "${CONTAINERD_DIR}/.c8s-containerd-prep.lock"
 #    (/var/run, /var/lib) is never deleted.
 if remove_plugin_from_containerd "/host${NRI_PLUGIN_DIR}"/*-nri-image-policy; then
   rm -f "/host${NRI_CONFIG_DIR}/image-policy.yaml"
-  rm -f "/host${NRI_CONFIG_DIR}/cds-address"
-  rm -f "/host${NRI_CONFIG_DIR}/cds.json"
+  rm -f "/host${NRI_CONFIG_DIR}/ta-address"
+  rm -f "/host${NRI_CONFIG_DIR}/ta.json"
   case "$NRI_RUNTIME_DIR" in
     */nri-image-policy) rm -rf "/host${NRI_RUNTIME_DIR}" ;;
     *) [ ! -e "/host${NRI_RUNTIME_DIR}" ] || echo "leaving NRI runtime dir with a custom name: ${NRI_RUNTIME_DIR}" ;;

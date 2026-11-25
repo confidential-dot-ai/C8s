@@ -234,7 +234,7 @@ func TestStagePublishesTheDocumentsFloor(t *testing.T) {
 		Allowlist struct {
 			Pull struct {
 				URL      string                  `yaml:"url"`
-				PinFloor cmdsutil.ClusterVersion `yaml:"cds_pin_floor"`
+				PinFloor cmdsutil.ClusterVersion `yaml:"ta_pin_floor"`
 			} `yaml:"pull"`
 		} `yaml:"allowlist"`
 		Mesh struct {
@@ -272,8 +272,8 @@ func TestStagePublishesTheDocumentsFloor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, err := os.ReadFile(filepath.Join(root, nodeservices.PublicDir, "cds.json")); err != nil || string(got) != string(wantPin) {
-		t.Errorf("cds.json = %s, %v; want the document's Trust Authority pin", got, err)
+	if got, err := os.ReadFile(filepath.Join(root, nodeservices.PublicDir, "ta.json")); err != nil || string(got) != string(wantPin) {
+		t.Errorf("ta.json = %s, %v; want the document's Trust Authority pin", got, err)
 	}
 	if got, err := os.ReadFile(filepath.Join(root, nodeservices.PublicDir, "router/hostnames")); err != nil || string(got) != "api.acme.example\n" {
 		t.Errorf("router/hostnames = %q, %v; want the document's router hostname", got, err)

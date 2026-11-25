@@ -162,7 +162,7 @@ func TestSidecarAdjustmentMountsTheNodePolicy(t *testing.T) {
 			Name:         name,
 			PodSandboxId: "sandbox",
 		})
-		mount := mountTo(adjust, workloadclaims.CDSPinsPath)
+		mount := mountTo(adjust, workloadclaims.TAPinsPath)
 		if mount == nil {
 			t.Fatalf("%s has no Trust Authority policy mount: %+v", name, adjust.GetMounts())
 		}
@@ -251,7 +251,7 @@ func TestSidecarAdjustmentFollowsTheMeasuredCredentialsRole(t *testing.T) {
 			readOnlyBind("/var/lib/kubelet/pods/uid/etc-hosts", "/etc/hosts"),
 		},
 	}
-	if mountTo(mustCredentialMounts(t, p, pod, proxy), workloadclaims.CDSPinsPath) == nil {
+	if mountTo(mustCredentialMounts(t, p, pod, proxy), workloadclaims.TAPinsPath) == nil {
 		t.Error("a credentials-role container was handed no Trust Authority policy, so it would dial an unpinned Trust Authority")
 	}
 
@@ -297,7 +297,7 @@ func TestSidecarAdjustmentRefusedWithoutPins(t *testing.T) {
 		Name:         workloadclaims.CertContainerName,
 		PodSandboxId: "sandbox",
 	})
-	if mountTo(adjust, workloadclaims.CDSPinsPath) != nil {
+	if mountTo(adjust, workloadclaims.TAPinsPath) != nil {
 		t.Fatalf("unpinned node mounted a policy: %+v", adjust.GetMounts())
 	}
 	if mountTo(adjust, workloadclaims.SidecarSocketDir) == nil {
@@ -353,7 +353,7 @@ func TestCertGateTakesNoSocketDirectory(t *testing.T) {
 	pod := certGatePod()
 	gate := certGateContainer()
 	adjust := mustCredentialMounts(t, p, pod, gate)
-	if mountTo(adjust, workloadclaims.CDSPinsPath) == nil {
+	if mountTo(adjust, workloadclaims.TAPinsPath) == nil {
 		t.Error("the certificate gate was handed no Trust Authority policy")
 	}
 	if m := mountTo(adjust, workloadclaims.SidecarSocketDir); m != nil {
@@ -443,7 +443,7 @@ func TestCredentialRoleFromAComponentSetInForce(t *testing.T) {
 	pod := certGatePod()
 	gate := certGateContainer()
 	adjust := mustCredentialMounts(t, p, pod, gate)
-	if mountTo(adjust, workloadclaims.CDSPinsPath) == nil {
+	if mountTo(adjust, workloadclaims.TAPinsPath) == nil {
 		t.Error("the gate the set grants the credentials role was handed no Trust Authority policy")
 	}
 

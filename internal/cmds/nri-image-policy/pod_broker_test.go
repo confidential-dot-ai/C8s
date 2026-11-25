@@ -51,7 +51,7 @@ func TestPreparePodBrokerRefusals(t *testing.T) {
 	}{
 		{name: "no client", want: "no authenticated Trust Authority client"},
 		{name: "conflicting Trust Authority source", client: http.DefaultClient,
-			pull: pullConfig{URL: "https://cds.example", TAAddressFile: "/run/cds-address"}, want: "pod broker Trust Authority pins"},
+			pull: pullConfig{URL: "https://cds.example", TAAddressFile: "/run/ta-address"}, want: "pod broker Trust Authority pins"},
 		{name: "missing state", client: http.DefaultClient, state: "missing", want: "open Pod broker state"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

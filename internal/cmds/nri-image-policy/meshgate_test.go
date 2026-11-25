@@ -895,7 +895,7 @@ func TestValidateContainerAdjustmentGatesOnProtection(t *testing.T) {
 // adds itself leaves it standing, while a mount of the pod's own at the same
 // destination counts and does not match the declaration.
 func TestValidateContainerAdjustmentPinsThePodsOwnMounts(t *testing.T) {
-	const enforcerAddress = "/run/c8s-enforcer/cds-address"
+	const enforcerAddress = "/run/c8s-enforcer/ta-address"
 	base := roleBase(t, pushDigestB, testCertRole, []string{"/c8s", "get-cert"})
 	base.Workloads["pinned-entry"] = allowlist.Workload{Containers: []allowlist.Container{{
 		Digest: mustDigest(t, pushDigestB),
@@ -923,12 +923,12 @@ func TestValidateContainerAdjustmentPinsThePodsOwnMounts(t *testing.T) {
 	}{
 		{
 			name:   "the enforcer's own bind",
-			adjust: []*api.Mount{readOnlyBind(enforcerAddress, workloadclaims.CDSAddressPath)},
+			adjust: []*api.Mount{readOnlyBind(enforcerAddress, workloadclaims.TAAddressPath)},
 			pinned: true,
 		},
 		{
 			name:     "a mount of the pod's own at that destination",
-			declared: []*api.Mount{readOnlyBind("/run/c8s-elsewhere", workloadclaims.CDSAddressPath)},
+			declared: []*api.Mount{readOnlyBind("/run/c8s-elsewhere", workloadclaims.TAAddressPath)},
 			pinned:   false,
 		},
 	} {

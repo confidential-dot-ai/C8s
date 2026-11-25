@@ -24,8 +24,8 @@ func TestHostSweepRestoresTheHostConfig(t *testing.T) {
 	earlierPluginPath := "/opt/nri/plugins/05-nri-image-policy"
 	n := installedNode(t, installerScript(t), cosContainerdConfig)
 	writeTestFile(t, n.hostPath(earlierPluginPath), "an earlier install")
-	writeTestFile(t, n.hostPath(nodeEnforcerDir+"/cds-pins.json"), "{}\n")
-	writeTestFile(t, n.hostPath(nodeEnforcerDir+"/cds-address"), "cds.c8s-system:443\n")
+	writeTestFile(t, n.hostPath(nodeEnforcerDir+"/ta-pins.json"), "{}\n")
+	writeTestFile(t, n.hostPath(nodeEnforcerDir+"/ta-address"), "cds.c8s-system:443\n")
 	for _, path := range []string{nodeEnforcerDir, nodePluginDir, nodeConfigDir} {
 		if !n.exists(path) {
 			t.Fatalf("%s is not on the node the sweep runs against", path)

@@ -34,7 +34,7 @@ type probe struct {
 
 // nodePinsPath is where the enforcer mounts the node's Trust Authority pins; a var so tests
 // can mount their own.
-var nodePinsPath = workloadclaims.CDSPinsPath
+var nodePinsPath = workloadclaims.TAPinsPath
 
 // clientFunc builds the mTLS client to the Trust Authority and returns the leaf's key;
 // sidecar.NewClient in the command, a client trusting a test server in tests.

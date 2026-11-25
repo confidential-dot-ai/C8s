@@ -58,7 +58,7 @@ var platformRoleEntries = []string{
 // and it passes every check an operator's write faces.
 func TestComponentSetFileCarriesTheTemplateAndTheRouter(t *testing.T) {
 	template := renderedTemplate(t)
-	seed := routerSeed("/run/c8s-node/cds.json", "/run/c8s-node/operator-pubkey", "/run/c8s-node/router/hostnames")
+	seed := routerSeed("/run/c8s-node/ta.json", "/run/c8s-node/operator-pubkey", "/run/c8s-node/router/hostnames")
 	file, err := ComponentSetFile(template, seed, testSetVersion)
 	if err != nil {
 		t.Fatal(err)
@@ -122,7 +122,7 @@ func normalized(t *testing.T, entry allowlist.Workload) allowlist.Workload {
 // Every container of the published set holds a role, so a pod of the router's
 // namespace and an injected sidecar take their identity from the set alone.
 func TestComponentSetFileBindsEveryContainerToARole(t *testing.T) {
-	file, err := ComponentSetFile(renderedTemplate(t), routerSeed("/run/c8s-node/cds.json"), testSetVersion)
+	file, err := ComponentSetFile(renderedTemplate(t), routerSeed("/run/c8s-node/ta.json"), testSetVersion)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +144,7 @@ func TestComponentSetFileBindsEveryContainerToARole(t *testing.T) {
 
 func TestComponentSetFileRefusesWhatItCannotPublish(t *testing.T) {
 	template := renderedTemplate(t)
-	seed := routerSeed("/run/c8s-node/cds.json")
+	seed := routerSeed("/run/c8s-node/ta.json")
 	// An entry declaring host ports pins its launch, so the open one declares none.
 	unpinnedRouter := []byte(strings.Replace(strings.Replace(string(seed), routerHostPorts+",", "", 1), `"env":{"policy":"exact","values":{"PATH":"/bin"}}`, `"env":{"policy":"any"}`, 1))
 	second := strings.ReplaceAll(volumedContainer, "/var/lib/c8s/volumed", "/var/lib/c8s/other")

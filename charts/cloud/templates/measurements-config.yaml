@@ -19,8 +19,8 @@ metadata:
   labels:
 {{ include "c8s.commonLabels" . | indent 4 }}
 data:
-  cds.json: {{ $ta.measurementsConfig | quote }}
-  cds-address: {{ $ta.address | quote }}
+  ta.json: {{ $ta.measurementsConfig | quote }}
+  ta-address: {{ $ta.address | quote }}
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -30,4 +30,4 @@ metadata:
   labels:
 {{ include "c8s.commonLabels" . | indent 4 }}
 data:
-  cds.json: {{ $ta.measurementsConfig | quote }}
+  ta.json: {{ $ta.measurementsConfig | quote }}

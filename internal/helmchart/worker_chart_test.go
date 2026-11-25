@@ -168,7 +168,7 @@ func TestWorkerChartRouterLaunchContract(t *testing.T) {
 	}
 	// The Trust Authority every client verifies is the VM the signed launch file names, so
 	// the one component argv naming a policy reads it from the staged copy.
-	wantPolicies := map[string]string{"c8s-router/cds-attest": "cds.json"}
+	wantPolicies := map[string]string{"c8s-router/cds-attest": "ta.json"}
 	workloads := renderedPodSpecs(t, out)
 	if len(workloads) != 2 {
 		t.Fatalf("the worker chart should contain the router and volumed; got %d workloads", len(workloads))

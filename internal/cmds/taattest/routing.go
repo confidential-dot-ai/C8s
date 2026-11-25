@@ -121,7 +121,7 @@ type routingEngine struct {
 // connections whose binding in bindings no longer holds.
 func newRoutingEngine(ctx context.Context, cfg config, bindings *Bindings, logger *slog.Logger) (*routingEngine, error) {
 	r := cfg.routing
-	pins, err := routeSourcePins(ctx, r, workloadclaims.RouterCDSPinsPath)
+	pins, err := routeSourcePins(ctx, r, workloadclaims.RouterTAPinsPath)
 	if err != nil {
 		return nil, err
 	}
@@ -203,7 +203,7 @@ func routeSourcePins(ctx context.Context, r routingConfig, followed string) (arm
 // resolved is the URL this process dials, after ExpandHostIP replaced a node
 // address reference with the address the enforcer published.
 func checkNodeVerifier(resolved string) error {
-	if err := cmdsutil.RequireNodeVerifier(workloadclaims.CDSPinsPath, workloadclaims.AttestationAPISocket, resolved); err != nil {
+	if err := cmdsutil.RequireNodeVerifier(workloadclaims.TAPinsPath, workloadclaims.AttestationAPISocket, resolved); err != nil {
 		return err
 	}
 	return checkVerifierEndpoint(resolved, cmdsutil.NodeIPPath)

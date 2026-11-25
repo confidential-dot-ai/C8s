@@ -213,11 +213,11 @@ func TestTheRouterTakesTheFollowedPinsAtItsOwnPath(t *testing.T) {
 	ctr.User = &api.User{Uid: workloadclaims.UpstreamUID}
 
 	adjustment := mustCredentialMounts(t, p, pod, ctr)
-	mount := mountTo(adjustment, workloadclaims.RouterCDSPinsPath)
+	mount := mountTo(adjustment, workloadclaims.RouterTAPinsPath)
 	if mount == nil || mount.GetSource() != p.taPins {
 		t.Fatalf("the router's pin mount = %v, want the node's own policy", mount)
 	}
-	if mountTo(adjustment, workloadclaims.CDSPinsPath) != nil {
+	if mountTo(adjustment, workloadclaims.TAPinsPath) != nil {
 		t.Fatal("the router was handed a credential client's pin path")
 	}
 }

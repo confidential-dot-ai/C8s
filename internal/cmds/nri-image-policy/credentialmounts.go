@@ -15,8 +15,8 @@ import (
 // read-only: the inventory's socket directory at
 // workloadclaims.SidecarSocketDir into the socket consumers
 // (workloadclaims.IsSocketConsumer) of an injected pod, the node's Trust Authority
-// attestation policy at workloadclaims.CDSPinsPath, and the Trust Authority endpoint it
-// dials at workloadclaims.CDSAddressPath. All are OCI-level replacements for a
+// attestation policy at workloadclaims.TAPinsPath, and the Trust Authority endpoint it
+// dials at workloadclaims.TAAddressPath. All are OCI-level replacements for a
 // pod-spec hostPath volume, which PodSecurity baseline and restricted would
 // reject. nil for every other container, and whenever the inventory is
 // disabled.
@@ -48,8 +48,8 @@ func (c nodeCVM) containerMounts(ctx context.Context, pod *api.PodSandbox, ctr *
 	var mounts []*api.Mount
 	for _, bind := range []struct{ source, destination string }{
 		{socketDir, workloadclaims.SidecarSocketDir},
-		{p.taPins, workloadclaims.CDSPinsPath},
-		{p.taAddress, workloadclaims.CDSAddressPath},
+		{p.taPins, workloadclaims.TAPinsPath},
+		{p.taAddress, workloadclaims.TAAddressPath},
 	} {
 		if bind.source != "" && takesNodeMount(pod, ctr, bind.destination) {
 			mounts = append(mounts, readOnlyBind(bind.source, bind.destination))
@@ -108,10 +108,10 @@ func fetchesRouteManifest(pod *api.PodSandbox, ctr *api.Container) bool {
 func (p *plugin) routerTAMount() *api.ContainerAdjustment {
 	var mounts []*api.Mount
 	if p.taAddress != "" {
-		mounts = append(mounts, readOnlyBind(p.taAddress, workloadclaims.CDSAddressPath))
+		mounts = append(mounts, readOnlyBind(p.taAddress, workloadclaims.TAAddressPath))
 	}
 	if p.taPins != "" {
-		mounts = append(mounts, readOnlyBind(p.taPins, workloadclaims.RouterCDSPinsPath))
+		mounts = append(mounts, readOnlyBind(p.taPins, workloadclaims.RouterTAPinsPath))
 	}
 	if len(mounts) == 0 {
 		return nil

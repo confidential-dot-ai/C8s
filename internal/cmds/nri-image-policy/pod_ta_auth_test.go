@@ -44,7 +44,7 @@ func TestPodTAPullAuthenticatesServerIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pinsPath := filepath.Join(t.TempDir(), "cds-pins.json")
+	pinsPath := filepath.Join(t.TempDir(), "ta-pins.json")
 	if err := os.WriteFile(pinsPath, pins, 0o600); err != nil {
 		t.Fatal(err)
 	}

@@ -783,7 +783,7 @@ func TestCheckVerifierEndpoint(t *testing.T) {
 // does not cost it the route manifest. Where the node mounts none, its own
 // --image-policy-file stands.
 func TestTheRouteSourceFollowsTheNodePins(t *testing.T) {
-	mounted := filepath.Join(t.TempDir(), "router-cds-pins.json")
+	mounted := filepath.Join(t.TempDir(), "router-ta-pins.json")
 	if err := os.WriteFile(mounted, []byte(testutil.TAPinDocument(testutil.NextTAImage, testutil.TALaunchFile)), 0o644); err != nil {
 		t.Fatal(err)
 	}

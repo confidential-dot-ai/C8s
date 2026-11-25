@@ -776,7 +776,7 @@ func podRoleConfig(t *testing.T) config {
 	cfg.WorkloadClaims.SocketDir = "/run/nri-image-policy"
 	cfg.Measure.RTMR3 = true
 	cfg.Platform = "tdx"
-	cfg.Allowlist.Pull.TAMeasurementsConfig = "/run/c8s-launch/cds.json"
+	cfg.Allowlist.Pull.TAMeasurementsConfig = "/run/c8s-launch/ta.json"
 	cfg.Allowlist.Base = roleBase(t, pushDigestB, allowlist.RoleMesh, []string{"/mesh"})
 	cfg.Mesh.Pod = &podMeshPolicy{}
 	cfg.Mesh.Roles = cfg.Mesh.Roles[:1]
@@ -866,7 +866,7 @@ func TestValidate_PullSourceRefusals(t *testing.T) {
 		change func(*config)
 		want   string
 	}{
-		{"URL and address file", func(c *config) { c.Allowlist.Pull.TAAddressFile = "/run/cds-address" }, "cannot be combined"},
+		{"URL and address file", func(c *config) { c.Allowlist.Pull.TAAddressFile = "/run/ta-address" }, "cannot be combined"},
 		{"zero interval", func(c *config) { c.Allowlist.Pull.Interval = 0 }, "allowlist.pull.interval"},
 		{"node IP without socket dir", func(c *config) {
 			c.WorkloadClaims.PublishNodeIP = true

@@ -19,7 +19,7 @@ func testTAPinFile(t *testing.T) string {
 // taPinFile stages the pin document this node holds its Trust Authority to.
 func taPinFile(t *testing.T, document string) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "cds.json")
+	path := filepath.Join(t.TempDir(), "ta.json")
 	if err := os.WriteFile(path, []byte(document), 0o600); err != nil {
 		t.Fatal(err)
 	}

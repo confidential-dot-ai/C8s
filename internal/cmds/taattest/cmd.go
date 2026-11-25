@@ -121,7 +121,7 @@ func run(ctx context.Context, cfg config) error {
 	if cfg.establishRate <= 0 || cfg.establishBurst <= 0 {
 		return errors.New("--establish-rate and --establish-burst must be positive")
 	}
-	taURL, fromNode, err := cmdsutil.ResolveTAURL(workloadclaims.CDSAddressPath, cfg.routing.taURL)
+	taURL, fromNode, err := cmdsutil.ResolveTAURL(workloadclaims.TAAddressPath, cfg.routing.taURL)
 	if err != nil {
 		return err
 	}

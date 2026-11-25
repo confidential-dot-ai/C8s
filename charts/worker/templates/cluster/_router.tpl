@@ -173,7 +173,7 @@ securityContext:
   (printf "--serving-cert-file=%s" (include "c8s.certFile" .))
   (printf "--acme-serving-cert-file=%s/cert.pem" (include "router.acmeCertDir" .))
   (printf "--measured-policies-file=%s/measured-policies" $runtimeDir)
-  (printf "--image-policy-file=%s/cds.json" $node)
+  (printf "--image-policy-file=%s/ta.json" $node)
   (printf "--operator-keys-file=%s/operator-pubkey" $node)
   "--routes-poll-interval=30s"
   "--routing-host=127.0.0.1"

@@ -359,7 +359,7 @@ func TestRun_WorkloadClaimsListenFailureSurfaces(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, NodeIPFile), []byte("10.0.0.7\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "cds-address"), []byte("10.9.9.9:8443\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "ta-address"), []byte("10.9.9.9:8443\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	occupySocketPath(t, dir)
@@ -381,9 +381,9 @@ allowlist:
             command: {policy: any}
             args: {policy: any}
   pull:
-    cds_address_file: %s/cds-address
+    ta_address_file: %s/ta-address
     attestation_api_url: http://127.0.0.1:1
-    cds_measurements_config: %s
+    ta_measurements_config: %s
 policy:
   mode: fail-closed
   enforce_existing: false
@@ -448,7 +448,7 @@ allowlist:
   pull:
     url: https://127.0.0.1:1/
     attestation_api_url: http://127.0.0.1:1
-    cds_measurements_config: %s
+    ta_measurements_config: %s
 policy:
   mode: fail-closed
   enforce_existing: false
@@ -513,7 +513,7 @@ allowlist:
   pull:
     url: https://%s/
     attestation_api_url: %s
-    cds_measurements_config: %s
+    ta_measurements_config: %s
     interval: 30s
     timeout: 300ms
 policy:

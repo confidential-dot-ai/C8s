@@ -149,7 +149,7 @@ refused. It writes:
 
 | Output | Holds |
 |---|---|
-| `/run/c8s-node/cds.json` | The `cds.measurements` pin. |
+| `/run/c8s-node/ta.json` | The `cds.measurements` pin. |
 | `/run/c8s-node/router/*` | The router settings `router.*` gives. |
 | `/run/c8s-node/operator-pubkey` | The operator keys of the TA configuration `cds.measurements` binds, which the router verifies route manifests under. |
 | `/run/c8s-node/tls-san` | `tlsSAN`. |
