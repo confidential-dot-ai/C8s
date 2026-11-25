@@ -67,8 +67,9 @@ non-genesis `policy` and `routes` entries through this input, using the same
 validation, commit and confirmation path as `POST /ha/entries`.
 
 Polling runs independently of gossip, every five seconds normally, with jittered
-backoff up to one minute for unavailable or unconfirmed input. Each attempt uses
-`--ha-store-timeout`. Unchanged confirmed or rejected artifacts are not submitted
+backoff up to one minute for unavailable or unconfirmed input. Reading the input
+uses `--ha-store-timeout`; submission uses its own store and peer timeouts.
+Unchanged confirmed or rejected artifacts are not submitted
 again unless the verified head changes. Uncertain submissions retry the original
 body and signature while that artifact remains published. Keep it published until
 attested observation confirms acceptance. Replacing or deleting it ends its retries;
