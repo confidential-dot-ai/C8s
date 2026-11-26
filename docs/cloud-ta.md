@@ -9,11 +9,10 @@ cluster is [operator.md](operator.md); running several of them is
 
 ## Where it runs
 
-`ta-pin.json`, the document every client holds the TA to, binds two values:
-the guest's launch digest and the exact bytes of the launch file it booted,
-which on SEV-SNP the launcher commits as `HOST_DATA`. For the `ta-guest` image
-those are the digest in the `manifest.json` published with it and the
-`ta-config.yaml`
+`ta-pin.json` binds the guest image identity and the exact launch-file bytes.
+The image identity is the SEV-SNP launch measurement or the TDX tuple of
+MRTD, RTMR[1] and RTMR[2]. For `ta-guest`, use the image measurements from its
+published `manifest.json` and the exact `ta-config.yaml`
 ([launch requirements](../images/ta-guest/README.md#launch-requirements)).
 
 An AKS or GKE confidential VM proves neither: its launch digest is the
@@ -44,10 +43,19 @@ for byte. One check serves every guest: it cannot tell a `ta-guest` VM from
 another, so identify the TDX image with pins on MRTD, RTMR[1] and RTMR[2].
 `c8s verify` can also display `MRCONFIGID`. HA peer and generated Genesis
 pins still bind RTMR[3], so they cannot authenticate an MRCONFIGID-only TA.
-`--alone` can commit a one-voter Genesis without peer checks; it does not
-make those pins match. The cloud chart rejects schema 3 pins. A schema 2
-TDX pin can pass rendering but fail TA authentication; install may warn and
-apply a release whose clients cannot authenticate their TA.
+
+For an MRCONFIGID-only TDX deployment with one replica filling one voter seat,
+follow the [runbook's `--alone` warning](ta-ha-runbooks.md#1-start-a-cluster-genesis).
+`genesis --alone` still authenticates the target: pass a separate schema 3
+`--ta-pin` with MRTD, RTMR[1], RTMR[2], the full `launch_file`, and
+`"launch_file_field": "init_data"`. Also pin RTMR[3] to all zero (`""` in the
+`rtmr` array), so the target cannot use a different RTMR[3]-bound launch file.
+`--alone` allows a one-voter Genesis without a peer response; the decree's
+generated RTMR[3] pins still do not match that target.
+
+The cloud chart rejects schema 3 pins. A schema 2 TDX pin can pass rendering
+but fail TA authentication; install may warn and apply a release whose
+clients cannot authenticate their TA.
 
 Supply the TA container and an attestation API on guest loopback
 (`--attestation-api-url`). The guest launch digest does not cover containers
