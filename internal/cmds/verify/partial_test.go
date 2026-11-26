@@ -37,7 +37,7 @@ func discoveryDocWithPublicTLS(t *testing.T, mode, certPEM string, challenge []b
 	return data
 }
 
-// The discovery gather must classify public_tls.mode: cds (and its
+// The discovery gather must classify public_tls.mode: ta (and its
 // pre-mode-field empty spelling) and webpki parse; anything else fails closed
 // as a security verdict — auto mode must not fall through past a document it
 // cannot classify. A parsed mode gates classification only — the verdict keys
@@ -48,7 +48,7 @@ func TestDiscoveryPublicTLSModeParsing(t *testing.T) {
 	challenge := []byte("issuance-challenge")
 	evidence := `{"attestation_report":"AAAA","cert_chain":{"vcek":"BBBB"}}`
 
-	for _, mode := range []string{"", "cds", "webpki"} {
+	for _, mode := range []string{"", "ta", "webpki"} {
 		ev, err := evidenceFromDiscovery(discoveryDocWithPublicTLS(t, mode, certPEM, challenge, evidence), "test", leafTrust{}, nil)
 		if err != nil {
 			t.Fatalf("mode %q: %v", mode, err)
@@ -466,7 +466,7 @@ func TestRunDiscoveryOverLyingHTTPS(t *testing.T) {
 	stubEvidence := `{"attestation_report":"AAAA","cert_chain":{"vcek":"BBBB"}}`
 	attestedPEM, attestedCert := selfSignedServerCert(t)
 	_, otherCert := selfSignedServerCert(t)
-	doc := discoveryDocWithPublicTLS(t, "cds", attestedPEM, challenge, stubEvidence)
+	doc := discoveryDocWithPublicTLS(t, "ta", attestedPEM, challenge, stubEvidence)
 
 	t.Run("lying https door + failing evidence is a named failure", func(t *testing.T) {
 		srv := discoveryServer(t, otherCert, doc)

@@ -133,7 +133,7 @@ func TestChartRouterReadsItsCertificatePerHandshake(t *testing.T) {
 			perHandshake.assertDirective(t, "default", `""`)
 
 			var served []string
-			for _, conf := range []string{data["nginx.conf"], data["tls-cds.conf"], data["tls-acme.conf"]} {
+			for _, conf := range []string{data["nginx.conf"], data["tls-ta.conf"], data["tls-acme.conf"]} {
 				for _, block := range parseNginxConfig(t, "server {\n"+conf+"\n}").all {
 					for _, name := range []string{"ssl_certificate", "ssl_certificate_key"} {
 						for _, args := range block.directives[name] {
@@ -202,7 +202,7 @@ func TestWorkerRouterServeWatchesTheACMECertificate(t *testing.T) {
 	}
 }
 
-// The cloud ConfigMap names no front-door mode, so the script serves as in cds
+// The cloud ConfigMap names no front-door mode, so the script serves as in ta
 // mode: it watches the mesh leaf alone and starts nginx once with no ACME
 // files.
 func TestCloudRouterServeWithoutFrontDoorModeServesTheMeshLeaf(t *testing.T) {
@@ -226,7 +226,7 @@ func TestCloudRouterServeWithoutFrontDoorModeServesTheMeshLeaf(t *testing.T) {
 
 // Running the worker's script in both front-door modes: each stops nginx when
 // a credential it serves is withdrawn, the mesh leaf in either mode and the
-// ACME certificate in acme mode. In cds mode the standby acme sidecar writes no
+// ACME certificate in acme mode. In ta mode the standby acme sidecar writes no
 // ACME files, and their absence is no withdrawal.
 func TestWorkerRouterServeFollowsTheFrontDoorMode(t *testing.T) {
 	for _, tc := range []struct {
@@ -235,7 +235,7 @@ func TestWorkerRouterServeFollowsTheFrontDoorMode(t *testing.T) {
 		{mode: "acme", withdraw: "acme/cert.pem"},
 		{mode: "acme", withdraw: "acme/key.pem"},
 		{mode: "acme", withdraw: "mesh/tls.crt"},
-		{mode: "cds", withdraw: "mesh/tls.crt"},
+		{mode: "ta", withdraw: "mesh/tls.crt"},
 	} {
 		t.Run(tc.mode+" "+tc.withdraw, func(t *testing.T) {
 			run := startServeScript(t, workerServeScript, func(dir string) {

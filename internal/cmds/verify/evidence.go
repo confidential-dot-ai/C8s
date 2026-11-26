@@ -147,7 +147,7 @@ type attestationResponse struct {
 	Platform      string                   `json:"platform"`
 	Nonce         string                   `json:"nonce"`
 	Evidence      json.RawMessage          `json:"evidence"`
-	TACertPEM     string                   `json:"cds_cert_pem"`
+	TACertPEM     string                   `json:"ta_cert_pem"`
 	FrontDoorMode types.FrontDoorMode      `json:"front_door_mode"`
 	XWingEK       string                   `json:"xwing_ek"`
 	XWingCT       string                   `json:"xwing_ct"`
@@ -513,10 +513,10 @@ func committedMeshChain(chainPEM string, proof *types.MeshIdentityProof) (leaf, 
 	}
 	certs, err := certutil.ParsePEMCertificates([]byte(chainPEM))
 	if err != nil {
-		return nil, nil, fmt.Errorf("parse cds_cert_pem: %w", err)
+		return nil, nil, fmt.Errorf("parse ta_cert_pem: %w", err)
 	}
 	if len(certs) < 2 {
-		return nil, nil, fmt.Errorf("cds_cert_pem must carry the mesh leaf and its issuing CA, got %d certificate(s)", len(certs))
+		return nil, nil, fmt.Errorf("ta_cert_pem must carry the mesh leaf and its issuing CA, got %d certificate(s)", len(certs))
 	}
 	leaf = certs[0]
 	caHash, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(proof.MeshCASHA256, "="))

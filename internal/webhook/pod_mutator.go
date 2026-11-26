@@ -67,7 +67,7 @@ const (
 	AnnotationDiscoveryVolume        = "confidential.ai/c8s-discovery-volume"
 	AnnotationDiscoveryMountPath     = "confidential.ai/c8s-discovery-mount-path"
 	AnnotationDiscoveryOut           = "confidential.ai/c8s-discovery-out"
-	AnnotationDiscoveryTACertURL     = "confidential.ai/c8s-discovery-cds-cert-url"
+	AnnotationDiscoveryTACertURL     = "confidential.ai/c8s-discovery-ta-cert-url"
 	AnnotationDiscoveryMeshCAURL     = "confidential.ai/c8s-discovery-mesh-ca-url"
 	AnnotationDiscoveryPublicTLSMode = "confidential.ai/c8s-discovery-public-tls-mode"
 	AnnotationGetCertVerbose         = "confidential.ai/c8s-get-cert-verbose"

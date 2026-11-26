@@ -69,7 +69,7 @@ func routerServer(t *testing.T, measurementChallenge []byte) (*httptest.Server, 
 
 	doc, err := json.Marshal(types.DiscoveryDocument{
 		Version: "1",
-		CDSTLS: types.CDSTLSDiscovery{
+		TATLS: types.TATLSDiscovery{
 			CertificatePEM: string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})),
 		},
 		Attestation: types.AttestationDiscovery{

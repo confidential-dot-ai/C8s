@@ -205,15 +205,15 @@ func TestPrepareWritesRouterInputs(t *testing.T) {
 		want   map[string]string
 	}{
 		{"unset", Router{}, map[string]string{
-			"tls.conf":           "include /usr/lib/c8s/router-nginx/tls-cds.conf;\n",
+			"tls.conf":           "include /usr/lib/c8s/router-nginx/tls-ta.conf;\n",
 			"hostnames":          "",
 			"acme-email":         "",
 			"acme-directory-url": "",
-			"front-door-mode":    "cds\n",
+			"front-door-mode":    "ta\n",
 			"request-body.conf":  "client_max_body_size 1048576;\n",
 		}},
 		{"body limit", Router{MaxRequestBodyBytes: 64 << 20}, map[string]string{
-			"front-door-mode":   "cds\n",
+			"front-door-mode":   "ta\n",
 			"request-body.conf": "client_max_body_size 67108864;\n",
 		}},
 		{"public", Router{

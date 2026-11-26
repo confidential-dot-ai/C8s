@@ -245,12 +245,12 @@ The router is the cluster's only public entry point, in its own `c8s-router`
 namespace. Its pod holds nginx, `cds-attest`, the allowlist-route proxy and the
 member shape the chart renders rather than injects. The `cds-attest` container
 provides the `c8s ta-attest` command's router services. Its front-door mode
-selects what terminates public TLS: `cds` on an installed cluster, and on a
+selects what terminates public TLS: `ta` on an installed cluster, and on a
 baked node whichever its signed launch file names:
 
 | Mode | Credential | Attested handshakes |
 |---|---|---|
-| `cds` (default) | A TA-issued mesh leaf; the key stays in the pod's TEE | attest-pq and attest-lb |
+| `ta` (default) | A TA-issued mesh leaf; the key stays in the pod's TEE | attest-pq and attest-lb |
 | `acme` | A multi-SAN WebPKI leaf the in-pod `c8s acme` sidecar obtains over HTTP-01; TEE-held, `bare-metal` only | attest-pq and attest-lb |
 
 The two attested handshakes, attest-pq and attest-lb, are
@@ -258,13 +258,13 @@ The two attested handshakes, attest-pq and attest-lb, are
 `cds-attest` commits it into both transcripts and refuses attest-lb unless the
 serving key is TEE-held, since a host holding the key could terminate a client's
 TLS with the same leaf. For the same reason `c8s allowlist` and `c8s routes`
-refuse a front door outside mode `cds`, wanting a direct TA URL.
-In mode `cds` attest-lb binds the mesh identity leaf, which is the leaf nginx
+refuse a front door outside mode `ta`, wanting a direct TA URL.
+In mode `ta` attest-lb binds the mesh identity leaf, which is the leaf nginx
 serves; a mesh leaf or CA outside its validity window is a credential failure,
 503 `binding_unavailable`. In mode `acme` it binds the leaf
 `--serving-cert-file` names and refuses with 503 `serving_leaf_rejected` while
 that leaf is outside its validity window or served with a chain that has
-expired. In mode `cds`, an expired intermediate in `tls.crt` gets
+expired. In mode `ta`, an expired intermediate in `tls.crt` gets
 `serving_leaf_rejected`, and a `tls.crt` chain block that does not parse gets
 503 `binding_unavailable` from attest-lb; `/readyz` and attest-pq are
 unaffected.
@@ -330,7 +330,7 @@ detectable only by pinning the route digest or the operator keys.
   withdrawal, and starts it again when all served credentials are readable.
   Readiness fails while nginx is stopped. An unexpected nginx exit terminates
   the container for kubelet to restart.
-- With the front door in `cds` mode the serving certificate is the router's
+- With the front door in `ta` mode the serving certificate is the router's
   mesh certificate, so a client pinning it attests again at every renewal.
 - An attested session routes only by the manifest and the router allowlist
   digest its handshake bound. Once either changes the router answers 503 and

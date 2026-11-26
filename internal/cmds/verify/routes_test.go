@@ -483,7 +483,7 @@ func TestTranscriptWithoutRouteDigestRejected(t *testing.T) {
 		if err := json.Unmarshal(buildEndpointJSON(t, id, nonce, bytes.Repeat([]byte{0x01}, 64), []byte("vcek"), sess), &obj); err != nil {
 			t.Fatal(err)
 		}
-		short := transcriptOf([]byte(types.ProtocolVersion), []byte("cds"), sum256(id.ca.Raw), sum256(id.leaf.Raw), sess.ek, sess.ct, sess.sid, nonce)
+		short := transcriptOf([]byte(types.ProtocolVersion), []byte("ta"), sum256(id.ca.Raw), sum256(id.leaf.Raw), sess.ek, sess.ct, sess.sid, nonce)
 		obj["identity_proof"] = id.proofJSON(t, short)
 		data, err := json.Marshal(obj)
 		if err != nil {
@@ -495,14 +495,14 @@ func TestTranscriptWithoutRouteDigestRejected(t *testing.T) {
 	})
 	t.Run("attest-lb", func(t *testing.T) {
 		serving := []byte("serving-der")
-		short := transcriptOf([]byte(types.BindingAttestLB), []byte("cds"), nonce, sum256(serving), sum256(id.leaf.Raw), sum256(id.ca.Raw))
+		short := transcriptOf([]byte(types.BindingAttestLB), []byte("ta"), nonce, sum256(serving), sum256(id.leaf.Raw), sum256(id.ca.Raw))
 		data, err := json.Marshal(map[string]any{
 			"version":         types.BindingAttestLB,
 			"platform":        "snp",
 			"nonce":           base64.RawURLEncoding.EncodeToString(nonce),
 			"evidence":        map[string]any{"attestation_report": "AAAA"},
-			"front_door_mode": "cds",
-			"cds_cert_pem":    id.chainPEM,
+			"front_door_mode": "ta",
+			"ta_cert_pem":     id.chainPEM,
 			"identity_proof":  id.proofJSON(t, short),
 			"route_digest":    hex.EncodeToString(testRouteDigest),
 		})

@@ -28,7 +28,7 @@ type meshIdentity struct {
 	// and the issuing CA: when nginx's chain stops validating.
 	servedUntil time.Time
 	// chainErr is why a block of tls.crt after the leaf did not parse. Only a
-	// cds front door serves that chain, so only attest-lb there acts on it.
+	// ta front door serves that chain, so only attest-lb there acts on it.
 	chainErr error
 }
 
@@ -99,7 +99,7 @@ func parseMeshIdentity(certPEM, keyPEM, caPEM []byte) (*meshIdentity, error) {
 		return nil, err
 	}
 
-	// X509KeyPair never parsed the extra blocks, and only a cds front door
+	// X509KeyPair never parsed the extra blocks, and only a ta front door
 	// serves them: a block that does not parse is recorded, not fatal here.
 	chain := []*x509.Certificate{issuer}
 	var chainErr error

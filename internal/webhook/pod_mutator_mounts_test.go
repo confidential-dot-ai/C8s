@@ -189,8 +189,8 @@ func TestChartSeedAdmitsInjectedSidecars(t *testing.T) {
 				pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{Name: "discovery", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{Medium: corev1.StorageMediumMemory}}})
 				pod.Annotations[AnnotationDiscoveryVolume] = "discovery"
 				pod.Annotations[AnnotationDiscoveryOut] = discoveryMountPath + "/discovery.json"
-				pod.Annotations[AnnotationDiscoveryTACertURL] = "/.well-known/cds-cert.pem"
-				pod.Annotations[AnnotationDiscoveryPublicTLSMode] = "cds"
+				pod.Annotations[AnnotationDiscoveryTACertURL] = "/.well-known/ta-cert.pem"
+				pod.Annotations[AnnotationDiscoveryPublicTLSMode] = "ta"
 			}
 			inj, err := parseAnnotations(pod, "default")
 			if err != nil {
@@ -304,8 +304,8 @@ func TestRejectUnpinnableSidecarVolumes(t *testing.T) {
 			{
 				pod.Annotations[AnnotationDiscoveryVolume] = "discovery"
 				pod.Annotations[AnnotationDiscoveryOut] = discoveryMountPath + "/discovery.json"
-				pod.Annotations[AnnotationDiscoveryTACertURL] = "/.well-known/cds-cert.pem"
-				pod.Annotations[AnnotationDiscoveryPublicTLSMode] = "cds"
+				pod.Annotations[AnnotationDiscoveryTACertURL] = "/.well-known/ta-cert.pem"
+				pod.Annotations[AnnotationDiscoveryPublicTLSMode] = "ta"
 			}
 			if tc.discovery != nil {
 				pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{Name: "discovery", VolumeSource: *tc.discovery})

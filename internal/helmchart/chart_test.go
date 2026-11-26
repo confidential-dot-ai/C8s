@@ -1147,13 +1147,13 @@ func TestChartRendersRouterTLSAndDiscovery(t *testing.T) {
 	cfg := renderedRouterNginxConfig(t, out)
 	server := cfg.server(t)
 	// The cloud's tls.conf names the mesh leaf, which cds-attest's pinned
-	// --front-door-mode=cds attests.
+	// --front-door-mode=ta attests.
 	server.assertDirective(t, "include", "/mnt/c8s-data/nginx/tls.conf")
 	files := renderedConfigMap(t, out, "c8s-router-nginx").Data
-	if got := files["tls.conf"]; got != "include /mnt/c8s-data/nginx/tls-cds.conf;\n" {
+	if got := files["tls.conf"]; got != "include /mnt/c8s-data/nginx/tls-ta.conf;\n" {
 		t.Errorf("tls.conf = %q, want the mesh leaf's snippet", got)
 	}
-	tls := parseNginxConfig(t, "server {\n"+files["tls-cds.conf"]+"\n}").servers[0]
+	tls := parseNginxConfig(t, "server {\n"+files["tls-ta.conf"]+"\n}").servers[0]
 	tls.assertDirective(t, "ssl_certificate", "/etc/c8s/certs/tls.crt$per_handshake")
 	tls.assertDirective(t, "ssl_certificate_key", "/etc/c8s/certs/tls.key$per_handshake")
 	if _, ok := files["front-door-mode"]; ok {
@@ -1165,13 +1165,13 @@ func TestChartRendersRouterTLSAndDiscovery(t *testing.T) {
 		t.Fatalf("ssl_ciphers missing ECDHE-RSA-AES128-GCM-SHA256; got %v", ciphers)
 	}
 	cfg.location(t, "exact", "/v1/discovery").assertDirective(t, "alias", "/discovery/discovery.json")
-	cfg.location(t, "exact", "/.well-known/cds-cert.pem").assertDirective(t, "alias", "/etc/c8s/certs/tls.crt")
+	cfg.location(t, "exact", "/.well-known/ta-cert.pem").assertDirective(t, "alias", "/etc/c8s/certs/tls.crt")
 	cfg.location(t, "exact", "/.well-known/mesh-ca.pem").assertDirective(t, "alias", "/etc/c8s/certs/ca.crt")
 	// Locations that hold no attest-lb binding close the connection after the
 	// response, so a binding cannot lapse under a connection they keep open.
 	// Discovery and the allowlist keep a young connection open, so a client can
 	// read the allowlist on the connection whose leaf it attested.
-	for _, path := range []string{"/.well-known/cds-cert.pem", "/.well-known/mesh-ca.pem", "/readyz", "/healthz"} {
+	for _, path := range []string{"/.well-known/ta-cert.pem", "/.well-known/mesh-ca.pem", "/readyz", "/healthz"} {
 		cfg.location(t, "exact", path).assertDirective(t, "keepalive_timeout", "0")
 	}
 	for _, path := range []string{"/v1/discovery", "/allowlist"} {
@@ -1198,12 +1198,12 @@ func TestChartRendersRouterTLSAndDiscovery(t *testing.T) {
 	cert := routerGetCertContainer(t, out, "c8s-cert")
 	assertContainerArgs(t, cert,
 		"--discovery-out=/discovery/discovery.json",
-		"--discovery-ta-cert-url=/.well-known/cds-cert.pem",
-		"--discovery-public-tls-mode=cds",
+		"--discovery-ta-cert-url=/.well-known/ta-cert.pem",
+		"--discovery-public-tls-mode=ta",
 		"--discovery-mesh-ca-url=/.well-known/mesh-ca.pem",
 	)
 	attest := renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")
-	assertContainerArgs(t, attest, "--front-door-mode=cds")
+	assertContainerArgs(t, attest, "--front-door-mode=ta")
 	// nginx is its own entrypoint's child, so the pod shares no process
 	// namespace (router_serve_test.go).
 	deployment := renderedDeployment(t, out, "c8s-router")
@@ -1469,7 +1469,7 @@ func findContainerPort(c corev1.Container, name string) (corev1.ContainerPort, b
 }
 
 // TestChartRouterAttestFrontDoorMode pins the endpoint-split wiring: the
-// front door (mesh-issued serving leaf) runs cds-attest in cds front-door mode
+// front door (mesh-issued serving leaf) runs cds-attest in ta front-door mode
 // on loopback with no readiness probe.
 func TestChartRouterAttestFrontDoorMode(t *testing.T) {
 	t.Parallel()
@@ -1478,7 +1478,7 @@ func TestChartRouterAttestFrontDoorMode(t *testing.T) {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
 	attest := renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")
-	assertContainerArgs(t, attest, "--front-door-mode=cds", "--host=127.0.0.1")
+	assertContainerArgs(t, attest, "--front-door-mode=ta", "--host=127.0.0.1")
 	if attest.ReadinessProbe != nil {
 		t.Fatalf("cds-attest must stay probe-less, got %+v", attest.ReadinessProbe)
 	}
@@ -1546,7 +1546,7 @@ var routerRoutingArgs = []string{
 	"--routing-port=8802",
 	"--routes-poll-interval=30s",
 	"--backend-timeout=1h",
-	"--reserved-paths=/allowlist,/.well-known/c8s/,/.well-known/acme-challenge/,/v1/discovery,/.well-known/cds-cert.pem,/.well-known/mesh-ca.pem,/readyz,/healthz",
+	"--reserved-paths=/allowlist,/.well-known/c8s/,/.well-known/acme-challenge/,/v1/discovery,/.well-known/ta-cert.pem,/.well-known/mesh-ca.pem,/readyz,/healthz",
 }
 
 func TestChartRendersRouterAttestSidecar(t *testing.T) {
@@ -1776,7 +1776,7 @@ var protocolCORSLocations = []struct{ match, path string }{
 	{"exact", "/allowlist"},
 	{"prefix", "/allowlist/"},
 	{"exact", "/v1/discovery"},
-	{"exact", "/.well-known/cds-cert.pem"},
+	{"exact", "/.well-known/ta-cert.pem"},
 	{"exact", "/.well-known/mesh-ca.pem"},
 	{"prefix", "/.well-known/c8s/"},
 	{"exact", "/.well-known/c8s/tunnel"},
@@ -2250,7 +2250,7 @@ func TestRouterDiscoveryReportsTAModeWithoutPublicTLSSecret(t *testing.T) {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
 	assertContainerArgs(t, routerGetCertContainer(t, out, "c8s-cert"),
-		"--discovery-public-tls-mode=cds")
+		"--discovery-public-tls-mode=ta")
 }
 
 func TestChartOperatorRBACIsScoped(t *testing.T) {
@@ -4709,7 +4709,7 @@ func TestChartRouterPodTakesTheMeasuredRoles(t *testing.T) {
 // container back.
 func TestChartRouterPodStartsTheMeshEndpointFirst(t *testing.T) {
 	for name, render := range map[string]func(t *testing.T, args ...string) (string, error){
-		"cds front door":    helmTemplate,
+		"ta front door":     helmTemplate,
 		"worker front door": helmTemplateWorker,
 	} {
 		t.Run(name, func(t *testing.T) {

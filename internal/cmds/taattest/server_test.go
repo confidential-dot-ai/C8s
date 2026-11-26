@@ -62,7 +62,7 @@ func newTestServer(t *testing.T) *httptest.Server {
 	srv := NewServer(Config{
 		Routes:               testRoutes(t),
 		Evidence:             fixedEvidence{},
-		FrontDoorMode:        types.FrontDoorModeCDS,
+		FrontDoorMode:        types.FrontDoorModeTA,
 		MeshIdentityCertFile: identity.certFile,
 		MeshIdentityKeyFile:  identity.keyFile,
 		MeshIdentityCAFile:   identity.caFile,
@@ -120,7 +120,7 @@ func clientChannelFromBundle(t *testing.T, bundle types.AttestationBundle, ck *o
 	if err != nil {
 		t.Fatal(err)
 	}
-	certs, err := certutil.ParsePEMCertificates([]byte(bundle.CDSCertPEM))
+	certs, err := certutil.ParsePEMCertificates([]byte(bundle.TACertPEM))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,7 +270,7 @@ func newBackendTestServer(t *testing.T, backend backendFunc) *httptest.Server {
 	srv := NewServer(Config{
 		Routes:               testRouter{State: testRoutes(t).State, backendFunc: backend},
 		Evidence:             fixedEvidence{},
-		FrontDoorMode:        types.FrontDoorModeCDS,
+		FrontDoorMode:        types.FrontDoorModeTA,
 		MeshIdentityCertFile: identity.certFile,
 		MeshIdentityKeyFile:  identity.keyFile,
 		MeshIdentityCAFile:   identity.caFile,
@@ -359,7 +359,7 @@ func TestTunnelRejectsIdleExpiredSession(t *testing.T) {
 	srv := NewServer(Config{
 		Routes:               testRoutes(t),
 		Evidence:             fixedEvidence{},
-		FrontDoorMode:        types.FrontDoorModeCDS,
+		FrontDoorMode:        types.FrontDoorModeTA,
 		MeshIdentityCertFile: identity.certFile,
 		MeshIdentityKeyFile:  identity.keyFile,
 		MeshIdentityCAFile:   identity.caFile,
@@ -388,7 +388,7 @@ func TestTunnelRejectsOverAgeSession(t *testing.T) {
 	srv := NewServer(Config{
 		Routes:               testRoutes(t),
 		Evidence:             fixedEvidence{},
-		FrontDoorMode:        types.FrontDoorModeCDS,
+		FrontDoorMode:        types.FrontDoorModeTA,
 		MeshIdentityCertFile: identity.certFile,
 		MeshIdentityKeyFile:  identity.keyFile,
 		MeshIdentityCAFile:   identity.caFile,
@@ -487,13 +487,13 @@ func TestAttestPQRejectsBadRequests(t *testing.T) {
 	}
 }
 
-// TestTACertRouteAbsentWithoutCert: the optional cds-cert endpoint must not be
+// TestTACertRouteAbsentWithoutCert: the optional ta-cert endpoint must not be
 // mounted when no cert was supplied.
 func TestTACertRouteAbsentWithoutCert(t *testing.T) {
 	srv := NewServer(Config{Routes: testRoutes(t), Evidence: failingProvider{}, Bindings: NewBindings()})
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
-	resp, err := http.Get(ts.URL + "/.well-known/c8s/cds-cert.pem")
+	resp, err := http.Get(ts.URL + "/.well-known/c8s/ta-cert.pem")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -510,7 +510,7 @@ func TestAttestationEvidenceUnavailable(t *testing.T) {
 	srv := NewServer(Config{
 		Routes:               testRoutes(t),
 		Evidence:             failingProvider{},
-		FrontDoorMode:        types.FrontDoorModeCDS,
+		FrontDoorMode:        types.FrontDoorModeTA,
 		ServingCertFile:      identity.certFile,
 		MeshIdentityCertFile: identity.certFile,
 		MeshIdentityKeyFile:  identity.keyFile,

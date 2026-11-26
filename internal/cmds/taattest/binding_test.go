@@ -232,7 +232,7 @@ func TestAttestLBAttestsTheLeafItsConnectionPresents(t *testing.T) {
 		mode  types.FrontDoorMode
 		renew func(*testing.T, *routedServer, string) []byte
 	}{
-		{"cds", types.FrontDoorModeCDS, func(t *testing.T, rs *routedServer, _ string) []byte {
+		{"ta", types.FrontDoorModeTA, func(t *testing.T, rs *routedServer, _ string) []byte {
 			renewed := namedLeaf(t, rs.ca, "router")
 			publishLeaf(t, rs.meshDir, renewed, rs.ca)
 			return renewed.Certificate[0]
@@ -342,7 +342,7 @@ func TestServingLeafExpiresWithItsChain(t *testing.T) {
 		}
 	})
 
-	// A cds front door serves tls.crt, so a bound mesh leaf is dropped once
+	// A ta front door serves tls.crt, so a bound mesh leaf is dropped once
 	// its CA or an intermediate in tls.crt expires, whichever comes first.
 	now := time.Now()
 	mint := func(t *testing.T, tmpl, parent *x509.Certificate, pub *ecdsa.PublicKey, signer *ecdsa.PrivateKey) *x509.Certificate {
@@ -365,9 +365,9 @@ func TestServingLeafExpiresWithItsChain(t *testing.T) {
 		caNotAfter   time.Time
 		intermediate time.Time // NotAfter of an intermediate in tls.crt; zero for none
 	}{
-		{name: "cds leaf expires first", caNotAfter: now.Add(3 * time.Hour)},
-		{name: "cds CA expires first", caNotAfter: now.Add(10 * time.Minute)},
-		{name: "cds intermediate expires first", caNotAfter: now.Add(time.Hour), intermediate: now.Add(10 * time.Minute)},
+		{name: "ta leaf expires first", caNotAfter: now.Add(3 * time.Hour)},
+		{name: "ta CA expires first", caNotAfter: now.Add(10 * time.Minute)},
+		{name: "ta intermediate expires first", caNotAfter: now.Add(time.Hour), intermediate: now.Add(10 * time.Minute)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -422,9 +422,9 @@ func TestServingLeafExpiresWithItsChain(t *testing.T) {
 				t.Fatalf("servedUntil = %v, want the earlier NotAfter %v", identity.servedUntil, want)
 			}
 
-			s := &Server{cfg: Config{FrontDoorMode: types.FrontDoorModeCDS}, bindings: NewBindings()}
+			s := &Server{cfg: Config{FrontDoorMode: types.FrontDoorModeTA}, bindings: NewBindings()}
 			if _, ok := s.servingLeafOf(httptest.NewRecorder(), "", identity); !ok {
-				t.Fatal("servingLeafOf(cds) refused a valid mesh identity")
+				t.Fatal("servingLeafOf(ta) refused a valid mesh identity")
 			}
 			hash := sha256.Sum256(leaf.Raw)
 			if _, kept := s.servedLeaves.find(hash, want); !kept {

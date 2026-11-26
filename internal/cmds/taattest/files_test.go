@@ -25,14 +25,14 @@ func TestLoadFiles(t *testing.T) {
 		t.Fatalf("loaded front-door mode %q, want acme", cfg.frontDoorMode)
 	}
 
-	cfg = config{frontDoorMode: types.FrontDoorModeCDS, frontDoorModeFile: write("mode", "cds")}
+	cfg = config{frontDoorMode: types.FrontDoorModeTA, frontDoorModeFile: write("mode", "ta")}
 	if err := loadFiles(&cfg); err == nil {
 		t.Fatal("--front-door-mode with --front-door-mode-file was accepted")
 	}
 
 	// The serving leaf follows the mode: nginx serves the ACME leaf in acme
 	// mode and the mesh leaf otherwise.
-	for mode, want := range map[string]string{"acme": "/etc/c8s-acme-tls/cert.pem", "cds": "/tls/cert.pem"} {
+	for mode, want := range map[string]string{"acme": "/etc/c8s-acme-tls/cert.pem", "ta": "/tls/cert.pem"} {
 		cfg = config{
 			frontDoorModeFile:   write("mode-"+mode, mode+"\n"),
 			servingCertFile:     "/tls/cert.pem",

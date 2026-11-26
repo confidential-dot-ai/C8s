@@ -76,7 +76,7 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- define "router.acmeKeyDir" -}}/etc/c8s-acme-key{{- end -}}
 {{- define "router.discoveryFilePath" -}}/discovery/discovery.json{{- end -}}
 {{- define "router.discoveryPath" -}}/v1/discovery{{- end -}}
-{{- define "router.taCertPath" -}}/.well-known/cds-cert.pem{{- end -}}
+{{- define "router.taCertPath" -}}/.well-known/ta-cert.pem{{- end -}}
 {{- define "router.meshCAPath" -}}/.well-known/mesh-ca.pem{{- end -}}
 
 {{- define "router.terminationGracePeriodSeconds" -}}10{{- end -}}

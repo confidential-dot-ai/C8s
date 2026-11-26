@@ -299,10 +299,10 @@ func (d discoverySpec) validate() error {
 	}
 
 	switch types.FrontDoorMode(d.PublicTLSMode) {
-	case types.FrontDoorModeCDS, types.FrontDoorModeWebPKI:
+	case types.FrontDoorModeTA, types.FrontDoorModeWebPKI:
 		return nil
 	default:
-		return fmt.Errorf("%w: %s must be %q or %q, got %q", errInvalidInjectionAnnotation, AnnotationDiscoveryPublicTLSMode, types.FrontDoorModeCDS, types.FrontDoorModeWebPKI, d.PublicTLSMode)
+		return fmt.Errorf("%w: %s must be %q or %q, got %q", errInvalidInjectionAnnotation, AnnotationDiscoveryPublicTLSMode, types.FrontDoorModeTA, types.FrontDoorModeWebPKI, d.PublicTLSMode)
 	}
 }
 

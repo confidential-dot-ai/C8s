@@ -216,16 +216,16 @@ func verifyDocument(ctx context.Context, data []byte, verify localverify.VerifyF
 		return nil, fmt.Errorf("parse discovery document: %w", err)
 	}
 
-	// Only a cds-mode front door serves the Trust Authority-issued leaf the evidence
-	// binds; empty means a pre-mode-field document (cds in practice). Anything
+	// Only a ta-mode front door serves the Trust Authority-issued leaf the evidence
+	// binds; empty means a pre-mode-field document (ta in practice). Anything
 	// else fails closed here rather than returning a client whose handshakes
 	// can never match the attested cert.
 	switch d.PublicTLS.Mode {
-	case "", types.FrontDoorModeCDS:
+	case "", types.FrontDoorModeTA:
 	case types.FrontDoorModeWebPKI:
-		return nil, fmt.Errorf("front door public_tls.mode=webpki is not supported: it serves an operator WebPKI certificate this client cannot yet bind to the attestation evidence; use a cds-mode front door or port-forward Trust Authority directly")
+		return nil, fmt.Errorf("front door public_tls.mode=webpki is not supported: it serves an operator WebPKI certificate this client cannot yet bind to the attestation evidence; use a ta-mode front door or port-forward Trust Authority directly")
 	case types.FrontDoorModeACME:
-		return nil, fmt.Errorf("front door public_tls.mode=acme is not supported: it serves an in-guest ACME certificate the issuance evidence does not bind; use a cds-mode front door or port-forward Trust Authority directly")
+		return nil, fmt.Errorf("front door public_tls.mode=acme is not supported: it serves an in-guest ACME certificate the issuance evidence does not bind; use a ta-mode front door or port-forward Trust Authority directly")
 	default:
 		return nil, fmt.Errorf("unknown public_tls.mode %q in discovery document", d.PublicTLS.Mode)
 	}
@@ -238,7 +238,7 @@ func verifyDocument(ctx context.Context, data []byte, verify localverify.VerifyF
 	// honestly-stale document is refused without costing a verification.
 	//
 	// The classification is deliberately not asserted here, and the window is
-	// ADVISORY on this path: cds_tls.certificate_pem is the router's
+	// ADVISORY on this path: ta_tls.certificate_pem is the router's
 	// Trust Authority-issued leaf, so RawIssuer != RawSubject and the result is
 	// BodyCAVouched — nothing checked that issuer's signature. This package
 	// cannot fix that: it is bootstrapping trust, the only CA it could reach

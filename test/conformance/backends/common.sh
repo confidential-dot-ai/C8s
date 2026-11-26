@@ -175,7 +175,7 @@
 #                                    address, PEM
 #   router_nginx_conf                the router's rendered nginx configuration;
 #                                    unsupported where the node image holds it
-#   router_tls_mode                  cds, webpki or acme: the public TLS
+#   router_tls_mode                  ta, webpki or acme: the public TLS
 #                                    credential the router selects
 #   ta_relay_block / ta_relay_unblock
 #                                    make the TA unreachable for the router's

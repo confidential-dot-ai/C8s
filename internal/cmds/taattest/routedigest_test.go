@@ -125,7 +125,7 @@ func newDigestServer(t *testing.T, router Router) *digestServer {
 	prov := &capturingProvider{}
 	srv := NewServer(Config{
 		Evidence:             prov,
-		FrontDoorMode:        types.FrontDoorModeCDS,
+		FrontDoorMode:        types.FrontDoorModeTA,
 		ServingCertFile:      identity.certFile,
 		MeshIdentityCertFile: identity.certFile,
 		MeshIdentityKeyFile:  identity.keyFile,

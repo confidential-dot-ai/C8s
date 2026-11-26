@@ -88,7 +88,7 @@ a changed CA certificate only under the pod's bound issuer key.
 | `--discovery-out` | | *(empty)* | Path to write JSON discovery metadata for the issued certificate and attestation evidence |
 | `--discovery-ta-cert-url` | | *(empty)* | Public URL path where the TA certificate PEM is served |
 | `--discovery-mesh-ca-url` | | *(empty)* | Public URL path where the mesh CA PEM is served |
-| `--discovery-public-tls-mode` | | `cds` | Public TLS mode to report in discovery metadata: `cds`, `webpki` or `acme` |
+| `--discovery-public-tls-mode` | | `ta` | Public TLS mode to report in discovery metadata: `ta`, `webpki` or `acme` |
 | `--discovery-public-tls-mode-file` | | *(empty)* | File holding the public TLS mode, read at start; replaces `--discovery-public-tls-mode` |
 | `--discovery-public-tls-hostnames-file` | | *(empty)* | File holding launch-selected public hostnames; discovery reports the first without changing the TA certificate SAN |
 | `--verbose` | `-v` | `false` | Enable debug logging |

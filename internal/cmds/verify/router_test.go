@@ -72,13 +72,13 @@ func productionRouter(t *testing.T, operator operatorSigner, afterResponse func(
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A cds front door serves the mesh identity leaf itself.
+	// A ta front door serves the mesh identity leaf itself.
 	meshCertFile := writePEM(t, "mesh.pem", "CERTIFICATE", id.leaf.Raw)
 	prov := &recordingProvider{}
 	bindings := taattest.NewBindings()
 	handler := taattest.NewServer(taattest.Config{
 		Evidence:             prov,
-		FrontDoorMode:        types.FrontDoorModeCDS,
+		FrontDoorMode:        types.FrontDoorModeTA,
 		ServingCertFile:      meshCertFile,
 		MeshIdentityCertFile: meshCertFile,
 		MeshIdentityKeyFile:  writePEM(t, "mesh-key.pem", "EC PRIVATE KEY", keyDER),
