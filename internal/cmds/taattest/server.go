@@ -1,4 +1,4 @@
-// Package cdsattest implements the router attestation + over-encryption sidecar:
+// Package taattest implements the router attestation + over-encryption sidecar:
 // the *dynamic* client-facing endpoints of the c8s-verify protocol. The
 // router nginx front-end terminates public TLS, serves the static Trust Authority/mesh-CA
 // certs, and reverse-proxies the two explicit attestation endpoints
@@ -301,7 +301,7 @@ func NewServer(cfg Config) *Server {
 func newLimiter(limit rate.Limit, burst, buckets int) *issuer.IPRateLimiter {
 	limiter, err := issuer.NewIPRateLimiter(limit, burst, buckets)
 	if err != nil {
-		panic("cdsattest: " + err.Error())
+		panic("taattest: " + err.Error())
 	}
 	return limiter
 }
@@ -1100,15 +1100,15 @@ func sealTunnelResponse(channel *overenc.Channel, resp types.TunnelResponse, seq
 	// seq is the sequence OpenRequest accepted, so never zero, and these types always encode.
 	respCBOR, err := cbor.Marshal(resp)
 	if err != nil {
-		panic("cdsattest: marshal response envelope: " + err.Error())
+		panic("taattest: marshal response envelope: " + err.Error())
 	}
 	out, err := channel.SealResponse(respCBOR, seq)
 	if err != nil {
-		panic("cdsattest: seal tunnel response: " + err.Error())
+		panic("taattest: seal tunnel response: " + err.Error())
 	}
 	outCBOR, err := cbor.Marshal(out)
 	if err != nil {
-		panic("cdsattest: marshal sealed record: " + err.Error())
+		panic("taattest: marshal sealed record: " + err.Error())
 	}
 	return outCBOR
 }

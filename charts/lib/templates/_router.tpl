@@ -220,7 +220,7 @@ The router pod's nginx, ta-attest and allowlist-proxy containers. Takes:
 
 {{/* The proxy holds the credentials role, so the node hands it the one Trust Authority
      its pod may reach and the pins to verify it with, and refuses an argument
-     naming either (cmdsutil.ResolveCDSEndpoint, cmdsutil.ResolveCDSPins).
+     naming either (cmdsutil.ResolveTAURL, cmdsutil.ResolveTAPins).
      Takes root and attestationApiURL. */}}
 {{- define "router.allowlistProxyArgs" -}}
 {{- list "allowlist-proxy" "--host=127.0.0.1" (printf "--port=%s" (include "router.allowlistProxyPort" .root)) (printf "--attestation-api-url=%s" .attestationApiURL) | toJson -}}

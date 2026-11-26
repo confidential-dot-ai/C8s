@@ -1,4 +1,4 @@
-// Package cds implements the Trust Authority subcommand:
+// Package ta implements the Trust Authority subcommand:
 // the C8s trust root (attestation, mesh CA, leaf signing).
 package ta
 

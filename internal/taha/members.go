@@ -300,7 +300,7 @@ func (m *members) knownElsewhere(address netip.AddrPort, member string) bool {
 // alarmTakingTurns: no member is known at such an address, so it never
 // becomes a Raft address (m.mu held).
 func (m *members) alarmTakingTurns(address netip.AddrPort, answering *answeringAddress) {
-	slog.Error("cds-ha: ALARM: the replicas of this cluster take turns answering at one address, so none of them is known there; a replica entry resolves to the replicas themselves, never to a load-balanced address",
+	slog.Error("ta-ha: ALARM: the replicas of this cluster take turns answering at one address, so none of them is known there; a replica entry resolves to the replicas themselves, never to a load-balanced address",
 		"address", address, "members", slices.Sorted(maps.Keys(answering.seen)), "turns", answering.turns)
 }
 
@@ -366,7 +366,7 @@ func (n *Node) recheck(held reachedMember) {
 	answer, err := held.control.exchange(controlRequest{Op: opMember}, controlTimeout)
 	received := n.clockNow()
 	if err != nil {
-		slog.Info("cds-ha: a member of this cluster stopped answering where this replica reached it", "member", held.member, "address", held.address, "error", err)
+		slog.Info("ta-ha: a member of this cluster stopped answering where this replica reached it", "member", held.member, "address", held.address, "error", err)
 		n.peers.lost(held)
 		return
 	}
@@ -459,13 +459,13 @@ func (n *Node) movedTo(server raft.Server) (reachedMember, bool) {
 }
 
 func (n *Node) moveMember(server raft.Server, moved reachedMember) {
-	slog.Info("cds-ha: a member of this cluster answers at another address", "member", server.ID, "was", server.Address, "now", moved.raftAddress())
+	slog.Info("ta-ha: a member of this cluster answers at another address", "member", server.ID, "was", server.Address, "now", moved.raftAddress())
 	if err := n.enqueueMutation(func() raft.Future { return n.raft.RemoveServer(server.ID, 0, n.cfg.Timing.Apply) }); err != nil {
-		slog.Warn("cds-ha: this leader could not take out a member that moved", "member", server.ID, "error", err)
+		slog.Warn("ta-ha: this leader could not take out a member that moved", "member", server.ID, "error", err)
 		return
 	}
 	if err := n.addNonVoter(moved); err != nil {
-		slog.Warn("cds-ha: this leader could not take in a member that moved", "member", server.ID, "address", moved.raftAddress(), "error", err)
+		slog.Warn("ta-ha: this leader could not take in a member that moved", "member", server.ID, "address", moved.raftAddress(), "error", err)
 	}
 }
 
@@ -485,7 +485,7 @@ func (n *Node) joinOrStart(found discovered) {
 	}
 	if err := n.startable(decree.Decree.Alone, found, answers); err != nil {
 		if n.genesisLog.changed(err.Error()) {
-			slog.Warn("cds-ha: this replica is decreed the start of its cluster and starts none", "error", err)
+			slog.Warn("ta-ha: this replica is decreed the start of its cluster and starts none", "error", err)
 		}
 		return
 	}
@@ -557,13 +557,13 @@ func (n *Node) leaderBesides(held reachedMember, answer controlAnswer) (reachedM
 
 func (n *Node) logInTheCluster(held reachedMember) {
 	if n.joinLog.changed(held.member) {
-		slog.Info("cds-ha: this replica is in its cluster", "via", held.member, "member", n.member)
+		slog.Info("ta-ha: this replica is in its cluster", "via", held.member, "member", n.member)
 	}
 }
 
 func (n *Node) logNotTakenIn(held reachedMember, refused string) {
 	if n.joinLog.changed(held.member + " " + refused) {
-		slog.Info("cds-ha: a member of this cluster did not take this replica in", "member", held.member, "error", refused)
+		slog.Info("ta-ha: a member of this cluster did not take this replica in", "member", held.member, "error", refused)
 	}
 }
 
@@ -624,7 +624,7 @@ func (n *Node) addNonVoter(held reachedMember) error {
 	}); err != nil {
 		return err
 	}
-	slog.Info("cds-ha: a replica joined this cluster as a non-voter", "member", held.member, "address", held.raftAddress())
+	slog.Info("ta-ha: a replica joined this cluster as a non-voter", "member", held.member, "address", held.raftAddress())
 	return nil
 }
 

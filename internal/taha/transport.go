@@ -29,7 +29,7 @@ const (
 	acceptBackoff     = 50 * time.Millisecond
 )
 
-var errTransportClosed = errors.New("cds-ha peer transport closed")
+var errTransportClosed = errors.New("ta-ha peer transport closed")
 
 // controlHandler answers one control request from an admitted peer.
 type controlHandler func(from peer, request controlRequest) controlAnswer
@@ -564,7 +564,7 @@ func (l *refusalLog) record(remote net.Addr, stage string, reason error) {
 	if !l.claim(host+" "+stage, time.Now()) {
 		return
 	}
-	slog.Info("cds-ha peer connection refused", "remote", host, "stage", stage, "error", reason)
+	slog.Info("ta-ha peer connection refused", "remote", host, "stage", stage, "error", reason)
 }
 
 // claim takes key's log slot for the interval, and reports whether it got

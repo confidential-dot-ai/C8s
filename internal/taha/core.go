@@ -74,13 +74,13 @@ type Launch struct {
 func (l Launch) check() error {
 	switch {
 	case l.ClusterID == "":
-		return errors.New("cds-ha: a replica launches with the id of its cluster")
+		return errors.New("ta-ha: a replica launches with the id of its cluster")
 	case len(l.OperatorKeys) == 0:
-		return errors.New("cds-ha: a replica launches with the operator keys whose decrees it obeys")
+		return errors.New("ta-ha: a replica launches with the operator keys whose decrees it obeys")
 	case l.ConfigSHA256 == "":
-		return errors.New("cds-ha: a replica launches with the digest of its own launch file")
+		return errors.New("ta-ha: a replica launches with the digest of its own launch file")
 	case l.Voters <= 0:
-		return errors.New("cds-ha: a replica launches with the voter seats its cluster starts with")
+		return errors.New("ta-ha: a replica launches with the voter seats its cluster starts with")
 	}
 	return nil
 }

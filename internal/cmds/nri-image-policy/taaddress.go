@@ -16,9 +16,9 @@ import (
 // directory (renderNodeDocument).
 const renderedTAAddressName = "ta-address"
 
-// prepareCDSAddress writes the Trust Authority endpoint this node's injected credential
+// prepareTAAddress writes the Trust Authority endpoint this node's injected credential
 // clients dial, before any container can be created.
-func (p *plugin) prepareCDSAddress() error {
+func (p *plugin) prepareTAAddress() error {
 	if !p.cfg.injectsCredentialClients() {
 		return nil
 	}
@@ -72,7 +72,7 @@ func bindCredentialRole(cfg *config) error {
 	if cfg.Allowlist.Pull.TAAddressFile == "" {
 		// Nothing an install mounted names the Trust Authority this node reaches. A node
 		// that injects credential clients refuses to start without a bound
-		// role; one that injects none needs no binding (prepareCDSAddress).
+		// role; one that injects none needs no binding (prepareTAAddress).
 		return nil
 	}
 	_, port, err := cmdsutil.SplitTAAddress(cfg.taAddress)

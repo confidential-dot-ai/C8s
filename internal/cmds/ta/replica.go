@@ -174,7 +174,7 @@ func runMember(ctx context.Context, node *taha.Node) (stop func(), ended <-chan 
 		case errors.Is(err, taha.ErrLeftItsCluster):
 			exitToRestart(err.Error())
 		case err != nil:
-			slog.Error("cds-ha: this replica's loop ended", "error", err)
+			slog.Error("ta-ha: this replica's loop ended", "error", err)
 		}
 	}()
 	go watchStuck(running, node)
@@ -203,7 +203,7 @@ func watchStuck(ctx context.Context, node *taha.Node) {
 
 // A failure exit is what the unit restarts on.
 func exitToRestart(reason string) {
-	slog.Error("cds-ha: this replica stopped following its cluster; it exits so a restart rejoins it as a new member with the cluster's state",
+	slog.Error("ta-ha: this replica stopped following its cluster; it exits so a restart rejoins it as a new member with the cluster's state",
 		"reason", reason)
 	os.Exit(1)
 }
@@ -217,14 +217,14 @@ func (r *clusterTA) join(ctx context.Context, cfg config) error {
 		return err
 	}
 	defer stopAnswering()
-	slog.Info("cds-ha: this replica waits to join its cluster",
+	slog.Info("ta-ha: this replica waits to join its cluster",
 		"cluster_id", cfg.measured.ClusterID,
 		"member", r.node.Status().ID,
 	)
 	if err := r.awaitServing(ctx); err != nil {
 		return err
 	}
-	slog.Info("cds-ha: this replica serves its cluster", "status", r.node.Status())
+	slog.Info("ta-ha: this replica serves its cluster", "status", r.node.Status())
 	return nil
 }
 
@@ -243,7 +243,7 @@ func (r *clusterTA) awaitServing(ctx context.Context) error {
 			if stopping := ctx.Err(); stopping != nil {
 				return stopping
 			}
-			return errors.New("cds-ha: this replica's loop ended before it joined its cluster")
+			return errors.New("ta-ha: this replica's loop ended before it joined its cluster")
 		case <-asking.C:
 		}
 	}
@@ -305,7 +305,7 @@ func (r *clusterTA) KeepMeshCA(ctx context.Context, peers *armtls.CertManager) {
 		}
 		peers.UpdateClientCA(ca.Cert)
 		published = ca.Cert.Raw
-		slog.Info("cds-ha: this replica issues under the mesh CA its cluster carries now",
+		slog.Info("ta-ha: this replica issues under the mesh CA its cluster carries now",
 			"audit", true,
 			"key_id", caKeyID(ca.Cert),
 			"fingerprint", certutil.CertFingerprint(ca.Cert.Raw),
@@ -347,7 +347,7 @@ func (c clusterNodeImages) Current() refvalues.ReferenceValues {
 	}
 	images, err := document.Images()
 	if err != nil {
-		slog.Error("cds-ha: the node image set this cluster carries does not parse, so this replica certifies no node", "error", err)
+		slog.Error("ta-ha: the node image set this cluster carries does not parse, so this replica certifies no node", "error", err)
 		return refvalues.ReferenceValues{}
 	}
 	return images

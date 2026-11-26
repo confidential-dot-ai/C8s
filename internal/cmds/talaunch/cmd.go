@@ -1,4 +1,4 @@
-// Package cdslaunch implements `c8s ta config`: the operator-side generator
+// Package talaunch implements `c8s ta config`: the operator-side generator
 // for the two files an external Trust Authority VM is launched and verified with.
 package talaunch
 

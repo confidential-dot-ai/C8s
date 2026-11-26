@@ -540,7 +540,7 @@ func TestReadinessFn(t *testing.T) {
 
 func TestNewRouter_PanicsOnNilMeshCA(t *testing.T) {
 	defer func() {
-		if got := recover(); got != "cds: dependencies.MeshCA must be set" {
+		if got := recover(); got != "ta: dependencies.MeshCA must be set" {
 			t.Fatalf("panic = %v, want nil MeshCA dependency panic", got)
 		}
 	}()

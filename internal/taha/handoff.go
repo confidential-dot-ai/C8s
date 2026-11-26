@@ -61,12 +61,12 @@ func (n *Node) transferCooldown() time.Duration {
 
 func (n *Node) handOverTo(target raft.Server) error {
 	if n.peers.clockQuarantined(string(target.ID)) {
-		return errors.New("cds-ha: the handover target is clock-quarantined")
+		return errors.New("ta-ha: the handover target is clock-quarantined")
 	}
 	if n.ClockError() != nil {
 		answer, eligible := n.transferStanding(target)
 		if !eligible || answer.Stuck != "" || answer.Applied < n.fsm.AppliedIndex() {
-			return errors.New("cds-ha: no current clock-eligible handover target")
+			return errors.New("ta-ha: no current clock-eligible handover target")
 		}
 	}
 
@@ -115,16 +115,16 @@ func (n *Node) handOverWhenStuck() {
 	target, found := n.aVoterThatApplied(n.fsm.AppliedIndex())
 	if !found {
 		if n.stuckLog.changed(reason) {
-			slog.Warn("cds-ha: this leader stopped following the log and no voter of its cluster is fit to take it over",
+			slog.Warn("ta-ha: this leader stopped following the log and no voter of its cluster is fit to take it over",
 				"reason", reason)
 		}
 		return
 	}
-	slog.Warn("cds-ha: this leader stopped following the log; it hands the cluster over",
+	slog.Warn("ta-ha: this leader stopped following the log; it hands the cluster over",
 		"reason", reason,
 		"member", target.ID)
 	if err := n.handOverTo(target); err != nil {
-		slog.Warn("cds-ha: this leader could not hand the cluster over",
+		slog.Warn("ta-ha: this leader could not hand the cluster over",
 			"member", target.ID,
 			"error", err)
 	}
@@ -144,10 +144,10 @@ func (n *Node) handOverWhenSlow(watch *slowLeader, now time.Time) {
 		return
 	}
 	watch.tried(now)
-	slog.Warn("cds-ha: this leader's own state machine keeps every replica from answering a read; it hands the cluster over",
+	slog.Warn("ta-ha: this leader's own state machine keeps every replica from answering a read; it hands the cluster over",
 		"member", target.ID, "applied_index", n.fsm.AppliedIndex(), "commit_index", n.raft.CommitIndex())
 	if err := n.handOverTo(target); err != nil {
-		slog.Warn("cds-ha: this leader could not hand the cluster over",
+		slog.Warn("ta-ha: this leader could not hand the cluster over",
 			"member", target.ID,
 			"error", err)
 	}
@@ -259,12 +259,12 @@ func (n *Node) handOverWhenClockQuarantined() {
 	target, found := n.aVoterThatApplied(n.fsm.AppliedIndex())
 	if !found {
 		if n.stuckLog.changed(reason.Error()) {
-			slog.Warn("cds-ha: clock-quarantined leader has no eligible voter to take over", "reason", reason)
+			slog.Warn("ta-ha: clock-quarantined leader has no eligible voter to take over", "reason", reason)
 		}
 		return
 	}
 	if err := n.handOverTo(target); err != nil {
-		slog.Warn("cds-ha: clock-quarantined leader could not hand the cluster over", "member", target.ID, "error", err)
+		slog.Warn("ta-ha: clock-quarantined leader could not hand the cluster over", "member", target.ID, "error", err)
 	}
 }
 

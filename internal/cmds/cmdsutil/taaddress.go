@@ -16,7 +16,7 @@ import (
 
 // The Trust Authority endpoint document the enforcer hands an injected credential client:
 // one <host>:<port>, the Trust Authority this cluster's components dial. The node writes
-// it with FormatCDSAddress (internal/cmds/nri-image-policy) and its clients
+// it with FormatTAAddress (internal/cmds/nri-image-policy) and its clients
 // read it back from workloadclaims.TAAddressPath.
 
 // Refusals a caller can match on.

@@ -84,7 +84,7 @@ func (g *MeshCAGate) Check(ctx context.Context, stderr io.Writer, hc *http.Clien
 		return err
 	}
 	if len(served) == 0 {
-		return fmt.Errorf("cds served no certificate at /ca, so its mesh CA cannot be checked against --mesh-ca")
+		return fmt.Errorf("the Trust Authority served no certificate at /ca, so its mesh CA cannot be checked against --mesh-ca")
 	}
 	for _, der := range served {
 		if !pinned[string(der)] {
@@ -147,13 +147,13 @@ func fetchCA(ctx context.Context, hc *http.Client, baseURL string) ([][]byte, er
 	var status *attestclient.StatusError
 	switch {
 	case errors.As(err, &status):
-		return nil, fmt.Errorf("cds returned %d for /ca, so its mesh CA cannot be checked against --mesh-ca", status.Status)
+		return nil, fmt.Errorf("the Trust Authority returned %d for /ca, so its mesh CA cannot be checked against --mesh-ca", status.Status)
 	case err != nil:
 		return nil, fmt.Errorf("fetch the Trust Authority mesh CA: %w", err)
 	}
 	certs, err := parseCertsPEM(raw)
 	if err != nil {
-		return nil, fmt.Errorf("cds /ca: %w", err)
+		return nil, fmt.Errorf("the Trust Authority /ca: %w", err)
 	}
 	return certs, nil
 }

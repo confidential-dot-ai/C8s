@@ -35,11 +35,11 @@ func (p *plugin) admitOnComponentSets(ctx context.Context, pod *api.PodSandbox, 
 }
 
 // componentSetRefusal is why the containers of one sandbox may not run on the
-// component sets the applied document holds in force at the CDS's time, and
-// nil when they may. A pod off its sets is refused every start, its tenant
-// containers included, and the component containers of one pod must share a
-// set, so no pod mixes two releases' components — a set's beside the measured
-// base's included.
+// component sets the applied document holds in force at the Trust Authority's
+// time, and nil when they may. A pod off its sets is refused every start, its
+// tenant containers included, and the component containers of one pod must
+// share a set, so no pod mixes two releases' components — a set's beside the
+// measured base's included.
 func (p *plugin) componentSetRefusal(containers []workloadclaims.SandboxContainer) error {
 	snap := p.policy.current()
 	if snap == nil || snap.pulled == nil {

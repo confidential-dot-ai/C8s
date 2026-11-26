@@ -10,7 +10,7 @@ import (
 )
 
 // VerifierStub adapts a test callback to an evidence verifier's Verify method.
-// It is intended only for tests that inject a cdsconn.PinVerifier.
+// It is intended only for tests that inject a taconn.PinVerifier.
 type VerifierStub localverify.VerifyFunc
 
 // Verify delegates to the stub callback without changing its inputs or results.

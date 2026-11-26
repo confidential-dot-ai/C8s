@@ -33,7 +33,7 @@ import (
 	"github.com/hashicorp/raft"
 )
 
-var ErrDiverged = errors.New("cds-ha: this replica holds another state than the majority of its cluster")
+var ErrDiverged = errors.New("ta-ha: this replica holds another state than the majority of its cluster")
 
 // What a replica tells its leader with a read.
 type DigestReport struct {
@@ -92,7 +92,7 @@ func (n *Node) takeReport(member raft.ServerID, report *DigestReport, appliedHer
 	contradicted := report.Latest.Index <= appliedHere && n.fsm.dig.disagreesWith(report.Latest)
 	verdict, asked := n.div.hold(member, report, contradicted)
 	if asked {
-		slog.Warn("cds-ha: a replica of this cluster reports another chain than this leader applied; a checkpoint decides what the cluster holds",
+		slog.Warn("ta-ha: a replica of this cluster reports another chain than this leader applied; a checkpoint decides what the cluster holds",
 			"member", member, "index", report.Latest.Index, "member_chain", report.Latest.Chain)
 	}
 	return verdict
@@ -134,7 +134,7 @@ func (n *Node) proposeCheckpoint() {
 		return
 	}
 	if _, err := n.propose(Entry{Kind: KindCheckpoint}); err != nil {
-		slog.Warn("cds-ha: the checkpoint the replicas record their state digest at did not commit", "error", err)
+		slog.Warn("ta-ha: the checkpoint the replicas record their state digest at did not commit", "error", err)
 	}
 }
 
@@ -179,7 +179,7 @@ func (n *Node) actOn(decided decision) {
 		return
 	}
 	if n.divergenceLog.changed(decided.found + decided.detail) {
-		slog.Error("cds-ha: ALARM: "+decided.found, "detail", decided.detail)
+		slog.Error("ta-ha: ALARM: "+decided.found, "detail", decided.detail)
 	}
 	if decided.leaderDiverged {
 		_ = n.fsm.stopLocal(fmt.Errorf("%w: %s", ErrDiverged, decided.detail))
@@ -239,7 +239,7 @@ func (d *divergence) agreed(checkpoint Point) {
 	if d.alarm == "" && (d.found == "" || len(d.verdicts) > 0) {
 		return
 	}
-	slog.Info("cds-ha: the replicas of this cluster hold one state again", "checkpoint", checkpoint.Index)
+	slog.Info("ta-ha: the replicas of this cluster hold one state again", "checkpoint", checkpoint.Index)
 	d.alarm = ""
 	d.found = ""
 }

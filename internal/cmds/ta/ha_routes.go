@@ -51,12 +51,12 @@ func takeDecree(node *taha.Node) http.HandlerFunc {
 		}
 		body, err := readutil.ReadAll(r.Body, maxDecreeBody)
 		if err != nil {
-			http.Error(w, "cds-ha: the posted decree: "+err.Error(), http.StatusBadRequest)
+			http.Error(w, "ta-ha: the posted decree: "+err.Error(), http.StatusBadRequest)
 			return
 		}
 		signed, err := tadecree.Parse(body)
 		if err != nil {
-			http.Error(w, "cds-ha: the posted decree: "+err.Error(), http.StatusBadRequest)
+			http.Error(w, "ta-ha: the posted decree: "+err.Error(), http.StatusBadRequest)
 			return
 		}
 		delivered, err := node.TakeDecree(signed)
@@ -85,7 +85,7 @@ func reportPinDecree(node *taha.Node) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		applied := node.ClusterState().PinsDecree
 		if applied == nil {
-			http.Error(w, "cds-ha: this cluster has applied no decree pinning its Trust Authority images", http.StatusNotFound)
+			http.Error(w, "ta-ha: this cluster has applied no decree pinning its Trust Authority images", http.StatusNotFound)
 			return
 		}
 		writeJSON(w, applied)
@@ -97,8 +97,8 @@ func reportPinDecree(node *taha.Node) http.HandlerFunc {
 func writeJSON(w http.ResponseWriter, report any) {
 	body, err := json.Marshal(report)
 	if err != nil {
-		slog.Error("cds-ha: this replica could not encode what it reports", "error", err)
-		http.Error(w, "cds-ha: this replica could not encode what it reports", http.StatusInternalServerError)
+		slog.Error("ta-ha: this replica could not encode what it reports", "error", err)
+		http.Error(w, "ta-ha: this replica could not encode what it reports", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -133,7 +133,7 @@ func haGate(
 		}
 		if !servedUnjoined(r.URL.Path) {
 			if err := confirmRead(); err != nil {
-				http.Error(w, "cds-ha: no current read watermark", http.StatusServiceUnavailable)
+				http.Error(w, "ta-ha: no current read watermark", http.StatusServiceUnavailable)
 				return
 			}
 		}
@@ -163,14 +163,14 @@ func (r *clusterTA) answerWhileJoining(cfg config) (stop func(), err error) {
 	// A replica holding no mesh CA verifies no client chain.
 	tlsCfg, _, err := armtls.NewServerTLSConfig(servingConfig(cfg, nil))
 	if err != nil {
-		return nil, fmt.Errorf("cds-ha: the attested server a replica answers on while it joins: %w", err)
+		return nil, fmt.Errorf("ta-ha: the attested server a replica answers on while it joins: %w", err)
 	}
 	server.TLSConfig = tlsCfg
 	served := make(chan struct{})
 	go func() {
 		defer close(served)
 		if err := server.ListenAndServeTLS("", ""); !errors.Is(err, http.ErrServerClosed) {
-			slog.Error("cds-ha: this replica answers nothing while it joins its cluster", "error", err)
+			slog.Error("ta-ha: this replica answers nothing while it joins its cluster", "error", err)
 		}
 	}()
 	return func() {
@@ -196,13 +196,13 @@ func joiningMux(cluster map[string]http.HandlerFunc) http.Handler {
 	// Never ready: whoever probes an unjoined replica must not put it in front
 	// of a client.
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, "cds-ha: this replica has not joined its cluster", http.StatusServiceUnavailable)
+		http.Error(w, "ta-ha: this replica has not joined its cluster", http.StatusServiceUnavailable)
 	})
 	for route, handler := range cluster {
 		mux.HandleFunc(route, handler)
 	}
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, "cds-ha: this replica has not joined its cluster", http.StatusServiceUnavailable)
+		http.Error(w, "ta-ha: this replica has not joined its cluster", http.StatusServiceUnavailable)
 	})
 	return mux
 }

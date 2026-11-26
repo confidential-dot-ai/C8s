@@ -1,4 +1,4 @@
-// Package cdsdecree is the operator's signed instruction to a Trust Authority cluster:
+// Package tadecree is the operator's signed instruction to a Trust Authority cluster:
 // which images a Trust Authority of this cluster may run, which node images it certifies,
 // which process may start or carry on the cluster, and which unjoined replica
 // may admit an image beside its own.

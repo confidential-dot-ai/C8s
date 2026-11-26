@@ -56,10 +56,10 @@ func admitted(bound int64) int64 {
 // ErrCapacity refuses a write that would take the replicated state past the
 // admission cap. It clears as the state shrinks: entries deleted, history
 // pruned.
-var ErrCapacity = errors.New("cds-ha: the replicated state is at its capacity")
+var ErrCapacity = errors.New("ta-ha: the replicated state is at its capacity")
 
 // ErrStateTooLarge is a state too large for a snapshot a replica can read.
-var ErrStateTooLarge = errors.New("cds-ha: the replicated state is larger than a snapshot carries")
+var ErrStateTooLarge = errors.New("ta-ha: the replicated state is larger than a snapshot carries")
 
 // Admit refuses a log entry, as its proposer holds it, that would take the
 // state past the admission cap. The replica that takes the write judges it,
@@ -85,7 +85,7 @@ func (f *FSM) admit(b bounds, e Entry, entryBytes int64) error {
 	header, image, err := f.stateSize()
 	if err != nil {
 		// The cap is a safety net, not a gate on availability.
-		slog.Warn("cds-ha: the size of this replica's state cannot be read, so the admission cap judges no write", "error", err)
+		slog.Warn("ta-ha: the size of this replica's state cannot be read, so the admission cap judges no write", "error", err)
 		return nil
 	}
 	if e.Kind == KindSecret {

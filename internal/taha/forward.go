@@ -42,7 +42,7 @@ func (n *Node) forward(entry []byte) (Result, error) {
 	// A committed index holds the same entry on every replica of the cluster,
 	// so this replica waits for its own state machine to reach it.
 	if !n.awaitApplied(answer.Index, time.Until(deadline)) {
-		return Result{}, fmt.Errorf("cds-ha: the write is committed at index %d, and this replica has not applied it", answer.Index)
+		return Result{}, fmt.Errorf("ta-ha: the write is committed at index %d, and this replica has not applied it", answer.Index)
 	}
 	var res Result
 	return res, decodeStrict(answer.Result, &res)
@@ -51,11 +51,11 @@ func (n *Node) forward(entry []byte) (Result, error) {
 func (n *Node) leaderChannel() (reachedMember, error) {
 	_, leader := n.raft.LeaderWithID()
 	if leader == "" {
-		return reachedMember{}, errors.New("cds-ha: this cluster has no leader (fewer than a majority of its voters answer)")
+		return reachedMember{}, errors.New("ta-ha: this cluster has no leader (fewer than a majority of its voters answer)")
 	}
 	held, reached := n.peers.knownAt(string(leader))
 	if !reached {
-		return reachedMember{}, fmt.Errorf("cds-ha: this replica has not reached the leader, member %s", leader)
+		return reachedMember{}, fmt.Errorf("ta-ha: this replica has not reached the leader, member %s", leader)
 	}
 	return held, nil
 }
@@ -76,10 +76,10 @@ func (n *Node) forwardDecree(signed tadecree.Signed) (Delivered, error) {
 		return Delivered{}, err
 	}
 	if answer.Err != "" {
-		return Delivered{}, errors.New("cds-ha: the leader did not take the decree: " + answer.Err)
+		return Delivered{}, errors.New("ta-ha: the leader did not take the decree: " + answer.Err)
 	}
 	if answer.Delivered == nil {
-		return Delivered{}, errors.New("cds-ha: the leader took the decree and answered nothing about it")
+		return Delivered{}, errors.New("ta-ha: the leader took the decree and answered nothing about it")
 	}
 	return *answer.Delivered, nil
 }
@@ -118,7 +118,7 @@ func refusedByLeader(answer controlAnswer) error {
 	if answer.Full {
 		return fmt.Errorf("%w: the leader refused the write: %s", ErrCapacity, answer.Err)
 	}
-	return errors.New("cds-ha: the leader refused the write: " + answer.Err)
+	return errors.New("ta-ha: the leader refused the write: " + answer.Err)
 }
 
 // answerWrite commits a write another replica took, under this leader's own
@@ -159,7 +159,7 @@ func (n *Node) commitForwarded(stamped []byte, answer controlAnswer) controlAnsw
 	}
 	result, err := json.Marshal(res)
 	if err != nil {
-		slog.Error("cds-ha: this leader committed a forwarded write and could not report what it produced", "index", index, "error", err)
+		slog.Error("ta-ha: this leader committed a forwarded write and could not report what it produced", "index", index, "error", err)
 		answer.Err = "the write is committed and this leader cannot report what it produced"
 		return answer
 	}
@@ -174,10 +174,10 @@ func (n *Node) commitForwarded(stamped []byte, answer controlAnswer) controlAnsw
 func forwardedWrite(forwarded json.RawMessage) (Entry, error) {
 	var entry Entry
 	if err := decodeStrict(forwarded, &entry); err != nil {
-		return Entry{}, fmt.Errorf("cds-ha: a forwarded entry: %w", err)
+		return Entry{}, fmt.Errorf("ta-ha: a forwarded entry: %w", err)
 	}
 	if !clientWrite(entry) {
-		return Entry{}, fmt.Errorf("cds-ha: a forwarded entry is one allowlist, secret or binding command, and this one is of kind %q", entry.Kind)
+		return Entry{}, fmt.Errorf("ta-ha: a forwarded entry is one allowlist, secret or binding command, and this one is of kind %q", entry.Kind)
 	}
 	return entry, nil
 }

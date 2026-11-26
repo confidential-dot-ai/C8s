@@ -55,7 +55,7 @@ func TestEvidenceFromDiscovery_Malformed(t *testing.T) {
 	}
 
 	garbageCert := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: []byte("garbage")}))
-	if _, err := evidenceFromDiscovery(discoveryDocWith(t, garbageCert, []byte("c"), `{"attestation_report":"AAAA"}`), "t", leafTrust{}, nil); err == nil || !strings.Contains(err.Error(), "parse cds cert") {
+	if _, err := evidenceFromDiscovery(discoveryDocWith(t, garbageCert, []byte("c"), `{"attestation_report":"AAAA"}`), "t", leafTrust{}, nil); err == nil || !strings.Contains(err.Error(), "parse Trust Authority cert") {
 		t.Errorf("unparseable cert DER should fail, got %v", err)
 	}
 }

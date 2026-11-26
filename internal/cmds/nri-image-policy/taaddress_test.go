@@ -78,8 +78,8 @@ func TestMeasuredPolicyDecidesTheCredentialPort(t *testing.T) {
 	}
 	renderInTempDir(t)
 	p := &plugin{cfg: cfg}
-	if err := p.prepareCDSAddress(); err != nil {
-		t.Fatalf("prepareCDSAddress: %v", err)
+	if err := p.prepareTAAddress(); err != nil {
+		t.Fatalf("prepareTAAddress: %v", err)
 	}
 	if got := readAddress(t, p.taAddress); got != "cds.example.org:8443" {
 		t.Fatalf("handed address = %q, want the Trust Authority this node reaches", got)
@@ -118,8 +118,8 @@ func TestInstallBindsTheCredentialRoleToItsAddressFile(t *testing.T) {
 	}
 	renderInTempDir(t)
 	p := &plugin{cfg: cfg}
-	if err := p.prepareCDSAddress(); err != nil {
-		t.Fatalf("prepareCDSAddress: %v", err)
+	if err := p.prepareTAAddress(); err != nil {
+		t.Fatalf("prepareTAAddress: %v", err)
 	}
 	if got := readAddress(t, p.taAddress); got != "cds.example.org:8443" {
 		t.Fatalf("handed address = %q, want the Trust Authority the address file names", got)
@@ -132,7 +132,7 @@ func TestTAEndpointIsRequiredWhereClientsAreInjected(t *testing.T) {
 	renderInTempDir(t)
 	cfg := &config{WorkloadClaims: workloadClaimsConfig{SocketDir: t.TempDir()}, Mesh: meshRoles()}
 	p := &plugin{cfg: cfg}
-	err := p.prepareCDSAddress()
+	err := p.prepareTAAddress()
 	if err == nil {
 		t.Fatal("a node with no Trust Authority endpoint started")
 	}
@@ -191,8 +191,8 @@ func TestRenderedDocumentsAreOutsideTheMountedSocketDirectory(t *testing.T) {
 	if err := p.prepareTAPins(nodeTAPins(t, p)); err != nil {
 		t.Fatalf("prepareCDSPins: %v", err)
 	}
-	if err := p.prepareCDSAddress(); err != nil {
-		t.Fatalf("prepareCDSAddress: %v", err)
+	if err := p.prepareTAAddress(); err != nil {
+		t.Fatalf("prepareTAAddress: %v", err)
 	}
 	for _, rendered := range []string{p.taPins, p.taAddress} {
 		if strings.HasPrefix(rendered, socketDir) {
@@ -205,8 +205,8 @@ func TestRenderedDocumentsAreOutsideTheMountedSocketDirectory(t *testing.T) {
 // own arguments.
 func TestNoInjectedClientsNoAddress(t *testing.T) {
 	p := &plugin{cfg: &config{}}
-	if err := p.prepareCDSAddress(); err != nil {
-		t.Fatalf("prepareCDSAddress: %v", err)
+	if err := p.prepareTAAddress(); err != nil {
+		t.Fatalf("prepareTAAddress: %v", err)
 	}
 	if p.taAddress != "" {
 		t.Fatalf("address path = %q, want none", p.taAddress)

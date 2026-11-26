@@ -101,7 +101,7 @@ func newRenewer(
 	if cfg.CAWatchInterval > 0 {
 		r.taTicker = time.NewTicker(cfg.CAWatchInterval)
 		r.taWatch = r.taTicker.C
-		slog.Info("watching cds for changes", "interval", cfg.CAWatchInterval, "ca_path", cfg.CAPath, "policy", !cfg.NoWorkloadClaims)
+		slog.Info("watching the Trust Authority for changes", "interval", cfg.CAWatchInterval, "ca_path", cfg.CAPath, "policy", !cfg.NoWorkloadClaims)
 	}
 	return r
 }
@@ -188,7 +188,7 @@ func (r *renewer) renewIfTAChanged(ctx context.Context) {
 		return
 	}
 	if r.publishedCAStale(ctx) {
-		slog.Info("cds renewed the bound mesh CA certificate, renewing now")
+		slog.Info("the Trust Authority renewed the bound mesh CA certificate, renewing now")
 		r.scheduleRenewal(0)
 		return
 	}
@@ -243,10 +243,10 @@ func logPolicyChange(
 	delay time.Duration,
 ) {
 	if servedVersion == stamp.AllowlistVersion {
-		slog.Warn("cds serves different allowlist bytes at the version the stamp names, renewing", "stamped_version", stamp.AllowlistVersion, "delay", delay)
+		slog.Warn("the Trust Authority serves different allowlist bytes at the version the stamp names, renewing", "stamped_version", stamp.AllowlistVersion, "delay", delay)
 		return
 	}
-	slog.Info("cds serves a newer allowlist policy than the leaf names, renewing", "stamped_version", stamp.AllowlistVersion, "served_version", servedVersion, "delay", delay)
+	slog.Info("the Trust Authority serves a newer allowlist policy than the leaf names, renewing", "stamped_version", stamp.AllowlistVersion, "served_version", servedVersion, "delay", delay)
 }
 
 // renew requests the next generation and schedules the request after it.
@@ -537,11 +537,11 @@ func warnUnexpectedWorkload(cfg config, leaf *x509.Certificate, warned map[strin
 func servedCAStale(ctx context.Context, client attestclient.Client, bound issuerKeyID, volume credentialVolume) (bool, error) {
 	currentPEM, err := client.MeshCA(ctx)
 	if err != nil {
-		return false, fmt.Errorf("fetch current mesh CA from cds: %w", err)
+		return false, fmt.Errorf("fetch current mesh CA from the Trust Authority: %w", err)
 	}
 	current, err := soleCA(currentPEM)
 	if err != nil {
-		return false, fmt.Errorf("mesh CA from cds: %w", err)
+		return false, fmt.Errorf("mesh CA from the Trust Authority: %w", err)
 	}
 	issuer, err := issuerKeyIDOf(current)
 	if err != nil {
@@ -570,7 +570,7 @@ func stampedPolicyStale(ctx context.Context, client allowlistclient.Client, dige
 	stamped := "sha256:" + hex.EncodeToString(digest)
 	served, notModified, err := client.FetchServed(ctx, pkgallowlist.EntityTag(stamped))
 	if err != nil {
-		return "", false, fmt.Errorf("fetch allowlist from cds: %w", err)
+		return "", false, fmt.Errorf("fetch allowlist from the Trust Authority: %w", err)
 	}
 	stale = !notModified && served.Digest != stamped
 	return served.Version, stale, nil

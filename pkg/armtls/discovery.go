@@ -29,7 +29,7 @@ func AttestedCertFromDiscovery(d *types.DiscoveryDocument) (*x509.Certificate, [
 	}
 	cert, err := x509.ParseCertificate(block.Bytes)
 	if err != nil {
-		return nil, [64]byte{}, fmt.Errorf("parse cds cert: %w", err)
+		return nil, [64]byte{}, fmt.Errorf("parse Trust Authority cert: %w", err)
 	}
 	challenge, err := base64.StdEncoding.DecodeString(d.Attestation.Challenge)
 	if err != nil {

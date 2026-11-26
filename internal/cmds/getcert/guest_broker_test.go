@@ -61,7 +61,7 @@ func TestRunGuestRejectsIncompleteConfig(t *testing.T) {
 		mutate func(*GuestConfig)
 		want   string
 	}{
-		"unparseable Trust Authority URL":  {func(g *GuestConfig) { g.TAURL = "://cds" }, "CDSURL: "},
+		"unparseable Trust Authority URL":  {func(g *GuestConfig) { g.TAURL = "://cds" }, "TAURL: "},
 		"plaintext Trust Authority URL":    {func(g *GuestConfig) { g.TAURL = "http://cds.example" }, "https URL with a host"},
 		"Trust Authority URL without host": {func(g *GuestConfig) { g.TAURL = "https:///attest" }, "https URL with a host"},
 		"no HTTP client":                   {func(g *GuestConfig) { g.HTTPClient = nil }, "HTTPClient is required"},

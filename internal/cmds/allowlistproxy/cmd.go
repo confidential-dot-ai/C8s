@@ -46,7 +46,7 @@ var (
 	nodeVerifier    = workloadclaims.AttestationAPISocket
 )
 
-// cds is the Trust Authority this proxy dials and the pins it holds it to.
+// ta is the Trust Authority this proxy dials and the pins it holds it to.
 type ta struct {
 	url  string
 	pins armtls.PinSource
@@ -159,7 +159,7 @@ func newHandler(ctx context.Context, cfg config, logger *slog.Logger) (http.Hand
 // verifier that decides them. All three come from one source: while the
 // enforcer mounts the node's endpoint, policy and attestation-api for a
 // credentials-role container, they are the only source and a flag naming
-// another is refused (cmdsutil.ResolveCDSURL, cmdsutil.ResolveTAPins,
+// another is refused (cmdsutil.ResolveTAURL, cmdsutil.ResolveTAPins,
 // cmdsutil.RequireNodeVerifier).
 func (cfg config) resolveTA(ctx context.Context) (ta, error) {
 	taURL, endpointFromNode, err := cmdsutil.ResolveTAURL(nodeAddressPath, cfg.taURL)

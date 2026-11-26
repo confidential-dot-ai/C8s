@@ -56,24 +56,24 @@ func (n *Node) applyDecree(signed tadecree.Signed) (Delivered, error) {
 	}
 	intent := signed.Decree.IntentID
 	if err := n.refuses(signed.Decree); err != nil {
-		slog.Info("cds-ha: this leader refused a decree of its operator", "intent", intent, "error", err)
+		slog.Info("ta-ha: this leader refused a decree of its operator", "intent", intent, "error", err)
 		return Delivered{Intent: intent, Refused: err.Error()}, nil
 	}
 	entry, err := n.decreeEntry(signed)
 	if err != nil {
-		return Delivered{}, fmt.Errorf("cds-ha: this leader could not write the entry a decree applies through: %w", err)
+		return Delivered{}, fmt.Errorf("ta-ha: this leader could not write the entry a decree applies through: %w", err)
 	}
 	res, err := n.propose(Entry{Kind: KindDecree, Decree: entry})
 	switch {
 	case err != nil:
-		return Delivered{}, fmt.Errorf("cds-ha: a decree of this cluster's operator did not commit: %w", err)
+		return Delivered{}, fmt.Errorf("ta-ha: a decree of this cluster's operator did not commit: %w", err)
 	case res.Decree == nil:
-		return Delivered{}, errors.New("cds-ha: the state machine answered a decree with no result of one")
+		return Delivered{}, errors.New("ta-ha: the state machine answered a decree with no result of one")
 	case res.Decree.Refused != "":
-		slog.Info("cds-ha: this cluster refused a decree of its operator", "intent", intent, "refused", res.Decree.Refused)
+		slog.Info("ta-ha: this cluster refused a decree of its operator", "intent", intent, "refused", res.Decree.Refused)
 		return Delivered{Intent: intent, Refused: res.Decree.Refused}, nil
 	}
-	slog.Info("cds-ha: this cluster applied a decree of its operator", "audit", true,
+	slog.Info("ta-ha: this cluster applied a decree of its operator", "audit", true,
 		"intent", intent, "kind", signed.Decree.Kind, "version", res.Decree.Version)
 	return Delivered{Intent: intent, Version: res.Decree.Version}, nil
 }
@@ -176,11 +176,11 @@ func (n *Node) renewMeshCA() {
 	}
 	renewed, err := renewedMeshCert(ca)
 	if err != nil {
-		slog.Error("cds-ha: this leader could not sign the cluster's mesh CA certificate again", "error", err)
+		slog.Error("ta-ha: this leader could not sign the cluster's mesh CA certificate again", "error", err)
 		return
 	}
 	if _, err := n.propose(Entry{Kind: KindRenewCA, RenewCA: &RenewCAEntry{MeshCACert: renewed}}); err != nil {
-		slog.Warn("cds-ha: the renewed mesh CA certificate did not commit", "error", err)
+		slog.Warn("ta-ha: the renewed mesh CA certificate did not commit", "error", err)
 	}
 }
 
@@ -219,7 +219,7 @@ func (n *Node) pruneHistory() {
 	}
 	over, keep, err := n.historyOverItsBound()
 	if err != nil {
-		slog.Warn("cds-ha: this leader cannot read the allowlist history to bound it", "error", err)
+		slog.Warn("ta-ha: this leader cannot read the allowlist history to bound it", "error", err)
 		return
 	}
 	if !over {
@@ -227,10 +227,10 @@ func (n *Node) pruneHistory() {
 	}
 	prune := &allowlist.Command{Op: allowlist.OpPruneHistory, Keep: keep, AtMS: time.Now().UnixMilli()}
 	if _, err := n.propose(Entry{Kind: KindAllowlist, Allowlist: prune}); err != nil {
-		slog.Warn("cds-ha: the allowlist history did not prune", "error", err)
+		slog.Warn("ta-ha: the allowlist history did not prune", "error", err)
 		return
 	}
-	slog.Info("cds-ha: the allowlist history is pruned", "kept", keep)
+	slog.Info("ta-ha: the allowlist history is pruned", "kept", keep)
 }
 
 // historyOverItsBound reports a history holding more than the cluster keeps,

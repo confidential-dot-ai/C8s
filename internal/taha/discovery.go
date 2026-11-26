@@ -84,7 +84,7 @@ func (n *Node) discover(ctx context.Context) discovered {
 // discoveryFailed reports an entry that did not resolve, once per reason.
 func (n *Node) discoveryFailed(err error) {
 	if n.discoveryLog.changed(err.Error()) {
-		slog.Warn("cds-ha: this replica cannot resolve every replica of its cluster", "error", err)
+		slog.Warn("ta-ha: this replica cannot resolve every replica of its cluster", "error", err)
 	}
 }
 

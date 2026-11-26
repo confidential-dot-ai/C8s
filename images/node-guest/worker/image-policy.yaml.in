@@ -13,10 +13,10 @@ plugin:
   health_addr: "unix:///run/nri-image-policy/health.sock"
 
 # The worker's admission inventory (c8s docs/armtls.md, "Sandbox identity").
-# get-cert dials this socket for its pod's digests before CDS will issue a
-# certificate. Worker staging preserves this baked inventory configuration;
-# without it the socket is never created and every adopted workload hangs
-# waiting for a certificate that cannot be issued.
+# get-cert dials this socket for its pod's digests before the Trust Authority
+# will issue a certificate. Worker staging preserves this baked inventory
+# configuration; without it the socket is never created and every adopted
+# workload hangs waiting for a certificate that cannot be issued.
 workload_claims:
   socket_dir: "/run/nri-image-policy"
   # The plugin is launched by containerd on the host, so its /proc is the
@@ -31,12 +31,12 @@ workload_claims:
 allowlist:
   # This base is the worker's trusted computing base: it is measured with the
   # image, so its digests are the only ones the sandbox policy below exempts.
-  # Everything CDS serves is sandboxed. Never set this in a config rendered by
-  # the chart — that base is the cluster admin's to choose.
+  # Everything the Trust Authority serves is sandboxed. Never set this in a
+  # config rendered by the chart — that base is the cluster admin's to choose.
   node_tcb: true
 
-  # The measured platform floor. Tenant workloads remain in the allowlist CDS
-  # serves; they cannot replace a measured entry.
+  # The measured platform floor. Tenant workloads remain in the allowlist the
+  # Trust Authority serves; they cannot replace a measured entry.
   base:
     schema: c8s.allowlist/v1
     workloads:
@@ -260,7 +260,7 @@ allowlist:
       # role serves the front door's ports; the upstream role reaches the
       # cluster's members, as the mesh client of the workload each route
       # names; the acme role is the one that reaches outside the cluster in
-      # the clear; the credentials role reaches the node's CDS.
+      # the clear; the credentials role reaches the node's Trust Authority.
       c8s-router-nginx:
         label: "nginx front door"
         containers:
@@ -419,7 +419,7 @@ allowlist:
             # Per cluster: the port it listens on.
             args: {policy: any}
             # The node's own inventory socket directory, which is where it
-            # reaches the verifier it dials CDS through.
+            # reaches the verifier it dials the Trust Authority through.
             mounts:
               policy: exact
               rules:
@@ -428,10 +428,10 @@ allowlist:
                   source: "/run/nri-image-policy"
                   readOnly: true
   pull:
-    # Worker staging replaces this endpoint with the CDS the worker document
-    # names (internal/cmds/nodeservices Prepare), so a worker never pulls from
-    # the loopback address this baked value carries. It is measured, so it
-    # cannot be left out.
+    # Worker staging replaces this endpoint with the Trust Authority the
+    # worker document names (internal/cmds/nodeservices Prepare), so a worker
+    # never pulls from the loopback address this baked value carries. It is
+    # measured, so it cannot be left out.
     url: "https://127.0.0.1:30808"
     # INVARIANT: equal to the chart's nriImagePolicy.refresh.interval.
     interval: "5s"
@@ -453,7 +453,7 @@ mesh:
     health: 15021
   # The mesh endpoint holds no capabilities: the enforcer installs the pod
   # ruleset, so the endpoint only proxies. Boot preparation adds the
-  # credential role, whose destination is the staged CDS address
+  # credential role, whose destination is the staged Trust Authority address
   # (internal/cmds/nodeservices).
   roles:
     - name: mesh

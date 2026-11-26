@@ -257,12 +257,12 @@ func run(ctx context.Context, cfg config) error {
 		return fmt.Errorf("warm up armtls serving cert: %w", err)
 	}
 	go meshPeers.RunRotation(ctx)
-	slog.Info("cds serving armTLS", "platform", cfg.armtlsPlatform)
+	slog.Info("Trust Authority serving armTLS", "platform", cfg.armtlsPlatform)
 
 	go cmdsutil.ShutdownOnDone(ctx, srv, 5*time.Second)
 	go back.KeepMeshCA(ctx, meshPeers)
 
-	slog.Info("cds listening", "addr", addr)
+	slog.Info("Trust Authority listening", "addr", addr)
 	if err := srv.ListenAndServeTLS("", ""); err != http.ErrServerClosed {
 		return err
 	}

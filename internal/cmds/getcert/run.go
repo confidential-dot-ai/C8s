@@ -134,7 +134,7 @@ consumers that read that volume.`,
 
 	flags := cmd.Flags()
 	cmdsutil.BindTAImagePolicyFlags(flags, &cfg.MeasurementsConfig, &cfg.MeasurementsConfigJSON, "pins the Trust Authority endpoint, every entry bound to the launch file that Trust Authority runs on; required unless the node pins Trust Authority")
-	flags.StringVar(&cfg.TAURL, "ta-url", "", "URL of the Trust Authority (e.g. https://cds:8443); refused in an injected sidecar, which dials the endpoint the node mounts")
+	flags.StringVar(&cfg.TAURL, "ta-url", "", "URL of the Trust Authority (e.g. https://ta:8443); refused in an injected sidecar, which dials the endpoint the node mounts")
 	flags.StringVar(&cfg.AttestationApiURL, "attestation-api-url", "", "URL of the node-local attestation-api (http://localhost:8400, or unix:// plus the on-node socket path the chart wires)"+cmdsutil.NodeAddressHelp)
 	flags.StringVar(&cfg.CertPath, "cert-path", "", "Path where the certificate chain PEM of the published generation is read")
 	flags.StringVar(&cfg.CAPath, "ca-path", "", "Path where the mesh CA PEM of the published generation is read; must be in the --cert-path directory")
@@ -210,7 +210,7 @@ func taHTTPClient(ctx context.Context, cfg config) (*http.Client, error) {
 	}
 	client, err := armtls.NewRefreshingHTTPClient(pins, cfg.AttestationApiURL)
 	if err != nil {
-		return nil, fmt.Errorf("cds armTLS client: %w", err)
+		return nil, fmt.Errorf("the Trust Authority armTLS client: %w", err)
 	}
 	return client, nil
 }
@@ -444,7 +444,7 @@ func obtainCert(ctx context.Context, cfg config, client attestclient.Client, cre
 	}
 	nonce, err := base64.StdEncoding.DecodeString(challenge.Challenge)
 	if err != nil {
-		return fmt.Errorf("invalid challenge from cds: %w", err)
+		return fmt.Errorf("invalid challenge from the Trust Authority: %w", err)
 	}
 
 	var sandboxToken json.RawMessage
@@ -474,7 +474,7 @@ func obtainCert(ctx context.Context, cfg config, client attestclient.Client, cre
 		return err
 	}
 
-	slog.Info("requesting certificate from cds", "ta_url", cfg.TAURL, "san", cfg.SAN, "instance_id", creds.instanceID)
+	slog.Info("requesting certificate from the Trust Authority", "ta_url", cfg.TAURL, "san", cfg.SAN, "instance_id", creds.instanceID)
 	result, err := client.ObtainCertificateWithSandboxContext(ctx, cfg.AttestationApiURL, string(csrPEM), challenge.Challenge, sandboxToken)
 	if err != nil {
 		return fmt.Errorf("attestation failed: %w", err)

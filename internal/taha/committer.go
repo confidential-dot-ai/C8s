@@ -122,11 +122,11 @@ func bindingWrites(n *Node) ledgerCommitter {
 // none answers from the bindings it holds, which fails closed.
 func (c ledgerCommitter) CatchUp() {
 	if err := c.node.ConfirmRead(); err != nil {
-		slog.Warn("cds-ha: a sandbox lookup confirmed no read with the cluster; it answers from the bindings this replica holds", "error", err)
+		slog.Warn("ta-ha: a sandbox lookup confirmed no read with the cluster; it answers from the bindings this replica holds", "error", err)
 	}
 }
 
 // answeredNothing: the entry is applied, so no writer may send it again.
 func answeredNothing(kind EntryKind) error {
-	return fmt.Errorf("cds-ha: the committed %s entry answered nothing", kind)
+	return fmt.Errorf("ta-ha: the committed %s entry answered nothing", kind)
 }

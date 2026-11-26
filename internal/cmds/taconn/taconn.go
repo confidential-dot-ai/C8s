@@ -1,4 +1,4 @@
-// Package cdsconn builds what an operator CLI needs to reach Trust Authority: an HTTP
+// Package taconn builds what an operator CLI needs to reach Trust Authority: an HTTP
 // client that has verified the endpoint's attestation, and the operator
 // credential that signs a write.
 //

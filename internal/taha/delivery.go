@@ -72,7 +72,7 @@ func actedOnByItsTarget(kind tadecree.Kind) bool {
 // neither another replica nor a restart of this one acts on it.
 func (n *Node) holdDecree(signed tadecree.Signed) (Delivered, error) {
 	if signed.Decree.TargetMember != string(n.member) {
-		return Delivered{}, fmt.Errorf("cds-ha: the decree names member %q, and this replica is member %q", signed.Decree.TargetMember, n.member)
+		return Delivered{}, fmt.Errorf("ta-ha: the decree names member %q, and this replica is member %q", signed.Decree.TargetMember, n.member)
 	}
 	n.clockMu.Lock()
 	defer n.clockMu.Unlock()
@@ -136,7 +136,7 @@ func (n *Node) anyAdmitForThisProcess() *[]remote.ImagePin {
 		images, err := n.imagesOfAdmit(signed)
 		if err != nil {
 			if n.admitLog.changed(err.Error()) {
-				slog.Warn("cds-ha: an Admit decree names this replica and it admits no image by it", "error", err)
+				slog.Warn("ta-ha: an Admit decree names this replica and it admits no image by it", "error", err)
 			}
 			continue
 		}
