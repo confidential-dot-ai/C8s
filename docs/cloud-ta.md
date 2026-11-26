@@ -41,11 +41,13 @@ RTMR[3], starts the TA, and no register shows that an initrd staged the
 operator key. The TA accepts the field because the check asks only what its
 own verified report proves about the file, and either field proves it byte
 for byte. One check serves every guest: it cannot tell a `ta-guest` VM from
-another, so which image answers is for a pin on the launch digest to
-establish. Only this startup check reads `MRCONFIGID`. `c8s install
---ta-pin`, replica peer pins and Genesis pins read RTMR[3] on TDX, so a TDX TA
-launched this way starts but no cluster can be installed against it and it
-cannot join a replica set.
+another, so identify the TDX image with pins on MRTD, RTMR[1] and RTMR[2].
+`c8s verify` can also display `MRCONFIGID`. HA peer and generated Genesis
+pins still bind RTMR[3], so they cannot authenticate an MRCONFIGID-only TA.
+`--alone` can commit a one-voter Genesis without peer checks; it does not
+make those pins match. The cloud chart rejects schema 3 pins. A schema 2
+TDX pin can pass rendering but fail TA authentication; install may warn and
+apply a release whose clients cannot authenticate their TA.
 
 Supply the TA container and an attestation API on guest loopback
 (`--attestation-api-url`). The guest launch digest does not cover containers
@@ -87,8 +89,8 @@ for `c8s install --ta-pin` instead:
 - Set every entry's `launch_file` to the same whole initdata document as a
   JSON string. Omit `launch_file_digest` and `approver_key`.
 
-Replace the placeholders below with those values. This pin is for SEV-SNP: on
-TDX there is no pin `c8s install --ta-pin` accepts yet.
+Replace the placeholders below with those values. This example is for SEV-SNP;
+a TDX pin using the file's RTMR[3] seed does not match an MRCONFIGID-only TA.
 
 ```json
 {
