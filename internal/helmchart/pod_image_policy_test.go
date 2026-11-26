@@ -29,7 +29,7 @@ func TestChartCannotConfigurePodIssuance(t *testing.T) {
 				t.Fatalf("render: %v\n%s", err, out)
 			}
 			for _, workload := range renderedPodSpecs(t, out) {
-				if workload.name == "c8s-cds" {
+				if workload.name == "c8s-ta" {
 					t.Fatal("chart rendered an unmeasured Trust Authority")
 				}
 				for _, c := range append(workload.spec.Containers, workload.spec.InitContainers...) {

@@ -91,9 +91,9 @@ func TestNewRequestErrors(t *testing.T) {
 		auth      Authorizer
 		want      error
 	}{
-		{"signer failure", "http://cds/secrets/key", failedAuthorizer{failure}, failure},
+		{"signer failure", "http://ta/secrets/key", failedAuthorizer{failure}, failure},
 		{"invalid URL", "://", failedAuthorizer{failure}, nil},
-		{"nil authorizer", "http://cds/secrets/key", nil, nil},
+		{"nil authorizer", "http://ta/secrets/key", nil, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			req, err := NewRequest(context.Background(), http.MethodPut, tc.url, nil, tc.auth)

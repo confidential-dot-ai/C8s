@@ -56,7 +56,7 @@ func taPinDocument(t *testing.T, entries []string, subnets string) []byte {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return []byte(`{"schema_version":"2","tee":"sev-snp","measurements":[{"name":"cds","measurement":"` +
+	return []byte(`{"schema_version":"2","tee":"sev-snp","measurements":[{"name":"ta","measurement":"` +
 		strings.Repeat("cd", 48) + `","launch_file":` + string(file) + `}]}`)
 }
 
@@ -93,7 +93,7 @@ func testOperatorPublicKey(t *testing.T) string {
 func TestTAPinNamesOneConfiguration(t *testing.T) {
 	config, err := taPinConfig(taPinDocument(t, []string{"app"}, "192.0.2.0/24"))
 	if err != nil {
-		t.Fatalf("cdsPinConfig: %v", err)
+		t.Fatalf("taPinConfig: %v", err)
 	}
 	if _, ok := config.Workloads.Workloads["app"]; !ok {
 		t.Fatalf("configuration serves %v, want the app entry", config.Workloads.Workloads)
@@ -105,9 +105,9 @@ func TestTAPinNamesOneConfiguration(t *testing.T) {
 
 func TestTAPinRefusesWhatNoClientCouldHold(t *testing.T) {
 	for name, document := range map[string]string{
-		"no launch file": `{"schema_version":"2","tee":"sev-snp","measurements":[{"name":"cds","measurement":"` + strings.Repeat("cd", 48) + `"}]}`,
+		"no launch file": `{"schema_version":"2","tee":"sev-snp","measurements":[{"name":"ta","measurement":"` + strings.Repeat("cd", 48) + `"}]}`,
 		"not a pin":      `{}`,
-		"not a configuration": `{"schema_version":"2","tee":"sev-snp","measurements":[{"name":"cds","measurement":"` +
+		"not a configuration": `{"schema_version":"2","tee":"sev-snp","measurements":[{"name":"ta","measurement":"` +
 			strings.Repeat("cd", 48) + `","launch_file":"clusterID: test\n"}]}`,
 		"two configurations": `{"schema_version":"2","tee":"sev-snp","measurements":[` +
 			`{"name":"a","measurement":"` + strings.Repeat("cd", 48) + `","launch_file":"schemaVersion: c8s-ta/v1\n"},` +
@@ -131,7 +131,7 @@ func TestTAInstallArgs(t *testing.T) {
 	}
 	values, err := taInstallValues("10.9.9.9:8443", pin)
 	if err != nil {
-		t.Fatalf("cdsInstallValues: %v", err)
+		t.Fatalf("taInstallValues: %v", err)
 	}
 	want := map[string]any{
 		"ta": map[string]any{
@@ -145,13 +145,13 @@ func TestTAInstallArgs(t *testing.T) {
 
 	// A node-image render names no Trust Authority: the image runs its own.
 	if values, err := taInstallValues("", ""); err != nil || values != nil {
-		t.Fatalf("cdsInstallValues() = %v, %v, want no values", values, err)
+		t.Fatalf("taInstallValues() = %v, %v, want no values", values, err)
 	}
 
 	// A name is this cluster's Trust Authority as much as an address is: its clients
 	// resolve it, and their packet rules admit the port.
-	if _, err := taInstallValues("cds.example.com:8443", pin); err != nil {
-		t.Fatalf("cdsInstallValues with a named Trust Authority: %v", err)
+	if _, err := taInstallValues("ta.example.com:8443", pin); err != nil {
+		t.Fatalf("taInstallValues with a named Trust Authority: %v", err)
 	}
 
 	for _, tc := range []struct{ name, address, pin string }{

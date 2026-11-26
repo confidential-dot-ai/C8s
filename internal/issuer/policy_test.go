@@ -124,7 +124,7 @@ func TestValidateCSR(t *testing.T) {
 		{
 			name:    "non-IP source rejected when CSR carries an IP SAN",
 			csr:     &x509.CertificateRequest{IPAddresses: []net.IP{net.ParseIP("10.0.0.1")}},
-			policy:  issuer.CSRPolicy{SourceIP: "/run/cds.sock"},
+			policy:  issuer.CSRPolicy{SourceIP: "/run/ta.sock"},
 			wantErr: "is not a valid IP",
 		},
 		{

@@ -93,7 +93,7 @@ func TestSeedWorkloadsKeepsComponentSets(t *testing.T) {
 	writeComponentDocument(t, allowlist)
 
 	added, _, err := allowlist.SeedWorkloads(map[string]pkgallowlist.Workload{
-		"cds": oneContainerWorkload(mustParseDigest(t, digestC)),
+		"ta": oneContainerWorkload(mustParseDigest(t, digestC)),
 	})
 	if err != nil || added != 1 {
 		t.Fatalf("SeedWorkloads = %d, %v, want one entry added", added, err)
@@ -105,7 +105,7 @@ func TestSeedWorkloadsKeepsComponentSets(t *testing.T) {
 	if _, listed := reloaded.Components["0.43.0"]; !listed {
 		t.Fatalf("seeding dropped the component sets: %#v", reloaded.Components)
 	}
-	if _, listed := reloaded.Workloads["cds"]; !listed {
+	if _, listed := reloaded.Workloads["ta"]; !listed {
 		t.Fatal("seeding did not add its entry")
 	}
 }

@@ -530,7 +530,7 @@ func TestFetchRejectsForgedAddrBeforeDialing(t *testing.T) {
 }
 
 func TestResolveAdvertiseHostPrefersExplicitHost(t *testing.T) {
-	host, err := ResolveAdvertiseHost(context.Background(), "10.1.2.3", "cds.invalid:8443")
+	host, err := ResolveAdvertiseHost(context.Background(), "10.1.2.3", "ta.invalid:8443")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -544,7 +544,7 @@ func TestResolveAdvertiseHostPrefersExplicitHost(t *testing.T) {
 // somewhere useless.
 func TestResolveAdvertiseHostRejectsUnreachableHost(t *testing.T) {
 	for _, host := range []string{"127.0.0.1", "::1", "169.254.169.254", "inventory.example"} {
-		if _, err := ResolveAdvertiseHost(context.Background(), host, "cds.invalid:8443"); err == nil {
+		if _, err := ResolveAdvertiseHost(context.Background(), host, "ta.invalid:8443"); err == nil {
 			t.Fatalf("advertise host %q accepted", host)
 		}
 	}
@@ -734,7 +734,7 @@ func TestListenUnixNoChgrpWhenGIDNonPositive(t *testing.T) {
 // requires of every evidence-path policy.
 func testPins() armtls.PinSource {
 	return armtls.FixedPins(refvalues.ReferenceValues{Images: []remote.ImagePin{{
-		Name:   "cds",
+		Name:   "ta",
 		Digest: bytes.Repeat([]byte{0x11}, refvalues.DigestSize),
 	}}})
 }

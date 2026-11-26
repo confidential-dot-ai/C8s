@@ -39,7 +39,7 @@ func TestList(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("ETag", testTag)
 		w.Header().Set(allowlist.VersionHeader, "7")
-		io.WriteString(w, `{"schema":"c8s.allowlist/v1","workloads":{"cds":{"containers":[{"digest":"`+testDigest+`","command":{"policy":"any"},"args":{"policy":"any"}}]}}}`)
+		io.WriteString(w, `{"schema":"c8s.allowlist/v1","workloads":{"ta":{"containers":[{"digest":"`+testDigest+`","command":{"policy":"any"},"args":{"policy":"any"}}]}}}`)
 	}))
 	defer srv.Close()
 
@@ -50,14 +50,14 @@ func TestList(t *testing.T) {
 	if version != "7" {
 		t.Fatalf("version = %q, want 7", version)
 	}
-	if cs := al.Workloads["cds"].Containers; len(cs) != 1 || cs[0].Digest.String() != testDigest {
+	if cs := al.Workloads["ta"].Containers; len(cs) != 1 || cs[0].Digest.String() != testDigest {
 		t.Fatalf("unexpected allowlist: %#v", al)
 	}
 }
 
 // The served digest is the stamped policy digest of the canonical document.
 func TestFetchServedDigestsServedBytes(t *testing.T) {
-	al, err := allowlist.ParseJSON([]byte(`{"schema":"c8s.allowlist/v1","workloads":{"cds":{"containers":[{"digest":"` + testDigest + `","command":{"policy":"any"},"args":{"policy":"any"}}]}}}`))
+	al, err := allowlist.ParseJSON([]byte(`{"schema":"c8s.allowlist/v1","workloads":{"ta":{"containers":[{"digest":"` + testDigest + `","command":{"policy":"any"},"args":{"policy":"any"}}]}}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ func TestFetchServedDigestsServedBytes(t *testing.T) {
 
 // The digest covers the bytes on the wire, not a re-encoding of them.
 func TestFetchServedDigestsExactBytes(t *testing.T) {
-	const body = `{"schema":"c8s.allowlist/v1",  "workloads":{"cds":{"containers":[{"digest":"` + testDigest + `","command":{"policy":"any"},"args":{"policy":"any"}}]}}}`
+	const body = `{"schema":"c8s.allowlist/v1",  "workloads":{"ta":{"containers":[{"digest":"` + testDigest + `","command":{"policy":"any"},"args":{"policy":"any"}}]}}}`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		io.WriteString(w, body)
@@ -133,7 +133,7 @@ func TestFetchNotModified(t *testing.T) {
 }
 
 func TestFetchServedStatus(t *testing.T) {
-	const doc = `{"schema":"c8s.allowlist/v1","workloads":{"cds":{"containers":[{"digest":"` + testDigest + `","command":{"policy":"any"},"args":{"policy":"any"}}]}}}`
+	const doc = `{"schema":"c8s.allowlist/v1","workloads":{"ta":{"containers":[{"digest":"` + testDigest + `","command":{"policy":"any"},"args":{"policy":"any"}}]}}}`
 	tests := []struct {
 		name            string
 		status          int
@@ -177,7 +177,7 @@ func TestFetchServedStatus(t *testing.T) {
 // Object fetches a history document by digest and refuses bytes that hash
 // to another one.
 func TestObjectChecksTheDigest(t *testing.T) {
-	al, err := allowlist.ParseJSON([]byte(`{"schema":"c8s.allowlist/v1","workloads":{"cds":{"containers":[{"digest":"` + testDigest + `","command":{"policy":"any"},"args":{"policy":"any"}}]}}}`))
+	al, err := allowlist.ParseJSON([]byte(`{"schema":"c8s.allowlist/v1","workloads":{"ta":{"containers":[{"digest":"` + testDigest + `","command":{"policy":"any"},"args":{"policy":"any"}}]}}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +197,7 @@ func TestObjectChecksTheDigest(t *testing.T) {
 	c := newClient(srv.URL)
 
 	got, err := c.Object(context.Background(), sum)
-	if err != nil || len(got.Workloads["cds"].Containers) != 1 {
+	if err != nil || len(got.Workloads["ta"].Containers) != 1 {
 		t.Fatalf("Object() = %+v, %v, want the stored document", got, err)
 	}
 	other := sum
@@ -299,7 +299,7 @@ func mustDigest(t *testing.T, s string) types.Digest {
 // The certificate lifetime a node's freshness limit follows is carried from
 // every reply, a 304 included, and absent where the reply reports none.
 func TestFetchServedCertificateLifetime(t *testing.T) {
-	const doc = `{"schema":"c8s.allowlist/v1","workloads":{"cds":{"containers":[{"digest":"` + testDigest + `","command":{"policy":"any"},"args":{"policy":"any"}}]}}}`
+	const doc = `{"schema":"c8s.allowlist/v1","workloads":{"ta":{"containers":[{"digest":"` + testDigest + `","command":{"policy":"any"},"args":{"policy":"any"}}]}}}`
 	for _, tc := range []struct {
 		name        string
 		header      string

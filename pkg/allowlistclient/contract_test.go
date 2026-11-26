@@ -70,7 +70,7 @@ func TestListReturnsOnContextCancel(t *testing.T) {
 func TestListNonOKYieldsStatusError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
-		io.WriteString(w, "cds is not ready\n")
+		io.WriteString(w, "the Trust Authority is not ready\n")
 	}))
 	defer srv.Close()
 
@@ -82,8 +82,8 @@ func TestListNonOKYieldsStatusError(t *testing.T) {
 	if se.Status != http.StatusServiceUnavailable {
 		t.Errorf("Status = %d, want %d", se.Status, http.StatusServiceUnavailable)
 	}
-	if se.Body != "cds is not ready" {
-		t.Errorf("Body = %q, want %q", se.Body, "cds is not ready")
+	if se.Body != "the Trust Authority is not ready" {
+		t.Errorf("Body = %q, want %q", se.Body, "the Trust Authority is not ready")
 	}
 }
 

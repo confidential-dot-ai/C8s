@@ -406,7 +406,7 @@ func TestParseAnnotationsRejectsIncompleteDiscovery(t *testing.T) {
 	}
 }
 
-// The injected sidecar only ever serves cds or webpki, so the annotation
+// The injected sidecar only ever serves ta or webpki, so the annotation
 // refuses acme even though get-cert accepts it.
 func TestParseAnnotationsRefusesACMEDiscoveryPublicTLSMode(t *testing.T) {
 	_, err := parseAnnotations(&corev1.Pod{

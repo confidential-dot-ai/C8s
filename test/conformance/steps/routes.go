@@ -393,7 +393,7 @@ func routerAppliedUnrelatedCA(ctx context.Context, path, host string) error {
 	}
 	backend := map[string]any{
 		"address":    strings.TrimPrefix(url, "https://"),
-		"serverName": "cds.c8s.test",
+		"serverName": "ta.c8s.test",
 		"ca":         unrelatedCA(),
 	}
 	return w.applyRoutes(map[string]any{w.routeHost(host): prefixRoute(path, backend)})

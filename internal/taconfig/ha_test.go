@@ -12,7 +12,7 @@ import (
 func testHAWire() haWire {
 	return haWire{
 		Replicas: []string{
-			"cds.acme.example",
+			"ta.acme.example",
 			"10.0.0.7",
 		},
 		Voters: 3,
@@ -38,7 +38,7 @@ func TestParseReturnsTheReplicaSet(t *testing.T) {
 	if ha == nil {
 		t.Fatal("the document's ha block is not parsed")
 	}
-	if len(ha.Replicas) != 2 || ha.Replicas[0] != "cds.acme.example" || ha.Replicas[1] != "10.0.0.7" {
+	if len(ha.Replicas) != 2 || ha.Replicas[0] != "ta.acme.example" || ha.Replicas[1] != "10.0.0.7" {
 		t.Fatalf("replicas = %v", ha.Replicas)
 	}
 	if ha.Voters != 3 {
@@ -66,9 +66,9 @@ func TestParseRefusesEachMalformedHAField(t *testing.T) {
 		want   string
 	}{
 		{"no replica", func(h *haWire) { h.Replicas = nil }, "ha.replicas"},
-		{"the same replica twice", func(h *haWire) { h.Replicas = []string{"cds.acme.example", "cds.acme.example"} }, "twice"},
-		{"a replica port", func(h *haWire) { h.Replicas = []string{"cds.acme.example:8444"} }, "port"},
-		{"a replica URL", func(h *haWire) { h.Replicas = []string{"https://cds.acme.example"} }, "ha.replicas"},
+		{"the same replica twice", func(h *haWire) { h.Replicas = []string{"ta.acme.example", "ta.acme.example"} }, "twice"},
+		{"a replica port", func(h *haWire) { h.Replicas = []string{"ta.acme.example:8444"} }, "port"},
+		{"a replica URL", func(h *haWire) { h.Replicas = []string{"https://ta.acme.example"} }, "ha.replicas"},
 		{"a replica wildcard", func(h *haWire) { h.Replicas = []string{"*.acme.example"} }, "ha.replicas"},
 		{"an IPv6 replica", func(h *haWire) { h.Replicas = []string{"fd00::7"} }, "ha.replicas"},
 		{"an empty replica", func(h *haWire) { h.Replicas = []string{""} }, "ha.replicas"},
@@ -117,7 +117,7 @@ func TestFormatWritesAnHABlockParseAccepts(t *testing.T) {
 	_, anchorPEM := testKey(t)
 	document := testDocumentFor(t, operatorPEM, anchorPEM)
 	document.HA = HA{
-		Replicas: []string{"cds.acme.example"},
+		Replicas: []string{"ta.acme.example"},
 		Voters:   1,
 	}
 	data, err := Format(document)
@@ -144,7 +144,7 @@ func TestFormatWritesNoNodesOnlyForAReplicaSet(t *testing.T) {
 		t.Fatal("Format wrote a single Trust Authority that certifies no node")
 	}
 	document.HA = HA{
-		Replicas: []string{"cds.acme.example"},
+		Replicas: []string{"ta.acme.example"},
 		Voters:   1,
 	}
 	data, err := Format(document)
@@ -172,14 +172,14 @@ func TestFormatRefusesAReplicaSetParseWouldRefuse(t *testing.T) {
 	for name, change := range map[string]func(*HA){
 		"an even voter count":   func(h *HA) { h.Voters = 4 },
 		"no replica":            func(h *HA) { h.Replicas = nil },
-		"a replica with a port": func(h *HA) { h.Replicas = []string{"cds.acme.example:8444"} },
+		"a replica with a port": func(h *HA) { h.Replicas = []string{"ta.acme.example:8444"} },
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, operatorPEM := testKey(t)
 			_, anchorPEM := testKey(t)
 			document := testDocumentFor(t, operatorPEM, anchorPEM)
 			document.HA = HA{
-				Replicas: []string{"cds.acme.example"},
+				Replicas: []string{"ta.acme.example"},
 				Voters:   1,
 			}
 			change(&document.HA)

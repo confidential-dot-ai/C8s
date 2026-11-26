@@ -472,7 +472,7 @@ func TestDialFrontDoorDefaultsToTheRouterPort(t *testing.T) {
 // outright: the trust model binds attestation to a TLS handshake, which
 // plaintext has none of.
 func TestNewVerifiedHTTPClient_RequiresHTTPS(t *testing.T) {
-	_, err := NewVerifiedHTTPClient(context.Background(), "http://cds.example", nil, approvingVerify(nil))
+	_, err := NewVerifiedHTTPClient(context.Background(), "http://ta.example", nil, approvingVerify(nil))
 	if err == nil || !bytes.Contains([]byte(err.Error()), []byte("scheme must be https")) {
 		t.Fatalf("want an https-scheme error, got: %v", err)
 	}
@@ -481,7 +481,7 @@ func TestNewVerifiedHTTPClient_RequiresHTTPS(t *testing.T) {
 // TestNewVerifiedHTTPClient_RequiresVerifier proves a nil verifier fails
 // closed at construction rather than skipping evidence verification.
 func TestNewVerifiedHTTPClient_RequiresVerifier(t *testing.T) {
-	_, err := NewVerifiedHTTPClient(context.Background(), "https://cds.example", nil, nil)
+	_, err := NewVerifiedHTTPClient(context.Background(), "https://ta.example", nil, nil)
 	if err == nil || !bytes.Contains([]byte(err.Error()), []byte("verifier is required")) {
 		t.Fatalf("want a nil-verifier error, got: %v", err)
 	}

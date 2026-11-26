@@ -47,7 +47,7 @@ func TestGenerateEvidenceVerifiesSystemRootsBesideArmTLS(t *testing.T) {
 	if _, err := ta.Get(srv.URL); err == nil {
 		t.Fatal("the armTLS client accepted an ordinary certificate; the test proves nothing")
 	}
-	c := NewClientWithHTTP("https://cds.invalid", ta)
+	c := NewClientWithHTTP("https://ta.invalid", ta)
 	if _, err := c.GenerateEvidenceContext(context.Background(), srv.URL, []byte("report-data")); err != nil {
 		t.Fatalf("GenerateEvidenceContext beside an armTLS Trust Authority client: %v", err)
 	}

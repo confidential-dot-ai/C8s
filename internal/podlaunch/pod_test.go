@@ -140,14 +140,14 @@ func TestNewPodBundleStages(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "bundle")
 	if err := runBundleCmd(t, "new-pod", "--out", dir, "--cluster-id", "cluster-one",
 		"--image-manifest", writeManifest(t, "tdx"), "--name", "p-1",
-		"--ta-address", "cds.example.org:8443", "--ta-image-policy-file", writePodTAPin(t)); err != nil {
+		"--ta-address", "ta.example.org:8443", "--ta-image-policy-file", writePodTAPin(t)); err != nil {
 		t.Fatal(err)
 	}
 	doc, _ := readBundleDocument(t, dir, podDir)
 	if doc.Role != Pod || doc.Node.Name != "p-1" {
 		t.Fatalf("pod document %+v", doc)
 	}
-	if doc.TA.Address != "cds.example.org:8443" || stagedTAPolicy(t, doc).Family != teetypes.FamilySNP {
+	if doc.TA.Address != "ta.example.org:8443" || stagedTAPolicy(t, doc).Family != teetypes.FamilySNP {
 		t.Fatal("Pod bundle lost independent DNS-addressed SNP Trust Authority trust")
 	}
 	requirePresent(t, filepath.Join(dir, podKeyFile))
@@ -160,7 +160,7 @@ func TestNewPodBundleRefusesSNPManifest(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "bundle")
 	err := runBundleCmd(t, "new-pod", "--out", dir, "--cluster-id", "cluster-one",
 		"--image-manifest", writeManifest(t, "snp"), "--name", "p-1",
-		"--ta-address", "cds.example.org:8443", "--ta-image-policy-file", writePodTAPin(t))
+		"--ta-address", "ta.example.org:8443", "--ta-image-policy-file", writePodTAPin(t))
 	if err == nil || !strings.Contains(err.Error(), "TDX-only") {
 		t.Fatalf("got %v, want a TDX-only refusal", err)
 	}

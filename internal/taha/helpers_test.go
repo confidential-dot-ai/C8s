@@ -248,7 +248,7 @@ func testPins(t *testing.T, digests ...byte) *tadecree.PinDocument {
 	images := make([]remote.ImagePin, 0, len(digests))
 	for _, digest := range digests {
 		images = append(images, remote.ImagePin{
-			Name:       fmt.Sprintf("cds-%02x", digest),
+			Name:       fmt.Sprintf("ta-%02x", digest),
 			Digest:     bytes.Repeat([]byte{digest}, refvalues.DigestSize),
 			LaunchFile: []byte(launchFile),
 		})

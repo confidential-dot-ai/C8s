@@ -93,12 +93,12 @@ func newClient(t *testing.T, h http.Handler) routesclient.Client {
 }
 
 func TestNewRejectsURLWithPath(t *testing.T) {
-	for _, u := range []string{"https://cds.example/api", "https://cds.example/routes", "https://cds.example?x=1", "https://cds.example#f", "cds.example", "://", "//cds.example", "ftp://cds.example"} {
+	for _, u := range []string{"https://ta.example/api", "https://ta.example/routes", "https://ta.example?x=1", "https://ta.example#f", "ta.example", "://", "//ta.example", "ftp://ta.example"} {
 		if _, err := routesclient.New(u, http.DefaultClient); err == nil {
 			t.Errorf("New(%q) = nil error, want a refusal", u)
 		}
 	}
-	for _, u := range []string{"https://cds.example", "https://cds.example:8443/"} {
+	for _, u := range []string{"https://ta.example", "https://ta.example:8443/"} {
 		if _, err := routesclient.New(u, http.DefaultClient); err != nil {
 			t.Errorf("New(%q) = %v, want nil", u, err)
 		}

@@ -77,7 +77,7 @@ func newNodeFixture(t *testing.T, containerdConfig string) *nodeFixture {
 		root:              filepath.Join(dir, "host"),
 		bin:               filepath.Join(dir, "bin"),
 		log:               filepath.Join(dir, "calls.log"),
-		taDir:             filepath.Join(dir, "cds"),
+		taDir:             filepath.Join(dir, "ta"),
 		podRoot:           filepath.Join(dir, "pod"),
 		pluginRunning:     filepath.Join(dir, "plugin-running"),
 		clock:             filepath.Join(dir, "clock"),
@@ -95,7 +95,7 @@ func newNodeFixture(t *testing.T, containerdConfig string) *nodeFixture {
 	}
 	writeTestFile(t, n.hostPath(nodeContainerdTOML), containerdConfig)
 	writeTestFile(t, n.clock, "1000\n")
-	writeTestFile(t, filepath.Join(n.taDir, "ta-address"), baseCDSAddress)
+	writeTestFile(t, filepath.Join(n.taDir, "ta-address"), baseTAAddress)
 	writeTestFile(t, filepath.Join(n.taDir, "ta.json"), "{}\n")
 	for name, body := range nodeStubs {
 		stub := "#!/bin/sh\nprintf '%s\\n' \"" + name + " $*\" >> \"$CALLS\"\n" + body + "\n"

@@ -233,7 +233,6 @@ func fakeCrane(digest string) string {
 	return `case "$1" in
 config)
   case "$2" in
-  *cds*) echo '{"config":{"Entrypoint":["/c8s","cds"],"Env":["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin","SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"]}}' ;;
   *armtls-mesh*) echo '{"config":{"Entrypoint":["/app/c8s","armtls-mesh"],"Env":["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"]}}' ;;
   *volumed*) echo '{"config":{"Entrypoint":["/app/c8s","volumed"],"Env":["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"]}}' ;;
   *nginx*) echo '{"config":{"Entrypoint":["/docker-entrypoint.sh"],"Cmd":["nginx","-g","daemon off;"],"Env":["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin","NGINX_VERSION=1.30.7","PKG_RELEASE=1","DYNPKG_RELEASE=1"]}}' ;;

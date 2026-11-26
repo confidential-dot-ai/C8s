@@ -57,7 +57,7 @@ func pinSet(t *testing.T, launchFile []byte, digests ...byte) refvalues.Referenc
 	set := refvalues.ReferenceValues{Family: teetypes.FamilySNP}
 	for _, digest := range digests {
 		set.Images = append(set.Images, remote.ImagePin{
-			Name:       "cds-" + strconv.Itoa(int(digest)),
+			Name:       "ta-" + strconv.Itoa(int(digest)),
 			Digest:     bytes.Repeat([]byte{digest}, refvalues.DigestSize),
 			LaunchFile: launchFile,
 		})
@@ -454,7 +454,7 @@ func TestATAThatRunsAloneIsFollowedByNoOne(t *testing.T) {
 		StateFile: filepath.Join(t.TempDir(), "ta-decree.json"),
 	})
 	if !errors.Is(err, ErrSingleTA) {
-		t.Fatalf("error = %v, want errors.Is ErrSingleCDS", err)
+		t.Fatalf("error = %v, want errors.Is ErrSingleTA", err)
 	}
 }
 

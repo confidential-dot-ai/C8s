@@ -51,7 +51,7 @@ func testPodDocument(t *testing.T, platform string) (Document, *ecdsa.PrivateKey
 		Node:                 Node{Name: "node-one"},
 		PodOperatorPublicKey: pub,
 		TA: cmdsutil.TA{
-			Address:      "cds.example.org:8443",
+			Address:      "ta.example.org:8443",
 			Measurements: testTAPin(t, teetypes.FamilySNP, 2),
 			PinFloor:     9,
 		},
@@ -67,7 +67,7 @@ func testTAPin(t *testing.T, family teetypes.Family, digests int) string {
 	pins := refvalues.ReferenceValues{Family: family}
 	for i := range digests {
 		image := remote.ImagePin{
-			Name:       fmt.Sprintf("cds-smp%d", 4*(i+1)),
+			Name:       fmt.Sprintf("ta-smp%d", 4*(i+1)),
 			Digest:     mustDecodeHex(strings.Repeat(fmt.Sprintf("%02x", 0x50+i), 48)),
 			LaunchFile: []byte(taLaunchFile),
 		}
