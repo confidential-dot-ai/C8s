@@ -70,7 +70,7 @@ The docs call the node shape the CVM mode: `bare-metal` (the measured worker
 image), `gke` or `aks`.
 
 - **TA.** A measured VM outside the cluster (`images/ta-guest`), booted on the
-  configuration `c8s ta config new` writes and pinned by the `cds-pin.json`
+  configuration `c8s ta config new` writes and pinned by the `ta-pin.json`
   written with it. No chart deploys it, and only test harnesses run it as a
   container. It runs as one VM, or as replicas that share
   state over a replicated log and take operator-signed decrees

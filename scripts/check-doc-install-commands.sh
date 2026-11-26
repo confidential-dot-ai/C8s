@@ -53,7 +53,7 @@ c8s ta config new --out "$work/ta" \
   --platform sev-snp \
   --vcpus 1 >/dev/null
 # The doc commands read the pin from the working directory.
-cp "$work/ta/cds-pin.json" "$work/cds-pin.json"
+cp "$work/ta/ta-pin.json" "$work/ta-pin.json"
 
 # A server that refuses instantly, so cluster contact fails fast and
 # deterministically.

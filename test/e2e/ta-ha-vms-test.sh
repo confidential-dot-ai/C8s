@@ -32,7 +32,7 @@ c8s() {
     'keys new '*) return 0 ;;
     'ta config new '*)
       mkdir launch
-      printf 'one measured configuration for three replicas\n' > launch/cds-config.yaml ;;
+      printf 'one measured configuration for three replicas\n' > launch/ta-config.yaml ;;
     *) echo "unexpected c8s call: $*" >&2; return 1 ;;
   esac
 }

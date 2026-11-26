@@ -229,7 +229,7 @@ func replicatedDocument(t *testing.T, operatorPEM []byte) []byte {
 // writeMeasuredDocument stages the document where a launched VM reads it.
 func writeMeasuredDocument(t *testing.T) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "cds-config.yaml")
+	path := filepath.Join(t.TempDir(), "ta-config.yaml")
 	document := measuredDocument(t, cluster{operatorPEM: operatorKeysPEM(t), workloads: map[string]string{"attestation-api": digestA}})
 	if err := os.WriteFile(path, document, 0o600); err != nil {
 		t.Fatal(err)

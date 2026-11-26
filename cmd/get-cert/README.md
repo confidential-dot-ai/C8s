@@ -22,7 +22,7 @@ Obtain a certificate with a DNS SAN:
 ```bash
 get-cert \
   --ta-url https://ta:8443 \
-  --ta-image-policy-file cds-pin.json \
+  --ta-image-policy-file ta-pin.json \
   --attestation-api-url unix:///run/c8s/workload-claims/attestation-api.sock \
   --san api.example.com \
   --cert-path /tls/cert.pem \
@@ -30,7 +30,7 @@ get-cert \
   --ca-path /tls/ca.pem
 ```
 
-The example names the TA and pins it with `cds-pin.json`, the pin
+The example names the TA and pins it with `ta-pin.json`, the pin
 `c8s ta config new` wrote, for a pod whose node supplies neither. The node's
 admission plugin mounts the TA address at `/run/c8s/cds-address` and its pins
 at `/run/c8s/cds-pins.json` into an injected sidecar. get-cert then reads each

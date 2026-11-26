@@ -197,7 +197,7 @@ func boundTAVerify(measurement []byte) localverify.VerifyFunc {
 // to the exact launch file that Trust Authority runs on.
 func writeTAPin(t *testing.T, measurement []byte) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "cds-pin.json")
+	path := filepath.Join(t.TempDir(), "ta-pin.json")
 	document := testutil.TAPinDocument(hex.EncodeToString(measurement), testutil.TALaunchFile)
 	if err := os.WriteFile(path, []byte(document), 0o600); err != nil {
 		t.Fatal(err)

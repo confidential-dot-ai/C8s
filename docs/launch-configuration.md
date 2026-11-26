@@ -55,14 +55,14 @@ document, the decree adds that entry itself:
 
 ```sh
 c8s ta ha decree node-images \
-    --config cds-config.yaml \
+    --config ta-config.yaml \
     --operator-key operator.key \
     --base-version 12 \
     --nodes nodes-v12.json \
     --worker-document worker.yaml \
     --worker-image worker-image.json \
     --to ta-1.example.org \
-    --ta-pin cds-pin.json
+    --ta-pin ta-pin.json
 ```
 
 | Flag | Holds |
@@ -262,7 +262,7 @@ set, which carries the entries of the injected sidecars, the router and volumed
 ```sh
 c8s allowlist components add component-set-<PLATFORM>.json \
   --url https://<TA_ADDRESS> \
-  --image-policy-file cds-pin.json \
+  --image-policy-file ta-pin.json \
   --operator-key operator.key
 ```
 

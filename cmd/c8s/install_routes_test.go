@@ -312,7 +312,7 @@ func TestWriteUpstreamRoutes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			resetCLIState(t)
 			installRoutesOut = filepath.Join(t.TempDir(), "routes.json")
-			installTA = &taPin{path: "cds-pin.json"}
+			installTA = &taPin{path: "ta-pin.json"}
 			installRoutesMaxAge, installRoutesRevision = 2*time.Hour, tc.revision
 			var out bytes.Buffer
 			if err := writeUpstreamRoutes(&out, testUpstream, "https://10.9.9.9:8443", map[string]adoptedEntry{"web": {}}, tc.manifest, tc.cause); err != nil {
@@ -331,8 +331,8 @@ func TestWriteUpstreamRoutes(t *testing.T) {
 				t.Errorf("output leads with put:\n%s", got)
 			}
 			for _, want := range append(tc.want,
-				"--url https://10.9.9.9:8443 --image-policy-file cds-pin.json",
-				"c8s allowlist list --url https://10.9.9.9:8443 --image-policy-file cds-pin.json",
+				"--url https://10.9.9.9:8443 --image-policy-file ta-pin.json",
+				"c8s allowlist list --url https://10.9.9.9:8443 --image-policy-file ta-pin.json",
 			) {
 				if !strings.Contains(got, want) {
 					t.Errorf("output lacks %q:\n%s", want, got)

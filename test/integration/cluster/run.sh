@@ -312,7 +312,7 @@ log "Starting the TA outside the cluster"
 ta_start
 TA_ADDRESS="$(ta_address)"
 # How every install below names that TA.
-TA_INSTALL_FLAGS=(--ta-address "$TA_ADDRESS" --ta-pin "$WORKDIR/ta/cds-pin.json")
+TA_INSTALL_FLAGS=(--ta-address "$TA_ADDRESS" --ta-pin "$WORKDIR/ta/ta-pin.json")
 ta_wait
 pass "TA serves the cluster its own launch binds it to"
 

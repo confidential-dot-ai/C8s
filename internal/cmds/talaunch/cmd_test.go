@@ -112,11 +112,11 @@ func TestNewWritesAConfigurationItsPinBinds(t *testing.T) {
 	if err := run(t, args...); err != nil {
 		t.Fatal(err)
 	}
-	config, err := os.ReadFile(filepath.Join(out, "cds-config.yaml"))
+	config, err := os.ReadFile(filepath.Join(out, "ta-config.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	document, err := os.ReadFile(filepath.Join(out, "cds-pin.json"))
+	document, err := os.ReadFile(filepath.Join(out, "ta-pin.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +174,7 @@ func TestNewLeafDNSPatternReplacesTheDefault(t *testing.T) {
 	if err := run(t, args...); err != nil {
 		t.Fatal(err)
 	}
-	config, err := os.ReadFile(filepath.Join(out, "cds-config.yaml"))
+	config, err := os.ReadFile(filepath.Join(out, "ta-config.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}

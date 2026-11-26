@@ -130,7 +130,7 @@ ta_start() {
     docker run -d \
         --name "$TA_ATTESTATION_CONTAINER" \
         --network "$KIND_NETWORK" \
-        -e "HOST_DATA=$(sha256sum "$WORKDIR/ta/cds-config.yaml" | cut -d' ' -f1)" \
+        -e "HOST_DATA=$(sha256sum "$WORKDIR/ta/ta-config.yaml" | cut -d' ' -f1)" \
         "ghcr.io/confidential-dot-ai/mock-attestation:$IMAGE_TAG" >/dev/null \
         || fail "could not start the TA attestation-api"
     ip=$(docker inspect "$TA_ATTESTATION_CONTAINER" \
@@ -152,7 +152,7 @@ ta_serve() {
         --network "container:$TA_ATTESTATION_CONTAINER" \
         -v "$WORKDIR/ta:/etc/confai:ro" \
         "ghcr.io/confidential-dot-ai/ta:$IMAGE_TAG" \
-        --config=/etc/confai/cds-config.yaml \
+        --config=/etc/confai/ta-config.yaml \
         --attestation-api-url=http://127.0.0.1:8400 \
         --allowlist-db=/tmp/allowlist.db \
         --allowlist-persistent=false \
@@ -236,7 +236,7 @@ pod_cvm_secret() {
     openssl ecparam -genkey -name prime256v1 -noout -out "$dir/pod.key" 2>/dev/null
     echo c8s-it-cloud-token > "$dir/cloud-token"
     jq --arg cluster "$CLUSTER" '.measurements[].launch_file = "schemaVersion: c8s-cds/v1\nclusterID: \($cluster)\n"' \
-        "$WORKDIR/ta/cds-pin.json" > "$dir/ta.json"
+        "$WORKDIR/ta/ta-pin.json" > "$dir/ta.json"
     register="$(printf '%096d' 0)"
     jq -n --arg r "$register" \
         '{version: 1, build: {platform: "tdx"}, tdx: {mrtd: $r, rtmr1: $r, rtmr2: $r}}' > "$dir/manifest.json"

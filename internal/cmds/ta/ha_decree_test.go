@@ -77,10 +77,10 @@ func newOperatorClusterBooting(
 	dir := t.TempDir()
 	c := operatorCluster{
 		config:      config,
-		configPath:  filepath.Join(dir, "cds-config.yaml"),
+		configPath:  filepath.Join(dir, "ta-config.yaml"),
 		keyPath:     filepath.Join(dir, "operator.pem"),
 		operatorPEM: operatorPEM,
-		taPinPath:   filepath.Join(dir, "cds-pin.json"),
+		taPinPath:   filepath.Join(dir, "ta-pin.json"),
 	}
 	writeTestFile(t, c.configPath, c.config)
 	writeTestFile(t, c.keyPath, keyPEM)

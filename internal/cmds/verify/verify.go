@@ -176,7 +176,7 @@ Evidence sources:
                          --observed-serving-cert and --attestation-nonce the
                          receipt was fetched with.
 
-  c8s ta verify https://cds.example.com:8443 --image-policy-file cds-pin.json
+  c8s ta verify https://cds.example.com:8443 --image-policy-file ta-pin.json
   c8s verify https://lb.example.com:443 --kind lb --measurements <sha384-hex> --mesh-ca mesh-ca.pem
 
 A front door serving a CA-issued leaf is verified only with its mesh anchor;

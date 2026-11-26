@@ -377,7 +377,7 @@ func (c *cluster) configure(size shape) {
 		c.t.Fatal(err)
 	}
 	c.config = document
-	c.configPath = filepath.Join(c.dir, "cds-config.yaml")
+	c.configPath = filepath.Join(c.dir, "ta-config.yaml")
 	write(c.t, c.configPath, c.config)
 }
 

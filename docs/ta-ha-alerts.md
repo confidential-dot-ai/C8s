@@ -15,7 +15,7 @@ A status is one replica's own word. `ha status` exits non-zero when the
 replicas do not agree, which is the one check that needs no threshold:
 
 ```sh
-c8s ta ha status --config cds-config.yaml --ta-pin cds-pin.json || alert
+c8s ta ha status --config ta-config.yaml --ta-pin ta-pin.json || alert
 ```
 
 ## What one replica reports

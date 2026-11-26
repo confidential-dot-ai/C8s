@@ -34,7 +34,7 @@ the operator signed before the set its own launch document carries.
 
 ## What the launch file starts and what it fixes
 
-Every replica boots the same `cds-config.yaml`, and clients pin those bytes,
+Every replica boots the same `ta-config.yaml`, and clients pin those bytes,
 so no field of it changes while the cluster lives. Some fields only start the
 cluster; the log rules afterwards.
 
@@ -94,10 +94,10 @@ An operator instructs a cluster by signing a decree with a key the launch file
 pins and posting it to a replica over the attested channel:
 
 ```sh
-c8s ta ha decree pins --config cds-config.yaml --operator-key operator.key \
+c8s ta ha decree pins --config ta-config.yaml --operator-key operator.key \
     --base-version 12 --platform sev-snp --vcpus 4 \
     --image-manifest manifest.json \
-    --to ta-1.example.org --ta-pin cds-pin.json
+    --to ta-1.example.org --ta-pin ta-pin.json
 ```
 
 The decree's signature is its authority, so the channel only has to reach an
@@ -161,7 +161,7 @@ replaced at that address.
 ## Reading the cluster
 
 ```sh
-c8s ta ha status --config cds-config.yaml --ta-pin cds-pin.json
+c8s ta ha status --config ta-config.yaml --ta-pin ta-pin.json
 ```
 
 One attested client per replica, and a summary of what they answered:
@@ -275,7 +275,7 @@ signed into the decree in force, and `c8s ta ha decrees` says which decree
 that is:
 
 ```sh
-c8s ta ha decrees --config cds-config.yaml --ta-pin cds-pin.json
+c8s ta ha decrees --config ta-config.yaml --ta-pin ta-pin.json
 c8s verify https://<ta-address> --kind ta --served-policy-file nodes-v13.json ...
 ```
 

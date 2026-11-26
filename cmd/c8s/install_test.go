@@ -56,9 +56,9 @@ func TestTAPinPreflight(t *testing.T) {
 		wantErr      bool
 	}{
 		{name: "nothing named", wantErr: true},
-		{name: "address and pin", address: "10.9.9.9:8443", pin: "cds-pin.json"},
+		{name: "address and pin", address: "10.9.9.9:8443", pin: "ta-pin.json"},
 		{name: "address alone", address: "10.9.9.9:8443", wantErr: true},
-		{name: "pin alone", pin: "cds-pin.json", wantErr: true},
+		{name: "pin alone", pin: "ta-pin.json", wantErr: true},
 		{name: "ta.address and ta.measurementsConfig", values: []string{named}},
 		{name: "ta.address alone", values: []string{addressOnly}, wantErr: true},
 		{name: "later file keeps the Trust Authority", values: []string{addressOnly, named}},
@@ -1655,7 +1655,7 @@ func TestExemptNamespaceImages(t *testing.T) {
 func TestVerifyHintPrintsRunnableCommands(t *testing.T) {
 	const (
 		taURL = "https://cds.example:8443"
-		taPin = "/run/c8s/cds-pin.json"
+		taPin = "/run/c8s/ta-pin.json"
 	)
 	var buf bytes.Buffer
 	printVerifyHint(&buf, taURL, taPin, "<operator-pub.pem>", "")
@@ -1699,7 +1699,7 @@ func TestVerifyHintPrintsRunnableCommands(t *testing.T) {
 func TestVerifyHintNamesTheStoredRouteDigest(t *testing.T) {
 	const digest = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
 	var buf bytes.Buffer
-	printVerifyHint(&buf, "https://cds.example:8443", "/run/c8s/cds-pin.json", "operator-pub.pem", digest)
+	printVerifyHint(&buf, "https://cds.example:8443", "/run/c8s/ta-pin.json", "operator-pub.pem", digest)
 
 	verifyArgs := hintCommandArgs(t, buf.String(), "c8s verify")
 	i := slices.Index(verifyArgs, "--route-digest")

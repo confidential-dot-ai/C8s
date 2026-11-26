@@ -363,7 +363,7 @@ func TestNewHandlerRefusesANamedVerifier(t *testing.T) {
 // The proxy holds Trust Authority to the configuration it runs on, so a document naming
 // only its image admits any Trust Authority VM.
 func TestNewHandlerRejectsAPinWithoutALaunchBinding(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "cds-pin.json")
+	path := filepath.Join(t.TempDir(), "ta-pin.json")
 	unbound := `{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"cds","measurement":"` + testutil.TestMeasurement + `"}]}`
 	if err := os.WriteFile(path, []byte(unbound), 0o600); err != nil {
 		t.Fatal(err)

@@ -287,7 +287,7 @@ func TestInstallRemovesTheFilesItCreated(t *testing.T) {
 	}
 	for _, tmp := range []struct{ name, path, prefix string }{
 		{"stdin values file", stdinValues, "c8s-install-stdin-"},
-		{"Trust Authority pin copy", pin, "c8s-cds-pin-"},
+		{"Trust Authority pin copy", pin, "c8s-ta-pin-"},
 		{"work directory", filepath.Dir(flagValue(calls[pull], "--untardir")), "c8s-install-"},
 		{"computed values file", files[len(files)-1], "c8s-install-values-"},
 	} {

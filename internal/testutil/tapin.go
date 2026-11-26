@@ -25,7 +25,7 @@ func TAPinDocument(measurement, launchFile string) string {
 // TAPinFile writes TAPinDocument at TestMeasurement and returns its path.
 func TAPinFile(t *testing.T) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "cds-pin.json")
+	path := filepath.Join(t.TempDir(), "ta-pin.json")
 	if err := os.WriteFile(path, []byte(TAPinDocument(TestMeasurement, TALaunchFile)), 0o600); err != nil {
 		t.Fatal(err)
 	}
