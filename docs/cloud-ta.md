@@ -42,9 +42,9 @@ operator key. The TA accepts the field because the check asks only what its
 own verified report proves about the file, and either field proves it byte
 for byte. One check serves every guest: it cannot tell a `ta-guest` VM from
 another, so identify the TDX image with pins on MRTD, RTMR[1] and RTMR[2].
-The operator keys are part of the launch file and are bound with it; what the
-`MRCONFIGID` case does not show is which code read them, and those image pins
-are what establish it.
+The operator keys sit in the document's `ta-config.yaml` entry, so the
+whole-document digest binds them too. What the `MRCONFIGID` case does not
+show is which code read them: the image pins establish the image.
 `c8s verify` can also display `MRCONFIGID`. HA peer and generated Genesis
 pins still bind RTMR[3], so they cannot authenticate an MRCONFIGID-only TA.
 

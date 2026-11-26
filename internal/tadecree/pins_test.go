@@ -192,3 +192,19 @@ func equalImages(got, want refvalues.ReferenceValues) bool {
 	}
 	return true
 }
+
+// A decree names its launch file by digest alone, so its entries cannot say
+// which field binds it: an entry reading MRCONFIGID is refused when the
+// decree is checked, before any reader binds a launch file to it.
+func TestDecreePinsCannotReadTheLaunchFileFromMRCONFIGID(t *testing.T) {
+	register := func(b string) string { return strings.Repeat(b, 48) }
+	entry := `{"schema_version":"3","tee":"tdx","measurements":[{"name":"ta","mrtd":"` + register("aa") +
+		`","rtmr":[null,"` + register("bb") + `","` + register("cc") + `",""],"launch_file_field":"init_data"}]}`
+	pins := PinDocument{
+		Images:           ElidedImages{document{json: []byte(entry)}},
+		LaunchFileSHA256: strings.Repeat("ab", sha256.Size),
+	}
+	if err := pins.check(); err == nil || !strings.Contains(err.Error(), "launch_file_field") {
+		t.Fatalf("check = %v, want a refusal naming launch_file_field", err)
+	}
+}
