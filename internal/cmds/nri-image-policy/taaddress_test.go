@@ -37,7 +37,7 @@ func renderInTempDir(t *testing.T) {
 // cluster trusts, as the installer copies it beside the plugin's config.
 func installedTAAddress(t *testing.T, address string) allowlistConfig {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "cds-address")
+	path := filepath.Join(t.TempDir(), "ta-address")
 	if err := os.WriteFile(path, []byte(address+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +218,7 @@ func TestNoInjectedClientsNoAddress(t *testing.T) {
 func TestTAAddressIsMountedIntoCredentialSidecars(t *testing.T) {
 	p := &plugin{
 		cfg:       &config{},
-		taAddress: "/var/run/nri-image-policy/cds-address",
+		taAddress: "/var/run/nri-image-policy/ta-address",
 	}
 	pod := &api.PodSandbox{Annotations: map[string]string{workloadclaims.AnnotationInjected: "true"}}
 	mount := addressMount(t, mustCredentialMounts(t, p, pod, &api.Container{Name: workloadclaims.CertContainerName}))
@@ -239,7 +239,7 @@ func TestTAAddressIsMountedIntoCredentialSidecars(t *testing.T) {
 func TestTAAddressIsMountedIntoTheRoutingRole(t *testing.T) {
 	p := &plugin{
 		cfg:       &config{},
-		taAddress: "/var/run/nri-image-policy/cds-address",
+		taAddress: "/var/run/nri-image-policy/ta-address",
 	}
 	pod := &api.PodSandbox{Namespace: routerNamespace}
 	routing := &api.Container{Name: workloadclaims.AttestContainerName, User: &api.User{Uid: workloadclaims.UpstreamUID}}
@@ -270,11 +270,11 @@ func TestTAAddressIsMountedIntoTheRoutingRole(t *testing.T) {
 func addressMount(t *testing.T, adjustment *api.ContainerAdjustment) *api.Mount {
 	t.Helper()
 	for _, m := range adjustment.GetMounts() {
-		if m.GetDestination() == workloadclaims.CDSAddressPath {
+		if m.GetDestination() == workloadclaims.TAAddressPath {
 			return m
 		}
 	}
-	t.Fatalf("no mount at %s: %+v", workloadclaims.CDSAddressPath, adjustment.GetMounts())
+	t.Fatalf("no mount at %s: %+v", workloadclaims.TAAddressPath, adjustment.GetMounts())
 	return nil
 }
 

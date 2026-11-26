@@ -78,7 +78,7 @@ func TestChartRouterNodeMountAdmission(t *testing.T) {
 }
 
 func TestRouterNodePolicyMountsRefuseForeignAndWritableSources(t *testing.T) {
-	for _, destination := range []string{workloadclaims.CDSPinsPath, workloadclaims.CDSAddressPath} {
+	for _, destination := range []string{workloadclaims.TAPinsPath, workloadclaims.TAAddressPath} {
 		for _, change := range []string{"foreign source", "writable", "wrong identity"} {
 			t.Run(destination+"/"+change, func(t *testing.T) {
 				p := routerNodeMountPlugin(t)
@@ -151,7 +151,7 @@ func TestRouterNodeMountEligibilityDoesNotAuthorizeLaunch(t *testing.T) {
 					t.Fatal("node mount eligibility admitted unapproved launch at creation")
 				}
 				mounts := routerNodeMountObserver(p).Observe(pod, ctr)
-				address := onlyMountAt(t, mounts, workloadclaims.CDSAddressPath)
+				address := onlyMountAt(t, mounts, workloadclaims.TAAddressPath)
 				if address.Class != allowlist.MountPlatform {
 					t.Fatalf("matching node client did not retain platform address classification: %+v", address)
 				}

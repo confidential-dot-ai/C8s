@@ -331,7 +331,7 @@ func runPodBootstrap(t *testing.T, cfg *config, root string, podKey []byte, base
 		})
 	}
 	waitHealth(0)
-	for _, destination := range []string{workloadclaims.SidecarSocketDir, workloadclaims.CDSPinsPath, workloadclaims.CDSAddressPath} {
+	for _, destination := range []string{workloadclaims.SidecarSocketDir, workloadclaims.TAPinsPath, workloadclaims.TAAddressPath} {
 		ctr := podBootstrapContainer(pod, "forged-mount", "app", baseDigest)
 		ctr.Mounts = append(ctr.Mounts, readOnlyBind(cfg.WorkloadClaims.SocketDir, destination))
 		if _, err := nri.CreateContainer(ctx, &api.CreateContainerRequest{Pod: pod, Container: ctr}); err == nil {

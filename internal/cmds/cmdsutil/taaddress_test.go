@@ -60,7 +60,7 @@ func TestResolveTAAddress(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "cds-address")
+			path := filepath.Join(t.TempDir(), "ta-address")
 			if tc.mounted != "" {
 				if err := os.WriteFile(path, []byte(tc.mounted), 0o644); err != nil {
 					t.Fatal(err)
@@ -120,7 +120,7 @@ func TestResolveTAURLPrefersTheNodesEndpoint(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "cds-address")
+			path := filepath.Join(t.TempDir(), "ta-address")
 			if tc.mounted != "" {
 				if err := os.WriteFile(path, []byte(tc.mounted), 0o644); err != nil {
 					t.Fatal(err)

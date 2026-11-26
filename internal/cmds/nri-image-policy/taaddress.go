@@ -14,7 +14,7 @@ import (
 
 // renderedTAAddressName is the endpoint document in the plugin's runtime
 // directory (renderNodeDocument).
-const renderedTAAddressName = "cds-address"
+const renderedTAAddressName = "ta-address"
 
 // prepareCDSAddress writes the Trust Authority endpoint this node's injected credential
 // clients dial, before any container can be created.
@@ -23,7 +23,7 @@ func (p *plugin) prepareCDSAddress() error {
 		return nil
 	}
 	if p.cfg.taAddress == "" {
-		return fmt.Errorf("nothing names the Trust Authority this node reaches: a measured config names it in allowlist.pull.url, and an install in allowlist.pull.cds_address_file")
+		return fmt.Errorf("nothing names the Trust Authority this node reaches: a measured config names it in allowlist.pull.url, and an install in allowlist.pull.ta_address_file")
 	}
 	path, err := renderNodeDocument(renderedTAAddressName, cmdsutil.FormatTAAddress(p.cfg.taAddress))
 	if err != nil {
@@ -53,7 +53,7 @@ func loadTAAddress(c pullConfig) (string, error) {
 		return "", err
 	}
 	if !mounted {
-		return "", fmt.Errorf("allowlist.pull.cds_address_file %s: no such file", c.TAAddressFile)
+		return "", fmt.Errorf("allowlist.pull.ta_address_file %s: no such file", c.TAAddressFile)
 	}
 	return address, nil
 }

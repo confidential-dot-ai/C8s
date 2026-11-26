@@ -16,7 +16,7 @@ import (
 
 // decreeStateName carries the decree across a restart of the plugin; a reboot
 // starts from the launch document again.
-const decreeStateName = "cds-decree.json"
+const decreeStateName = "ta-decree.json"
 
 // followedPins is the node's Trust Authority pin set as the cluster's pin decrees move
 // it. Each change is written into the policy the plugin mounts into its

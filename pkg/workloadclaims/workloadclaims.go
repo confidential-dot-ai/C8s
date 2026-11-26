@@ -90,32 +90,32 @@ const (
 	MemberCAPath  = MemberCertDir + "/ca.crt"
 )
 
-// CDSPinsPath is where an injected credential client reads the Trust Authority attestation
+// TAPinsPath is where an injected credential client reads the Trust Authority attestation
 // policy it holds the Trust Authority to. Compiled for the same reason as the socket path:
 // the node bind-mounts its own policy there, so neither the pod nor the control
 // plane can name another source (see cmdsutil.ResolveCDSPins). The path is the
 // enforcer's alone — a chart-rendered client reads the node config it mounts
 // itself, and keeps its own policy flag.
-const CDSPinsPath = "/run/c8s/cds-pins.json"
+const TAPinsPath = "/run/c8s/ta-pins.json"
 
-// RouterCDSPinsPath is where the router's route-manifest poller reads the same
+// RouterTAPinsPath is where the router's route-manifest poller reads the same
 // policy. The router runs on the upstream identity, so the credential
 // clients' path would hand it their trust root.
-const RouterCDSPinsPath = "/run/c8s/router-cds-pins.json"
+const RouterTAPinsPath = "/run/c8s/router-ta-pins.json"
 
 // AttestationAPISocket is the node's own attestation-api as an injected
 // credential client sees it: the socket in the directory the NRI plugin
 // mounts. Compiled for the same reason as the paths above — the verifier
-// decides whether the Trust Authority a client dials satisfies CDSPinsPath, so a client
+// decides whether the Trust Authority a client dials satisfies TAPinsPath, so a client
 // the node pins reaches no other one (see cmdsutil.RequireNodeVerifier).
 const AttestationAPISocket = SidecarSocketDir + "/attestation-api.sock"
 
-// CDSAddressPath is where an injected credential client reads the Trust Authority endpoint
+// TAAddressPath is where an injected credential client reads the Trust Authority endpoint
 // it dials, as <addr>:<port>. Compiled for the same reason as the pins: the
 // node writes the address its pod ruleset admits for the credential role, so a
 // client reaches the one Trust Authority it is permitted to reach and never an address the
 // control plane names (see cmdsutil.ResolveCDSEndpoint).
-const CDSAddressPath = "/run/c8s/cds-address"
+const TAAddressPath = "/run/c8s/ta-address"
 
 // AnnotationInjected is stamped on a pod by the mutating webhook after
 // injection; the inventory's NRI plugin mounts its socket directory only under

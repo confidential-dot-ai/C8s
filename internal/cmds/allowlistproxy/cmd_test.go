@@ -27,8 +27,8 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		panic(err)
 	}
-	nodeAddressPath = filepath.Join(dir, "cds-address")
-	nodePinsPath = filepath.Join(dir, "cds-pins.json")
+	nodeAddressPath = filepath.Join(dir, "ta-address")
+	nodePinsPath = filepath.Join(dir, "ta-pins.json")
 	nodeVerifier = filepath.Join(dir, "attestation-api.sock")
 	code := m.Run()
 	os.RemoveAll(dir)
@@ -244,11 +244,11 @@ func mountedByTheNode(t *testing.T, address, pins, verifier string) {
 func nodeTAFiles(t *testing.T) (address, pins, verifier string) {
 	t.Helper()
 	dir := t.TempDir()
-	address = filepath.Join(dir, "cds-address")
+	address = filepath.Join(dir, "ta-address")
 	if err := os.WriteFile(address, cmdsutil.FormatTAAddress("cds.example.org:30808"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	pins = filepath.Join(dir, "cds-pins.json")
+	pins = filepath.Join(dir, "ta-pins.json")
 	policy := testutil.TAPinDocument(testutil.TestMeasurement, testutil.TALaunchFile)
 	if err := os.WriteFile(pins, []byte(policy), 0o600); err != nil {
 		t.Fatal(err)
@@ -256,7 +256,7 @@ func nodeTAFiles(t *testing.T) (address, pins, verifier string) {
 	return address, pins, filepath.Join(dir, "attestation-api.sock")
 }
 
-// The node addresses this proxy's Trust Authority (workloadclaims.CDSAddressPath). Where
+// The node addresses this proxy's Trust Authority (workloadclaims.TAAddressPath). Where
 // no node does, --ta-url is the only remaining source, and its absence is a
 // refusal.
 func TestNewHandlerRequiresTAURLWithoutNodeEndpoint(t *testing.T) {

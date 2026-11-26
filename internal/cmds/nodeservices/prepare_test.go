@@ -85,7 +85,7 @@ func TestPrepareNamesTheExternalTA(t *testing.T) {
 	if roles[1].Port != 8443 {
 		t.Errorf("credential role port = %d, want the port the document's Trust Authority serves on", roles[1].Port)
 	}
-	published, err := refvalues.Load(filepath.Join(root, PublicDir, "cds.json"))
+	published, err := refvalues.Load(filepath.Join(root, PublicDir, "ta.json"))
 	if err != nil {
 		t.Fatal(err)
 	}

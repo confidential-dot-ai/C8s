@@ -36,7 +36,7 @@ func TestNewPodBundleRefuses(t *testing.T) {
 			o.TAImagePolicyPath = filepath.Join(t.TempDir(), "absent.json")
 		}, "--ta-image-policy-file"},
 		{"Trust Authority policy is not a pin document", func(t *testing.T, o *PodBundleOptions) {
-			o.TAImagePolicyPath = writeFile(t, "cds.json", "not a policy")
+			o.TAImagePolicyPath = writeFile(t, "ta.json", "not a policy")
 		}, "cds.measurements"},
 		{"missing image manifest", func(t *testing.T, o *PodBundleOptions) {
 			o.ManifestPath = filepath.Join(t.TempDir(), "absent.json")

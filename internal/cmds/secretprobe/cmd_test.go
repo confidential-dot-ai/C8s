@@ -523,7 +523,7 @@ func (f *fakeTA) fetched() int {
 // the test's duration.
 func writeNodePins(t *testing.T) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "cds-pins.json")
+	path := filepath.Join(t.TempDir(), "ta-pins.json")
 	document := testutil.TAPinDocument(testutil.TestMeasurement, testutil.TALaunchFile)
 	if err := os.WriteFile(path, []byte(document), 0o644); err != nil {
 		t.Fatal(err)

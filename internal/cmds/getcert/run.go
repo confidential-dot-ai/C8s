@@ -216,7 +216,7 @@ func taHTTPClient(ctx context.Context, cfg config) (*http.Client, error) {
 }
 
 func taPins(ctx context.Context, cfg config) (armtls.PinSource, error) {
-	return cmdsutil.ClientTAPins(ctx, workloadclaims.CDSPinsPath,
+	return cmdsutil.ClientTAPins(ctx, workloadclaims.TAPinsPath,
 		cmdsutil.ImagePolicySource{
 			File: cfg.MeasurementsConfig,
 			JSON: cfg.MeasurementsConfigJSON,
@@ -238,7 +238,7 @@ func run(ctx context.Context, cfg config) error {
 	if err := resolveDiscoveryPublicTLSHostname(&cfg); err != nil {
 		return err
 	}
-	taURL, fromNode, err := cmdsutil.ResolveTAURL(workloadclaims.CDSAddressPath, cfg.TAURL)
+	taURL, fromNode, err := cmdsutil.ResolveTAURL(workloadclaims.TAAddressPath, cfg.TAURL)
 	if err != nil {
 		return err
 	}
@@ -537,7 +537,7 @@ func validateConfig(cfg config) error {
 	if err := cmdsutil.ValidateAttestationAPIURL("--attestation-api-url", cfg.AttestationApiURL); err != nil {
 		return err
 	}
-	if err := cmdsutil.RequireNodeVerifier(workloadclaims.CDSPinsPath, workloadclaims.AttestationAPISocket, cfg.AttestationApiURL); err != nil {
+	if err := cmdsutil.RequireNodeVerifier(workloadclaims.TAPinsPath, workloadclaims.AttestationAPISocket, cfg.AttestationApiURL); err != nil {
 		return err
 	}
 	if cfg.SAN != "" {

@@ -367,11 +367,11 @@ func takesNodeMount(pod *api.PodSandbox, ctr *api.Container, destination string)
 	switch destination {
 	case workloadclaims.SidecarSocketDir:
 		return injected
-	case workloadclaims.CDSPinsPath:
+	case workloadclaims.TAPinsPath:
 		return injected || holdsCredentialsIdentity(ctr)
-	case workloadclaims.RouterCDSPinsPath:
+	case workloadclaims.RouterTAPinsPath:
 		return fetchesRouteManifest(pod, ctr)
-	case workloadclaims.CDSAddressPath:
+	case workloadclaims.TAAddressPath:
 		return injected || holdsCredentialsIdentity(ctr) || fetchesRouteManifest(pod, ctr)
 	case workloadclaims.ClientDocumentPath:
 		// Only a Pod CVM with a client document has a source for it.
@@ -384,9 +384,9 @@ func takesNodeMount(pod *api.PodSandbox, ctr *api.Container, destination string)
 func isInjectedNodeMount(pod *api.PodSandbox, ctr *api.Container, m *api.Mount, own enforcerMounts) bool {
 	source := map[string]string{
 		workloadclaims.SidecarSocketDir:   own.socketDir,
-		workloadclaims.CDSPinsPath:        own.taPins,
-		workloadclaims.RouterCDSPinsPath:  own.taPins,
-		workloadclaims.CDSAddressPath:     own.taAddress,
+		workloadclaims.TAPinsPath:         own.taPins,
+		workloadclaims.RouterTAPinsPath:   own.taPins,
+		workloadclaims.TAAddressPath:      own.taAddress,
 		workloadclaims.ClientDocumentPath: own.clientDocument,
 	}[m.GetDestination()]
 	return source != "" && m.GetSource() == source && endsReadOnly(m) && takesNodeMount(pod, ctr, m.GetDestination())

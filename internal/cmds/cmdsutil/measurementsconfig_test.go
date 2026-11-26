@@ -190,7 +190,7 @@ func TestImagePolicyFlagsRejectRemovedAliases(t *testing.T) {
 // writeTAPins stages a Trust Authority pin document where the enforcer mounts one.
 func writeTAPins(t *testing.T, document string) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "cds-pins.json")
+	path := filepath.Join(t.TempDir(), "ta-pins.json")
 	if err := os.WriteFile(path, []byte(document), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -263,7 +263,7 @@ func TestResolveTAPinsFallsBackToTheArgument(t *testing.T) {
 // pod's log names the Trust Authority image it will accept.
 func TestClientTAPinsLogsWhatItResolved(t *testing.T) {
 	document := testutil.TAPinDocument(testutil.TestMeasurement, testutil.TALaunchFile)
-	mounted := filepath.Join(t.TempDir(), "cds-pins.json")
+	mounted := filepath.Join(t.TempDir(), "ta-pins.json")
 	if err := os.WriteFile(mounted, []byte(document), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -311,7 +311,7 @@ func TestClientTAPinsLogsWhatItResolved(t *testing.T) {
 // only verifier.
 func TestRequireNodeVerifierRefusesANamedVerifier(t *testing.T) {
 	dir := t.TempDir()
-	policy := filepath.Join(dir, "cds-pins.json")
+	policy := filepath.Join(dir, "ta-pins.json")
 	socket := filepath.Join(dir, "attestation-api.sock")
 	for _, path := range []string{policy, socket} {
 		if err := os.WriteFile(path, nil, 0o644); err != nil {
@@ -344,7 +344,7 @@ func TestRequireNodeVerifierRefusesANamedVerifier(t *testing.T) {
 // node serving no attestation-api of its own hands out no verifier.
 func TestRequireNodeVerifierFallsBackToTheArgument(t *testing.T) {
 	dir := t.TempDir()
-	policy := filepath.Join(dir, "cds-pins.json")
+	policy := filepath.Join(dir, "ta-pins.json")
 	socket := filepath.Join(dir, "attestation-api.sock")
 	if err := os.WriteFile(policy, nil, 0o644); err != nil {
 		t.Fatal(err)
@@ -370,7 +370,7 @@ func TestResolveTAPinsFailsOnAnUnreadablePolicy(t *testing.T) {
 		t.Skip("root reads through a 0000 directory")
 	}
 
-	_, _, err := ResolveTAPins(t.Context(), filepath.Join(dir, "cds-pins.json"), ImagePolicySource{})
+	_, _, err := ResolveTAPins(t.Context(), filepath.Join(dir, "ta-pins.json"), ImagePolicySource{})
 	if err == nil {
 		t.Fatal("ResolveCDSPins accepted an unreadable policy path")
 	}

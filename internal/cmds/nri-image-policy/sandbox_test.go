@@ -77,9 +77,9 @@ func injectedPod(p *api.PodSandbox) {
 func injectedPinsMount(c *api.Container) {
 	c.Name = workloadclaims.CertContainerName
 	c.Mounts = append(c.Mounts, &api.Mount{
-		Destination: workloadclaims.CDSPinsPath,
+		Destination: workloadclaims.TAPinsPath,
 		Type:        "bind",
-		Source:      "/run/c8s-node/cds.json",
+		Source:      "/run/c8s-node/ta.json",
 		Options:     []string{"rbind", "ro", "rprivate", "nosuid", "nodev", "noexec"},
 	})
 }
@@ -89,9 +89,9 @@ func injectedPinsMount(c *api.Container) {
 func injectedAddressMount(c *api.Container) {
 	c.Name = workloadclaims.CertContainerName
 	c.Mounts = append(c.Mounts, &api.Mount{
-		Destination: workloadclaims.CDSAddressPath,
+		Destination: workloadclaims.TAAddressPath,
 		Type:        "bind",
-		Source:      "/var/run/nri-image-policy/cds-address",
+		Source:      "/var/run/nri-image-policy/ta-address",
 		Options:     []string{"rbind", "ro", "rprivate", "nosuid", "nodev", "noexec"},
 	})
 }
@@ -132,14 +132,14 @@ func TestSandboxViolations(t *testing.T) {
 			pod:       injectedPod,
 			ctr:       injectedPinsMount,
 			ownSocket: "/var/run/nri-image-policy",
-			ownPins:   "/run/c8s-node/cds.json",
+			ownPins:   "/run/c8s-node/ta.json",
 		},
 		{
 			name:       "the node's own Trust Authority address mount",
 			pod:        injectedPod,
 			ctr:        injectedAddressMount,
 			ownSocket:  "/var/run/nri-image-policy",
-			ownAddress: "/var/run/nri-image-policy/cds-address",
+			ownAddress: "/var/run/nri-image-policy/ta-address",
 		},
 		{
 			name: "a Trust Authority address mount from a source the plugin does not own",
@@ -149,7 +149,7 @@ func TestSandboxViolations(t *testing.T) {
 				c.Mounts[len(c.Mounts)-1].Source = "/tmp/attacker-cds-address"
 			},
 			ownSocket:  "/var/run/nri-image-policy",
-			ownAddress: "/var/run/nri-image-policy/cds-address",
+			ownAddress: "/var/run/nri-image-policy/ta-address",
 			want:       "host path bind mount",
 		},
 		{
@@ -160,7 +160,7 @@ func TestSandboxViolations(t *testing.T) {
 				c.Mounts[len(c.Mounts)-1].Source = "/tmp/attacker-pins.json"
 			},
 			ownSocket: "/var/run/nri-image-policy",
-			ownPins:   "/run/c8s-node/cds.json",
+			ownPins:   "/run/c8s-node/ta.json",
 			want:      "host path bind mount",
 		},
 		{
@@ -171,7 +171,7 @@ func TestSandboxViolations(t *testing.T) {
 				c.Mounts[len(c.Mounts)-1].Options = []string{"rbind", "rw"}
 			},
 			ownSocket: "/var/run/nri-image-policy",
-			ownPins:   "/run/c8s-node/cds.json",
+			ownPins:   "/run/c8s-node/ta.json",
 			want:      "host path bind mount",
 		},
 		{
@@ -182,7 +182,7 @@ func TestSandboxViolations(t *testing.T) {
 				c.Name = "app"
 			},
 			ownSocket: "/var/run/nri-image-policy",
-			ownPins:   "/run/c8s-node/cds.json",
+			ownPins:   "/run/c8s-node/ta.json",
 			want:      "host path bind mount",
 		},
 		{

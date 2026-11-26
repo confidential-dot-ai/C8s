@@ -31,11 +31,11 @@ func TestChartHandsTheNodeItsTAAddress(t *testing.T) {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
 	data := renderedConfigMap(t, out, "c8s-measurements").Data
-	if data["cds.json"] == "" {
+	if data["ta.json"] == "" {
 		t.Fatal("the Trust Authority pin reaches no node")
 	}
-	if got := data["cds-address"]; got != baseCDSAddress {
-		t.Fatalf("cds-address = %q, want %q", got, baseCDSAddress)
+	if got := data["ta-address"]; got != baseCDSAddress {
+		t.Fatalf("ta-address = %q, want %q", got, baseCDSAddress)
 	}
 }
 

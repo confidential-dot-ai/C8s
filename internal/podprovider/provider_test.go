@@ -56,10 +56,10 @@ func fixtureConfig(t *testing.T) *Config {
 	}
 	write("launch.key", pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: private}))
 	write("token", []byte("test-provider-token\n"))
-	write("cds.json", providerTAPolicy(t, []byte("schemaVersion: c8s-cds/v1\nclusterID: test-cluster\n")))
+	write("ta.json", providerTAPolicy(t, []byte("schemaVersion: c8s-cds/v1\nclusterID: test-cluster\n")))
 	write("manifest.json", []byte(`{"version":1,"build":{"platform":"tdx"},"tdx":{"mrtd":"`+strings.Repeat("11", 48)+`","rtmr1":"`+strings.Repeat("22", 48)+`","rtmr2":"`+strings.Repeat("33", 48)+`"}}`))
 	write("workloads.json", []byte(`{"schema":"c8s.allowlist/v1","workloads":{"app":{"containers":[{"digest":"sha256:`+strings.Repeat("a", 64)+`","command":{"policy":"any"},"args":{"policy":"any"}}]}}}`))
-	cfg := Config{ProviderID: "test-provider", NodeName: "pod-cvm-node", Namespace: "provider-system", CloudURL: "https://cloud.example", CloudTokenFile: "token", Image: "c8s-pod@2026.10.26-1", ImageManifestFile: "manifest.json", LaunchKeyFile: "launch.key", TAAddress: "cds.example.test:8443", TAImagePolicyFile: "cds.json", WorkloadsFile: "workloads.json", ClusterID: "test-cluster", Size: "c1.2x", Location: "eu", VCPUs: 2, MemoryMiB: 8192, ReservedMemoryMiB: 1024, MaxPods: 10, MeshPeers: []string{"203.0.113.2:9443"}}
+	cfg := Config{ProviderID: "test-provider", NodeName: "pod-cvm-node", Namespace: "provider-system", CloudURL: "https://cloud.example", CloudTokenFile: "token", Image: "c8s-pod@2026.10.26-1", ImageManifestFile: "manifest.json", LaunchKeyFile: "launch.key", TAAddress: "cds.example.test:8443", TAImagePolicyFile: "ta.json", WorkloadsFile: "workloads.json", ClusterID: "test-cluster", Size: "c1.2x", Location: "eu", VCPUs: 2, MemoryMiB: 8192, ReservedMemoryMiB: 1024, MaxPods: 10, MeshPeers: []string{"203.0.113.2:9443"}}
 	b, err := json.Marshal(cfg)
 	if err != nil {
 		t.Fatal(err)

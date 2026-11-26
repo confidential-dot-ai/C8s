@@ -12,7 +12,7 @@ import (
 
 // withTAPin names pin as the Trust Authority pin file of a boot config document.
 func withTAPin(document, pin string) string {
-	return strings.Replace(document, "  pull:\n", "  pull:\n    cds_measurements_config: "+pin+"\n", 1)
+	return strings.Replace(document, "  pull:\n", "  pull:\n    ta_measurements_config: "+pin+"\n", 1)
 }
 
 // withSyslog has a boot config document log to a socket that is listened on.

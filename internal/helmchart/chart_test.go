@@ -590,8 +590,8 @@ func TestChartLeavesTheInjectedTAEndpointToTheNode(t *testing.T) {
 	assertContainerNoArgPrefix(t, "operator", renderedOperatorArgs(t, out), "--ta-url=")
 	// The node reads the endpoint from the file the installer puts beside its
 	// config and hands it to every injected client; no component names it.
-	if got := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker").Allowlist.Pull.TAAddressFile; got != "/etc/nri/conf.d/cds-address" {
-		t.Fatalf("allowlist.pull.cds_address_file = %q, want the file beside the boot config", got)
+	if got := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker").Allowlist.Pull.TAAddressFile; got != "/etc/nri/conf.d/ta-address" {
+		t.Fatalf("allowlist.pull.ta_address_file = %q, want the file beside the boot config", got)
 	}
 	iterateManifests(t, out, func(doc []byte) bool {
 		var meta docMeta
@@ -615,10 +615,10 @@ func TestChartNRIImagePolicyUsesPullMode(t *testing.T) {
 	workerCfg := renderedNRIBootConfig(t, out, "c8s-nri-image-policy-worker")
 	// The Trust Authority reaches the plugin as two paths beside its config: no argument
 	// of the installer names the address or the pin it is served by.
-	if got, want := workerCfg.Allowlist.Pull.TAAddressFile, "/etc/nri/conf.d/cds-address"; got != want {
+	if got, want := workerCfg.Allowlist.Pull.TAAddressFile, "/etc/nri/conf.d/ta-address"; got != want {
 		t.Fatalf("worker Trust Authority address file = %q, want %q", got, want)
 	}
-	if got, want := workerCfg.Allowlist.Pull.TAMeasurementsConfig, "/etc/nri/conf.d/cds.json"; got != want {
+	if got, want := workerCfg.Allowlist.Pull.TAMeasurementsConfig, "/etc/nri/conf.d/ta.json"; got != want {
 		t.Fatalf("worker Trust Authority pin = %q, want %q", got, want)
 	}
 	if workerCfg.Allowlist.Pull.URL != "" {
@@ -1574,7 +1574,7 @@ func TestChartRendersRouterAttestSidecar(t *testing.T) {
 	for _, banned := range []string{"--upstream", "--attest-endpoints", "--operator-keys-file", "--publish-routes", "--ta-url", "--mesh-identity-"} {
 		assertContainerNoArgPrefix(t, "cds-attest", sidecar.Args, banned)
 	}
-	assertContainerHasArg(t, "cds-attest", sidecar.Args, "--image-policy-file=/mnt/c8s-data/measurements/cds.json")
+	assertContainerHasArg(t, "cds-attest", sidecar.Args, "--image-policy-file=/mnt/c8s-data/measurements/ta.json")
 	if got := len(deployment.Spec.Template.Spec.Containers); got != 3 {
 		t.Fatalf("router should have nginx + cds-attest + allowlist-proxy, got %d containers", got)
 	}
@@ -1656,8 +1656,8 @@ func TestChartRouterTAPins(t *testing.T) {
 		want    string
 		mounted bool
 	}{
-		{name: "an external Trust Authority", chart: chartRender{render: helmTemplate}, want: "--image-policy-file=/mnt/c8s-data/measurements/cds.json", mounted: true},
-		{name: "a worker", chart: chartRender{render: helmTemplateWorker}, want: "--image-policy-file=/run/c8s-node/cds.json"},
+		{name: "an external Trust Authority", chart: chartRender{render: helmTemplate}, want: "--image-policy-file=/mnt/c8s-data/measurements/ta.json", mounted: true},
+		{name: "a worker", chart: chartRender{render: helmTemplateWorker}, want: "--image-policy-file=/run/c8s-node/ta.json"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out, err := tc.chart.render(t, tc.chart.args...)
@@ -3109,8 +3109,8 @@ type nriRuntimeConfig struct {
 	Allowlist struct {
 		Pull struct {
 			URL                  string `yaml:"url"`
-			TAAddressFile        string `yaml:"cds_address_file"`
-			TAMeasurementsConfig string `yaml:"cds_measurements_config"`
+			TAAddressFile        string `yaml:"ta_address_file"`
+			TAMeasurementsConfig string `yaml:"ta_measurements_config"`
 			Interval             string `yaml:"interval"`
 			Timeout              string `yaml:"timeout"`
 			AttestationApiURL    string `yaml:"attestation_api_url"`
@@ -3710,8 +3710,8 @@ type installerBootConfig struct {
 		Base pkgallowlist.Allowlist `yaml:"base"`
 		Pull struct {
 			URL                  string `yaml:"url"`
-			TAAddressFile        string `yaml:"cds_address_file"`
-			TAMeasurementsConfig string `yaml:"cds_measurements_config"`
+			TAAddressFile        string `yaml:"ta_address_file"`
+			TAMeasurementsConfig string `yaml:"ta_measurements_config"`
 		} `yaml:"pull"`
 		Push struct {
 			PersistPath string `yaml:"persist_path"`
@@ -3793,7 +3793,7 @@ func TestChartBootConfigParsesAsPluginYAML(t *testing.T) {
 	// never a push block. Asserting both confirms the typed decode landed on
 	// the boot config document, not just that some YAML parsed.
 	if wl := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker").Allowlist; wl.Pull.TAAddressFile == "" || wl.Push.PersistPath != "" {
-		t.Errorf("worker boot config should configure pull, not push: pull.cds_address_file=%q push.persist_path=%q", wl.Pull.TAAddressFile, wl.Push.PersistPath)
+		t.Errorf("worker boot config should configure pull, not push: pull.ta_address_file=%q push.persist_path=%q", wl.Pull.TAAddressFile, wl.Push.PersistPath)
 	}
 }
 
@@ -3969,7 +3969,7 @@ func bootConfigAsStagedOnANode(t *testing.T, body []byte) []byte {
 	if named == "" {
 		t.Fatalf("boot config names no Trust Authority address file\n%s", body)
 	}
-	path := filepath.Join(t.TempDir(), "cds-address")
+	path := filepath.Join(t.TempDir(), "ta-address")
 	if err := os.WriteFile(path, []byte(baseCDSAddress), 0o600); err != nil {
 		t.Fatalf("stage the Trust Authority address file: %v", err)
 	}

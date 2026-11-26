@@ -98,11 +98,11 @@ pin, which it copies to the node beside the boot config that names both paths.
 {{- end }}
 
 {{- define "nri-image-policy.hostTAAddressPath" -}}
-{{ printf "%s/cds-address" .Values.nriImagePolicy.hostPaths.configDir }}
+{{ printf "%s/ta-address" .Values.nriImagePolicy.hostPaths.configDir }}
 {{- end }}
 
 {{- define "nri-image-policy.hostTAPinPath" -}}
-{{ printf "%s/cds.json" .Values.nriImagePolicy.hostPaths.configDir }}
+{{ printf "%s/ta.json" .Values.nriImagePolicy.hostPaths.configDir }}
 {{- end }}
 
 {{/*
@@ -139,7 +139,7 @@ limits:
   mountPath: /host{{ include "nri-image-policy.containerdConfigDir" . }}
 - name: host-runtime-dir
   mountPath: /host{{ include "nri-image-policy.runtimeDir" . }}
-- name: cds-policy
+- name: ta-policy
   mountPath: {{ include "nri-image-policy.taPolicyMount" . }}
   readOnly: true
 {{- end }}
@@ -161,7 +161,7 @@ limits:
   hostPath:
     path: {{ include "nri-image-policy.runtimeDir" . }}
     type: DirectoryOrCreate
-- name: cds-policy
+- name: ta-policy
   projected:
     sources:
       - configMap:

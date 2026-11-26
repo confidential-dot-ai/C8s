@@ -41,8 +41,8 @@ type config struct {
 // What the enforcer mounts for a credentials-role container, each at the one
 // compiled path its client reads. Tests point them elsewhere.
 var (
-	nodeAddressPath = workloadclaims.CDSAddressPath
-	nodePinsPath    = workloadclaims.CDSPinsPath
+	nodeAddressPath = workloadclaims.TAAddressPath
+	nodePinsPath    = workloadclaims.TAPinsPath
 	nodeVerifier    = workloadclaims.AttestationAPISocket
 )
 

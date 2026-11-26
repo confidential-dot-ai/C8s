@@ -36,7 +36,7 @@ func TestStagePodRole(t *testing.T) {
 		t.Fatal(err)
 	}
 	requirePresent(t, cfg.path(PodMarker))
-	for _, path := range []string{Dir + "/workloads.json", Dir + "/cds.json", Dir + "/peers.json"} {
+	for _, path := range []string{Dir + "/workloads.json", Dir + "/ta.json", Dir + "/peers.json"} {
 		requireAbsent(t, cfg.path(path))
 	}
 	for path, want := range map[string]string{Dir + "/operator-pubkey": pub} {
@@ -171,7 +171,7 @@ func TestNewPodBundleRefusesSNPManifest(t *testing.T) {
 
 func writePodTAPin(t *testing.T) string {
 	t.Helper()
-	return writeFile(t, "cds.json", testTAPin(t, teetypes.FamilySNP, 2))
+	return writeFile(t, "ta.json", testTAPin(t, teetypes.FamilySNP, 2))
 }
 
 func testProviderPod(t *testing.T, spec string) *corev1.Pod {

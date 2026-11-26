@@ -23,7 +23,7 @@ import (
 // public files it publishes beside it.
 type FloorInputs struct {
 	// Trust Authority is where the plugin pulls from and the credential role dials; its
-	// pin is published as cds.json.
+	// pin is published as ta.json.
 	TA cmdsutil.TA
 	// ClusterRanges, when given, are the cluster's pod and Service ranges,
 	// the mesh policy's cluster_ranges; none keeps the baked ones.
@@ -38,7 +38,7 @@ type FloorInputs struct {
 	Outputs map[string][]byte
 }
 
-// Prepare publishes the Trust Authority pin as cds.json, in.Outputs and the measured NRI
+// Prepare publishes the Trust Authority pin as ta.json, in.Outputs and the measured NRI
 // floor completed with in, and removes every other public output. rootDir
 // rebases paths for tests. The root bootstrap service owns these files; pods
 // mount them read-only.
@@ -145,8 +145,8 @@ func bindTAPull(a map[string]any, ta cmdsutil.TA) (map[string]any, error) {
 		return nil, err
 	}
 	pull["url"] = cmdsutil.TAURL(ta.Address)
-	pull["cds_measurements_config"] = PublicDir + "/" + TAOutput
-	pull["cds_pin_floor"] = ta.PinFloor
+	pull["ta_measurements_config"] = PublicDir + "/" + TAOutput
+	pull["ta_pin_floor"] = ta.PinFloor
 	return pull, nil
 }
 
@@ -440,7 +440,7 @@ func appendCredentialRole(policy map[string]any, port uint16) error {
 var publicOutputNames = append([]string{TAOutput, "operator-pubkey", "tls-san"}, routerOutputNames...)
 
 // TAOutput is the Trust Authority pin Prepare publishes under PublicDir.
-const TAOutput = "cds.json"
+const TAOutput = "ta.json"
 
 // removeOutputs removes the named outputs from the public directory, trying
 // every one.

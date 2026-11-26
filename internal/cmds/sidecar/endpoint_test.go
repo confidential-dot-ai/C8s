@@ -20,7 +20,7 @@ import (
 // An injected sidecar dials the endpoint its node mounts; without a mount
 // --ta-url stands as it was given, and Validate canonicalises it.
 func TestResolveTAEndpointTakesTheNodesEndpoint(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "cds-address")
+	path := filepath.Join(t.TempDir(), "ta-address")
 	if err := os.WriteFile(path, cmdsutil.FormatTAAddress("cds.example.org:30808"), 0o600); err != nil {
 		t.Fatal(err)
 	}

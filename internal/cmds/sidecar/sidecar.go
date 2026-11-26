@@ -68,7 +68,7 @@ func BindFlags(f *pflag.FlagSet, cfg *Config) {
 
 // nodeAddressPath is where the enforcer mounts the Trust Authority endpoint an injected
 // client dials; a var so tests can mount their own.
-var nodeAddressPath = workloadclaims.CDSAddressPath
+var nodeAddressPath = workloadclaims.TAAddressPath
 
 // ResolveTAEndpoint fixes the Trust Authority this sidecar dials: the endpoint its node
 // hands an injected client, otherwise --ta-url. Each command calls it while
@@ -99,7 +99,7 @@ func (c *Config) Validate() error {
 	if err := cmdsutil.ValidateAttestationAPIURL("--attestation-api-url", c.AttestationApiURL); err != nil {
 		return err
 	}
-	if err := cmdsutil.RequireNodeVerifier(workloadclaims.CDSPinsPath, workloadclaims.AttestationAPISocket, c.AttestationApiURL); err != nil {
+	if err := cmdsutil.RequireNodeVerifier(workloadclaims.TAPinsPath, workloadclaims.AttestationAPISocket, c.AttestationApiURL); err != nil {
 		return err
 	}
 	if c.Attempts < 0 {
@@ -114,7 +114,7 @@ func (c *Config) Validate() error {
 // ParsePins resolves the pins this sidecar holds its Trust Authority to: the node's policy
 // where the enforcer mounts it, otherwise --ta-image-policy-file.
 func (c *Config) ParsePins(ctx context.Context) (armtls.PinSource, error) {
-	return cmdsutil.ClientTAPins(ctx, workloadclaims.CDSPinsPath,
+	return cmdsutil.ClientTAPins(ctx, workloadclaims.TAPinsPath,
 		cmdsutil.ImagePolicySource{
 			File: c.MeasurementsConfig,
 			JSON: c.MeasurementsConfigJSON,

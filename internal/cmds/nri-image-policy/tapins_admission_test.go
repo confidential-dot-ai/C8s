@@ -58,7 +58,7 @@ func TestNodePolicyMountAdmission(t *testing.T) {
 		},
 		{
 			name:        "node address without inventory sockets",
-			destination: workloadclaims.CDSAddressPath,
+			destination: workloadclaims.TAAddressPath,
 			source:      address,
 			consumer:    workloadclaims.CertContainerName,
 			options:     []string{"rbind", "ro"},
@@ -67,7 +67,7 @@ func TestNodePolicyMountAdmission(t *testing.T) {
 		},
 		{
 			name:        "foreign address",
-			destination: workloadclaims.CDSAddressPath,
+			destination: workloadclaims.TAAddressPath,
 			source:      "/other-node/address",
 			consumer:    workloadclaims.CertContainerName,
 			options:     []string{"rbind", "ro"},
@@ -75,7 +75,7 @@ func TestNodePolicyMountAdmission(t *testing.T) {
 		},
 		{
 			name:        "writable address",
-			destination: workloadclaims.CDSAddressPath,
+			destination: workloadclaims.TAAddressPath,
 			source:      address,
 			consumer:    workloadclaims.CertContainerName,
 			options:     []string{"rbind", "rw"},
@@ -120,7 +120,7 @@ func TestNodePolicyMountAdmission(t *testing.T) {
 			}
 			destination := tc.destination
 			if destination == "" {
-				destination = workloadclaims.CDSPinsPath
+				destination = workloadclaims.TAPinsPath
 			}
 			policy := &api.Mount{
 				Source:      tc.source,

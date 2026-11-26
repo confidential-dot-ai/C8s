@@ -32,8 +32,8 @@ get-cert \
 
 The example names the TA and pins it with `ta-pin.json`, the pin
 `c8s ta config new` wrote, for a pod whose node supplies neither. The node's
-admission plugin mounts the TA address at `/run/c8s/cds-address` and its pins
-at `/run/c8s/cds-pins.json` into an injected sidecar. get-cert then reads each
+admission plugin mounts the TA address at `/run/c8s/ta-address` and its pins
+at `/run/c8s/ta-pins.json` into an injected sidecar. get-cert then reads each
 from its mount and refuses the flag that would also supply it:
 `--ta-url` for the address, `--ta-image-policy-file` or `--ta-image-policy-json`
 for the pins. While the pins and the node's attestation-api socket are both

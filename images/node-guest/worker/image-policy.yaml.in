@@ -437,7 +437,7 @@ allowlist:
     interval: "5s"
     timeout: "30s"
     attestation_api_url: "http://127.0.0.1:8400"
-    cds_measurements_config: "/run/c8s-node/cds.json"
+    ta_measurements_config: "/run/c8s-node/ta.json"
     # measure_policies (extend RTMR[3] with each pulled allowlist) is set by
     # `c8s worker floor`.
 
