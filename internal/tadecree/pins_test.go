@@ -194,10 +194,10 @@ func equalImages(got, want refvalues.ReferenceValues) bool {
 	return true
 }
 
-// A decree names its launch file by digest alone, so its entries cannot say
-// which field binds it: an entry reading MRCONFIGID is refused when the
-// decree is checked, before any reader binds a launch file to it.
-func TestDecreePinsCannotReadTheLaunchFileFromMRCONFIGID(t *testing.T) {
+// A decree's entries carry no launch file, so none of them can say which
+// field binds it: the document says it once, and an entry that names the
+// field itself is refused when the decree is checked.
+func TestDecreeEntriesCannotNameTheLaunchFileField(t *testing.T) {
 	register := func(b string) string { return strings.Repeat(b, 48) }
 	entry := `{"schema_version":"3","tee":"tdx","measurements":[{"name":"ta","mrtd":"` + register("aa") +
 		`","rtmr":[null,"` + register("bb") + `","` + register("cc") + `",""],"launch_file_field":"init_data"}]}`
@@ -257,7 +257,7 @@ func TestPinsReadFromMRCONFIGIDTravelAndComeBack(t *testing.T) {
 // A decree whose entries read RTMR[3] says nothing about the field, so the
 // decrees already in a cluster's log keep their bytes.
 func TestPinsReadFromRTMR3NameNoField(t *testing.T) {
-	pins, err := NewPinDocument(taImages(t, 0x11))
+	pins, err := NewPinDocument(taImagesTDX(t))
 	if err != nil {
 		t.Fatal(err)
 	}

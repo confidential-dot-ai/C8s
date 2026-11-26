@@ -81,6 +81,12 @@ command refuses to sign one for a launch file that names a single replica
 filling a single voter seat. Do not pass it with more replicas booted, because
 a host that hides the others would get a cluster beside them.
 
+Replicas whose TDX launcher bound the launch file in `MRCONFIGID` need
+`--launch-file-field init_data` on every command that takes
+`--image-manifest`; see [cloud-ta.md](cloud-ta.md). A replica running a
+release that does not know the field refuses such a decree, and stops if it
+meets one in the log, so upgrade every replica before signing the first one.
+
 ## 2. Replace a replica VM
 
 A VM is gone, or is to be replaced for any reason other than a new TA image
