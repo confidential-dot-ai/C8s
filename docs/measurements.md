@@ -148,8 +148,8 @@ takes the same document as `--ta-pin`. Some also accept
 | `mrtd` | TDX only and required there, 96 lowercase hex. |
 | `rtmr` | TDX only: up to four slots, `rtmr[0]` must be `null`, a null slot is unpinned, `""` pins the all-zero register. |
 | `approver_key` | Optional: a launch key, PEM. The entry then also requires that this guest was launched for that key — the RTMR[3] seed on TDX, `HOST_DATA` on SEV-SNP. |
-| `launch_file` | Optional, schema 2 only: the exact bytes of the configuration file the guest was launched with. The entry then requires that the guest's launch binding is that file alone, with nothing extended on top. Excludes `approver_key`, which binds the same field. |
-| `launch_file_digest` | Optional, schema 2 only: the digest of the configuration file the guest was launched with, lowercase hex: SHA-256 on SEV-SNP (`HOST_DATA`), SHA-384 on TDX (the RTMR[3] seed). Excludes `approver_key` and `launch_file`. |
+| `launch_file` | Optional, schema 2 only: exact launch-file bytes (configuration, or the whole [Kata initdata document](cloud-ta.md#under-a-kata-containers-runtime)). Requires that file's launch binding, with nothing extended on top. Excludes `approver_key`. |
+| `launch_file_digest` | Optional, schema 2 only: the digest of that launch file, lowercase hex: SHA-256 on SEV-SNP (`HOST_DATA`), SHA-384 on TDX (the RTMR[3] seed). Excludes `approver_key` and `launch_file`. |
 
 Unknown fields, repeated JSON keys, trailing data and an empty `measurements`
 list are refused; omit the flag to pin nothing.

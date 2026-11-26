@@ -71,7 +71,7 @@ func (d Document) validate() error {
 	if err != nil {
 		return err
 	}
-	config, err := taconfig.Parse(ta.LaunchFile)
+	config, err := taconfig.ParseForFamily(ta.LaunchFile, ta.Pins.Family)
 	if err != nil {
 		return fmt.Errorf("ta.measurements: the pinned Trust Authority configuration: %w", err)
 	}
@@ -107,7 +107,7 @@ func (d Document) operatorKeys() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	config, err := taconfig.Parse(ta.LaunchFile)
+	config, err := taconfig.ParseForFamily(ta.LaunchFile, ta.Pins.Family)
 	if err != nil {
 		return nil, fmt.Errorf("ta.measurements: the pinned Trust Authority configuration: %w", err)
 	}

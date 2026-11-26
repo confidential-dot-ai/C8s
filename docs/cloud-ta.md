@@ -9,10 +9,11 @@ cluster is [operator.md](operator.md); running several of them is
 
 ## Where it runs
 
-`ta-pin.json`, the document every client holds the TA to, binds two values: a
-launch digest from the `manifest.json` published with the `ta-guest` image,
-and the exact bytes of the `ta-config.yaml` the VM booted, which on SEV-SNP
-the launcher commits as `HOST_DATA`
+`ta-pin.json`, the document every client holds the TA to, binds two values:
+the guest's launch digest and the exact bytes of the launch file it booted,
+which on SEV-SNP the launcher commits as `HOST_DATA`. For the `ta-guest` image
+those are the digest in the `manifest.json` published with it and the
+`ta-config.yaml`
 ([launch requirements](../images/ta-guest/README.md#launch-requirements)).
 
 An AKS or GKE confidential VM proves neither: its launch digest is the
@@ -23,6 +24,72 @@ than in it — a host launching it under an IGVM-capable QEMU, or a KubeVirt VM
 on a cluster of your own confidential hosts. The cloud cluster holds its
 address and its pin, which `c8s install --ta-address <HOST>:<PORT> --ta-pin
 ta-pin.json` carries into the release, and nothing else of it.
+
+### Under a Kata Containers runtime
+
+Kata SEV-SNP binds the SHA-256 of its whole initdata document to `HOST_DATA`.
+TDX Kata launch binding through `MRCONFIGID` is not supported here; the TA
+rejects it at startup.
+
+Supply the TA container and an attestation API on guest loopback
+(`--attestation-api-url`). The guest launch digest does not cover containers
+loaded after launch: you must establish how the deployment enforces the TA's
+code, storage and attester. C8s provides no measured Kata TA image or
+integration tests for this deployment, including replicated TAs.
+
+Put the TA configuration in the initdata document as follows (schematic):
+
+```toml
+version = "0.1.0"
+algorithm = "sha256"
+
+[data]
+"ta-config.yaml" = '''
+schemaVersion: c8s-ta/v1
+...
+'''
+```
+
+C8s detects initdata by its TOML `data` table and requires a string
+`ta-config.yaml` entry and a supported `algorithm`; other files are read as
+bare YAML configuration. Other initdata keys, including guest policy, are
+bound but not enforced by C8s. Establish their enforcement separately.
+
+Pass the whole document to the runtime and mount identical bytes for
+`c8s ta --config`; even changes to comments or whitespace break the binding.
+Use it for every command's `--config` and every TA pin's `launch_file`.
+Kata does not use the [`ta-guest` image's staging](../images/ta-guest/README.md#launch-requirements).
+The document must be at most 1 MiB; keep it well below that so its JSON-encoded
+pin also fits the release ConfigMap's 1 MiB limit.
+
+`c8s ta config new` produces bare YAML and a pin for it. For Kata, write a
+schema 2 SEV-SNP [measurements config](measurements.md#the-measurements-config)
+for `c8s install --ta-pin` instead:
+
+- Set `measurement` to your Kata guest's launch digest, established from your
+  own build at the deployed vCPU count. The `ta-guest` image's digest will not match.
+- Set every entry's `launch_file` to the same whole initdata document as a
+  JSON string. Omit `launch_file_digest` and `approver_key`.
+
+Replace the placeholders below with those values:
+
+```json
+{
+  "schema_version": "2",
+  "tee": "sev-snp",
+  "measurements": [
+    {
+      "name": "ta-kata-snp",
+      "measurement": "<96_HEX>",
+      "launch_file": "<the initdata document>"
+    }
+  ]
+}
+```
+
+For HA commands taking `--image-manifest`, supply a manifest with your Kata
+guest's launch digest. These pin builders check the initdata algorithm against
+`--platform`; TA startup checks it against the attested family.
 
 ## The flows it needs
 

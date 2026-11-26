@@ -18,6 +18,9 @@ replicas do not agree, which is the one check that needs no threshold:
 c8s ta ha status --config ta-config.yaml --ta-pin ta-pin.json || alert
 ```
 
+For [Kata replicas](cloud-ta.md#under-a-kata-containers-runtime), pass the
+whole initdata document as `--config`.
+
 ## What one replica reports
 
 The default table shows the address, member id, role, vote, version and health

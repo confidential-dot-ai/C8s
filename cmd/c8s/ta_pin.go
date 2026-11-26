@@ -52,7 +52,7 @@ func taPinConfig(document []byte) (*taconfig.Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("the Trust Authority pin %w", err)
 	}
-	config, err := taconfig.Parse(file)
+	config, err := taconfig.ParseForFamily(file, set.Family)
 	if err != nil {
 		return nil, fmt.Errorf("the Trust Authority pin names a configuration this release cannot read: %w", err)
 	}

@@ -115,7 +115,7 @@ func New(cfg Config) (*Source, error) {
 	if err != nil {
 		return nil, fmt.Errorf("tapins: the bootstrap pin set %w", err)
 	}
-	cluster, err := taconfig.ReadCluster(launchFile)
+	cluster, err := taconfig.ReadClusterForFamily(launchFile, cfg.Bootstrap.Family)
 	if err != nil {
 		return nil, fmt.Errorf("tapins: the launch file the bootstrap set pins: %w", err)
 	}

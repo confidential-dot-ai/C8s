@@ -88,7 +88,7 @@ func decreeCmd(use, short, long string, o *decreeOptions, run func(*cobra.Comman
 		},
 	}
 	f := cmd.Flags()
-	f.StringVar(&o.config, "config", "", "the configuration document the cluster's Trust Authority VMs boot on (REQUIRED)")
+	f.StringVar(&o.config, "config", "", "the launch file the cluster's Trust Authority VMs boot on: the configuration document, or the Kata Containers initdata document carrying it (REQUIRED)")
 	f.StringVar(&o.operatorKey, "operator-key", "", "operator EC private key PEM file, whose public key the configuration pins (REQUIRED)")
 	f.StringVar(&o.out, "out", "", "file to write the signed decree to, beside posting it")
 	f.DurationVar(&o.expiresIn, "expires-in", defaultDecreeValidity, "how long the cluster may adopt this decree for")
