@@ -14,7 +14,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -1135,35 +1134,5 @@ func TestSplitList(t *testing.T) {
 				t.Errorf("SplitList(%q) = %q, want %q", tt.value, got, tt.want)
 			}
 		})
-	}
-}
-
-// Retire leaves the client's connections, so a callback after a change of the
-// node set handshakes under the set in force.
-func TestDigestsClientRetireLeavesItsConnections(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, r.RemoteAddr)
-	}))
-	t.Cleanup(srv.Close)
-	transport := armtls.NewRetiringTransport(&http.Transport{})
-	c := &DigestsClient{http: &http.Client{Transport: transport}, transport: transport}
-	t.Cleanup(c.http.CloseIdleConnections)
-	conn := func() string {
-		t.Helper()
-		resp, err := c.http.Get(srv.URL)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer resp.Body.Close()
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return string(body)
-	}
-	first := conn()
-	c.Retire()
-	if after := conn(); after == first {
-		t.Fatalf("a callback after Retire ran on the old connection %s", first)
 	}
 }

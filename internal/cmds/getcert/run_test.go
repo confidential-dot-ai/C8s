@@ -71,7 +71,7 @@ func TestTAHTTPClientUsesARMTLSForHTTPS(t *testing.T) {
 		t.Fatal("client = http.DefaultClient, want armTLS client")
 	}
 	// The armTLS client that leaves its connections when the pins change.
-	if _, ok := client.Transport.(interface{ Retire() }); !ok {
+	if _, ok := client.Transport.(*armtls.RetiringTransport); !ok {
 		t.Fatalf("transport = %T, want the armTLS retiring transport", client.Transport)
 	}
 }
