@@ -66,6 +66,7 @@ var commandImportRules = importRules{
 		"internal/cmds/nri-image-policy imports internal/cmds/getcert",
 		"internal/cmds/nri-image-policy imports internal/cmds/volume",
 		"internal/cmds/routes imports internal/cmds/taha",
+		"internal/cmds/secrets imports internal/cmds/taha",
 		"internal/cmds/volumed imports internal/cmds/volume",
 		"internal/cmds/worker imports internal/cmds/nri-image-policy",
 	},
