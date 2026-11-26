@@ -218,17 +218,12 @@ func nodeAffinityHasKey(ds appsv1.DaemonSet, key string) bool {
 }
 
 // The chart renders exactly one pull-mode installer DaemonSet, `-worker`, that
-// targets every node — there is no Trust Authority/worker partition. The old push archetype
-// (a role=cds-pinned `-cds` installer) is gone; this guards against it coming
-// back.
+// targets every node.
 func TestChartNriInstallerRendersSinglePullDaemonSet(t *testing.T) {
 	t.Parallel()
 	out, err := helmTemplate(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	if renderedManifestHasNamedKind(t, out, "DaemonSet", "c8s-nri-image-policy-cds") {
-		t.Error("no cds/push installer must render; only the pull-mode -worker DaemonSet exists")
 	}
 	worker := renderedDaemonSet(t, out, "c8s-nri-image-policy-worker")
 	if nodeAffinityHasKey(worker, "role") {
@@ -435,12 +430,12 @@ func assertContainerArgs(t *testing.T, c corev1.Container, want ...string) {
 }
 
 // TestChartRejectsOperatorKeysPath pins the path-vs-content guard: a
-// cds.operatorKeys value that is a filesystem path (or any non-PEM string)
+// ta.operatorKeys value that is a filesystem path (or any non-PEM string)
 // must fail the render with an instructive message, not ship a ConfigMap Trust Authority
 // will refuse at startup.
 func TestChartRejectsOperatorKeysPath(t *testing.T) {
 	t.Parallel()
-	out, err := helmTemplate(t, "--set", "cds.operatorKeys=/home/user/public.pem")
+	out, err := helmTemplate(t, "--set", "ta.operatorKeys=/home/user/public.pem")
 	if err == nil {
 		t.Fatalf("helm template succeeded, want operatorKeys content-guard failure\n%s", out)
 	}
@@ -456,7 +451,7 @@ func TestChartRendersOperatorKeysPEM(t *testing.T) {
 	if err := os.WriteFile(path, []byte(pemText), 0o600); err != nil {
 		t.Fatalf("write key file: %v", err)
 	}
-	out, err := helmTemplate(t, "--set-file", "cds.operatorKeys="+path)
+	out, err := helmTemplate(t, "--set-file", "ta.operatorKeys="+path)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
@@ -592,7 +587,7 @@ func TestChartLeavesTheInjectedTAEndpointToTheNode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	assertContainerNoArgPrefix(t, "operator", renderedOperatorArgs(t, out), "--cds-url=")
+	assertContainerNoArgPrefix(t, "operator", renderedOperatorArgs(t, out), "--ta-url=")
 	// The node reads the endpoint from the file the installer puts beside its
 	// config and hands it to every injected client; no component names it.
 	if got := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker").Allowlist.Pull.TAAddressFile; got != "/etc/nri/conf.d/cds-address" {
@@ -1203,7 +1198,7 @@ func TestChartRendersRouterTLSAndDiscovery(t *testing.T) {
 	cert := routerGetCertContainer(t, out, "c8s-cert")
 	assertContainerArgs(t, cert,
 		"--discovery-out=/discovery/discovery.json",
-		"--discovery-cds-cert-url=/.well-known/cds-cert.pem",
+		"--discovery-ta-cert-url=/.well-known/cds-cert.pem",
 		"--discovery-public-tls-mode=cds",
 		"--discovery-mesh-ca-url=/.well-known/mesh-ca.pem",
 	)
@@ -1562,11 +1557,11 @@ func TestChartRendersRouterAttestSidecar(t *testing.T) {
 	}
 
 	// The cds-attest sidecar runs the operator multi-mode image with the
-	// cds-attest subcommand, bound to loopback for nginx to proxy to.
+	// ta-attest subcommand, bound to loopback for nginx to proxy to.
 	deployment := renderedDeployment(t, out, "c8s-router")
 	sidecar := renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")
-	if len(sidecar.Args) == 0 || sidecar.Args[0] != "cds-attest" {
-		t.Fatalf("cds-attest args = %v, want first arg 'cds-attest'", sidecar.Args)
+	if len(sidecar.Args) == 0 || sidecar.Args[0] != "ta-attest" {
+		t.Fatalf("cds-attest args = %v, want first arg 'ta-attest'", sidecar.Args)
 	}
 	assertContainerArgs(t, sidecar, append([]string{
 		"--host=127.0.0.1",
@@ -1574,9 +1569,9 @@ func TestChartRendersRouterAttestSidecar(t *testing.T) {
 		"--generation=milan",
 	}, routerRoutingArgs...)...)
 	assertContainerHasArgPrefix(t, "cds-attest", sidecar.Args, "--attestation-api-url=unix:///run/nri-image-policy/attestation-api.sock")
-	// --cds-url among them: the enforcer mounts the one Trust Authority endpoint this
+	// --ta-url among them: the enforcer mounts the one Trust Authority endpoint this
 	// node admits for the router role, and cds-attest reads it there.
-	for _, banned := range []string{"--upstream", "--attest-endpoints", "--operator-keys-file", "--cds-measurements", "--cds-rtmrs", "--publish-routes", "--cds-url", "--mesh-identity-"} {
+	for _, banned := range []string{"--upstream", "--attest-endpoints", "--operator-keys-file", "--publish-routes", "--ta-url", "--mesh-identity-"} {
 		assertContainerNoArgPrefix(t, "cds-attest", sidecar.Args, banned)
 	}
 	assertContainerHasArg(t, "cds-attest", sidecar.Args, "--image-policy-file=/mnt/c8s-data/measurements/cds.json")
@@ -1683,10 +1678,10 @@ func TestChartRouterTAPins(t *testing.T) {
 }
 
 // TestChartRouterOperatorKeySource pins the router's operator-key source:
-// cds.operatorKeys when set, else Trust Authority itself.
+// ta.operatorKeys when set, else Trust Authority itself.
 func TestChartRouterOperatorKeySource(t *testing.T) {
 	t.Parallel()
-	keys := []string{"--set-string", "cds.operatorKeys=-----BEGIN PUBLIC KEY-----\nMFkw\n-----END PUBLIC KEY-----\n"}
+	keys := []string{"--set-string", "ta.operatorKeys=-----BEGIN PUBLIC KEY-----\nMFkw\n-----END PUBLIC KEY-----\n"}
 	const keysArg = "--operator-keys-file=/mnt/c8s-data/operator-keys/keys.pem"
 	for _, tc := range []struct {
 		name     string
@@ -1720,10 +1715,10 @@ func TestChartRefusesUnpinnedTA(t *testing.T) {
 		name string
 		args []string
 	}{
-		{name: "cds.address and cds.measurementsConfig", args: baseTAPolicy(t)},
+		{name: "ta.address and ta.measurementsConfig", args: baseTAPolicy(t)},
 		{
 			name: "a Trust Authority named by a DNS name",
-			args: []string{"--set-string", "cds.address=cds.example.com:8443", "--set-file", "cds.measurementsConfig=" + baseTAPin(t)},
+			args: []string{"--set-string", "ta.address=cds.example.com:8443", "--set-file", "ta.measurementsConfig=" + baseTAPin(t)},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1733,18 +1728,18 @@ func TestChartRefusesUnpinnedTA(t *testing.T) {
 			}
 		})
 	}
-	pin := []string{"--set-file", "cds.measurementsConfig=" + baseTAPin(t)}
+	pin := []string{"--set-file", "ta.measurementsConfig=" + baseTAPin(t)}
 	for _, tc := range []struct {
 		name string
 		args []string
 		want string
 	}{
 		{name: "neither", want: "cds_pins_required"},
-		{name: "no pin", args: []string{"--set-string", "cds.address=" + baseCDSAddress}, want: "cds_pins_required"},
+		{name: "no pin", args: []string{"--set-string", "ta.address=" + baseCDSAddress}, want: "cds_pins_required"},
 		{name: "no address", args: pin, want: "cds_address_required"},
-		{name: "no port", args: append(pin, "--set-string", "cds.address=10.9.9.9"), want: "cds_address_required"},
-		{name: "an uppercase name", args: append(pin, "--set-string", "cds.address=TA.example.com:8443"), want: "cds_address_required"},
-		{name: "a URL, not an endpoint", args: append(pin, "--set-string", "cds.address=https://cds.example.com:8443"), want: "cds_address_required"},
+		{name: "no port", args: append(pin, "--set-string", "ta.address=10.9.9.9"), want: "cds_address_required"},
+		{name: "an uppercase name", args: append(pin, "--set-string", "ta.address=TA.example.com:8443"), want: "cds_address_required"},
+		{name: "a URL, not an endpoint", args: append(pin, "--set-string", "ta.address=https://cds.example.com:8443"), want: "cds_address_required"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out, err := helmTemplateUnpinned(t, cloudChartDir, tc.args...)
@@ -1923,7 +1918,7 @@ func TestRouterAllowlistProxyTakesItsTAPinsFromTheNode(t *testing.T) {
 	proxy := renderedDeploymentContainer(t, out, "c8s-router", "allowlist-proxy")
 	// It holds the credentials role, so its node hands it the pins and
 	// refuses an argument naming any.
-	assertNoArgWithPrefix(t, "allowlist-proxy", proxy.Args, "--cds-measurements", "--image-policy-file")
+	assertNoArgWithPrefix(t, "allowlist-proxy", proxy.Args, "--image-policy-file")
 }
 
 func renderedRouterNginxConf(t *testing.T, manifest string) string {
@@ -2515,7 +2510,7 @@ func baseTAPinDocument(t *testing.T) string {
 // document, which is how every non-baked release names its Trust Authority.
 func baseTAPolicy(t *testing.T) []string {
 	t.Helper()
-	return []string{"--set-string", "cds.address=" + baseCDSAddress, "--set-file", "cds.measurementsConfig=" + baseTAPin(t)}
+	return []string{"--set-string", "ta.address=" + baseCDSAddress, "--set-file", "ta.measurementsConfig=" + baseTAPin(t)}
 }
 
 // helmOutput keeps warnings outside the YAML. Failed commands keep diagnostics.
@@ -2560,7 +2555,7 @@ func helmTemplate(t *testing.T, args ...string) (string, error) {
 func helmTemplateIn(t *testing.T, chartDir string, args ...string) (string, error) {
 	t.Helper()
 	pinned := slices.ContainsFunc(args, func(arg string) bool {
-		return strings.HasPrefix(arg, "cds.measurementsConfig") || strings.HasPrefix(arg, "cds.address")
+		return strings.HasPrefix(arg, "ta.measurementsConfig") || strings.HasPrefix(arg, "ta.address")
 	})
 	if !pinned {
 		args = append(baseTAPolicy(t), args...)
@@ -2751,7 +2746,7 @@ func TestRouterNginxMatchesItsContainers(t *testing.T) {
 			}
 
 			cfg.location(t, "exact", "/v1/discovery").assertDirective(t, "alias", argValue(t, cert.Args, "--discovery-out="))
-			cfg.location(t, "exact", argValue(t, cert.Args, "--discovery-cds-cert-url=")).assertDirective(t, "alias", argValue(t, cert.Args, "--cert-path="))
+			cfg.location(t, "exact", argValue(t, cert.Args, "--discovery-ta-cert-url=")).assertDirective(t, "alias", argValue(t, cert.Args, "--cert-path="))
 			cfg.location(t, "exact", argValue(t, cert.Args, "--discovery-mesh-ca-url=")).assertDirective(t, "alias", argValue(t, cert.Args, "--ca-path="))
 			spool, ok := containerVolumeMount(nginx, "nginx-tunnel-body")
 			if !ok {
@@ -4302,7 +4297,7 @@ func TestChartOperatorPassesNoTAPins(t *testing.T) {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
 	args := strings.Join(renderedDeploymentContainer(t, out, "c8s-operator", "operator").Args, " ")
-	for _, unwanted := range []string{"--cds-measurements", "--cds-rtmrs", "--image-policy-file", "--image-policy-json"} {
+	for _, unwanted := range []string{"--image-policy-file", "--image-policy-json"} {
 		if strings.Contains(args, unwanted) {
 			t.Errorf("operator carries %s; the injected clients read the node policy instead: %s", unwanted, args)
 		}
@@ -4519,7 +4514,7 @@ func TestChartVolumedAndWebhookAgreeOnTheSocketDir(t *testing.T) {
 
 // schemaCoveredPaths are the values subtrees values.schema.json seals: the
 // component blocks the docs tell operators to write by hand.
-var schemaCoveredPaths = []string{"cds", "nriImagePolicy", "router", "volumed"}
+var schemaCoveredPaths = []string{"ta", "nriImagePolicy", "router", "volumed"}
 
 // readChartFile decodes a file of a chart directory. JSON is a subset of
 // YAML, so one decoder serves values.yaml and values.schema.json alike.
@@ -4550,7 +4545,7 @@ func TestChartValuesSchemaRejectsUnknownKeys(t *testing.T) {
 		// A values file from a release that still had these keys.
 		{"router.hostPort", "router.hostPort=true"},
 		{"router.routing", "router.routing.prot=9900"},
-		{"cds", "cds.addresss=10.9.9.9:8443"},
+		{"ta", "ta.addresss=10.9.9.9:8443"},
 		{"volumed", "volumed.enable=true"},
 		// The control-plane chart's own schema, through the cloud chart.
 		{"controlPlane.webhook", "controlPlane.webhook.extraExclude=tenant-a"},

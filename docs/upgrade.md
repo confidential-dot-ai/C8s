@@ -36,12 +36,6 @@ Steps 1 and 5 take their replacements:
 | `--cvm-mode bare-metal` | nothing |
 | nothing | `--pod-cidr <cidr>`, step 5 |
 
-The chart reads the Trust Authority address, measurements and optional operator
-keys together from `ta`. A release with `cds` values can keep using that
-block. If both blocks supply settings, their values must match. To change
-the trust root with Helm, run `helm upgrade --reset-values` with the complete
-release configuration and the new trust settings under `ta`.
-
 An AKS cluster on Azure CNI Overlay, the AKS default, publishes no
 `spec.podCIDR` on its nodes; install refuses such a cluster unless step 5's
 command names each of its pod ranges with `--pod-cidr`

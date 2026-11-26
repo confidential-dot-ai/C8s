@@ -1760,11 +1760,6 @@ func TestRun_UsageAndGatherFailures(t *testing.T) {
 			},
 			{
 				fromFile:           absent,
-				kind:               "cds",
-				measurementsConfig: testutil.TAPinFile(t),
-			},
-			{
-				fromFile:           absent,
 				kind:               "ta",
 				measurementsConfig: testutil.TAPinFile(t),
 			},

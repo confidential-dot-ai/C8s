@@ -33,7 +33,6 @@ func bindReachFlags(cmd *cobra.Command, reach *clusterReach) {
 	f.StringVar(&reach.config, "config", "", "the configuration document the cluster's Trust Authority VMs boot on (REQUIRED); its replica entries name the replicas to read")
 	f.StringArrayVar(&reach.urls, "url", nil, "<host>[:"+strconv.Itoa(replicaPort)+"] of a replica to read instead of the configuration's replica entries; repeatable")
 	f.StringVar(&reach.taPin, "ta-pin", "", "measurements document pinning this cluster's Trust Authority, which every replica read is verified against (REQUIRED); during an image roll the one naming both images")
-	cmdsutil.AliasFlag(f, "ta-pin", "cds-pin")
 	cmdsutil.RequireFlags(cmd, "config", "ta-pin")
 }
 

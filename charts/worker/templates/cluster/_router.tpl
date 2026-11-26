@@ -148,7 +148,7 @@ securityContext:
 {{- $settings := include "c8s.routerWorkerSettingsDir" . -}}
 {{- list
   (printf "--discovery-out=%s" (include "router.discoveryFilePath" .))
-  (printf "--discovery-cds-cert-url=%s" (include "router.taCertPath" .))
+  (printf "--discovery-ta-cert-url=%s" (include "router.taCertPath" .))
   (printf "--discovery-public-tls-mode-file=%s/front-door-mode" $settings)
   (printf "--discovery-public-tls-hostnames-file=%s/hostnames" $settings)
   (printf "--discovery-mesh-ca-url=%s" (include "router.meshCAPath" .))
@@ -163,7 +163,7 @@ securityContext:
 {{- $node := include "c8s.nodeConfigDir" . -}}
 {{- $runtimeDir := include "worker.runtimeDir" . -}}
 {{- list
-  "cds-attest"
+  "ta-attest"
   "--host=127.0.0.1"
   (printf "--port=%s" (include "router.attestPort" .))
   (printf "--platform=%s" .Values.router.attest.platform)

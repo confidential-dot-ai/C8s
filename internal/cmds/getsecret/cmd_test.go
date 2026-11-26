@@ -15,7 +15,7 @@ import (
 func TestNewCmdRejectsBadSecretSpec(t *testing.T) {
 	cmd := NewCmd()
 	cmd.SetArgs([]string{
-		"--cds-url=https://cds.example",
+		"--ta-url=https://cds.example",
 		"--attestation-api-url=http://127.0.0.1:8080",
 		"--secret=notaspec",
 	})

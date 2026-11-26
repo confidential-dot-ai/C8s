@@ -60,7 +60,6 @@ type routingConfig struct {
 
 func bindRoutingFlags(f *pflag.FlagSet, cfg *routingConfig) {
 	f.StringVar(&cfg.taURL, "ta-url", "", "Trust Authority base URL (https, armTLS-verified) to poll the signed route manifest from; required unless this node's enforcer mounts the endpoint")
-	cmdsutil.AliasFlag(f, "ta-url", "cds-url")
 	cmdsutil.BindTAImagePolicyFlags(f, &cfg.imagePolicyFile, nil, "pins the Trust Authority endpoint (REQUIRED), every entry bound to the launch file that Trust Authority runs on")
 	f.StringVar(&cfg.operatorKeysFile, "operator-keys-file", "", "PEM operator public keys a route manifest must be signed under, used when the node's launch configuration carries none; unset, the keys come from the verified Trust Authority's GET /operator-keys")
 	f.DurationVar(&cfg.pollInterval, "routes-poll-interval", 30*time.Second, "how often to poll the Trust Authority for the route manifest")

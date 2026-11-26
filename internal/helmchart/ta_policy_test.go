@@ -1,9 +1,6 @@
 package helmchart
 
-import (
-	"strings"
-	"testing"
-)
+import "testing"
 
 // The chart's platform clients hold no pin of their own: the node hands each
 // of them the one it was installed with, so nothing renders a policy flag
@@ -20,7 +17,7 @@ func TestChartComponentsCarryNoPolicyFlags(t *testing.T) {
 				continue
 			}
 			assertNoArgWithPrefix(t, workload.name+"/"+container.Name, container.Args,
-				"--image-policy-file", "--image-policy-json", "--cds-measurements", "--cds-rtmrs", "--measurements-config")
+				"--image-policy-file", "--image-policy-json", "--measurements-config")
 		}
 	}
 }
@@ -47,79 +44,11 @@ func TestChartHandsTheNodeItsTAAddress(t *testing.T) {
 func TestChartRefusesATAPinThatBindsNoLaunchFile(t *testing.T) {
 	t.Parallel()
 	flat := writeMeasurementsConfig(t, `{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"cds","measurement":"`+baseTADigest+`"}]}`)
-	out, err := helmTemplateUnpinned(t, cloudChartDir, "--set-string", "cds.address="+baseCDSAddress, "--set-file", "cds.measurementsConfig="+flat)
+	out, err := helmTemplateUnpinned(t, cloudChartDir, "--set-string", "ta.address="+baseCDSAddress, "--set-file", "ta.measurementsConfig="+flat)
 	if err == nil {
 		t.Fatalf("helm template accepted a pin binding no launch file\n%s", out)
 	}
 	if kind := parseValidationErrorKind(out); kind != "cds_pin_schema" {
 		t.Fatalf("validation kind = %q, want cds_pin_schema\n%s", kind, out)
-	}
-}
-
-func TestChartTrustAuthorityValuesPreserveRenderedPolicy(t *testing.T) {
-	t.Parallel()
-	pin := baseTAPin(t)
-	keys := "-----BEGIN PUBLIC KEY-----\nMFkw\n-----END PUBLIC KEY-----\n"
-	legacy := []string{
-		"--set-string", "cds.address=" + baseCDSAddress,
-		"--set-file", "cds.measurementsConfig=" + pin,
-		"--set-string", "cds.operatorKeys=" + keys,
-	}
-	canonical := []string{
-		"--set-string", "ta.address=" + baseCDSAddress,
-		"--set-file", "ta.measurementsConfig=" + pin,
-		"--set-string", "ta.operatorKeys=" + keys,
-	}
-	want, err := helmTemplateUnpinned(t, cloudChartDir, legacy...)
-	if err != nil {
-		t.Fatalf("helm template with cds values: %v\n%s", err, want)
-	}
-	for _, args := range [][]string{canonical, append(legacy, canonical...)} {
-		out, err := helmTemplateUnpinned(t, cloudChartDir, args...)
-		if err != nil {
-			t.Fatalf("helm template with ta values: %v\n%s", err, out)
-		}
-		if out != want {
-			t.Fatal("the same Trust Authority values rendered different manifests")
-		}
-	}
-}
-
-func TestChartRefusesConflictingTrustAuthorityValues(t *testing.T) {
-	t.Parallel()
-	pin := baseTAPin(t)
-	otherPin := writeMeasurementsConfig(t, strings.ReplaceAll(baseTAPinDocument(t), baseTADigest, strings.Repeat("cd", len(baseTADigest)/2)))
-	legacy := baseTAPolicy(t)
-	for _, tc := range []struct {
-		name string
-		args []string
-	}{
-		{
-			name: "address",
-			args: []string{"--set-string", "ta.address=other.example.com:8443", "--set-file", "ta.measurementsConfig=" + pin},
-		},
-		{
-			name: "pin",
-			args: []string{"--set-string", "ta.address=" + baseCDSAddress, "--set-file", "ta.measurementsConfig=" + otherPin},
-		},
-		{
-			name: "operator keys",
-			args: []string{
-				"--set-string", "ta.address=" + baseCDSAddress,
-				"--set-file", "ta.measurementsConfig=" + pin,
-				"--set-string", "ta.operatorKeys=-----BEGIN PUBLIC KEY-----\nMFkw\n-----END PUBLIC KEY-----\n",
-			},
-		},
-		{
-			name: "split configuration",
-			args: []string{"--set-string", "ta.address=" + baseCDSAddress},
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			out, err := helmTemplateUnpinned(t, cloudChartDir, append(legacy, tc.args...)...)
-			if err == nil || parseValidationErrorKind(out) != "ta_values_conflict" {
-				t.Fatalf("want ta_values_conflict, got %v\n%s", err, out)
-			}
-		})
 	}
 }

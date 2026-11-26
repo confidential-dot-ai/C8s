@@ -579,10 +579,10 @@ esac`
 
 // pipedTA names the stubs' Trust Authority in a values file, as an operator's -f does:
 // the install reads the pin from the values it renders with, so a piped one is
-// held to the same shape as --cds-pin.
+// held to the same shape as --ta-pin.
 func pipedTA(t *testing.T) string {
 	t.Helper()
-	return "cds:\n  address: " + installTAAddressUnreachable + "\n  measurementsConfig: |\n    " +
+	return "ta:\n  address: " + installTAAddressUnreachable + "\n  measurementsConfig: |\n    " +
 		string(taPinDocument(t, []string{installSeedEntryName}, "192.0.2.0/24")) + "\n"
 }
 

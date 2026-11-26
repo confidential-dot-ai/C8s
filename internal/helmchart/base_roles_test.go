@@ -45,7 +45,7 @@ func platformInvocations() []struct {
 // each role rides on the component's own subcommand.
 var otherSubcommandArgvs = [][]string{
 	{"/c8s", "operator"},
-	{"/c8s", "cds"},
+	{"/c8s", "ta"},
 }
 
 // TestChartBaseGrantsInjectedRoles proves the worker's base grants each
@@ -219,7 +219,7 @@ func TestChartBaseGrantsTheRouterPodItsRoles(t *testing.T) {
 	// Pinned operator keys put one more data mount on cds-attest, so the base
 	// the same values render must name it.
 	operatorKeysArgs := append(slices.Clone(digestArgs),
-		"--set-string", "cds.operatorKeys=-----BEGIN PUBLIC KEY-----\nMFkw\n-----END PUBLIC KEY-----\n",
+		"--set-string", "ta.operatorKeys=-----BEGIN PUBLIC KEY-----\nMFkw\n-----END PUBLIC KEY-----\n",
 	)
 	operatorKeysArgs = append(operatorKeysArgs, floorArgs...)
 	cases := map[string][]string{

@@ -303,7 +303,7 @@ func TestPinDecreeNeedsTheVersionItAppliesOn(t *testing.T) {
 		"--operator-key", c.keyPath,
 		"--out", filepath.Join(t.TempDir(), "pins.json"),
 		"--to", "cds-1.acme.example",
-		"--cds-pin", c.taPinPath,
+		"--ta-pin", c.taPinPath,
 		"--platform", "sev-snp",
 		"--vcpus", "2",
 		"--image-manifest", snpManifest(t, smp2Digest),

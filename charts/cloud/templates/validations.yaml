@@ -1,4 +1,4 @@
-{{- $ta := include "c8s.trustAuthority" . | fromJson -}}
+{{- $ta := .Values.ta | default dict -}}
 {{- include "c8s.validateTAPin" $ta.measurementsConfig -}}
 {{- include "c8s.checkTAAddress" $ta.address -}}
 {{- if and $ta.operatorKeys (not (contains "BEGIN PUBLIC KEY" $ta.operatorKeys)) -}}

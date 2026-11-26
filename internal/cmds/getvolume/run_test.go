@@ -101,7 +101,7 @@ func TestValidateTrimsURL(t *testing.T) {
 
 func TestNewCmdHasTheSidecarFlags(t *testing.T) {
 	cmd := NewCmd()
-	for _, flag := range []string{"cds-url", "attestation-api-url", "cert", "key", "volume", "attempts"} {
+	for _, flag := range []string{"ta-url", "attestation-api-url", "cert", "key", "volume", "attempts"} {
 		if cmd.Flags().Lookup(flag) == nil {
 			t.Errorf("missing --%s", flag)
 		}

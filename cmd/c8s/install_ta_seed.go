@@ -54,7 +54,6 @@ type seedRender struct {
 	valueFiles  []string
 	// helm reads this last, as it does on the install itself.
 	computed string
-	legacyTA bool
 	// cds names a Trust Authority the release itself does not, as --set arguments that
 	// outrank every file above.
 	ta []string
@@ -98,13 +97,9 @@ func writeInstallSeed(ctx context.Context, render seedRender, path string) error
 		return fmt.Errorf("write the placeholder Trust Authority pin: %w", err)
 	}
 	defer os.Remove(pin)
-	key := "ta"
-	if render.legacyTA {
-		key = "cds"
-	}
 	render.ta = []string{
-		"--set-string", key + ".address=" + documentationRangeCDSAddress,
-		"--set-file", key + ".measurementsConfig=" + pin,
+		"--set-string", "ta.address=" + documentationRangeCDSAddress,
+		"--set-file", "ta.measurementsConfig=" + pin,
 	}
 	seed, err := installSeed(ctx, render)
 	if err != nil {

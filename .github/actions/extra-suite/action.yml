@@ -44,9 +44,8 @@ runs:
         # The TA the cluster's launch names, and the pin binding it to the
         # configuration it boots on: the routes the router does not relay are
         # sent there.
-        export C8S_TA_URL="https://${TA_ADDRESS:-$CDS_ADDRESS}"
+        export C8S_TA_URL="https://${TA_ADDRESS}"
         export C8S_TA_PIN=/tmp/launch-data/cds-pin.json
-        export C8S_CDS_URL="$C8S_TA_URL" C8S_CDS_PIN="$C8S_TA_PIN"
         export C8S_OPERATOR_KEY=/tmp/launch-data/server.key
         mkdir -p "$SUITE_RESULTS"
         cd "$SUITE_DIR"

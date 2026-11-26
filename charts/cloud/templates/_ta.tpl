@@ -1,17 +1,3 @@
-{{/* The address, pin and operator keys must come from the same values block. */}}
-{{- define "c8s.trustAuthority" -}}
-{{- $ta := pick (.Values.ta | default dict) "address" "measurementsConfig" "operatorKeys" -}}
-{{- $cds := pick (.Values.cds | default dict) "address" "measurementsConfig" "operatorKeys" -}}
-{{- range $field := list "address" "measurementsConfig" "operatorKeys" -}}
-  {{- if not (get $ta $field) -}}{{- $_ := unset $ta $field -}}{{- end -}}
-  {{- if not (get $cds $field) -}}{{- $_ := unset $cds $field -}}{{- end -}}
-{{- end -}}
-{{- if and $ta $cds (not (deepEqual $ta $cds)) -}}
-  {{- fail "VALIDATION_ERROR kind=ta_values_conflict: ta and cds contain different values for the Trust Authority. Put the address, pin and optional operator keys together under ta." -}}
-{{- end -}}
-{{- coalesce $ta $cds | default dict | mustToJson -}}
-{{- end -}}
-
 {{- define "c8s.validateTAPin" -}}
 {{- $document := default "" . -}}
 {{- if not $document -}}

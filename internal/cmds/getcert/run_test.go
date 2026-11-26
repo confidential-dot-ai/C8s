@@ -40,7 +40,7 @@ import (
 )
 
 func TestTAHTTPClientRejectsPlainHTTP(t *testing.T) {
-	// A non-https --cds-url must be refused, not quietly served over a client
+	// A non-https --ta-url must be refused, not quietly served over a client
 	// that skips armTLS attestation of Trust Authority.
 	for _, scheme := range []string{"http://cds:8443", "cds:8443", "tcp://cds:8443"} {
 		cfg := config{
@@ -53,7 +53,7 @@ func TestTAHTTPClientRejectsPlainHTTP(t *testing.T) {
 	}
 }
 
-// No test host mounts a Trust Authority endpoint, so --cds-url is the only source left and
+// No test host mounts a Trust Authority endpoint, so --ta-url is the only source left and
 // its absence is refused before the rest of the configuration is validated.
 func TestRunRequiresATAEndpoint(t *testing.T) {
 	err := run(t.Context(), config{NoSAN: true})

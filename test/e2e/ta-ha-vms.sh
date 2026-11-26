@@ -20,10 +20,6 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=test/e2e/lib.sh
 . "$here/lib.sh"
-TA_VM=${TA_VM:-${CDS_VM:-}}
-TA_IMAGE_MANIFEST=${TA_IMAGE_MANIFEST:-${CDS_IMAGE_MANIFEST:-}}
-TA_ALLOWLIST_SEED=${TA_ALLOWLIST_SEED:-${CDS_ALLOWLIST_SEED:-}}
-TA_NODE_PINS=${TA_NODE_PINS:-${CDS_NODE_PINS:-}}
 : "${NS:?}" "${TA_VM:?}" "${VM:?}" "${TA_IMAGE_MANIFEST:?}" "${SMP:?}" "${NODE_CIDR:?}" \
   "${TA_ALLOWLIST_SEED:?}" "${TA_NODE_PINS:?}"
 

@@ -57,7 +57,6 @@ func (c Config) Endpoint() string {
 func BindFlags(f *pflag.FlagSet, cfg *Config) {
 	cmdsutil.BindTAImagePolicyFlags(f, &cfg.MeasurementsConfig, &cfg.MeasurementsConfigJSON, "pins the Trust Authority endpoint, every entry bound to the launch file that Trust Authority runs on; required unless the node pins Trust Authority")
 	f.StringVar(&cfg.TAURL, "ta-url", "", "HTTPS Trust Authority base URL; refused in an injected sidecar, which dials the endpoint the node mounts")
-	cmdsutil.AliasFlag(f, "ta-url", "cds-url")
 	f.StringVar(&cfg.AttestationApiURL, "attestation-api-url", "", "local attestation-api used to verify Trust Authority's armTLS certificate")
 	f.StringVar(&cfg.CertPath, "cert", "/run/c8s/certs/tls.crt", "the pod's Trust Authority-issued certificate, presented to the Trust Authority")
 	f.StringVar(&cfg.KeyPath, "key", "/run/c8s/certs/tls.key", "private key for --cert")

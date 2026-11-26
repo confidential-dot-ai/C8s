@@ -245,8 +245,8 @@ func TestNodeImagesDecreeRefusesAWorkerDocumentPinningAnotherTA(t *testing.T) {
 // Cobra refuses a worker image without its document, and the reverse, before
 // any decree is built; a Genesis starts from --nodes or a worker document.
 func TestWorkerDecreesRefuseFlagsThatDoNotGoTogether(t *testing.T) {
-	nodeImages := []string{"--config", "c", "--operator-key", "k", "--base-version", "1", "--to", "r", "--cds-pin", "p", "--nodes", "n"}
-	genesis := []string{"--config", "c", "--operator-key", "k", "--target", "r", "--cds-pin", "p", "--platform", "tdx", "--image-manifest", "m", "--resume-version", "0"}
+	nodeImages := []string{"--config", "c", "--operator-key", "k", "--base-version", "1", "--to", "r", "--ta-pin", "p", "--nodes", "n"}
+	genesis := []string{"--config", "c", "--operator-key", "k", "--target", "r", "--ta-pin", "p", "--platform", "tdx", "--image-manifest", "m", "--resume-version", "0"}
 	for _, tc := range []struct {
 		cmd  *cobra.Command
 		args []string

@@ -422,7 +422,7 @@ func TestWorkerChartRouterTakesItsTAFromTheNode(t *testing.T) {
 			}
 			found = append(found, c.Name)
 			assertNoArgWithPrefix(t, "router/"+c.Name, c.Args,
-				"--cds-url", "--image-policy-file", "--cds-measurements", "--cds-rtmrs")
+				"--ta-url", "--image-policy-file")
 			assertContainerHasArg(t, "router/"+c.Name, c.Args,
 				"--attestation-api-url=unix://"+workloadclaims.AttestationAPISocket)
 		}

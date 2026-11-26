@@ -118,45 +118,8 @@ func TestInstallTrustAuthorityValuesMerge(t *testing.T) {
 	if doc, err := os.ReadFile(resolved.path); err != nil || string(doc) != string(pin) {
 		t.Fatalf("resolved pin must be the values file's document: %v", err)
 	}
-	values, err := buildComputedValues(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if url, err := installTAURL(values); err != nil || url != "https://last.example:8443" {
-		t.Fatalf("resolved endpoint = %s, %v", url, err)
-	}
-}
-
-func TestInstallTrustAuthorityOverridesLegacyValues(t *testing.T) {
-	resetCLIState(t)
-	installValues = []string{
-		computedValuesFile(t, valuesAtPath("cds.address", "legacy.example:8443")),
-		computedValuesFile(t, valuesAtPath("cds.measurementsConfig", "legacy pin")),
-		computedValuesFile(t, valuesAtPath("cds.operatorKeys", "legacy keys")),
-	}
-	installTAAddress = "replacement.example:8443"
-	installTAPin = pinnedTAPinFile(t)
-	values, err := buildComputedValues(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if values["cds"] != nil {
-		t.Fatal("the Helm overlay must clear the legacy block")
-	}
-	ta, err := trustAuthorityValues(values)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pin, err := os.ReadFile(installTAPin)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ta["address"] != installTAAddress || ta["measurementsConfig"] != string(pin) || ta["operatorKeys"] != "legacy keys" {
-		t.Fatal("expected the explicit endpoint and pin together with the legacy operator keys")
-	}
-
-	installValues = append(installValues, computedValuesFile(t, valuesAtPath("ta.address", "ambiguous.example:8443")))
-	if err := taPreflight(installTAAddress, installTAPin, installValues); err == nil || !strings.Contains(err.Error(), "ta and cds contain different values") {
-		t.Fatalf("preflight must reject conflicts before applying explicit overrides, got %v", err)
+	ta, err := taValuesFromFiles(installValues)
+	if err != nil || ta["address"] != "last.example:8443" {
+		t.Fatalf("resolved endpoint = %s, %v", ta["address"], err)
 	}
 }

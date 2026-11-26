@@ -24,7 +24,7 @@ import (
 
 // AdmitInputs are what a worker document is admitted against: the customer's
 // Trust Authority pin, the worker image's measurements, and the node images the cluster
-// certifies now, as the node-images decree's --cds-pin, --worker-image and
+// certifies now, as the node-images decree's --ta-pin, --worker-image and
 // --nodes carry them.
 type AdmitInputs struct {
 	TAPin       []byte

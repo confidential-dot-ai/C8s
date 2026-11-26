@@ -317,7 +317,7 @@ func TestMutatePodSupportsRouterProfile(t *testing.T) {
 		"--ca-path=/etc/c8s/certs/ca.crt",
 		"--renew-interval=1h0m0s",
 		"--discovery-out=/run/c8s/discovery/discovery.json",
-		"--discovery-cds-cert-url=/.well-known/cds-cert.pem",
+		"--discovery-ta-cert-url=/.well-known/cds-cert.pem",
 		"--discovery-public-tls-mode=webpki",
 		"--discovery-mesh-ca-url=/.well-known/mesh-ca.pem",
 		"--verbose",
@@ -1187,7 +1187,7 @@ func TestInjectedClientsCarryNoTAPins(t *testing.T) {
 
 	for _, name := range []string{reservedCertContainerName, reservedSecretContainerName, reservedVolumeContainerName} {
 		for _, arg := range containerNamed(pod, name).Args {
-			for _, pin := range []string{"--cds-measurements", "--cds-rtmrs", "--measurements", "--rtmrs", "--image-policy"} {
+			for _, pin := range []string{"--measurements", "--rtmrs", "--image-policy"} {
 				if strings.HasPrefix(arg, pin) {
 					t.Errorf("%s carries %q; pins come from the node policy mount", name, arg)
 				}

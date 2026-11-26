@@ -110,7 +110,7 @@ func discoveryArgs(discovery discoverySpec) []string {
 		args = append(args, "--discovery-out="+discovery.Out)
 	}
 	if discovery.TACertURL != "" {
-		args = append(args, "--discovery-cds-cert-url="+discovery.TACertURL)
+		args = append(args, "--discovery-ta-cert-url="+discovery.TACertURL)
 	}
 	if discovery.PublicTLSMode != "" {
 		args = append(args, "--discovery-public-tls-mode="+discovery.PublicTLSMode)

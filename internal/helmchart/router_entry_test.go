@@ -201,7 +201,7 @@ func TestWorkerChartRouterEntryPinsItsLaunch(t *testing.T) {
 			name: "cds-attest with an extra flag",
 			mutate: func(cs []workloadclaims.SandboxContainer) []workloadclaims.SandboxContainer {
 				for i, c := range cs {
-					if len(c.Argv) > 1 && c.Argv[1] == "cds-attest" {
+					if len(c.Argv) > 1 && c.Argv[1] == "ta-attest" {
 						cs[i].Argv = append(slices.Clone(c.Argv), "--verbose")
 					}
 				}
@@ -212,7 +212,7 @@ func TestWorkerChartRouterEntryPinsItsLaunch(t *testing.T) {
 			name: "no cds-attest",
 			mutate: func(cs []workloadclaims.SandboxContainer) []workloadclaims.SandboxContainer {
 				return slices.DeleteFunc(cs, func(c workloadclaims.SandboxContainer) bool {
-					return len(c.Argv) > 1 && c.Argv[1] == "cds-attest"
+					return len(c.Argv) > 1 && c.Argv[1] == "ta-attest"
 				})
 			},
 		},
@@ -228,7 +228,7 @@ func TestWorkerChartRouterEntryPinsItsLaunch(t *testing.T) {
 			name: "cds-attest with an extra mount",
 			mutate: func(cs []workloadclaims.SandboxContainer) []workloadclaims.SandboxContainer {
 				for i, c := range cs {
-					if len(c.Argv) > 1 && c.Argv[1] == "cds-attest" {
+					if len(c.Argv) > 1 && c.Argv[1] == "ta-attest" {
 						cs[i].Mounts = append(slices.Clone(c.Mounts), pkgallowlist.ObservedMount{Destination: "/extra", Class: pkgallowlist.MountEmptyDir, Storage: pkgallowlist.MountMemory})
 					}
 				}
