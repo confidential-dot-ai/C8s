@@ -18,9 +18,8 @@ replicas do not agree, which is the one check that needs no threshold:
 c8s ta ha status --config ta-config.yaml --ta-pin ta-pin.json || alert
 ```
 
-`--config` is the cluster's launch file: for replicas launched
-[under a Kata Containers runtime](cloud-ta.md#under-a-kata-containers-runtime)
-that is the whole initdata document, not the `ta-config.yaml` inside it.
+For [Kata replicas](cloud-ta.md#under-a-kata-containers-runtime), pass the
+whole initdata document as `--config`.
 
 ## What one replica reports
 

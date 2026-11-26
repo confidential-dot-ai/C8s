@@ -27,20 +27,17 @@ ta-pin.json` carries into the release, and nothing else of it.
 
 ### Under a Kata Containers runtime
 
-This form binds the TA's configuration and nothing more. A Kata guest starts
-`c8s ta` and its attester as containers after launch, so the launch digest
-does not cover them, and C8s does not build, measure or test a TA launched
-this way. A pin written for such a guest does not by itself establish which
-code answers: holding the guest to the TA's code, storage and attester is
-yours to establish and review. You supply both the container that runs the TA
-and the attestation API it reports through, and the pin names neither. It works on SEV-SNP only: on Intel TDX a Kata
-runtime commits initdata to `MRCONFIGID`, which the TA does not read, so a TA
-launched that way exits at its launch-binding check.
+Kata SEV-SNP binds the SHA-256 of its whole initdata document to `HOST_DATA`.
+TDX Kata launch binding through `MRCONFIGID` is not supported here; the TA
+rejects it at startup.
 
-A Kata Containers SEV-SNP runtime binds a guest to an initdata document: TOML
-whose SHA-256 it commits as `HOST_DATA`. The TA reads such a document as its
-launch file when it carries the configuration as a `ta-config.yaml` entry and
-declares `algorithm = "sha256"`:
+Supply the TA container and an attestation API on guest loopback
+(`--attestation-api-url`). The guest launch digest does not cover containers
+loaded after launch: you must establish how the deployment enforces the TA's
+code, storage and attester. C8s provides no measured Kata TA image or
+integration tests for this deployment, including replicated TAs.
+
+Put the TA configuration in the initdata document as follows (schematic):
 
 ```toml
 version = "0.1.0"
@@ -53,66 +50,28 @@ schemaVersion: c8s-ta/v1
 '''
 ```
 
-The TA reads `algorithm` and the `ta-config.yaml` entry and nothing else.
-Every other key and entry, a policy included, is covered by the binding but
-neither read nor enforced by C8s: only whatever else consumes the document
-can enforce it, so do not rely on the runtime's guest policy unless you
-establish it separately.
+C8s detects initdata by its TOML `data` table and requires a string
+`ta-config.yaml` entry and a supported `algorithm`; other files are read as
+bare YAML configuration. Other initdata keys, including guest policy, are
+bound but not enforced by C8s. Establish their enforcement separately.
 
-Which form a file takes is decided by its bytes alone, never by a flag. A
-file that parses as TOML with a `data` table is an initdata document, and is
-then refused unless it declares the platform's `algorithm` and carries the
-entry as a string. Any other file is read as the configuration itself; the
-configuration is YAML, which does not parse as TOML: a mapping line such
-as `clusterID: x` is not TOML, so no configuration is taken for an initdata
-document. The configuration has no top-level `algorithm` or `data` key, and
-a file that does parse as TOML with a `data` table is refused unless its
-`algorithm` is the family's.
+Pass the whole document to the runtime and mount identical bytes for
+`c8s ta --config`; even changes to comments or whitespace break the binding.
+Use it for every command's `--config` and every TA pin's `launch_file`.
+Kata does not use the [`ta-guest` image's staging](../images/ta-guest/README.md#launch-requirements).
+The document must be at most 1 MiB; keep it well below that so its JSON-encoded
+pin also fits the release ConfigMap's 1 MiB limit.
 
-The whole document, with its policy and the configuration inside it, must be
-at most 1 MiB. A larger file is never read as an initdata document: it is
-read as the configuration itself, and an initdata document is not one, so
-the TA refuses it with an error naming that limit. Keep it to a few hundred KiB:
-the pin below embeds it, the release stores the pin in a ConfigMap with a
-1 MiB limit of its own, and a pin over that limit is refused by the API
-server when `c8s install` applies it, not when the pin is read. The
-[`ta-guest` image's staging](../images/ta-guest/README.md#launch-requirements),
-an `opkeydata` disk read into `/run/confai/operator-pubkey` by its initrd,
-does not serve this form: a Kata guest boots the runtime's own image and runs
-no such initrd. You supply the container that runs `c8s ta` and name the path
-yourself. `c8s ta` still takes its own report from an attestation API on a
-loopback address inside the guest (`--attestation-api-url`), which that image
-runs for you and a Kata guest does not: run one beside it. Pass the document to the
-pod as the runtime's initdata and mount the same bytes for `c8s ta --config`:
-the file must match what the runtime received byte for byte, the parts the TA
-does not read included, or the TA exits saying it is not the document this VM
-was launched with.
-Copy the file; do not regenerate it. A difference in a comment or in
-indentation alone changes the digest and fails the same way.
-Every command that reads a launch file takes the whole document, and the
-launch-file binding is over the whole document. So do the clients that read
-their launch file from a pin and not a flag, on replicas, nodes and workers:
-they take whatever `launch_file` the pin carries, so every `ta-pin.json` in
-use must carry the initdata document, and none falls back to a bare
-`ta-config.yaml`.
+`c8s ta config new` produces bare YAML and a pin for it. For Kata, write a
+schema 2 SEV-SNP [measurements config](measurements.md#the-measurements-config)
+for `c8s install --ta-pin` instead:
 
-`c8s ta config new` writes neither this form nor a pin for it, whatever
-manifest it is given, for two reasons. Its pin takes its launch digest from
-`--image-manifest`, which the `ta-guest` image's manifest fills with a digest
-no Kata guest has. And it always names the bare `ta-config.yaml` as
-`launch_file`, which is not what a Kata guest is bound to.
+- Set `measurement` to your Kata guest's launch digest, established from your
+  own build at the deployed vCPU count. The `ta-guest` image's digest will not match.
+- Set every entry's `launch_file` to the same whole initdata document as a
+  JSON string. Omit `launch_file_digest` and `approver_key`.
 
-Write the pin for `c8s install --ta-pin` yourself, as a schema 2 SEV-SNP
-[measurements config](measurements.md#the-measurements-config):
-
-1. Establish the launch digest of your Kata guest, at the vCPU count it runs
-   with, from your own build. It is the entry's `measurement`.
-2. Put the whole initdata document, byte for byte, in the entry's
-   `launch_file`, as a JSON string.
-3. Leave out `launch_file_digest` and `approver_key`. Each of the three names
-   what `HOST_DATA` holds, and a Kata runtime fills it with the document's
-   digest, so an entry copied from a `ta-guest` pin with its `approver_key`
-   kept matches no Kata guest.
+Replace the placeholders below with those values:
 
 ```json
 {
@@ -128,15 +87,9 @@ Write the pin for `c8s install --ta-pin` yourself, as a schema 2 SEV-SNP
 }
 ```
 
-Every entry of a TA pin must carry that same `launch_file`, so the set holds
-TA entries only.
-
-The `c8s ta ha` commands that take `--image-manifest` build their pins from it too, and pair its launch
-digest with the launch file. Give them a manifest you write that carries your
-Kata guest's launch digest: with the one published for `ta-guest` they sign a
-decree no Kata replica matches. The `c8s ta ha` commands do not hold the
-document's `algorithm` to a platform: the TA at startup, `c8s install
---ta-pin` and the clients do.
+For HA commands taking `--image-manifest`, supply a manifest with your Kata
+guest's launch digest. These pin builders check the initdata algorithm against
+`--platform`; TA startup checks it against the attested family.
 
 ## The flows it needs
 

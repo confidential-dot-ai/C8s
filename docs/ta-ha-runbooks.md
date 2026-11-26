@@ -6,14 +6,9 @@ explains the behaviour each one relies on, and
 
 Every runbook assumes:
 
-- `ta-config.yaml`: the launch file every replica of the cluster boots. For
-  replicas launched [under a Kata Containers
-  runtime](cloud-ta.md#under-a-kata-containers-runtime) that file is the whole
-  initdata document, passed wherever a command takes `--config`. The `c8s ta ha`
-  commands do not hold the document's `algorithm` to a platform: the TA at
-  startup, `c8s install --ta-pin` and the clients do. The pins and
-  the image manifest for such replicas are yours to write, as that section
-  describes, and C8s tests no replicated TA launched this way;
+- `ta-config.yaml`: the launch file every replica boots. For
+  [Kata replicas](cloud-ta.md#under-a-kata-containers-runtime), use the whole
+  initdata document wherever these commands take `--config`;
 - `ta-pin.json`: the pin document for the TA images the cluster accepts,
   which `c8s ta ha pin-policy --out` writes;
 - `operator.key`: a private key whose public half the launch file pins.
