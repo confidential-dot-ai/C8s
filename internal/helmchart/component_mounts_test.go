@@ -185,9 +185,6 @@ type componentPin struct {
 	imageEnv   map[string]string
 }
 
-// componentPins maps each component digest a render sets to its
-// componentPin, from the render's own --set arguments, the Trust Authority digest
-// helmTemplate pins and the nginx digest the router renders.
 // renderedLaunch is the launch a node observes for a rendered component
 // container: its argv, its classified mount table and the environment it
 // starts with. It is what Index.RoleOf and AdmitsContainer are given.
@@ -201,6 +198,7 @@ func renderedLaunch(t *testing.T, spec corev1.PodSpec, c corev1.Container, pin c
 	}
 }
 
+// componentPins pins the digests of the render's --set arguments and the router's nginx image.
 func componentPins(t *testing.T, out string, args []string) map[string]componentPin {
 	t.Helper()
 	entrypoints, envs := componentPinValues(t), componentImageEnvValues(t)
