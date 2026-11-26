@@ -34,6 +34,11 @@ on:
   # see docker-build-matrix.sh). Dispatching it to give a docs-only merge its
   # images is unnecessary: the unfiltered push trigger above covers that.
   workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: "Require this full workflow source SHA before publishing components."
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -48,6 +53,22 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  verify-source:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Verify the requested source
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          if [[ -n "$EXPECTED_SHA" ]]; then
+            if [[ ! "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ || "$SOURCE_SHA" != "$EXPECTED_SHA" ]]; then
+              echo '::error::workflow source must match the requested SHA'
+              exit 1
+            fi
+          fi
   # Per-image jobs run only when the component's own cmd/<X> or
   # internal/cmds/<X> changed (this applies to both PR events and
   # pushes to main). Shared code (api/**, pkg/**, root internal/** minus
@@ -61,6 +82,7 @@ jobs:
   # `latest` is reserved for the complete stable release rebuild below.
   changes:
     name: Detect changed components
+    needs: verify-source
     runs-on: ubuntu-latest
     # dorny/paths-filter reads a pull request's files from the API.
     permissions:

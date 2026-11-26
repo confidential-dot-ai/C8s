@@ -479,11 +479,13 @@ Pull the printed `repository@sha256:…` pins or the receipt's `images` values.
 Optional `--receipt <file>` saves run IDs, pins in `images`, and first-attempt numbers
 in `guestAttempt` and `componentAttempt`; component fields are empty for existing tags.
 Read logs with `gh run view <run> --attempt <attempt> --log --repo <repo>`.
-Receipts require Python 3 and install atomically without replacing existing paths.
+Receipts require Python 3 and a filesystem supporting hard links. The publisher
+probes that support before remote actions, then installs the receipt atomically
+without replacing existing paths.
 
-The publisher requires yq v4 and the target workflow's `expected_sha` source guard,
-which rejects moved sources before guest builds. Unsupported targets are rejected
-before mutation; use their matching publisher. Component-pin verification also
+The publisher requires yq v4 and both target workflows' `expected_sha` source guards,
+which reject moved sources before component or guest builds. Unsupported targets
+are rejected before mutation; use their matching publisher. Component-pin verification also
 requires a target containing the sync log records.
 
 ## Physical host prerequisites

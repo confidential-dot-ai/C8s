@@ -34,7 +34,8 @@
 #   --receipt      write source, dispatched run IDs and verified guest digest references
 #   --dry-run      resolve and check, print what would be dispatched, exit 0
 #
-# Needs: gh (authenticated), curl, jq, yq v4; --receipt also needs python3.
+# Needs: gh (authenticated), curl, jq, yq v4; --receipt also needs python3 and
+# hard-link support in its output directory (checked before remote actions).
 # GH_TOKEN (or gh's own token) authenticates private packages through ghcr.
 
 set -euo pipefail
@@ -100,6 +101,20 @@ if [ -n "$receipt" ]; then
   [ ! -e "$receipt" ] && [ ! -L "$receipt" ] || die "receipt already exists: $receipt"
   receipt_dir=$(dirname -- "$receipt")
   [ -d "$receipt_dir" ] && [ -w "$receipt_dir" ] || die "receipt directory is not writable"
+  receipt_dir=$(CDPATH='' cd -P -- "$receipt_dir" >/dev/null && pwd -P)
+  receipt="$receipt_dir/${receipt##*/}"
+  if [ "$dry_run" = false ]; then
+    python3 - "$receipt_dir" <<'PY' || die "receipt directory must support atomic hard-link installation"
+import os
+import sys
+import tempfile
+
+with tempfile.NamedTemporaryFile(prefix=".publication-probe-", dir=sys.argv[1]) as source:
+    target = source.name + ".link"
+    os.link(source.name, target)
+    os.unlink(target)
+PY
+  fi
 fi
 
 for tool in gh curl jq yq; do
@@ -152,15 +167,17 @@ registry_token() {
     | jq -r '.token // empty'
 }
 
-# tag_exists <repository> <tag>: HEAD on the manifest, any media type.
+# tag_exists <repository> <tag> [headers]: HEAD on the manifest, any media type.
 tag_exists() {
-  local repository=$1 tag=$2 token code
+  local repository=$1 tag=$2 headers=${3:-/dev/null} token code
   token=$(registry_token "$repository")
   [ -n "$token" ] || die "no registry token for $registry_namespace/$repository"
-  code=$(curl -s -o /dev/null -w '%{http_code}' -I \
+  if ! code=$(curl -sS -o /dev/null -D "$headers" -w '%{http_code}' -I \
     -H "Authorization: Bearer $token" \
     -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json' \
-    "https://$registry_host/v2/$registry_namespace/$repository/manifests/$tag")
+    "https://$registry_host/v2/$registry_namespace/$repository/manifests/$tag"); then
+    die "manifest request failed for $repository:$tag"
+  fi
   case "$code" in
     200) return 0 ;;
     404) return 1 ;;
@@ -218,6 +235,14 @@ if ! yq -o=json <<<"$manual" | jq -e '
 ' >/dev/null; then
   die "target lacks the guest source guard; use that revision's publisher"
 fi
+docker=$(gh api "repos/$repo/contents/.github/workflows/$docker_workflow?ref=$sha" \
+  -H 'Accept: application/vnd.github.raw+json')
+if ! yq -o=json <<<"$docker" | jq -e '
+  (.on.workflow_dispatch.inputs | has("expected_sha")) and (.jobs | has("verify-source")) and
+  (.jobs.changes.needs | if type == "array" then index("verify-source") != null else . == "verify-source" end)
+' >/dev/null; then
+  die "target lacks the component source guard; use its matching publisher"
+fi
 ensure_branch
 
 missing_text=$(missing_components)
@@ -233,7 +258,7 @@ else
   if [ "$dry_run" = true ]; then
     echo "would dispatch $docker_workflow on $branch"
   else
-    dispatch_and_wait "$docker_workflow"
+    dispatch_and_wait "$docker_workflow" -f "inputs[expected_sha]=$sha"
     component_run_id=$last_run_id
     still_missing=$(missing_components)
     [ -z "$still_missing" ] || die "$docker_workflow finished but tags are still missing: $still_missing"
@@ -261,15 +286,11 @@ gh run view "$image_run_id" --repo "$repo" --attempt 1 --log >"$work/guest.log"
 guests='{}'
 for expected in "${guest_refs[@]}"; do
   reference="$registry_host/$registry_namespace/$expected"
-  tag_exists "${expected%%:*}" "${expected#*:}" || die "missing expected image $expected"
+  tag_exists "${expected%%:*}" "${expected#*:}" "$work/headers" || die "missing expected image $expected"
   published=$(awk -F '\t' -v ref="$reference" '
     /Pushed \[registry\] / {line=$NF; sub(/^.*Pushed \[registry\] /, "", line); selected[$1]=(line==ref)}
     / Digest: sha256:[0-9a-f]+$/ && selected[$1] {sub(/^.* Digest: /, "", $NF); print $NF; selected[$1]=0}' "$work/guest.log" | sort -u)
   [[ "$published" =~ ^sha256:[0-9a-f]{64}$ ]] || die "missing or conflicting publication digest for $reference"
-  token=$(registry_token "${expected%%:*}")
-  curl -fsSI -H "Authorization: Bearer $token" \
-    -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json' \
-    "https://$registry_host/v2/$registry_namespace/${expected%%:*}/manifests/${expected#*:}" >"$work/headers"
   current=$(awk 'tolower($1)=="docker-content-digest:" {gsub(/\r/, "", $2); print $2}' "$work/headers")
   [ "$current" = "$published" ] || die "guest tag changed since run $image_run_id: $reference"
   guests=$(jq -c --arg tag "$reference" --arg pin "${reference%:*}@$published" '. + {($tag): $pin}' <<<"$guests")
