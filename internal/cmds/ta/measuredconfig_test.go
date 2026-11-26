@@ -3,6 +3,7 @@ package ta
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -209,6 +210,13 @@ func TestRunMeasuredConfigReadsAnInitdataDocumentFromMRCONFIGID(t *testing.T) {
 	bind(launchFile, strings.Repeat("cd", 48))
 	if err := runMeasuredConfig(t.Context(), cfg); err == nil || !strings.Contains(err.Error(), "RTMR[3]") {
 		t.Fatalf("an extended RTMR[3] beside a matching MRCONFIGID = %v, want a refusal naming the register", err)
+	}
+	// A measured initrd that seeded RTMR[3] from the same document starts it
+	// too, whatever MRCONFIGID holds.
+	seed := runtimemeasure.Seed(launchFile)
+	bind(configuration, hex.EncodeToString(seed[:]))
+	if err := runMeasuredConfig(t.Context(), cfg); !errors.Is(err, noRoute) {
+		t.Fatalf("a report whose RTMR[3] seed binds the document = %v, want startup to pass the launch-binding check", err)
 	}
 }
 

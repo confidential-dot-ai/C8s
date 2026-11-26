@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/pflag"
 
+	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
 )
 
@@ -376,5 +377,39 @@ func TestResolveTAPinsFailsOnAnUnreadablePolicy(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "node policy") {
 		t.Fatalf("error = %v, want it to name the node policy", err)
+	}
+}
+
+// A pin that reads the launch file from MRCONFIGID does not read RTMR[3], and
+// a guest seeded from another launch file runs that file. So such a pin names
+// one Trust Authority only when it also pins RTMR[3] untouched.
+func TestTALaunchFileRequiresAnUntouchedRTMR3BesideMRCONFIGID(t *testing.T) {
+	hex96 := func(b string) string { return strings.Repeat(b, 48) }
+	document := func(rtmr3, field string) []byte {
+		return []byte(`{"schema_version":"3","tee":"tdx","measurements":[{"name":"ta","mrtd":"` + hex96("aa") +
+			`","rtmr":[null,"` + hex96("bb") + `","` + hex96("cc") + `"` + rtmr3 + `],"launch_file":"clusterID: test\n"` + field + `}]}`)
+	}
+	initData := `,"launch_file_field":"init_data"`
+	for _, tc := range []struct {
+		name, rtmr3, field string
+		wantErr            bool
+	}{
+		{name: "MRCONFIGID, RTMR[3] pinned untouched", rtmr3: `,""`, field: initData},
+		{name: "MRCONFIGID, RTMR[3] unpinned", field: initData, wantErr: true},
+		{name: "MRCONFIGID, RTMR[3] null", rtmr3: `,null`, field: initData, wantErr: true},
+		{name: "MRCONFIGID, RTMR[3] pinned to a value", rtmr3: `,"` + hex96("dd") + `"`, field: initData, wantErr: true},
+		{name: "the RTMR[3] seed, RTMR[3] unpinned"},
+	} {
+		values, err := refvalues.Parse(document(tc.rtmr3, tc.field))
+		if err != nil {
+			t.Fatalf("%s: parse: %v", tc.name, err)
+		}
+		_, err = TALaunchFile(values)
+		if tc.wantErr != errors.Is(err, ErrTAPinUnbound) || (!tc.wantErr && err != nil) {
+			t.Errorf("%s: TALaunchFile = %v, want refusal %v", tc.name, err, tc.wantErr)
+		}
+		if tc.wantErr && err != nil && !strings.Contains(err.Error(), "RTMR[3]") {
+			t.Errorf("%s: refusal %q does not name RTMR[3]", tc.name, err)
+		}
 	}
 }
