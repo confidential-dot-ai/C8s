@@ -716,3 +716,123 @@ func TestDeletionKeepsThePodUntilItsEndpointsAreWithdrawn(t *testing.T) {
 		t.Fatalf("after the retry: endpoints %q, finalizer held=%t, want withdrawn and released", got.Annotations[endpointsAnnotation], controllerutil.ContainsFinalizer(got, finalizer))
 	}
 }
+
+// countGets counts the Cloud reads of the Pod's instance from here on.
+func countGets(cloud *fakeCloud, answer func() (*instance, error)) *int {
+	n := new(int)
+	cloud.get = func(string) (*instance, error) {
+		*n++
+		if answer != nil {
+			return answer()
+		}
+		return cloud.in, nil
+	}
+	return n
+}
+
+// The wait Cloud asked for holds however the next pass was triggered: a Pod
+// update inside it is not another read. The wait ending still ends the hold.
+func TestDeletionDoesNotLookAgainBeforeCloudAllows(t *testing.T) {
+	pod, r, cloud, _ := heldPod(t)
+	end := getPod(t, r, pod).DeletionTimestamp.Time
+	at := func(left time.Duration) { r.now = func() time.Time { return end.Add(-left) } }
+	gets := countGets(cloud, func() (*instance, error) {
+		return nil, &cloudProblem{status: http.StatusTooManyRequests, retryAfter: 20 * time.Second}
+	})
+	if got := reconcileResult(t, r, pod).RequeueAfter; *gets != 1 || got != 20*time.Second {
+		t.Fatalf("%d reads, requeue %s: want 1 read and the 20s Cloud asked for", *gets, got)
+	}
+	at(25 * time.Second)
+	if got := reconcileResult(t, r, pod).RequeueAfter; *gets != 1 || got != 15*time.Second {
+		t.Fatalf("%d reads, requeue %s for a pass 5s into a 20s wait: want no new read and the 15s left", *gets, got)
+	}
+	at(10 * time.Second)
+	if reconcileResult(t, r, pod); *gets != 2 {
+		t.Fatalf("%d reads once the wait Cloud asked for had passed, want 2", *gets)
+	}
+	at(0)
+	cloud.get = nil
+	if err := reconcile(t, r, pod); err != nil {
+		t.Fatal(err)
+	}
+	if cloud.deleteCalls != 1 {
+		t.Fatalf("%d destruction requests when the grace period ended inside Cloud's wait, want 1", cloud.deleteCalls)
+	}
+}
+
+// Looks are a poll interval apart from start to start, however long one
+// takes and however the next pass was triggered.
+func TestDeletionLooksAPollIntervalApart(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		took, want time.Duration
+	}{
+		{"quick look", 0, pollInterval},
+		{"slow look", 7 * time.Second, 3 * time.Second},
+		{"look longer than the interval", 12 * time.Second, minLookGap},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pod, r, cloud, _ := heldPod(t)
+			end := getPod(t, r, pod).DeletionTimestamp.Time
+			r.now = func() time.Time { return end.Add(-60 * time.Second) }
+			gets := countGets(cloud, func() (*instance, error) {
+				r.now = func() time.Time { return end.Add(-60*time.Second + tc.took) }
+				return cloud.in, nil
+			})
+			if got := reconcileResult(t, r, pod).RequeueAfter; *gets != 1 || got != tc.want {
+				t.Fatalf("%d reads, requeue %s after a look that took %s: want 1 and %s", *gets, got, tc.took, tc.want)
+			}
+		})
+	}
+	t.Run("pass between looks", func(t *testing.T) {
+		pod, r, cloud, _ := heldPod(t)
+		end := getPod(t, r, pod).DeletionTimestamp.Time
+		gets := countGets(cloud, nil)
+		reconcileResult(t, r, pod)
+		r.now = func() time.Time { return end.Add(-26 * time.Second) }
+		if got := reconcileResult(t, r, pod).RequeueAfter; *gets != 1 || got != 6*time.Second {
+			t.Fatalf("%d reads, requeue %s for a pass 4s after a look: want no new read and the 6s to the next", *gets, got)
+		}
+	})
+}
+
+// Cloud's wait runs from its answer, and a look that outlasted the interval
+// is followed by another no sooner than the minimum gap, whatever triggers
+// the pass. Neither is kept past the end of the wait.
+func TestDeletionSpacesLooksFromWhenTheLastEnded(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		left, took, retry time.Duration
+		want              time.Duration
+	}{
+		{"cloud's wait after a slow answer", 60 * time.Second, 5 * time.Second, 20 * time.Second, 20 * time.Second},
+		{"look longer than the interval", 60 * time.Second, 12 * time.Second, 0, minLookGap},
+		{"look just short of the interval", 60 * time.Second, 9750 * time.Millisecond, 0, 250 * time.Millisecond},
+		{"cloud's wait past the end of the hold", 30 * time.Second, 0, time.Hour, 30 * time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pod, r, cloud, _ := heldPod(t)
+			end := getPod(t, r, pod).DeletionTimestamp.Time
+			after := end.Add(-tc.left + tc.took)
+			r.now = func() time.Time { return end.Add(-tc.left) }
+			gets := countGets(cloud, func() (*instance, error) {
+				r.now = func() time.Time { return after }
+				if tc.retry != 0 {
+					return nil, &cloudProblem{status: http.StatusTooManyRequests, retryAfter: tc.retry}
+				}
+				return cloud.in, nil
+			})
+			if got := reconcileResult(t, r, pod).RequeueAfter; got != tc.want {
+				t.Fatalf("requeued after %s, want %s", got, tc.want)
+			}
+			if next := r.nextLook[pod.UID]; next != after.Add(tc.want) || next.After(end) {
+				t.Fatalf("next look kept as %s after the look ended, want %s and no later than the end of the hold", next.Sub(after), tc.want)
+			}
+			// A pass triggered just short of that time is not another look.
+			r.now = func() time.Time { return after.Add(tc.want - time.Millisecond) }
+			if reconcileResult(t, r, pod); *gets != 1 {
+				t.Fatalf("%d reads for a pass before the next look was due, want 1", *gets)
+			}
+		})
+	}
+}
