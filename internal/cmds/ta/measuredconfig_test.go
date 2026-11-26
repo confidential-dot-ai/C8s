@@ -101,7 +101,7 @@ func measuredConfig(t *testing.T, c cluster) *taconfig.Config {
 // inside it, so the bytes a replica's peers and its cluster's decrees pin are
 // the whole document.
 func TestMeasuredConfigKeepsAnInitdataLaunchFileWhole(t *testing.T) {
-	launchFile, _ := initdataLaunchFile(t)
+	launchFile, _ := initdataLaunchFile(t, taconfig.InitdataAlgorithmSNP)
 	cfg, err := withMeasuredConfig(config{}, launchFile, teetypes.FamilySNP)
 	if err != nil {
 		t.Fatal(err)
@@ -121,12 +121,12 @@ func TestMeasuredConfigKeepsAnInitdataLaunchFileWhole(t *testing.T) {
 
 // initdataLaunchFile returns a Kata Containers initdata document and the
 // configuration it carries.
-func initdataLaunchFile(t *testing.T) (launchFile, configuration []byte) {
+func initdataLaunchFile(t *testing.T, algorithm string) (launchFile, configuration []byte) {
 	t.Helper()
 	configuration = measuredDocument(t, cluster{operatorPEM: operatorKeysPEM(t), workloads: map[string]string{"attestation-api": digestA}})
 	launchFile, err := toml.Marshal(map[string]any{
 		"version":   "0.1.0",
-		"algorithm": taconfig.InitdataAlgorithmSNP,
+		"algorithm": algorithm,
 		"data":      map[string]string{taconfig.ConfigFile: string(configuration)},
 	})
 	if err != nil {
@@ -138,7 +138,7 @@ func initdataLaunchFile(t *testing.T) (launchFile, configuration []byte) {
 // The launch binding is over the initdata document: a report binding only the
 // configuration inside it is of a guest launched with something else.
 func TestRunMeasuredConfigBindsTheWholeInitdataDocument(t *testing.T) {
-	launchFile, configuration := initdataLaunchFile(t)
+	launchFile, configuration := initdataLaunchFile(t, taconfig.InitdataAlgorithmSNP)
 	path := filepath.Join(t.TempDir(), "initdata.toml")
 	if err := os.WriteFile(path, launchFile, 0o600); err != nil {
 		t.Fatal(err)
@@ -165,6 +165,50 @@ func TestRunMeasuredConfigBindsTheWholeInitdataDocument(t *testing.T) {
 	bind(configuration)
 	if err := runMeasuredConfig(t.Context(), cfg); err == nil || !strings.Contains(err.Error(), "launched with") {
 		t.Fatalf("a report binding only the carried configuration = %v, want a launch-binding refusal", err)
+	}
+}
+
+// On TDX a Kata Containers runtime commits the document in MRCONFIGID and
+// extends no register, so that field alone holds the binding.
+func TestRunMeasuredConfigReadsAnInitdataDocumentFromMRCONFIGID(t *testing.T) {
+	launchFile, configuration := initdataLaunchFile(t, taconfig.InitdataAlgorithmTDX)
+	path := filepath.Join(t.TempDir(), "initdata.toml")
+	if err := os.WriteFile(path, launchFile, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stub := mockapi.New(t)
+	stub.SetPlatform(teetypes.PlatformTDX)
+	untouched := strings.Repeat("00", 48)
+	bind := func(bound []byte, register string) {
+		t.Helper()
+		digest, err := runtimemeasure.LaunchFileDigest(teetypes.FamilyTDX, bound)
+		if err != nil {
+			t.Fatal(err)
+		}
+		verdict := mockapi.PassingVerdict(strings.Repeat("ab", 48))
+		verdict.Claims.InitData = digest
+		verdict.Claims.PlatformData = map[string]any{"rtmr_3": register}
+		stub.SetVerdict(verdict)
+	}
+	noRoute := errors.New("no default route")
+	previous := chooseHostInterface
+	t.Cleanup(func() { chooseHostInterface = previous })
+	chooseHostInterface = func() (net.IP, error) { return nil, noRoute }
+	cfg := config{configPath: path, attestationApiURL: stub.URL(), host: "auto"}
+
+	bind(launchFile, untouched)
+	if err := runMeasuredConfig(t.Context(), cfg); !errors.Is(err, noRoute) {
+		t.Fatalf("a report whose MRCONFIGID binds the document = %v, want startup to pass the launch-binding check", err)
+	}
+	bind(configuration, untouched)
+	if err := runMeasuredConfig(t.Context(), cfg); err == nil || !strings.Contains(err.Error(), "launched with") {
+		t.Fatalf("a report binding only the carried configuration = %v, want a launch-binding refusal", err)
+	}
+	// MRCONFIGID says nothing about RTMR[3]: a register something extended
+	// means a measurer the launch file does not account for ran.
+	bind(launchFile, strings.Repeat("cd", 48))
+	if err := runMeasuredConfig(t.Context(), cfg); err == nil || !strings.Contains(err.Error(), "RTMR[3]") {
+		t.Fatalf("an extended RTMR[3] beside a matching MRCONFIGID = %v, want a refusal naming the register", err)
 	}
 }
 
@@ -384,19 +428,45 @@ func fetchJSON(t *testing.T, client *http.Client, url string, into any) {
 	}
 }
 
-// On TDX the report this build reads binds no initdata document, so startup
-// stops at the launch-binding check, before the document's family is judged.
-func TestRunMeasuredConfigRefusesAnInitdataDocumentOnTDXAtTheLaunchBinding(t *testing.T) {
-	launchFile, _ := initdataLaunchFile(t)
+// A TDX report that binds the document in neither field is refused naming
+// both, so the operator sees which fields were read.
+func TestRunMeasuredConfigNamesBothTDXFieldsWhenNeitherBinds(t *testing.T) {
+	launchFile, _ := initdataLaunchFile(t, taconfig.InitdataAlgorithmTDX)
 	path := filepath.Join(t.TempDir(), "initdata.toml")
 	if err := os.WriteFile(path, launchFile, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	stub := mockapi.New(t)
 	stub.SetPlatform(teetypes.PlatformTDX)
-	stub.SetVerdict(mockapi.PassingVerdict(strings.Repeat("ab", 48)))
+	verdict := mockapi.PassingVerdict(strings.Repeat("ab", 48))
+	verdict.Claims.PlatformData = map[string]any{"rtmr_3": strings.Repeat("00", 48)}
+	stub.SetVerdict(verdict)
 	err := runMeasuredConfig(t.Context(), config{configPath: path, attestationApiURL: stub.URL(), host: "auto"})
-	if err == nil || !strings.Contains(err.Error(), "launched with") {
-		t.Fatalf("got %v, want a launch-binding refusal", err)
+	if err == nil || !strings.Contains(err.Error(), "launched with") || !strings.Contains(err.Error(), "RTMR[3]") || !strings.Contains(err.Error(), "MRCONFIGID") {
+		t.Fatalf("got %v, want a launch-binding refusal naming RTMR[3] and MRCONFIGID", err)
+	}
+}
+
+// A document its launcher bound but the Trust Authority cannot read is refused
+// for what is wrong with it, not as a file the VM was not launched with.
+func TestRunMeasuredConfigNamesAnUnreadableInitdataDocument(t *testing.T) {
+	launchFile, _ := initdataLaunchFile(t, "md5")
+	path := filepath.Join(t.TempDir(), "initdata.toml")
+	if err := os.WriteFile(path, launchFile, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	digest, err := runtimemeasure.LaunchFileDigest(teetypes.FamilyTDX, launchFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stub := mockapi.New(t)
+	stub.SetPlatform(teetypes.PlatformTDX)
+	verdict := mockapi.PassingVerdict(strings.Repeat("ab", 48))
+	verdict.Claims.InitData = digest
+	verdict.Claims.PlatformData = map[string]any{"rtmr_3": strings.Repeat("00", 48)}
+	stub.SetVerdict(verdict)
+	err = runMeasuredConfig(t.Context(), config{configPath: path, attestationApiURL: stub.URL(), host: "auto"})
+	if err == nil || !strings.Contains(err.Error(), "algorithm") || strings.Contains(err.Error(), "launched with") {
+		t.Fatalf("got %v, want a refusal naming the algorithm", err)
 	}
 }

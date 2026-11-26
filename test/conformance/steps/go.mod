@@ -3,7 +3,7 @@ module github.com/confidential-dot-ai/confidential-kubernetes/test/conformance/s
 go 1.27.3
 
 require (
-	github.com/confidential-dot-ai/attestation-go v0.8.3
+	github.com/confidential-dot-ai/attestation-go v0.8.4
 	github.com/confidential-dot-ai/confidential-kubernetes v0.103.3
 	github.com/cucumber/godog v0.16.0
 	github.com/google/go-sev-guest v0.15.0

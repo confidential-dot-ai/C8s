@@ -9,11 +9,10 @@ cluster is [operator.md](operator.md); running several of them is
 
 ## Where it runs
 
-`ta-pin.json`, the document every client holds the TA to, binds two values:
-the guest's launch digest and the exact bytes of the launch file it booted,
-which on SEV-SNP the launcher commits as `HOST_DATA`. For the `ta-guest` image
-those are the digest in the `manifest.json` published with it and the
-`ta-config.yaml`
+`ta-pin.json` binds the guest image identity and the exact launch-file bytes.
+The image identity is the SEV-SNP launch measurement or the TDX tuple of
+MRTD, RTMR[1] and RTMR[2]. For `ta-guest`, use the image measurements from its
+published `manifest.json` and the exact `ta-config.yaml`
 ([launch requirements](../images/ta-guest/README.md#launch-requirements)).
 
 An AKS or GKE confidential VM proves neither: its launch digest is the
@@ -28,8 +27,37 @@ ta-pin.json` carries into the release, and nothing else of it.
 ### Under a Kata Containers runtime
 
 Kata SEV-SNP binds the SHA-256 of its whole initdata document to `HOST_DATA`.
-TDX Kata launch binding through `MRCONFIGID` is not supported here; the TA
-rejects it at startup.
+Kata TDX binds its SHA-384 to `MRCONFIGID`, and the document then declares
+`algorithm = "sha384"`. On TDX the TA starts in one of two cases:
+
+- RTMR[3] holds the file's seed, as the `ta-guest` initrd extends it.
+  `MRCONFIGID` is then not read.
+- `MRCONFIGID` holds the file's SHA-384 and RTMR[3] is all zero.
+
+It refuses every other report. The `MRCONFIGID` case is not specific to Kata:
+any TDX launcher that sets the field, for a guest that extends nothing into
+RTMR[3], starts the TA, and no register shows that an initrd staged the
+operator key. The TA accepts the field because the check asks only what its
+own verified report proves about the file, and either field proves it byte
+for byte. One check serves every guest: it cannot tell a `ta-guest` VM from
+another, so identify the TDX image with pins on MRTD, RTMR[1] and RTMR[2].
+`c8s verify` can also display `MRCONFIGID`. HA peer and generated Genesis
+pins still bind RTMR[3], so they cannot authenticate an MRCONFIGID-only TA.
+
+For an MRCONFIGID-only TDX deployment with one replica filling one voter seat,
+follow the [runbook's `--alone` warning](ta-ha-runbooks.md#1-start-a-cluster-genesis).
+Use `--platform tdx --image-manifest <manifest.json>` and omit `--vcpus`;
+the manifest must contain your Kata guest's MRTD, RTMR[1] and RTMR[2].
+`genesis --alone` still authenticates the target: pass a separate schema 3
+`--ta-pin` with MRTD, RTMR[1], RTMR[2], the full `launch_file`, and
+`"launch_file_field": "init_data"`. Also pin RTMR[3] to all zero (`""` in the
+`rtmr` array), so the target cannot use a different RTMR[3]-bound launch file.
+`--alone` allows a one-voter Genesis without a peer response; the decree's
+generated RTMR[3] pins still do not match that target.
+
+The cloud chart rejects schema 3 pins. A schema 2 TDX pin can pass rendering
+but fail TA authentication; install may warn and apply a release whose
+clients cannot authenticate their TA.
 
 Supply the TA container and an attestation API on guest loopback
 (`--attestation-api-url`). The guest launch digest does not cover containers
@@ -71,7 +99,8 @@ for `c8s install --ta-pin` instead:
 - Set every entry's `launch_file` to the same whole initdata document as a
   JSON string. Omit `launch_file_digest` and `approver_key`.
 
-Replace the placeholders below with those values:
+Replace the placeholders below with those values. This example is for SEV-SNP;
+a TDX pin using the file's RTMR[3] seed does not match an MRCONFIGID-only TA.
 
 ```json
 {
@@ -88,8 +117,8 @@ Replace the placeholders below with those values:
 ```
 
 For HA commands taking `--image-manifest`, supply a manifest with your Kata
-guest's launch digest. These pin builders check the initdata algorithm against
-`--platform`; TA startup checks it against the attested family.
+guest's image measurements. The pin builders check the initdata algorithm
+against `--platform`; TA startup checks it against the attested family.
 
 ## The flows it needs
 

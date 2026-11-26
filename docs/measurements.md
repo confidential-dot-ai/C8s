@@ -38,6 +38,7 @@ runtime measurement registers, RTMR[0] to RTMR[3], extendable in the guest.
 | `RTMR[1]` | The guest kernel. | `--rtmr 1=<HEX>`, `--image-manifest`, config `rtmr[1]` |
 | `RTMR[2]` | The kernel command line, which carries the dm-verity root hash of the read-only root. | `--rtmr 2=<HEX>`, `--image-manifest`, config `rtmr[2]` |
 | `RTMR[3]` | The launch file the node was started with, then any workload images a measurer extended, then the allowlist policies it applied. | `--rtmr 3=<HEX>` or `--operator-pkey`, both needing `--image-manifest`; `--pin-policy`, or `--trust-operator` with `--trust-operator-keys`, then judge the replayed policies |
+| `MRCONFIGID` | Data set by the launcher; TA startup can bind its launch file here while RTMR[3] is zero. | Schema 3 config: `launch_file_field: "init_data"`. |
 | `REPORTDATA` | As SEV-SNP's `REPORT_DATA`. | Derived by the verifier |
 
 Pinning MRTD alone leaves the guest unpinned: it covers the firmware, so a host
@@ -53,6 +54,12 @@ Intel's current collateral says whether those levels are up to date, which
 ([verify.md](verify.md#require-a-current-intel-tcb-on-tdx)).
 
 ### Policy history
+
+A Trust Authority can bind its launch file through `MRCONFIGID` while
+RTMR[3] is all zero ([Kata startup](cloud-ta.md#under-a-kata-containers-runtime)).
+An RTMR[3] seed pin, such as `--operator-pkey` builds, does not match that TA.
+Schema 3 image pins can select `MRCONFIGID`; the policy history check below
+replays only RTMR[3].
 
 RTMR[3] is extended by software inside the guest, so on its own it says nothing
 about which image booted: pin it only together with an image, which is why
@@ -140,7 +147,7 @@ takes the same document as `--ta-pin`. Some also accept
 
 | Field | Rule |
 |---|---|
-| `schema_version` | Exactly `"1"`, or `"2"` for a document pinning a launch file. |
+| `schema_version` | `"1"`, `"2"` or `"3"`. Launch-file pins require 2 or 3; `launch_file_field` requires 3. |
 | `tee` | The TEE family: `sev-snp` or `tdx`, which is what `derive` writes. A platform tag such as `snp` or `az-tdx` normalizes to its family. One file covers one family. |
 | `measurements` | At least one entry. Two entries may not pin the same tuple. |
 | `name` | Required, unique in the file, and diagnostic only: nothing matches on it. |
@@ -148,14 +155,27 @@ takes the same document as `--ta-pin`. Some also accept
 | `mrtd` | TDX only and required there, 96 lowercase hex. |
 | `rtmr` | TDX only: up to four slots, `rtmr[0]` must be `null`, a null slot is unpinned, `""` pins the all-zero register. |
 | `approver_key` | Optional: a launch key, PEM. The entry then also requires that this guest was launched for that key — the RTMR[3] seed on TDX, `HOST_DATA` on SEV-SNP. |
-| `launch_file` | Optional, schema 2 only: exact launch-file bytes (configuration, or the whole [Kata initdata document](cloud-ta.md#under-a-kata-containers-runtime)). Requires that file's launch binding, with nothing extended on top. Excludes `approver_key`. |
-| `launch_file_digest` | Optional, schema 2 only: the digest of that launch file, lowercase hex: SHA-256 on SEV-SNP (`HOST_DATA`), SHA-384 on TDX (the RTMR[3] seed). Excludes `approver_key` and `launch_file`. |
+| `launch_file` | Optional, schema 2 or 3: exact launch-file bytes (configuration, or the whole [Kata initdata document](cloud-ta.md#under-a-kata-containers-runtime)). Excludes `approver_key`. |
+| `launch_file_digest` | Optional, schema 2 or 3: the launch file's digest, lowercase hex: SHA-256 on SEV-SNP, SHA-384 on TDX. Excludes `approver_key` and `launch_file`. |
+| `launch_file_field` | Optional, schema 3, TDX only: `"init_data"` selects bare-metal `MRCONFIGID`. Requires `launch_file` or `launch_file_digest`. |
+
+By default, launch-file pins require `HOST_DATA` on SEV-SNP or the file's
+RTMR[3] seed on TDX. A worker's `launch_file_digest` pin can verify subsequent
+RTMR[3] extensions by replaying its measured-policy journal. Selecting
+`"init_data"` binds `MRCONFIGID` instead and leaves RTMR[3] unconstrained
+unless separately pinned.
+
+Direct TA clients require the same full `launch_file` in every entry;
+digest-only pins are for consumers such as worker authorization.
+`c8s verify` currently mislabels a schema 3 MRCONFIGID binding as `not pinned`;
+its suggested `--init-data` flag does not accept the TDX digest.
 
 Unknown fields, repeated JSON keys, trailing data and an empty `measurements`
 list are refused; omit the flag to pin nothing.
 
-`c8s install --ta-pin` takes such a document whole: the chart carries it to
-every in-cluster verifier as a file. The TA renders the set it enforces at
+`c8s install --ta-pin` currently requires schema 2: the cloud chart rejects
+schema 3 and carries accepted pins to every in-cluster verifier as a file.
+The TA renders the set it enforces at
 `/measurements`, which `c8s verify --kind ta --served-policy-file` compares
 against the node identities you expect it to serve. To
 build a config from an image build, see

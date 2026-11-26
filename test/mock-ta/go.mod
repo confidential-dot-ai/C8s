@@ -3,7 +3,7 @@ module github.com/confidential-dot-ai/confidential-kubernetes/test/mock-ta
 go 1.27.3
 
 require (
-	github.com/confidential-dot-ai/attestation-go v0.8.3
+	github.com/confidential-dot-ai/attestation-go v0.8.4
 	github.com/confidential-dot-ai/confidential-kubernetes v0.0.0
 )
 

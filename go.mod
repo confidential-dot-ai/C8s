@@ -7,7 +7,7 @@ require (
 	filippo.io/mlkem768 v0.0.0-20260214141301-2e7bebc7d88d
 	github.com/anishathalye/porcupine v1.3.1
 	github.com/cenkalti/backoff/v5 v5.0.3
-	github.com/confidential-dot-ai/attestation-go v0.8.3
+	github.com/confidential-dot-ai/attestation-go v0.8.4
 	github.com/containerd/containerd/api v1.12.0
 	github.com/containerd/containerd/v2 v2.4.2
 	github.com/containerd/errdefs v1.0.0

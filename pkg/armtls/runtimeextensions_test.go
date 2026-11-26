@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -165,6 +166,43 @@ func TestEnforceImagesRuntimeExtensions(t *testing.T) {
 		}
 		if pins[0].AcceptExtension != nil {
 			t.Errorf("EnforceImages set AcceptExtension on the caller's %s pin", launch.pin.Name)
+		}
+	}
+}
+
+// On TDX a launch file pin of either form reads RTMR[3] and nothing else. So
+// it matches a guest seeded with the file whatever MRCONFIGID holds, and
+// refuses a Trust Authority that started from MRCONFIGID alone, whose RTMR[3]
+// is untouched.
+func TestEnforceImagesLaunchFilePinsReadOnlyRTMR3OnTDX(t *testing.T) {
+	mrtd := bytes.Repeat([]byte{0x42}, sha512.Size384)
+	launchFile := []byte("clusterID: test\n")
+	digest, other := sha512.Sum384(launchFile), sha512.Sum384([]byte("clusterID: other\n"))
+	seed := runtimemeasure.Extend(runtimemeasure.Zero, digest)
+	for _, pin := range []remote.ImagePin{
+		{Name: "launch file", Digest: mrtd, LaunchFile: launchFile},
+		{Name: "launch file digest", Digest: mrtd, LaunchFileDigest: digest[:]},
+	} {
+		for _, tc := range []struct {
+			name     string
+			rtmr3    [runtimemeasure.Size]byte
+			initData []byte
+			wantErr  bool
+		}{
+			{name: "seed, MRCONFIGID of the file", rtmr3: seed, initData: digest[:]},
+			{name: "seed, MRCONFIGID of another file", rtmr3: seed, initData: other[:]},
+			{name: "RTMR[3] untouched, MRCONFIGID of the file", rtmr3: runtimemeasure.Zero, initData: digest[:], wantErr: true},
+		} {
+			claims := teetypes.Claims{
+				LaunchDigest: hex.EncodeToString(mrtd),
+				InitData:     tc.initData,
+				PlatformData: map[string]any{"rtmr_3": hex.EncodeToString(tc.rtmr3[:])},
+			}
+			resp := remote.VerifyResponse{Result: teetypes.VerificationResult{SignatureValid: true, Platform: teetypes.PlatformTDX, Claims: claims}}
+			err := EnforceImages(resp, []remote.ImagePin{pin}, teetypes.PlatformTDX, nil)
+			if tc.wantErr != errors.Is(err, remote.ErrLaunchFileNotAllowed) || (!tc.wantErr && err != nil) {
+				t.Errorf("%s pin, %s: EnforceImages = %v, want refusal %v", pin.Name, tc.name, err, tc.wantErr)
+			}
 		}
 	}
 }
