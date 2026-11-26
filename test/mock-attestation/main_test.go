@@ -132,7 +132,7 @@ func snpEvidence(t *testing.T, reportData []byte) json.RawMessage {
 // SNP report carries it: HOST_DATA in the report, echoed as the init-data
 // claim, which is where runtimemeasure reads an SNP launch binding from.
 func TestReportBindsConfiguredHostData(t *testing.T) {
-	launchFile := []byte("schemaVersion: c8s-cds/v1\n")
+	launchFile := []byte("schemaVersion: c8s-ta/v1\n")
 	digest := runtimemeasure.HostData(launchFile)
 
 	result := verify(t, attest(t, digest[:], bytes.Repeat([]byte{0x11}, reportDataSize)))

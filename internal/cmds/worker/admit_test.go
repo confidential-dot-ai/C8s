@@ -220,7 +220,7 @@ func TestAdmitRefusesWhatTheCustomerCannotAdmit(t *testing.T) {
 			pins, _ := refvalues.Parse(f.in.TAPin)
 			pins.Family = teetypes.FamilyTDX
 			f.in.TAPin = formatPins(t, pins.Family, pins.Images...)
-		}, "cds.measurements pins a sev-snp Trust Authority and --ta-pin a tdx one"},
+		}, "ta.measurements pins a sev-snp Trust Authority and --ta-pin a tdx one"},
 		{"another Trust Authority pin", func(t *testing.T, f *admitFixture) {
 			f.in.TAPin = []byte(testTAPin(t, taConfig(t, "192.168.0.0/16")))
 		}, "pins another Trust Authority than --ta-pin"},

@@ -27,7 +27,7 @@ type Document struct {
 	SchemaVersion string `yaml:"schemaVersion"`
 	// Trust Authority is where this cluster's Trust Authority listens and the pin binding the
 	// configuration it runs on.
-	TA cmdsutil.TA `yaml:"cds"`
+	TA cmdsutil.TA `yaml:"ta"`
 	// TLSSAN is the DNS name of the router's front-door certificate, which
 	// the Trust Authority signs onto its leaf.
 	TLSSAN string `yaml:"tlsSAN"`
@@ -73,7 +73,7 @@ func (d Document) validate() error {
 	}
 	config, err := taconfig.Parse(ta.LaunchFile)
 	if err != nil {
-		return fmt.Errorf("cds.measurements: the pinned Trust Authority configuration: %w", err)
+		return fmt.Errorf("ta.measurements: the pinned Trust Authority configuration: %w", err)
 	}
 	nodeSubnets, err := pinnedNodeSubnets(config)
 	if err != nil {
@@ -109,7 +109,7 @@ func (d Document) operatorKeys() ([]byte, error) {
 	}
 	config, err := taconfig.Parse(ta.LaunchFile)
 	if err != nil {
-		return nil, fmt.Errorf("cds.measurements: the pinned Trust Authority configuration: %w", err)
+		return nil, fmt.Errorf("ta.measurements: the pinned Trust Authority configuration: %w", err)
 	}
 	return config.OperatorKeys.PEM(), nil
 }
@@ -121,7 +121,7 @@ func pinnedNodeSubnets(config *taconfig.Config) ([]netip.Prefix, error) {
 	for _, subnet := range config.NodeCIDRs {
 		prefix, err := subnetPrefix(subnet)
 		if err != nil {
-			return nil, fmt.Errorf("cds.measurements: the pinned Trust Authority configuration: %w", err)
+			return nil, fmt.Errorf("ta.measurements: the pinned Trust Authority configuration: %w", err)
 		}
 		subnets = append(subnets, prefix)
 	}

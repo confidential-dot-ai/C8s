@@ -44,7 +44,7 @@ func taPinDocument(t *testing.T, entries []string, subnets string) []byte {
 		workloads = append(workloads, `"`+name+`":`+testSeedEntry)
 	}
 	config := strings.Join([]string{
-		"schemaVersion: c8s-cds/v1",
+		"schemaVersion: c8s-ta/v1",
 		"clusterID: test",
 		"operatorPublicKeys: |\n  " + strings.ReplaceAll(strings.TrimSpace(testOperatorPublicKey(t)), "\n", "\n  "),
 		`workloads: '{"schema":"c8s.allowlist/v1","workloads":{` + strings.Join(workloads, ",") + `}}'`,
@@ -110,8 +110,8 @@ func TestTAPinRefusesWhatNoClientCouldHold(t *testing.T) {
 		"not a configuration": `{"schema_version":"2","tee":"sev-snp","measurements":[{"name":"cds","measurement":"` +
 			strings.Repeat("cd", 48) + `","launch_file":"clusterID: test\n"}]}`,
 		"two configurations": `{"schema_version":"2","tee":"sev-snp","measurements":[` +
-			`{"name":"a","measurement":"` + strings.Repeat("cd", 48) + `","launch_file":"schemaVersion: c8s-cds/v1\n"},` +
-			`{"name":"b","measurement":"` + strings.Repeat("ef", 48) + `","launch_file":"schemaVersion: c8s-cds/v2\n"}]}`,
+			`{"name":"a","measurement":"` + strings.Repeat("cd", 48) + `","launch_file":"schemaVersion: c8s-ta/v1\n"},` +
+			`{"name":"b","measurement":"` + strings.Repeat("ef", 48) + `","launch_file":"schemaVersion: c8s-ta/v2\n"}]}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := taPinConfig([]byte(document)); err == nil {

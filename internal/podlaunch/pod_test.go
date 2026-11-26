@@ -109,7 +109,7 @@ func TestValidatePodRole(t *testing.T) {
 		append string
 		want   string
 	}{
-		{"no Trust Authority policy", func(d *Document) { d.TA.Measurements = "" }, "", "cds.measurements"},
+		{"no Trust Authority policy", func(d *Document) { d.TA.Measurements = "" }, "", "ta.measurements"},
 		{"no pod key", func(d *Document) { d.PodOperatorPublicKey = "" }, "", "podOperatorPublicKey"},
 		{"no runtime register", func(d *Document) { d.Image.Platform = "snp"; d.Image.RTMRs = nil }, "", "runtime register"},
 		{"server block", func(*Document) {}, "server:\n  address: 10.0.0.1\n", "server"},

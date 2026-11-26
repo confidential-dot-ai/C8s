@@ -117,7 +117,7 @@ func TestPrepareRefusesAnUnrenderableTAPolicy(t *testing.T) {
 // this node's, with one entry per vCPU count it may boot with.
 func externalTAPin(t *testing.T) []byte {
 	t.Helper()
-	launchFile := []byte("schemaVersion: c8s-cds/v1\n")
+	launchFile := []byte("schemaVersion: c8s-ta/v1\n")
 	data, err := refvalues.Format(refvalues.ReferenceValues{
 		Family: teetypes.FamilySNP,
 		Images: []remote.ImagePin{

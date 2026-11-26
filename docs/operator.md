@@ -406,8 +406,8 @@ signing and in the guest. Cloud launches a pod CVM from a Pod manifest through
 its API or console with this guest contract. For automatic placement from
 Kubernetes, enable the optional [Pod CVM provider](pod-cvm-provider.md): it
 signs the scheduler-assigned Pod, launches its Cloud VM, projects attested
-status and owns cleanup. The provider requires explicit `cdsAddress` and
-`cdsImagePolicyFile` configuration, plus a guest image and Cloud launch
+status and owns cleanup. The provider requires explicit `taAddress` and
+`taImagePolicyFile` configuration, plus a guest image and Cloud launch
 contract accepting `c8s-launch/v2`. Follow its [configuration and upgrade
 requirements](pod-cvm-provider.md#platform-configuration). The manual commands
 below use the same guest contract.

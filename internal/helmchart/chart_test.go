@@ -439,8 +439,8 @@ func TestChartRejectsOperatorKeysPath(t *testing.T) {
 	if err == nil {
 		t.Fatalf("helm template succeeded, want operatorKeys content-guard failure\n%s", out)
 	}
-	if kind := parseValidationErrorKind(out); kind != "cds_operator_keys_content" {
-		t.Fatalf("validation kind = %q, want cds_operator_keys_content\n%s", kind, out)
+	if kind := parseValidationErrorKind(out); kind != "ta_operator_keys_content" {
+		t.Fatalf("validation kind = %q, want ta_operator_keys_content\n%s", kind, out)
 	}
 }
 
@@ -1734,12 +1734,12 @@ func TestChartRefusesUnpinnedTA(t *testing.T) {
 		args []string
 		want string
 	}{
-		{name: "neither", want: "cds_pins_required"},
-		{name: "no pin", args: []string{"--set-string", "ta.address=" + baseCDSAddress}, want: "cds_pins_required"},
-		{name: "no address", args: pin, want: "cds_address_required"},
-		{name: "no port", args: append(pin, "--set-string", "ta.address=10.9.9.9"), want: "cds_address_required"},
-		{name: "an uppercase name", args: append(pin, "--set-string", "ta.address=TA.example.com:8443"), want: "cds_address_required"},
-		{name: "a URL, not an endpoint", args: append(pin, "--set-string", "ta.address=https://cds.example.com:8443"), want: "cds_address_required"},
+		{name: "neither", want: "ta_pins_required"},
+		{name: "no pin", args: []string{"--set-string", "ta.address=" + baseCDSAddress}, want: "ta_pins_required"},
+		{name: "no address", args: pin, want: "ta_address_required"},
+		{name: "no port", args: append(pin, "--set-string", "ta.address=10.9.9.9"), want: "ta_address_required"},
+		{name: "an uppercase name", args: append(pin, "--set-string", "ta.address=TA.example.com:8443"), want: "ta_address_required"},
+		{name: "a URL, not an endpoint", args: append(pin, "--set-string", "ta.address=https://cds.example.com:8443"), want: "ta_address_required"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out, err := helmTemplateUnpinned(t, cloudChartDir, tc.args...)
@@ -2473,8 +2473,8 @@ const baseNRIDigest = "sha256:aaaa0000000000000000000000000000000000000000000000
 
 // baseTADigest is the Trust Authority launch digest testdata/ta-pin.json carries, and
 // baseCDSAddress the endpoint the shared harness points a release at: the
-// chart refuses a release naming no Trust Authority (kind=cds_pins_required,
-// kind=cds_address_required).
+// chart refuses a release naming no Trust Authority (kind=ta_pins_required,
+// kind=ta_address_required).
 var baseTADigest = strings.Repeat("ab", armtls.SNPMeasurementSize)
 
 const (
@@ -2551,7 +2551,7 @@ func helmTemplate(t *testing.T, args ...string) (string, error) {
 
 // helmTemplateIn is helmTemplate on the chart at chartDir, under a
 // placeholder Trust Authority unless the caller names its own: the chart refuses a release
-// naming no Trust Authority (kind=cds_pins_required, kind=cds_address_required).
+// naming no Trust Authority (kind=ta_pins_required, kind=ta_address_required).
 func helmTemplateIn(t *testing.T, chartDir string, args ...string) (string, error) {
 	t.Helper()
 	pinned := slices.ContainsFunc(args, func(arg string) bool {
@@ -2564,7 +2564,7 @@ func helmTemplateIn(t *testing.T, chartDir string, args ...string) (string, erro
 }
 
 // helmTemplateUnpinned is helmTemplateIn without the harness Trust Authority pin, for the
-// tests that drive the chart's cds_pins_required refusal and the pin sources
+// tests that drive the chart's ta_pins_required refusal and the pin sources
 // that satisfy it.
 func helmTemplateUnpinned(t *testing.T, chartDir string, args ...string) (string, error) {
 	t.Helper()

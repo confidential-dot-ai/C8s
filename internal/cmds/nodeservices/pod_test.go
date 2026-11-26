@@ -344,7 +344,7 @@ func TestRenderPodRuntimeFailsClosed(t *testing.T) {
 		change func(*podlaunch.AssignedPod)
 		want   string
 	}{
-		{"no Trust Authority address", podFloor, func(a *podlaunch.AssignedPod) { a.TA.Address = "" }, "cds.address"},
+		{"no Trust Authority address", podFloor, func(a *podlaunch.AssignedPod) { a.TA.Address = "" }, "ta.address"},
 		{"bad entries", podFloor, func(a *podlaunch.AssignedPod) { a.Entries = "{" }, "assignment entries"},
 		{"bad manifest", podFloor, func(a *podlaunch.AssignedPod) { a.Pod.Manifest = "kind: Deployment" }, "pod.manifest"},
 		{"no endpoint", meshFloor, func(*podlaunch.AssignedPod) {}, "no mesh endpoint"},

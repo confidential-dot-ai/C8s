@@ -38,25 +38,25 @@ type TAEndpoint struct {
 // identity.
 func (c TA) Parse() (TAEndpoint, error) {
 	if c.Address == "" {
-		return TAEndpoint{}, fmt.Errorf("cds.address %w", ErrNoTAAddress)
+		return TAEndpoint{}, fmt.Errorf("ta.address %w", ErrNoTAAddress)
 	}
 	host, port, err := SplitTAAddress(c.Address)
 	if err != nil {
-		return TAEndpoint{}, fmt.Errorf("cds.address %w", err)
+		return TAEndpoint{}, fmt.Errorf("ta.address %w", err)
 	}
 	// A DNS name resolves to whatever the cluster's resolver answers.
 	if isAddress(host) {
 		if err := ValidateRoutableIPv4(host); err != nil {
-			return TAEndpoint{}, fmt.Errorf("cds.address %q: %w", host, err)
+			return TAEndpoint{}, fmt.Errorf("ta.address %q: %w", host, err)
 		}
 	}
 	pins, err := refvalues.Parse([]byte(c.Measurements))
 	if err != nil {
-		return TAEndpoint{}, fmt.Errorf("cds.measurements: %w", err)
+		return TAEndpoint{}, fmt.Errorf("ta.measurements: %w", err)
 	}
 	launchFile, err := TALaunchFile(pins)
 	if err != nil {
-		return TAEndpoint{}, fmt.Errorf("cds.measurements: the pin %w", err)
+		return TAEndpoint{}, fmt.Errorf("ta.measurements: the pin %w", err)
 	}
 	return TAEndpoint{
 		Host:       host,

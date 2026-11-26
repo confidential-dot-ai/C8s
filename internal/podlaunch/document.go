@@ -59,7 +59,7 @@ type Document struct {
 	PodOperatorPublicKey string `yaml:"podOperatorPublicKey" json:"pod_operator_public_key"`
 	// TA names the Trust Authority the guest's credential broker
 	// reaches, outside the pod network.
-	TA cmdsutil.TA `yaml:"cds" json:"cds"`
+	TA cmdsutil.TA `yaml:"ta" json:"ta"`
 }
 
 // Image pins this boot's complete software identity. Platform names which

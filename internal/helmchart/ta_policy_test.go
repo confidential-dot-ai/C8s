@@ -48,7 +48,7 @@ func TestChartRefusesATAPinThatBindsNoLaunchFile(t *testing.T) {
 	if err == nil {
 		t.Fatalf("helm template accepted a pin binding no launch file\n%s", out)
 	}
-	if kind := parseValidationErrorKind(out); kind != "cds_pin_schema" {
-		t.Fatalf("validation kind = %q, want cds_pin_schema\n%s", kind, out)
+	if kind := parseValidationErrorKind(out); kind != "ta_pin_schema" {
+		t.Fatalf("validation kind = %q, want ta_pin_schema\n%s", kind, out)
 	}
 }

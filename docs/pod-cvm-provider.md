@@ -51,8 +51,8 @@ and size placeholders with compatible Cloud values:
   "image": "c8s-pod@V2_COMPATIBLE_CATALOG_VERSION",
   "imageManifestFile": "manifest.json",
   "launchKeyFile": "pod.key",
-  "cdsAddress": "ta.example.com:8443",
-  "cdsImagePolicyFile": "ta.json",
+  "taAddress": "ta.example.com:8443",
+  "taImagePolicyFile": "ta.json",
   "workloadsFile": "workloads.json",
   "clusterID": "demo",
   "size": "CLOUD_SIZE",
@@ -73,7 +73,7 @@ characters, letters, digits, `-`, `_` and `.`, starting and ending with a letter
 or digit. It names this provider's records, its Node and its Cloud instances,
 and the provider refuses to start without a valid one.
 
-`cdsAddress` names the external TA host and port; `cdsImagePolicyFile` contains
+`taAddress` names the external TA host and port; `taImagePolicyFile` contains
 the generated policy binding every admitted TA image to the same exact measured
 TA configuration. Both are required. A DNS host and a different TA image or
 TEE are supported. Every generic launch
@@ -81,7 +81,7 @@ document carries this explicit TA trust. Changing it affects new records only;
 existing Pod records retain their signed bytes.
 
 The provider takes no TA pin decree: after a TA image roll, deploy an updated
-`cdsImagePolicyFile`. Existing frozen Pod and assignment records keep their
+`taImagePolicyFile`. Existing frozen Pod and assignment records keep their
 original trust.
 
 `workloadsFile` holds the `c8s.allowlist/v1` entries the provider signs into
