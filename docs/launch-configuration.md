@@ -108,7 +108,7 @@ against the report. `‖` below is byte concatenation:
 | | TDX | SEV-SNP |
 |---|---|---|
 | Who commits the digest | The measured initrd, before `switch_root` | The launcher, at launch |
-| Where it lands | The RTMR[3] seed, `SHA-384(0x00 * 48 ‖ SHA-384(document))`. A Trust Authority also accepts `MRCONFIGID`, `SHA-384(document)`, set by its launcher ([cloud-ta.md](cloud-ta.md#under-a-kata-containers-runtime)) | `HOST_DATA`, `SHA-256(document)` |
+| Where it lands | The RTMR[3] seed, `SHA-384(0x00 * 48 ‖ SHA-384(document))`. A Trust Authority whose RTMR[3] is all zero also accepts `MRCONFIGID`, `SHA-384(document)`, set by its launcher ([cloud-ta.md](cloud-ta.md#under-a-kata-containers-runtime)) | `HOST_DATA`, `SHA-256(document)` |
 
 On SEV-SNP the host sets that field, so a verifier has to pin a launch digest
 of an image known to read it and to refuse a document that does not match. On
