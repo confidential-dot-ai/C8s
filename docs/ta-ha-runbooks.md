@@ -13,6 +13,20 @@ Every runbook assumes:
   which `c8s ta ha pin-policy --out` writes;
 - `operator.key`: a private key whose public half the launch file pins.
 
+Replicas whose TDX launcher bound the launch file in `MRCONFIGID` are a case
+of their own in three places:
+
+- `ta-pin.json` is a schema 3 pin that names `launch_file_field` and pins
+  RTMR[3] to zero ([cloud-ta.md](cloud-ta.md#under-a-kata-containers-runtime)).
+  Before Genesis no decree exists for `pin-policy --out` to read, so write it
+  from the image manifest and the launch file.
+- Every command that takes `--image-manifest` takes `--platform tdx
+  --launch-file-field init_data` and no `--vcpus`. `genesis` refuses pins that
+  read another field than `ta-pin.json`.
+- A release that does not know the field refuses a decree that carries it,
+  and a replica stops if it meets one in its log. Upgrade every replica and
+  every node that follows the cluster's decrees before signing the first one.
+
 Every decree is posted to a replica over the attested channel: `--to` names
 any replica of the cluster, and `--target` the one replica a `genesis`,
 `recover` or `admit` is for. The answer says what the cluster made of it.
@@ -80,12 +94,6 @@ no second replica to ask, so it would hold the Genesis forever, and the
 command refuses to sign one for a launch file that names a single replica
 filling a single voter seat. Do not pass it with more replicas booted, because
 a host that hides the others would get a cluster beside them.
-
-Replicas whose TDX launcher bound the launch file in `MRCONFIGID` need
-`--launch-file-field init_data` on every command that takes
-`--image-manifest`; see [cloud-ta.md](cloud-ta.md). A replica running a
-release that does not know the field refuses such a decree, and stops if it
-meets one in the log, so upgrade every replica before signing the first one.
 
 ## 2. Replace a replica VM
 

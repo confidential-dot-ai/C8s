@@ -779,3 +779,32 @@ func TestPinFlagsPinGuestsThatReadMRCONFIGID(t *testing.T) {
 		}
 	}
 }
+
+// A Genesis whose pins read another TDX field than the pin its replicas are
+// verified with would commit and then admit none of them, so it is refused
+// before anything is signed.
+func TestGenesisPinsReadTheFieldTheTAPinReads(t *testing.T) {
+	register := func(b string) string { return strings.Repeat(b, 48) }
+	pin := func(rtmr3, field string) string {
+		path := filepath.Join(t.TempDir(), "ta-pin.json")
+		writeTestFile(t, path, []byte(`{"schema_version":"3","tee":"tdx","measurements":[{"name":"ta","mrtd":"`+register("aa")+
+			`","rtmr":[null,"`+register("bb")+`","`+register("cc")+`"`+rtmr3+`],"launch_file":"x"`+field+`}]}`))
+		return path
+	}
+	launcherBound, guestMeasured := pin(`,""`, `,"launch_file_field":"init_data"`), pin("", "")
+	for name, c := range map[string]struct {
+		flags pinFlags
+		taPin string
+		want  string
+	}{
+		"the flag is missing":   {pinFlags{}, launcherBound, "pass --launch-file-field"},
+		"the flag is misplaced": {pinFlags{launchFileField: "init_data"}, guestMeasured, "omit the flag"},
+		"both read MRCONFIGID":  {pinFlags{launchFileField: "init_data"}, launcherBound, ""},
+		"both read RTMR[3]":     {pinFlags{}, guestMeasured, ""},
+	} {
+		err := c.flags.readTheFieldOf(c.taPin)
+		if c.want == "" && err != nil || c.want != "" && (err == nil || !strings.Contains(err.Error(), c.want)) {
+			t.Errorf("%s: %v, want %q", name, err, c.want)
+		}
+	}
+}

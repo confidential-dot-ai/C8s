@@ -285,6 +285,27 @@ func (p pinFlags) readInitData(set refvalues.ReferenceValues) error {
 	return nil
 }
 
+// readTheFieldOf refuses pins that read the launch file from another TDX
+// field than --ta-pin, the pin the replicas are verified with before the
+// decree applies: a Genesis signed over them would commit, and then admit
+// none of the replicas that formed it.
+func (p pinFlags) readTheFieldOf(taPinPath string) error {
+	verified, err := refvalues.Load(taPinPath)
+	if err != nil {
+		return fmt.Errorf("--ta-pin: %w", err)
+	}
+	if verified.Family != teetypes.FamilyTDX || len(verified.Images) == 0 {
+		return nil
+	}
+	switch inInitData := verified.Images[0].LaunchFileInInitData; {
+	case inInitData && p.launchFileField == "":
+		return fmt.Errorf("--ta-pin reads the launch file from MRCONFIGID, and the decree's pins would read RTMR[3]: pass --launch-file-field %s", launchFileFieldInitData)
+	case !inInitData && p.launchFileField == launchFileFieldInitData:
+		return fmt.Errorf("--ta-pin reads the launch file from RTMR[3], and --launch-file-field %s pins guests that read MRCONFIGID: omit the flag", launchFileFieldInitData)
+	}
+	return nil
+}
+
 // imagePins names one image's entries after its launch digest, so the entries
 // of the two images an image roll accepts never collide.
 func imagePins(manifest string, family teetypes.Family, vcpus []int, launchFile []byte) ([]remote.ImagePin, error) {
@@ -436,6 +457,9 @@ func (o genesisOptions) run(cmd *cobra.Command) error {
 	}
 	taPins, err := o.pins.document(c.launchFile)
 	if err != nil {
+		return err
+	}
+	if err := o.pins.readTheFieldOf(o.target.taPin); err != nil {
 		return err
 	}
 	target, address, err := o.target.statusAtAddress(cmd.Context())
