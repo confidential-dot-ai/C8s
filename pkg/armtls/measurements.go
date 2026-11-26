@@ -86,7 +86,9 @@ func EnforceImages(resp remote.VerifyResponse, images []remote.ImagePin, platfor
 func acceptReplayed(images []remote.ImagePin) []remote.ImagePin {
 	out := slices.Clone(images)
 	for i := range out {
-		replays := out[i].Anchor != nil || out[i].LaunchFileDigest != nil
+		// A pin read from MRCONFIGID replays nothing, and the matcher refuses a
+		// hook on one.
+		replays := out[i].Anchor != nil || (out[i].LaunchFileDigest != nil && !out[i].LaunchFileInInitData)
 		if replays && out[i].AcceptExtension == nil {
 			out[i].AcceptExtension = func(string) error { return nil }
 		}
