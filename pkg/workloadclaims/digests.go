@@ -249,7 +249,8 @@ func StartDigestsEndpoint(ctx context.Context, logger *slog.Logger, cfg DigestsE
 // configured — and presents Trust Authority's own armTLS certificate, so the inventory can
 // pin Trust Authority in turn.
 type DigestsClient struct {
-	http *http.Client
+	http      *http.Client
+	transport *armtls.RetiringTransport
 }
 
 // DigestsClientConfig configures [NewDigestsClient].
@@ -265,10 +266,8 @@ type DigestsClientConfig struct {
 	Pins armtls.Pins
 	// CurrentPins, when set, replaces Pins on every handshake: for a set
 	// that changes while Trust Authority runs (a replica set's nodes entry). A connection
-	// made under the old set is not checked again: CloseIdleConnections on a
-	// change drops the pooled ones, but a callback in flight then keeps its
-	// connection and may return it to the pool, so a later callback can still
-	// reuse it. Dropping the old set's connections is best effort.
+	// made under the old set is not checked again, so the owner of the set
+	// calls Retire on a change.
 	CurrentPins func() armtls.Pins
 	// Timeout bounds one callback. Zero or negative means 10s.
 	Timeout time.Duration
@@ -296,9 +295,9 @@ func (c DigestsClientConfig) tlsConfig() *armtls.ClientConfig {
 	return cfg
 }
 
-// CloseIdleConnections drops the connections pooled now. A callback in flight
-// keeps its own connection and may pool it afterwards (CurrentPins).
-func (c *DigestsClient) CloseIdleConnections() { c.http.CloseIdleConnections() }
+// Retire leaves the connections made so far: a callback in flight finishes on
+// its own, and none carries a later callback (CurrentPins).
+func (c *DigestsClient) Retire() { c.transport.Retire() }
 
 // NewDigestsClient builds the client. ctx bounds the client's certificate
 // renewal, so callers pass their lifetime context.
@@ -324,22 +323,18 @@ func NewDigestsClient(ctx context.Context, cfg DigestsClientConfig) (*DigestsCli
 	if timeout <= 0 {
 		timeout = 10 * time.Second
 	}
-	return &DigestsClient{
-		http: &http.Client{
-			Timeout: timeout,
-			// Fresh Transport, so Proxy stays nil: no HTTP_PROXY can interpose
-			// on a call whose whole point is to reach one attested peer. The
-			// idle pool is bounded because the dial target is chosen by the
-			// requester: unbounded, never-expiring idle conns would be a
-			// retention primitive rather than a reuse optimisation.
-			Transport: &http.Transport{
-				TLSClientConfig:     tlsCfg,
-				MaxIdleConns:        64,
-				MaxIdleConnsPerHost: 2,
-				IdleConnTimeout:     30 * time.Second,
-			},
-		},
-	}, nil
+	// Fresh Transport, so Proxy stays nil: no HTTP_PROXY can interpose
+	// on a call whose whole point is to reach one attested peer. The
+	// idle pool is bounded because the dial target is chosen by the
+	// requester: unbounded, never-expiring idle conns would be a
+	// retention primitive rather than a reuse optimisation.
+	transport := armtls.NewRetiringTransport(&http.Transport{
+		TLSClientConfig:     tlsCfg,
+		MaxIdleConns:        64,
+		MaxIdleConnsPerHost: 2,
+		IdleConnTimeout:     30 * time.Second,
+	})
+	return &DigestsClient{http: &http.Client{Timeout: timeout, Transport: transport}, transport: transport}, nil
 }
 
 const (

@@ -155,7 +155,7 @@ type routingEngine struct {
 func newRoutingEngine(cfg config, bindings *Bindings, logger *slog.Logger) (*routingEngine, error) {
 	r := cfg.routing
 	pins := func() (armtls.Pins, error) { return routerCDSPins(r.imagePolicyFile) }
-	httpClient, err := armtls.NewFollowingHTTPClient(pins, cfg.attestationAPIURL)
+	httpClient, err := armtls.NewRetiringHTTPClient(pins, cfg.attestationAPIURL)
 	if err != nil {
 		return nil, fmt.Errorf("the Trust Authority armTLS client: %w", err)
 	}

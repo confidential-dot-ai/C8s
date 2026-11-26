@@ -212,7 +212,7 @@ func run(ctx context.Context, cfg config) error {
 	}
 	var replica *taha.Replica
 	if cfg.measured.HA != nil {
-		if replica, err = startHA(ctx, cfg, mesh, &allowlistStore, tlsCfg, meshPeers, &chainNodes{set: nodes, launch: cfg.measured.Nodes, pods: cfg.measured.PodImages, retire: sandboxDigests.CloseIdleConnections}); err != nil {
+		if replica, err = startHA(ctx, cfg, mesh, &allowlistStore, tlsCfg, meshPeers, &chainNodes{set: nodes, launch: cfg.measured.Nodes, pods: cfg.measured.PodImages, retire: sandboxDigests.Retire}); err != nil {
 			return err
 		}
 	}

@@ -70,15 +70,9 @@ func TestTAHTTPClientUsesARMTLSForHTTPS(t *testing.T) {
 	if client == http.DefaultClient {
 		t.Fatal("client = http.DefaultClient, want armTLS client")
 	}
-	transport, ok := client.Transport.(*http.Transport)
-	if !ok {
-		t.Fatalf("transport = %T, want *http.Transport", client.Transport)
-	}
-	if transport.TLSClientConfig == nil {
-		t.Fatal("TLSClientConfig is nil")
-	}
-	if !transport.TLSClientConfig.InsecureSkipVerify {
-		t.Fatal("TLSClientConfig.InsecureSkipVerify = false, want armTLS verification path")
+	// The armTLS client that leaves its connections when the pins change.
+	if _, ok := client.Transport.(interface{ Retire() }); !ok {
+		t.Fatalf("transport = %T, want the armTLS retiring transport", client.Transport)
 	}
 }
 

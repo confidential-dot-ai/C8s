@@ -157,7 +157,7 @@ jobs:
       # it is listed separately.
       - name: Guard testing out of shipped binaries
         run: |
-          forbidden='^(testing|github.com/confidential-dot-ai/confidential-kubernetes/internal/testattest)$'
+          forbidden='^(testing|github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil)$'
           deps=$(CGO_ENABLED=0 go list -deps ./cmd/...)
           if grep -qE "$forbidden" <<<"$deps"; then
             echo "testing code is in the dep graph of a shipped binary" >&2

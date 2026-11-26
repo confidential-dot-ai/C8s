@@ -204,8 +204,8 @@ func taHTTPClient(cfg config) (*http.Client, error) {
 		return nil, fmt.Errorf("--ta-url must use https (armTLS); got scheme %q", parsed.Scheme)
 	}
 
-	// Pins are read per handshake: a renewing get-cert follows a Trust Authority upgrade.
-	client, err := armtls.NewFollowingHTTPClient(func() (armtls.Pins, error) { return taPins(cfg) }, cfg.AttestationApiURL)
+	// Pins are read per request: a renewing get-cert follows a Trust Authority upgrade.
+	client, err := armtls.NewRetiringHTTPClient(func() (armtls.Pins, error) { return taPins(cfg) }, cfg.AttestationApiURL)
 	if err != nil {
 		return nil, fmt.Errorf("the Trust Authority armTLS client: %w", err)
 	}
