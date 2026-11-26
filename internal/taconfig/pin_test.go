@@ -54,7 +54,7 @@ func parsePin(t *testing.T, document []byte) refvalues.ReferenceValues {
 // Every entry binds the launch file, so no vCPU shape of the image is pinned
 // without the configuration it must have booted on.
 func TestPinBindsTheLaunchFileToEachVCPUCount(t *testing.T) {
-	config := []byte("schemaVersion: c8s-cds/v1\n")
+	config := []byte("schemaVersion: c8s-ta/v1\n")
 	document, err := Pin(snpManifest(t), teetypes.FamilySNP, []int{2, 4}, config)
 	if err != nil {
 		t.Fatal(err)
@@ -79,7 +79,7 @@ func TestPinBindsTheLaunchFileToEachVCPUCount(t *testing.T) {
 
 func TestPinRefusesWhatItCannotBind(t *testing.T) {
 	snp, tdx := snpManifest(t), tdxManifest(t)
-	config := []byte("schemaVersion: c8s-cds/v1\n")
+	config := []byte("schemaVersion: c8s-ta/v1\n")
 	tests := []struct {
 		name     string
 		manifest string
@@ -105,7 +105,7 @@ func TestPinRefusesWhatItCannotBind(t *testing.T) {
 // RTMR[3] carries the launch-file binding and comes from no manifest, so a TDX
 // entry pins the build's RTMR[1] and RTMR[2] only.
 func TestPinOnTDXPinsTheBuildRegistersOnly(t *testing.T) {
-	config := []byte("schemaVersion: c8s-cds/v1\n")
+	config := []byte("schemaVersion: c8s-ta/v1\n")
 	document, err := Pin(tdxManifest(t), teetypes.FamilyTDX, nil, config)
 	if err != nil {
 		t.Fatal(err)

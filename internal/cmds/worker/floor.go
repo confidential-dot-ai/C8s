@@ -5,18 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"path"
-	"regexp"
 	"slices"
-	"strings"
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/nodeservices"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
-
-const routerWorkloadPrefix = "c8s-router-"
 
 // floorSettings are the floor template's settings a worker's floor takes as
 // they are. INVARIANT: every field is omitempty, so a key the template leaves
@@ -60,39 +54,53 @@ type workerFloor struct {
 }
 
 // Floor builds a worker image's NRI floor from the image's floor template,
-// its digests filled, the seed `c8s node-image render` writes, and the image's
-// static pod templates by file name. See NewFloorCmd for what it keeps.
-func Floor(templateData, seed []byte, staticPods map[string][]byte) ([]byte, error) {
+// its digests filled, and the image's static pod templates by file name. The
+// base it writes holds the static pods alone; the template's platform role
+// entries are published in the release's component set
+// (ComponentSetFile). See NewFloorCmd for what it keeps.
+func Floor(templateData []byte, staticPods map[string][]byte) ([]byte, error) {
 	template, err := parseTemplate(templateData)
 	if err != nil {
 		return nil, err
 	}
-	if err := requirePlatformRoles(template.Allowlist.Base); err != nil {
-		return nil, err
-	}
-	// The output takes a copy: the parsed template stays as it was read.
-	allow := *template.Allowlist
-	base := &allowlist.Allowlist{Schema: template.Allowlist.Base.Schema, Workloads: maps.Clone(template.Allowlist.Base.Workloads)}
-	allow.Base = base
-	allow.Pull = maps.Clone(template.Allowlist.Pull)
-	name, router, err := routerEntry(seed)
-	if err != nil {
-		return nil, err
-	}
-	if _, taken := base.Workloads[name]; taken {
-		return nil, fmt.Errorf("floor template: a platform role is named %s, the router's entry", name)
-	}
-	base.Workloads[name] = router
+	base := map[string]allowlist.Workload{}
 	for file, data := range staticPods {
 		pod, entry, err := staticPodEntry(data)
 		if err != nil {
 			return nil, fmt.Errorf("static pod template %s: %w", file, err)
 		}
-		if _, taken := base.Workloads[pod]; taken {
+		if _, taken := base[pod]; taken {
 			return nil, fmt.Errorf("static pod template %s: pod %s is named as another entry", file, pod)
 		}
-		base.Workloads[pod] = entry
+		base[pod] = entry
 	}
+	return floorWithBase(template, base)
+}
+
+// PodImageFloor builds the Pod CVM image's NRI floor from the same template,
+// its digests filled. Its base holds the template's role entries: a pod CVM
+// follows no cluster allowlist and renders its one pod's mesh endpoint from
+// the entry its image measures (internal/cmds/nodeservices RenderPodRuntime).
+// It runs no static pod.
+func PodImageFloor(templateData []byte) ([]byte, error) {
+	template, err := parseTemplate(templateData)
+	if err != nil {
+		return nil, err
+	}
+	roles, err := roleEntries(template)
+	if err != nil {
+		return nil, err
+	}
+	return floorWithBase(template, roles)
+}
+
+// floorWithBase is the template's settings with base as the measured base, as
+// every image's floor carries them.
+func floorWithBase(template *floorTemplate, base map[string]allowlist.Workload) ([]byte, error) {
+	// The output takes a copy: the parsed template stays as it was read.
+	allow := *template.Allowlist
+	allow.Base = &allowlist.Allowlist{Schema: template.Allowlist.Base.Schema, Workloads: base}
+	allow.Pull = maps.Clone(template.Allowlist.Pull)
 	if allow.Pull == nil {
 		return nil, fmt.Errorf("floor template: no allowlist.pull: a worker pulls its served allowlist from its Trust Authority")
 	}
@@ -104,6 +112,34 @@ func Floor(templateData, seed []byte, staticPods map[string][]byte) ([]byte, err
 		Mesh:          *template.Mesh,
 		Worker:        true,
 	})
+}
+
+// RoleEntries are the floor template's platform role entries, the launches of
+// a release's own components.
+func RoleEntries(templateData []byte) (map[string]allowlist.Workload, error) {
+	template, err := parseTemplate(templateData)
+	if err != nil {
+		return nil, err
+	}
+	return roleEntries(template)
+}
+
+// roleEntries are the template's role entries, each container bound to a
+// platform role: the template describes a release's own invocations.
+func roleEntries(template *floorTemplate) (map[string]allowlist.Workload, error) {
+	base := template.Allowlist.Base
+	for _, name := range slices.Sorted(maps.Keys(base.Workloads)) {
+		containers := slices.Concat(base.Workloads[name].InitContainers, base.Workloads[name].Containers)
+		if len(containers) == 0 {
+			return nil, fmt.Errorf("floor template base: entry %s holds no container", name)
+		}
+		for _, c := range containers {
+			if c.Role == "" {
+				return nil, fmt.Errorf("floor template base: entry %s container with digest %s holds no platform role", name, c.Digest)
+			}
+		}
+	}
+	return maps.Clone(base.Workloads), nil
 }
 
 // parseTemplate decodes data strictly and requires its allowlist base and
@@ -122,91 +158,4 @@ func parseTemplate(data []byte) (*floorTemplate, error) {
 		return nil, errors.New("floor template base: no entry")
 	}
 	return &template, nil
-}
-
-// requirePlatformRoles refuses a base entry whose containers do not all carry
-// a platform role: a worker grants roles from this measured base alone.
-func requirePlatformRoles(base *allowlist.Allowlist) error {
-	for _, name := range slices.Sorted(maps.Keys(base.Workloads)) {
-		containers := slices.Concat(base.Workloads[name].InitContainers, base.Workloads[name].Containers)
-		if len(containers) == 0 {
-			return fmt.Errorf("floor template base: entry %s holds no container", name)
-		}
-		for _, c := range containers {
-			if c.Role == "" {
-				return fmt.Errorf("floor template base: entry %s container with digest %s holds no platform role", name, c.Digest)
-			}
-		}
-	}
-	return nil
-}
-
-// routerEntry is the seed's one router entry.
-func routerEntry(seed []byte) (string, allowlist.Workload, error) {
-	parsed, err := allowlist.ParseJSON(seed)
-	if err != nil {
-		return "", allowlist.Workload{}, fmt.Errorf("seed: %w", err)
-	}
-	var names []string
-	for name := range parsed.Workloads {
-		if strings.HasPrefix(name, routerWorkloadPrefix) {
-			names = append(names, name)
-		}
-	}
-	if len(names) != 1 {
-		return "", allowlist.Workload{}, fmt.Errorf("seed: want one %s* entry, got %v", routerWorkloadPrefix, names)
-	}
-	router := parsed.Workloads[names[0]]
-	if err := requireNodeInputs(names[0], router); err != nil {
-		return "", allowlist.Workload{}, err
-	}
-	return names[0], router, requireStagedFiles(names[0], router)
-}
-
-// routerMountKinds are the mounts the router may take: none filled from
-// objects the control plane writes.
-var routerMountKinds = []allowlist.MountClass{allowlist.MountHost, allowlist.MountNodeRootFile, allowlist.MountEmptyDir}
-
-// requireNodeInputs refuses a router entry that leaves its launch open or
-// takes a mount outside routerMountKinds: the router's settings come from the
-// worker document alone.
-func requireNodeInputs(name string, router allowlist.Workload) error {
-	for _, c := range slices.Concat(router.InitContainers, router.Containers) {
-		if !c.LaunchPinned() {
-			return fmt.Errorf("seed: router entry %s container %s does not pin its launch", name, c.Digest)
-		}
-		for _, rule := range c.Mounts.Rules {
-			if !slices.Contains(routerMountKinds, rule.Kind) {
-				return fmt.Errorf("seed: router entry %s container %s mounts %s, which the control plane fills", name, c.Digest, rule.Kind)
-			}
-		}
-	}
-	return nil
-}
-
-var publicPath = regexp.MustCompile(`/run/+c8s-node(/[^\s,=:]*)?`)
-
-// requireStagedFiles refuses a router entry naming a file under /run/c8s-node,
-// in its argv, environment or mount sources, that worker stage does not
-// publish.
-func requireStagedFiles(name string, router allowlist.Workload) error {
-	staged, err := stagedPublicNames()
-	if err != nil {
-		return err
-	}
-	for _, c := range slices.Concat(router.InitContainers, router.Containers) {
-		named := slices.Concat(c.Command.Argv, c.Args.Argv, slices.Collect(maps.Values(c.Env.ExactValues())))
-		for _, rule := range c.Mounts.Rules {
-			named = append(named, rule.Source)
-		}
-		for _, text := range named {
-			for _, p := range publicPath.FindAllString(text, -1) {
-				file := strings.TrimPrefix(path.Clean(p), nodeservices.PublicDir)
-				if file != "" && !slices.Contains(staged, strings.TrimPrefix(file, "/")) {
-					return fmt.Errorf("seed: router entry %s reads %s, which worker stage does not publish", name, p)
-				}
-			}
-		}
-	}
-	return nil
 }

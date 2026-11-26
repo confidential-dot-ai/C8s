@@ -36,7 +36,7 @@ func TestStagePodRole(t *testing.T) {
 		t.Fatal(err)
 	}
 	requirePresent(t, cfg.path(PodMarker))
-	for _, path := range []string{Dir + "/workloads.json", Dir + "/cds.json", Dir + "/peers.json"} {
+	for _, path := range []string{Dir + "/workloads.json", Dir + "/ta.json", Dir + "/peers.json"} {
 		requireAbsent(t, cfg.path(path))
 	}
 	for path, want := range map[string]string{Dir + "/operator-pubkey": pub} {
@@ -109,7 +109,7 @@ func TestValidatePodRole(t *testing.T) {
 		append string
 		want   string
 	}{
-		{"no Trust Authority policy", func(d *Document) { d.TA.Measurements = "" }, "", "cds.measurements"},
+		{"no Trust Authority policy", func(d *Document) { d.TA.Measurements = "" }, "", "ta.measurements"},
 		{"no pod key", func(d *Document) { d.PodOperatorPublicKey = "" }, "", "podOperatorPublicKey"},
 		{"no runtime register", func(d *Document) { d.Image.Platform = "snp"; d.Image.RTMRs = nil }, "", "runtime register"},
 		{"server block", func(*Document) {}, "server:\n  address: 10.0.0.1\n", "server"},
@@ -140,14 +140,14 @@ func TestNewPodBundleStages(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "bundle")
 	if err := runBundleCmd(t, "new-pod", "--out", dir, "--cluster-id", "cluster-one",
 		"--image-manifest", writeManifest(t, "tdx"), "--name", "p-1",
-		"--cds-address", "cds.example.org:8443", "--cds-image-policy-file", writePodTAPin(t)); err != nil {
+		"--ta-address", "ta.example.org:8443", "--ta-image-policy-file", writePodTAPin(t)); err != nil {
 		t.Fatal(err)
 	}
 	doc, _ := readBundleDocument(t, dir, podDir)
 	if doc.Role != Pod || doc.Node.Name != "p-1" {
 		t.Fatalf("pod document %+v", doc)
 	}
-	if doc.TA.Address != "cds.example.org:8443" || stagedTAPolicy(t, doc).Family != teetypes.FamilySNP {
+	if doc.TA.Address != "ta.example.org:8443" || stagedTAPolicy(t, doc).Family != teetypes.FamilySNP {
 		t.Fatal("Pod bundle lost independent DNS-addressed SNP Trust Authority trust")
 	}
 	requirePresent(t, filepath.Join(dir, podKeyFile))
@@ -160,7 +160,7 @@ func TestNewPodBundleRefusesSNPManifest(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "bundle")
 	err := runBundleCmd(t, "new-pod", "--out", dir, "--cluster-id", "cluster-one",
 		"--image-manifest", writeManifest(t, "snp"), "--name", "p-1",
-		"--cds-address", "cds.example.org:8443", "--cds-image-policy-file", writePodTAPin(t))
+		"--ta-address", "ta.example.org:8443", "--ta-image-policy-file", writePodTAPin(t))
 	if err == nil || !strings.Contains(err.Error(), "TDX-only") {
 		t.Fatalf("got %v, want a TDX-only refusal", err)
 	}
@@ -171,7 +171,7 @@ func TestNewPodBundleRefusesSNPManifest(t *testing.T) {
 
 func writePodTAPin(t *testing.T) string {
 	t.Helper()
-	return writeFile(t, "cds.json", testTAPin(t, teetypes.FamilySNP, 2))
+	return writeFile(t, "ta.json", testTAPin(t, teetypes.FamilySNP, 2))
 }
 
 func testProviderPod(t *testing.T, spec string) *corev1.Pod {

@@ -1,4 +1,4 @@
-// Package cdsha replicates the state a Trust Authority cluster agrees on: its mesh CA,
+// Package taha replicates the state a Trust Authority cluster agrees on: its mesh CA,
 // the image sets its operator decreed, and the allowlist, secrets and sandbox
 // bindings a single Trust Authority keeps for itself. Every replica applies the same log
 // through the same state machine, so they answer alike.
@@ -187,7 +187,7 @@ func (f *FSM) applyingDone(index uint64, entry []byte, atCheckpoint digest) {
 func (f *FSM) applyRecovering(index uint64, e Entry) (res Result) {
 	defer func() {
 		if p := recover(); p != nil {
-			slog.Error("cds-ha: panic applying a log entry", "index", index, "kind", e.Kind, "panic", p, "stack", string(debug.Stack()))
+			slog.Error("ta-ha: panic applying a log entry", "index", index, "kind", e.Kind, "panic", p, "stack", string(debug.Stack()))
 			res = Result{Stop: f.stop(fmt.Errorf("log entry %d of kind %q panicked: %v", index, e.Kind, p))}
 		}
 	}()
@@ -287,7 +287,7 @@ func (f *FSM) raiseAllowlistVersion(startedAtMS int64) error {
 	if err != nil {
 		return f.stopLocal(fmt.Errorf("raise the allowlist version to the cluster's start: %w", err))
 	}
-	slog.Info("cds-ha: the cluster started; the allowlist version is raised to its start time", "version", version, "started_at_ms", startedAtMS)
+	slog.Info("ta-ha: the cluster started; the allowlist version is raised to its start time", "version", version, "started_at_ms", startedAtMS)
 	return nil
 }
 
@@ -313,7 +313,7 @@ func (f *FSM) applyDoubt(sd tadecree.Signed) Result {
 		Intent: d.IntentID,
 		Member: d.TargetMember,
 	})
-	slog.Error("cds-ha: ALARM: a Recover decree names a member this cluster cannot account for; no replica serves until that member rejoins or the operator dismisses the Recover",
+	slog.Error("ta-ha: ALARM: a Recover decree names a member this cluster cannot account for; no replica serves until that member rejoins or the operator dismisses the Recover",
 		"intent", d.IntentID, "member", d.TargetMember)
 	return Result{
 		Decree: &DecreeResult{Version: f.core.Version},
@@ -335,7 +335,7 @@ func (f *FSM) applyRenewCA(e RenewCAEntry) Result {
 	}
 	f.core.MeshCACert = slices.Clone(e.MeshCACert)
 	f.ca = renewed
-	slog.Info("cds-ha: the cluster's mesh CA certificate is renewed", "audit", true,
+	slog.Info("ta-ha: the cluster's mesh CA certificate is renewed", "audit", true,
 		"not_after", renewed.Cert.NotAfter.Format(time.RFC3339))
 	return Result{}
 }

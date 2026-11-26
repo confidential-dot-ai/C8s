@@ -6,8 +6,8 @@ explains the behaviour each one relies on, and
 
 Every runbook assumes:
 
-- `cds-config.yaml`: the launch file every replica of the cluster boots;
-- `cds-pin.json`: the pin document for the TA images the cluster accepts,
+- `ta-config.yaml`: the launch file every replica of the cluster boots;
+- `ta-pin.json`: the pin document for the TA images the cluster accepts,
   which `c8s ta ha pin-policy --out` writes;
 - `operator.key`: a private key whose public half the launch file pins.
 
@@ -18,7 +18,7 @@ any replica of the cluster, and `--target` the one replica a `genesis`,
 Read the cluster before and after every step:
 
 ```sh
-c8s ta ha status --config cds-config.yaml --ta-pin cds-pin.json
+c8s ta ha status --config ta-config.yaml --ta-pin ta-pin.json
 ```
 
 The `VERSION` column is what the next decree's `--base-version` names. A
@@ -32,7 +32,7 @@ The replicas are booted and none of them holds a cluster.
 1. Check that every replica answers and reports no cluster:
 
    ```sh
-   c8s ta ha status --config cds-config.yaml --ta-pin cds-pin.json
+   c8s ta ha status --config ta-config.yaml --ta-pin ta-pin.json
    ```
 
    Every row reads `does not serve: "this replica holds no cluster"`. A
@@ -44,8 +44,8 @@ The replicas are booted and none of them holds a cluster.
 
    ```sh
    c8s ta ha decree genesis \
-       --config cds-config.yaml --operator-key operator.key \
-       --target ta-1.example.org --ta-pin cds-pin.json \
+       --config ta-config.yaml --operator-key operator.key \
+       --target ta-1.example.org --ta-pin ta-pin.json \
        --platform sev-snp --vcpus 4 --image-manifest ta-manifest.json \
        --resume-version 0
    ```
@@ -62,7 +62,7 @@ The replicas are booted and none of them holds a cluster.
    decreed replica leads and the others join:
 
    ```sh
-   c8s ta ha status --config cds-config.yaml --ta-pin cds-pin.json
+   c8s ta ha status --config ta-config.yaml --ta-pin ta-pin.json
    ```
 
    Every row reads `serving`, and the last line reads
@@ -92,7 +92,7 @@ If the cluster lost its majority, follow runbook 7 before replacing VMs.
      replaced:
 
      ```sh
-     c8s ta ha status --config cds-config.yaml --ta-pin cds-pin.json --json |
+     c8s ta ha status --config ta-config.yaml --ta-pin ta-pin.json --json |
          jq -e 'any(.[]; .status.roll_safe.ok)'
      ```
 
@@ -103,7 +103,7 @@ If the cluster lost its majority, follow runbook 7 before replacing VMs.
      `ta-2.example.org` with its address:
 
      ```sh
-     c8s ta ha status --config cds-config.yaml --ta-pin cds-pin.json --url ta-2.example.org
+     c8s ta ha status --config ta-config.yaml --ta-pin ta-pin.json --url ta-2.example.org
      ```
 
      Require a successful exit and its row to read `leader` and `serving`,
@@ -146,9 +146,9 @@ is odd, at most 9, and no larger than the number of replicas that can fill it.
 
 ```sh
 c8s ta ha decree voters \
-    --config cds-config.yaml --operator-key operator.key \
+    --config ta-config.yaml --operator-key operator.key \
     --base-version 12 --voters 5 \
-    --to ta-1.example.org --ta-pin cds-pin.json
+    --to ta-1.example.org --ta-pin ta-pin.json
 ```
 
 The replicas fill or give up one seat at a time, so the cluster keeps a
@@ -167,9 +167,9 @@ client pin changes.
 
    ```sh
    c8s ta ha decree node-images \
-       --config cds-config.yaml --operator-key operator.key \
+       --config ta-config.yaml --operator-key operator.key \
        --base-version 12 --nodes nodes-old-and-new.json \
-       --to ta-1.example.org --ta-pin cds-pin.json
+       --to ta-1.example.org --ta-pin ta-pin.json
    ```
 
    Wait until `ha status --json` reports `node_images_version` as the version
@@ -183,9 +183,9 @@ client pin changes.
 
    ```sh
    c8s ta ha decree node-images \
-       --config cds-config.yaml --operator-key operator.key \
+       --config ta-config.yaml --operator-key operator.key \
        --base-version 13 --nodes nodes-new.json \
-       --to ta-1.example.org --ta-pin cds-pin.json
+       --to ta-1.example.org --ta-pin ta-pin.json
    ```
 
 4. Keep the node document of the decree in force: it is what
@@ -203,11 +203,11 @@ running the old one.
 
    ```sh
    c8s ta ha decree pins \
-       --config cds-config.yaml --operator-key operator.key \
+       --config ta-config.yaml --operator-key operator.key \
        --base-version 12 --platform sev-snp --vcpus 4 \
        --image-manifest ta-manifest-old.json \
        --image-manifest ta-manifest-new.json \
-       --to ta-1.example.org --ta-pin cds-pin.json
+       --to ta-1.example.org --ta-pin ta-pin.json
    ```
 
    Wait until `c8s ta ha decrees` lists it, then write the pin document it
@@ -215,7 +215,7 @@ running the old one.
    verifies a replica of either image.
 
    ```sh
-   c8s ta ha pin-policy --config cds-config.yaml --ta-pin cds-pin.json \
+   c8s ta ha pin-policy --config ta-config.yaml --ta-pin ta-pin.json \
        --out ta-pin-both.json --decree-out pins-applied.json
    ```
 
@@ -224,7 +224,7 @@ running the old one.
 
    ```sh
    c8s ta ha decree admit \
-       --config cds-config.yaml --operator-key operator.key \
+       --config ta-config.yaml --operator-key operator.key \
        --target ta-1.example.org --ta-pin ta-pin-both.json \
        --cluster ta-2.example.org
    ```
@@ -241,7 +241,7 @@ running the old one.
 
    ```sh
    c8s ta ha decree pins \
-       --config cds-config.yaml --operator-key operator.key \
+       --config ta-config.yaml --operator-key operator.key \
        --base-version 13 --platform sev-snp --vcpus 4 \
        --image-manifest ta-manifest-new.json \
        --to ta-1.example.org --ta-pin ta-pin-both.json
@@ -250,8 +250,8 @@ running the old one.
 6. Write the new pin document for the clients and the nodes:
 
    ```sh
-   c8s ta ha pin-policy --config cds-config.yaml --ta-pin ta-pin-both.json \
-       --out cds-pin.json --decree-out pins-applied.json
+   c8s ta ha pin-policy --config ta-config.yaml --ta-pin ta-pin-both.json \
+       --out ta-pin.json --decree-out pins-applied.json
    ```
 
    Nodes already running follow the decree themselves. Nodes added from now on
@@ -275,8 +275,8 @@ the recovered one.
 
    ```sh
    c8s ta ha decree recover \
-       --config cds-config.yaml --operator-key operator.key \
-       --target ta-3.example.org --ta-pin cds-pin.json \
+       --config ta-config.yaml --operator-key operator.key \
+       --target ta-3.example.org --ta-pin ta-pin.json \
        --base-version 14 --resume-version 14 \
        --i-understand-recover-is-break-glass
    ```
@@ -294,9 +294,9 @@ VM is destroyed, lift the doubt:
 
 ```sh
 c8s ta ha decree dismiss-recover \
-    --config cds-config.yaml --operator-key operator.key \
+    --config ta-config.yaml --operator-key operator.key \
     --base-version 14 --recover-intent <intent id from ha status> \
-    --to ta-3.example.org --ta-pin cds-pin.json
+    --to ta-3.example.org --ta-pin ta-pin.json
 ```
 
 ## 8. A halted cluster
@@ -356,7 +356,7 @@ names a retired TA image. A node already running holds the newer decree and
 refuses older ones. A worker added later needs the floor in its own document:
 
 ```sh
-c8s ta ha pin-policy --config cds-config.yaml --ta-pin cds-pin.json
+c8s ta ha pin-policy --config ta-config.yaml --ta-pin ta-pin.json
 ```
 
 It reports the version the applied pin decree stands at. Pass that version as

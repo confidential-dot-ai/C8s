@@ -5,6 +5,7 @@ import (
 	"path"
 	"slices"
 	"strings"
+	"time"
 )
 
 // RunningContainer holds the launch characteristics observed by an enforcer.
@@ -79,31 +80,45 @@ var (
 // admission is a union across every entry listing a digest: an entry pinning an
 // exact command guarantees nothing here if another entry widens the same digest.
 func (a *Allowlist) MatchWorkload(running []RunningContainer) (string, Workload, error) {
+	return resolveMatch(running, a.Workloads)
+}
+
+// MatchWorkloadAt resolves a running container set against the workloads
+// section and the entries of every component set in force at now.
+func (a *Allowlist) MatchWorkloadAt(running []RunningContainer, now time.Time) (string, Workload, error) {
+	sections := make([]map[string]Workload, 0, len(a.Components)+1)
+	sections = append(sections, a.Workloads)
+	for _, ref := range a.SetsInForce(now) {
+		sections = append(sections, a.Components[ref.Version].Entries)
+	}
+	return resolveMatch(running, sections...)
+}
+
+// resolveMatch is the single entry describing the running set. Entries of one
+// name are one match however many sections carry them: two releases may carry
+// the same entry.
+func resolveMatch(running []RunningContainer, sections ...map[string]Workload) (string, Workload, error) {
 	if len(running) == 0 {
 		// A pod always runs at least the container that is asking, so an empty
 		// set is no evidence rather than a set that happens to match an entry
 		// declaring nothing.
 		return "", Workload{}, ErrNoMatch
 	}
-	var (
-		foundName string
-		found     Workload
-		matches   int
-	)
-	for name, w := range a.Workloads {
-		if !w.describes(running) {
-			continue
+	matched := map[string]Workload{}
+	for _, entries := range sections {
+		for name, w := range entries {
+			if w.describes(running) {
+				matched[name] = w
+			}
 		}
-		matches++
-		if matches > 1 {
-			return "", Workload{}, ErrAmbiguous
-		}
-		foundName, found = name, w
 	}
-	if matches == 0 {
-		return "", Workload{}, ErrNoMatch
+	if len(matched) > 1 {
+		return "", Workload{}, ErrAmbiguous
 	}
-	return foundName, found, nil
+	for name, w := range matched {
+		return name, w, nil
+	}
+	return "", Workload{}, ErrNoMatch
 }
 
 // EntryDiff is the distance between an entry and a running set: what is running

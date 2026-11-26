@@ -1,4 +1,4 @@
-// Package cdsdecree is the operator's signed instruction to a Trust Authority cluster:
+// Package tadecree is the operator's signed instruction to a Trust Authority cluster:
 // which images a Trust Authority of this cluster may run, which node images it certifies,
 // which process may start or carry on the cluster, and which unjoined replica
 // may admit an image beside its own.
@@ -37,7 +37,7 @@ import (
 
 // signingDomain separates a decree signature from every other operator
 // signature over JSON.
-const signingDomain = "c8s-cds-decree-v1\n"
+const signingDomain = "c8s-ta-decree-v1\n"
 
 // Kind is the intent a decree carries.
 type Kind string
@@ -83,7 +83,7 @@ type Decree struct {
 	// applies on top of.
 	BaseVersion uint64 `json:"base_version,omitempty"`
 	// TAPins is the image set a Trust Authority of this cluster may run.
-	TAPins *PinDocument `json:"cds_pins,omitempty"`
+	TAPins *PinDocument `json:"ta_pins,omitempty"`
 	// NodePins is the full set of node images the cluster certifies.
 	NodePins *NodeImages `json:"node_pins,omitempty"`
 	Voters   int         `json:"voters,omitempty"`
@@ -257,7 +257,7 @@ func (d Decree) checkVersions() error {
 var fields = map[string]func(Decree) bool{
 	"alone":          func(d Decree) bool { return d.Alone },
 	"base_version":   func(d Decree) bool { return d.BaseVersion != 0 },
-	"cds_pins":       func(d Decree) bool { return d.TAPins != nil },
+	"ta_pins":        func(d Decree) bool { return d.TAPins != nil },
 	"genesis_ca":     func(d Decree) bool { return d.GenesisCA != "" },
 	"issued_at_ms":   func(d Decree) bool { return d.IssuedAtMS != 0 },
 	"node_pins":      func(d Decree) bool { return d.NodePins != nil },
@@ -284,16 +284,16 @@ func (c carried) allows(name string) bool {
 // a base version; a first Genesis resumes above no version.
 var kinds = map[Kind]carried{
 	Genesis: {
-		must: []string{"cds_pins", "node_pins", "target_member", "target_address", "issued_at_ms", "genesis_ca"},
+		must: []string{"ta_pins", "node_pins", "target_member", "target_address", "issued_at_ms", "genesis_ca"},
 		may:  []string{"resume_version", "alone"},
 	},
-	UpdateMeasurements: {must: []string{"base_version", "cds_pins"}},
+	UpdateMeasurements: {must: []string{"base_version", "ta_pins"}},
 	SetNodeImages:      {must: []string{"base_version", "node_pins"}},
 	RotateKey:          {must: []string{"base_version"}},
 	SetVoters:          {must: []string{"base_version", "voters"}},
 	Recover:            {must: []string{"base_version", "target_member", "target_address", "issued_at_ms", "resume_version"}},
 	DismissRecover:     {must: []string{"base_version", "recover_intent"}},
-	Admit:              {must: []string{"cds_pins", "target_member"}},
+	Admit:              {must: []string{"ta_pins", "target_member"}},
 }
 
 // checkFields requires a decree to carry exactly what its kind does.
@@ -320,7 +320,7 @@ func (d Decree) checkFields() error {
 func (d Decree) checkPins() error {
 	if d.TAPins != nil {
 		if err := d.TAPins.check(); err != nil {
-			return fmt.Errorf("cds_pins: %w", err)
+			return fmt.Errorf("ta_pins: %w", err)
 		}
 	}
 	if d.NodePins != nil {

@@ -99,18 +99,18 @@ func (n *Node) readTimeout() time.Duration {
 // for this replica's own state machine to reach it.
 func (n *Node) confirmRead() (*readLease, error) {
 	if n.raft == nil {
-		return nil, errors.New("cds-ha: this replica is not started")
+		return nil, errors.New("ta-ha: this replica is not started")
 	}
 	core := n.fsm.ClusterState()
 	if !core.Joined() {
-		return nil, errors.New("cds-ha: this replica holds no cluster")
+		return nil, errors.New("ta-ha: this replica holds no cluster")
 	}
 	if reason := n.fsm.Stuck(); reason != "" {
-		return nil, errors.New("cds-ha: this replica stopped following the log: " + reason)
+		return nil, errors.New("ta-ha: this replica stopped following the log: " + reason)
 	}
 	leader := n.following()
 	if !leader.known() {
-		return nil, errors.New("cds-ha: this replica follows no leader")
+		return nil, errors.New("ta-ha: this replica follows no leader")
 	}
 	taken := time.Now()
 	jumps := n.clockJumps.Load()
@@ -121,7 +121,7 @@ func (n *Node) confirmRead() (*readLease, error) {
 	// A committed index holds the same entry on every replica of the cluster,
 	// so this replica waits for its own state machine to reach it.
 	if !n.awaitApplied(confirmed, n.readTimeout()-time.Since(taken)) {
-		return nil, fmt.Errorf("cds-ha: the cluster's watermark is log index %d, and this replica has applied %d", confirmed, n.fsm.AppliedIndex())
+		return nil, fmt.Errorf("ta-ha: the cluster's watermark is log index %d, and this replica has applied %d", confirmed, n.fsm.AppliedIndex())
 	}
 	lease := &readLease{
 		leadership: leader,
@@ -131,7 +131,7 @@ func (n *Node) confirmRead() (*readLease, error) {
 		jumps:      jumps,
 	}
 	if !n.holdsNow(lease) {
-		return nil, errors.New("cds-ha: the leader, term, cluster version or clock changed while the read was confirmed")
+		return nil, errors.New("ta-ha: the leader, term, cluster version or clock changed while the read was confirmed")
 	}
 	return lease, nil
 }
@@ -178,11 +178,11 @@ func (b oneBarrier) give() {
 // confirmation.
 func (n *Node) barrier() (uint64, error) {
 	if reason := n.fsm.Stuck(); reason != "" {
-		return 0, errors.New("cds-ha: this leader stopped following the log: " + reason)
+		return 0, errors.New("ta-ha: this leader stopped following the log: " + reason)
 	}
 	deadline := time.Now().Add(n.readTimeout())
 	if !n.barriers.take(deadline) {
-		return 0, errors.New("cds-ha: a barrier of this leader was in flight for a whole read")
+		return 0, errors.New("ta-ha: a barrier of this leader was in flight for a whole read")
 	}
 	passed := make(chan barrierResult, 1)
 	go n.passBarrier(passed)
@@ -203,7 +203,7 @@ func barrierPassed(passed <-chan barrierResult, deadline time.Time) (uint64, err
 	case result := <-passed:
 		return result.confirmed, result.err
 	case <-waiting.C:
-		return 0, errors.New("cds-ha: this leader's barrier did not pass within a read")
+		return 0, errors.New("ta-ha: this leader's barrier did not pass within a read")
 	}
 }
 
@@ -220,7 +220,7 @@ func (n *Node) passBarrier(passed chan<- barrierResult) {
 		return
 	}
 	if !n.leadsAs(leader) || n.fsm.Stuck() != "" {
-		passed <- barrierResult{err: errors.New("cds-ha: this leader's leadership or state machine changed while its barrier passed")}
+		passed <- barrierResult{err: errors.New("ta-ha: this leader's leadership or state machine changed while its barrier passed")}
 		return
 	}
 	appliedBehindBarrier := n.fsm.AppliedIndex()
@@ -232,7 +232,7 @@ func (n *Node) passBarrier(passed chan<- barrierResult) {
 func (n *Node) askLeaderToConfirm(leader leadership) (uint64, error) {
 	held, reached := n.peers.knownAt(string(leader.member))
 	if !reached {
-		return 0, fmt.Errorf("cds-ha: this replica has not reached the leader, member %s", leader.member)
+		return 0, fmt.Errorf("ta-ha: this replica has not reached the leader, member %s", leader.member)
 	}
 	answer, err := held.control.exchange(
 		controlRequest{
@@ -248,11 +248,11 @@ func (n *Node) askLeaderToConfirm(leader leadership) (uint64, error) {
 		return 0, n.stopOnVerdict(answer, leader)
 	}
 	if answer.Err != "" {
-		return 0, errors.New("cds-ha: the leader confirmed no read: " + answer.Err)
+		return 0, errors.New("ta-ha: the leader confirmed no read: " + answer.Err)
 	}
 	// An index of 0 is no watermark: a barrier always passes above it.
 	if answer.Index == 0 {
-		return 0, errors.New("cds-ha: the leader confirmed no watermark")
+		return 0, errors.New("ta-ha: the leader confirmed no watermark")
 	}
 	return answer.Index, nil
 }
@@ -282,7 +282,7 @@ func (n *Node) answerRead(from peer, request controlRequest, answer controlAnswe
 // The verdict counts only from the leadership this replica follows.
 func (n *Node) stopOnVerdict(answer controlAnswer, led leadership) error {
 	if answer.Term != led.term {
-		return fmt.Errorf("cds-ha: the leader answered in term %d, and this replica follows term %d", answer.Term, led.term)
+		return fmt.Errorf("ta-ha: the leader answered in term %d, and this replica follows term %d", answer.Term, led.term)
 	}
 	return n.fsm.stopLocal(fmt.Errorf("%w: %s", ErrDiverged, answer.Diverged))
 }
@@ -345,7 +345,7 @@ func (n *Node) refreshFailed(err error) {
 	if begun := n.outage.Load(); begun != nil {
 		since = begun.since
 	} else {
-		slog.Warn("cds-ha: this replica confirms no read with its cluster", "reason", err)
+		slog.Warn("ta-ha: this replica confirms no read with its cluster", "reason", err)
 	}
 	n.outage.Store(&readOutage{
 		reason: err.Error(),
@@ -357,7 +357,7 @@ func (n *Node) refreshFailed(err error) {
 func (n *Node) refreshed(lease *readLease) {
 	n.lease.Store(lease)
 	if begun := n.outage.Swap(nil); begun != nil {
-		slog.Info("cds-ha: this replica confirms reads with its cluster again", "after", time.Since(begun.since).Round(time.Millisecond))
+		slog.Info("ta-ha: this replica confirms reads with its cluster again", "after", time.Since(begun.since).Round(time.Millisecond))
 	}
 }
 
@@ -385,7 +385,7 @@ func (n *Node) watchClock(ctx context.Context) {
 			mono := now.Sub(last)
 			if clockJumped(wall, mono) {
 				n.clockJumps.Add(1)
-				slog.Warn("cds-ha: this replica's clock jumped; it answers no read until it has confirmed one again", "wall", wall, "monotonic", mono)
+				slog.Warn("ta-ha: this replica's clock jumped; it answers no read until it has confirmed one again", "wall", wall, "monotonic", mono)
 			}
 			last = now
 		}

@@ -27,7 +27,6 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/nodeservices"
-	nriimagepolicy "github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/nri-image-policy"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/fileutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/taconfig"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
@@ -235,7 +234,7 @@ func TestStagePublishesTheDocumentsFloor(t *testing.T) {
 		Allowlist struct {
 			Pull struct {
 				URL      string                  `yaml:"url"`
-				PinFloor cmdsutil.ClusterVersion `yaml:"cds_pin_floor"`
+				PinFloor cmdsutil.ClusterVersion `yaml:"ta_pin_floor"`
 			} `yaml:"pull"`
 		} `yaml:"allowlist"`
 		Mesh struct {
@@ -257,11 +256,11 @@ func TestStagePublishesTheDocumentsFloor(t *testing.T) {
 		t.Errorf("node-ip = %q, %v; want this host's primary address", got, err)
 	}
 	pull := floor.Allowlist.Pull
-	if pull.URL != "https://cds.acme.example:8443" || pull.PinFloor != doc.TA.PinFloor {
+	if pull.URL != "https://ta.acme.example:8443" || pull.PinFloor != doc.TA.PinFloor {
 		t.Errorf("pull = %+v, want the document's Trust Authority and pin floor %d", pull, doc.TA.PinFloor)
 	}
 	roles := floor.Mesh.Roles
-	if i := slices.IndexFunc(roles, func(r stagedRole) bool { return r.Name == nriimagepolicy.CredentialRole }); i < 0 || roles[i].Port != 8443 {
+	if i := slices.IndexFunc(roles, func(r stagedRole) bool { return r.Name == allowlist.RoleCredentials }); i < 0 || roles[i].Port != 8443 {
 		t.Errorf("mesh roles = %+v, want the credential role on the document's Trust Authority port", roles)
 	}
 
@@ -273,8 +272,8 @@ func TestStagePublishesTheDocumentsFloor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, err := os.ReadFile(filepath.Join(root, nodeservices.PublicDir, "cds.json")); err != nil || string(got) != string(wantPin) {
-		t.Errorf("cds.json = %s, %v; want the document's Trust Authority pin", got, err)
+	if got, err := os.ReadFile(filepath.Join(root, nodeservices.PublicDir, "ta.json")); err != nil || string(got) != string(wantPin) {
+		t.Errorf("ta.json = %s, %v; want the document's Trust Authority pin", got, err)
 	}
 	if got, err := os.ReadFile(filepath.Join(root, nodeservices.PublicDir, "router/hostnames")); err != nil || string(got) != "api.acme.example\n" {
 		t.Errorf("router/hostnames = %q, %v; want the document's router hostname", got, err)
@@ -387,7 +386,7 @@ func TestStagePublishesTheRoutersFilesWithoutARouterBlock(t *testing.T) {
 		t.Fatal(err)
 	}
 	public := filepath.Join(root, nodeservices.PublicDir)
-	for name, want := range map[string]string{"router/front-door-mode": "cds\n", "router/hostnames": "", "tls-san": "c8s.acme.example\n"} {
+	for name, want := range map[string]string{"router/front-door-mode": "ta\n", "router/hostnames": "", "tls-san": "c8s.acme.example\n"} {
 		if got, err := os.ReadFile(filepath.Join(public, name)); err != nil || string(got) != want {
 			t.Errorf("%s = %q, %v; want %q", name, got, err, want)
 		}

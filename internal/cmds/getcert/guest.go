@@ -36,10 +36,10 @@ type GuestConfig struct {
 func (g GuestConfig) validate() error {
 	endpoint, err := url.Parse(g.TAURL)
 	if err != nil {
-		return fmt.Errorf("CDSURL: %w", err)
+		return fmt.Errorf("TAURL: %w", err)
 	}
 	if endpoint.Scheme != "https" || endpoint.Host == "" {
-		return errors.New("CDSURL must be an https URL with a host")
+		return errors.New("TAURL must be an https URL with a host")
 	}
 	if g.HTTPClient == nil {
 		return errors.New("HTTPClient is required")

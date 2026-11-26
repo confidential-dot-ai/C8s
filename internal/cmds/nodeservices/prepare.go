@@ -14,7 +14,6 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
-	nriimagepolicy "github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/nri-image-policy"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/fileutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
@@ -24,7 +23,7 @@ import (
 // public files it publishes beside it.
 type FloorInputs struct {
 	// Trust Authority is where the plugin pulls from and the credential role dials; its
-	// pin is published as cds.json.
+	// pin is published as ta.json.
 	TA cmdsutil.TA
 	// ClusterRanges, when given, are the cluster's pod and Service ranges,
 	// the mesh policy's cluster_ranges; none keeps the baked ones.
@@ -39,7 +38,7 @@ type FloorInputs struct {
 	Outputs map[string][]byte
 }
 
-// Prepare publishes the Trust Authority pin as cds.json, in.Outputs and the measured NRI
+// Prepare publishes the Trust Authority pin as ta.json, in.Outputs and the measured NRI
 // floor completed with in, and removes every other public output. rootDir
 // rebases paths for tests. The root bootstrap service owns these files; pods
 // mount them read-only.
@@ -146,8 +145,8 @@ func bindTAPull(a map[string]any, ta cmdsutil.TA) (map[string]any, error) {
 		return nil, err
 	}
 	pull["url"] = cmdsutil.TAURL(ta.Address)
-	pull["cds_measurements_config"] = PublicDir + "/" + TAOutput
-	pull["cds_pin_floor"] = ta.PinFloor
+	pull["ta_measurements_config"] = PublicDir + "/" + TAOutput
+	pull["ta_pin_floor"] = ta.PinFloor
 	return pull, nil
 }
 
@@ -420,15 +419,15 @@ func appendCredentialRole(policy map[string]any, port uint16) error {
 		if !ok {
 			return fmt.Errorf("baked NRI mesh role is %T, not a mapping", declared)
 		}
-		if role["name"] == nriimagepolicy.CredentialRole {
-			return fmt.Errorf("baked NRI mesh policy already binds the %s role", nriimagepolicy.CredentialRole)
+		if role["name"] == allowlist.RoleCredentials {
+			return fmt.Errorf("baked NRI mesh policy already binds the %s role", allowlist.RoleCredentials)
 		}
 		if uid, declared := role["uid"]; declared && fmt.Sprint(uid) == fmt.Sprint(workloadclaims.CredentialsUID) {
-			return fmt.Errorf("baked NRI mesh role %v holds uid %v, reserved for the %s role", role["name"], uid, nriimagepolicy.CredentialRole)
+			return fmt.Errorf("baked NRI mesh role %v holds uid %v, reserved for the %s role", role["name"], uid, allowlist.RoleCredentials)
 		}
 	}
 	policy["roles"] = append(roles, map[string]any{
-		"name": nriimagepolicy.CredentialRole,
+		"name": allowlist.RoleCredentials,
 		"uid":  workloadclaims.CredentialsUID,
 		"port": port,
 	})
@@ -441,7 +440,7 @@ func appendCredentialRole(policy map[string]any, port uint16) error {
 var publicOutputNames = append([]string{TAOutput, "operator-pubkey", "tls-san"}, routerOutputNames...)
 
 // TAOutput is the Trust Authority pin Prepare publishes under PublicDir.
-const TAOutput = "cds.json"
+const TAOutput = "ta.json"
 
 // removeOutputs removes the named outputs from the public directory, trying
 // every one.

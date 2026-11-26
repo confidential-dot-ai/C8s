@@ -67,7 +67,7 @@ func mintSelfSigned(t *testing.T, cn string, serial int64, key *ecdsa.PrivateKey
 // public key, for testing REPORTDATA-binding math without real SNP crypto.
 func selfSignedCertPEM(t *testing.T) (string, *ecdsa.PublicKey) {
 	t.Helper()
-	key, der := mintSelfSigned(t, "cds", 1, nil)
+	key, der := mintSelfSigned(t, "ta", 1, nil)
 	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})), &key.PublicKey
 }
 
@@ -79,7 +79,8 @@ func TestEvidenceFromDiscovery(t *testing.T) {
 
 	buildDoc := func(platform, cert string) []byte {
 		doc := map[string]any{
-			"cds_tls": map[string]any{"certificate_pem": cert},
+			"public_tls": map[string]any{"mode": "ta"},
+			"ta_tls":     map[string]any{"certificate_pem": cert},
 			"attestation": map[string]any{
 				"platform":  platform,
 				"challenge": base64.StdEncoding.EncodeToString(challenge),
@@ -147,8 +148,8 @@ func TestNormalizeTarget(t *testing.T) {
 		wantDial string
 		wantBase string
 	}{
-		{"cds.example.com", 8443, "cds.example.com:8443", "https://cds.example.com:8443"},
-		{"cds.example.com:9999", 8443, "cds.example.com:9999", "https://cds.example.com:9999"},
+		{"ta.example.com", 8443, "ta.example.com:8443", "https://ta.example.com:8443"},
+		{"ta.example.com:9999", 8443, "ta.example.com:9999", "https://ta.example.com:9999"},
 		{"https://lb.example.com", 443, "lb.example.com:443", "https://lb.example.com:443"},
 		{"https://lb.example.com:8443/ignored", 443, "lb.example.com:8443", "https://lb.example.com:8443"},
 		{"2001:db8::2", 8443, "[2001:db8::2]:8443", "https://[2001:db8::2]:8443"},
@@ -212,7 +213,7 @@ func TestBuildPolicy_MeshLeafFlagsRefusedWithKindTA(t *testing.T) {
 		"--allowlist":  {kind: "ta", allowlistFile: allowlist},
 	}
 	for flag, cfg := range refused {
-		t.Run(flag+" is refused with kind cds", func(t *testing.T) {
+		t.Run(flag+" is refused with kind ta", func(t *testing.T) {
 			_, err := buildPolicy(cfg)
 			if err == nil || !strings.Contains(err.Error(), "--kind ta") || !strings.Contains(err.Error(), flag) {
 				t.Fatalf("err = %v, want a refusal naming %s and --kind ta", err, flag)
@@ -227,7 +228,7 @@ func TestBuildPolicy_MeshLeafFlagsRefusedWithKindTA(t *testing.T) {
 		}
 	})
 
-	t.Run("kind cds without mesh leaf flags is accepted", func(t *testing.T) {
+	t.Run("kind ta without mesh leaf flags is accepted", func(t *testing.T) {
 		if _, err := buildPolicy(config{kind: "ta", measurementsConfig: testutil.TAPinFile(t)}); err != nil {
 			t.Fatalf("buildPolicy: %v", err)
 		}
@@ -411,7 +412,7 @@ func fakeSession(fill byte) testSession {
 // this identity and session.
 func (id *endpointIdentity) transcript(t *testing.T, nonce []byte, s testSession) []byte {
 	t.Helper()
-	erd, err := overenc.IdentityTranscriptHash("cds", s.ek, s.ct, s.sid, nonce, id.leaf.Raw, id.ca.Raw, testRouteDigest)
+	erd, err := overenc.IdentityTranscriptHash("ta", s.ek, s.ct, s.sid, nonce, id.leaf.Raw, id.ca.Raw, testRouteDigest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -457,7 +458,7 @@ func buildEndpointJSONWithEvidence(t *testing.T, id *endpointIdentity, nonce []b
 		"platform":          "snp",
 		"nonce":             b64u(nonce),
 		"evidence":          evidence,
-		"front_door_mode":   "cds",
+		"front_door_mode":   "ta",
 		"xwing_ek":          b64u(s.ek),
 		"xwing_ct":          b64u(s.ct),
 		"session_id":        b64u(s.sid),
@@ -465,7 +466,7 @@ func buildEndpointJSONWithEvidence(t *testing.T, id *endpointIdentity, nonce []b
 		"route_digest":      hex.EncodeToString(testRouteDigest),
 	}
 	if id != nil {
-		resp["cds_cert_pem"] = id.chainPEM
+		resp["ta_cert_pem"] = id.chainPEM
 		resp["identity_proof"] = id.proofJSON(t, id.transcript(t, nonce, s))
 	}
 	data, err := json.Marshal(resp)
@@ -615,13 +616,13 @@ func TestEvidenceFromEndpointJSON(t *testing.T) {
 			if err := json.Unmarshal(data, &obj); err != nil {
 				t.Fatal(err)
 			}
-			obj["cds_cert_pem"] = chain
+			obj["ta_cert_pem"] = chain
 			mutated, err := json.Marshal(obj)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := evidenceFromEndpointJSON(mutated, nonce, sess.ek, testRoute, "test"); err == nil || !strings.Contains(err.Error(), "cds_cert_pem") {
-				t.Errorf("%s chain: err = %v, want a cds_cert_pem error", name, err)
+			if _, err := evidenceFromEndpointJSON(mutated, nonce, sess.ek, testRoute, "test"); err == nil || !strings.Contains(err.Error(), "ta_cert_pem") {
+				t.Errorf("%s chain: err = %v, want a ta_cert_pem error", name, err)
 			}
 		}
 	})
@@ -652,7 +653,7 @@ func TestEvidenceFromEndpointJSON(t *testing.T) {
 		// issuing relationship, which must fail closed.
 		other := mintEndpointIdentity(t)
 		b64u := base64.RawURLEncoding.EncodeToString
-		erd, err := overenc.IdentityTranscriptHash("cds", sess.ek, sess.ct, sess.sid, nonce, id.leaf.Raw, other.ca.Raw, testRouteDigest)
+		erd, err := overenc.IdentityTranscriptHash("ta", sess.ek, sess.ct, sess.sid, nonce, id.leaf.Raw, other.ca.Raw, testRouteDigest)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -667,7 +668,7 @@ func TestEvidenceFromEndpointJSON(t *testing.T) {
 		if err := json.Unmarshal(data, &obj); err != nil {
 			t.Fatal(err)
 		}
-		obj["cds_cert_pem"] = string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: id.leaf.Raw})) +
+		obj["ta_cert_pem"] = string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: id.leaf.Raw})) +
 			string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: other.ca.Raw}))
 		obj["identity_proof"] = map[string]any{
 			"algorithm":      "ecdsa-sha384",
@@ -824,8 +825,8 @@ func TestEvidenceFromEndpointJSON_RealShape(t *testing.T) {
     "attestation_report": %q,
     "cert_chain": { "vcek": %q }
   },
-  "cds_cert_pem": %q,
-  "front_door_mode": "cds",
+  "ta_cert_pem": %q,
+  "front_door_mode": "ta",
   "xwing_ek": %q,
   "xwing_ct": %q,
   "session_id": %q,
@@ -1244,12 +1245,12 @@ func TestResolveMode(t *testing.T) {
 	}{
 		{"lb kind, auto mode", "lb", "auto", "discovery"},
 		{"lb kind, empty mode", "lb", "", "discovery"},
-		{"cds kind, auto mode", "ta", "auto", "armtls-cert"},
+		{"ta kind, auto mode", "ta", "auto", "armtls-cert"},
 		{"workload kind, auto mode", "workload", "auto", "armtls-cert"},
 		{"auto kind, auto mode", "auto", "auto", "auto"},
 		{"empty kind, empty mode", "", "", "auto"},
 		{"explicit mode overrides lb kind", "lb", "armtls-cert", "armtls-cert"},
-		{"explicit mode overrides cds kind", "ta", "attest-pq", "attest-pq"},
+		{"explicit mode overrides ta kind", "ta", "attest-pq", "attest-pq"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1306,7 +1307,7 @@ func TestDefaultPort(t *testing.T) {
 		want int
 	}{
 		{"preset wins over kind", config{defaults: Defaults{DefaultPort: 1234}, kind: "ta"}, 1234},
-		{"cds", config{kind: "ta"}, 8443},
+		{"ta", config{kind: "ta"}, 8443},
 		{"lb", config{kind: "lb"}, 443},
 		{"auto", config{}, 443},
 	}
@@ -1760,11 +1761,6 @@ func TestRun_UsageAndGatherFailures(t *testing.T) {
 			},
 			{
 				fromFile:           absent,
-				kind:               "cds",
-				measurementsConfig: testutil.TAPinFile(t),
-			},
-			{
-				fromFile:           absent,
 				kind:               "ta",
 				measurementsConfig: testutil.TAPinFile(t),
 			},
@@ -1817,7 +1813,7 @@ func TestRun_UsageAndGatherFailures(t *testing.T) {
 		}
 	})
 
-	t.Run("kind cds refuses --mesh-ca as a usage error", func(t *testing.T) {
+	t.Run("kind ta refuses --mesh-ca as a usage error", func(t *testing.T) {
 		var out, errOut bytes.Buffer
 		code := run(context.Background(), config{url: "https://127.0.0.1:1", kind: "ta", meshCA: writeMeshCAFile(t)}, &out, &errOut)
 		if code != exitUsage || !strings.Contains(errOut.String(), "--kind ta") || out.Len() != 0 {

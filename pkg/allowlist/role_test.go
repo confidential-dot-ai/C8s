@@ -116,9 +116,9 @@ func TestRoleOfRefusesAnAmbiguousRole(t *testing.T) {
 	}
 }
 
-// A role never travels on the wire: it is absent from the canonical document,
-// an operator-authored document naming one is refused, and a served document
-// naming one yields no role.
+// A role under workloads never travels on the wire: an operator-authored
+// document naming one is refused, and a served document naming one yields no
+// role.
 func TestRoleIsBoundByBootConfigAlone(t *testing.T) {
 	index := roleIndex(t, "mesh", []string{"/usr/local/bin/armtls-mesh"})
 	launch := RunningContainer{

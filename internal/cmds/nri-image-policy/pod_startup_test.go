@@ -30,6 +30,7 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/podmesh"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/podstart"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
@@ -244,7 +245,7 @@ func runPodBootstrap(t *testing.T, cfg *config, root string, podKey []byte, base
 	var meshDigest string
 	for _, workload := range cfg.Allowlist.Base.Workloads {
 		for _, container := range workload.Containers {
-			if container.Role != meshRole {
+			if container.Role != allowlist.RoleMesh {
 				continue
 			}
 			meshDigest = container.Digest.String()
@@ -330,7 +331,7 @@ func runPodBootstrap(t *testing.T, cfg *config, root string, podKey []byte, base
 		})
 	}
 	waitHealth(0)
-	for _, destination := range []string{workloadclaims.SidecarSocketDir, workloadclaims.CDSPinsPath, workloadclaims.CDSAddressPath} {
+	for _, destination := range []string{workloadclaims.SidecarSocketDir, workloadclaims.TAPinsPath, workloadclaims.TAAddressPath} {
 		ctr := podBootstrapContainer(pod, "forged-mount", "app", baseDigest)
 		ctr.Mounts = append(ctr.Mounts, readOnlyBind(cfg.WorkloadClaims.SocketDir, destination))
 		if _, err := nri.CreateContainer(ctx, &api.CreateContainerRequest{Pod: pod, Container: ctr}); err == nil {

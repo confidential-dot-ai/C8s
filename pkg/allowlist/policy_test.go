@@ -7,7 +7,7 @@ import (
 )
 
 func TestIndex_AnyArgvEntryAdmitsAnyArgv(t *testing.T) {
-	idx := mustParse(t, `{"schema":"c8s.allowlist/v1","workloads":{"cds":{"containers":[
+	idx := mustParse(t, `{"schema":"c8s.allowlist/v1","workloads":{"ta":{"containers":[
 		{"digest":"`+digestA+`","command":{"policy":"any"},"args":{"policy":"any"}}]}}}`).BuildIndex()
 	if !idx.AdmitsDigest(digestA) {
 		t.Fatal("digest not admitted")

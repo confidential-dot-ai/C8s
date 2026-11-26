@@ -67,7 +67,7 @@ func testDocument(t *testing.T, operatorPEM, anchorPEM string) wire {
 		Workloads:          testWorkloads,
 		Nodes:              testNodePins(t, anchorPEM),
 		NodeCIDRs:          []string{"10.0.0.0/24"},
-		LeafDNSNames:       []string{"cds.acme.example"},
+		LeafDNSNames:       []string{"ta.acme.example"},
 		LeafDNSPatterns:    []string{testServicePattern},
 	}
 }
@@ -116,7 +116,7 @@ func TestParseReturnsEverySettingParsed(t *testing.T) {
 		t.Fatal("lost the document's service DNS pattern")
 	}
 	// A leaf name is a literal identity: it matches whole, or not at all.
-	if !cfg.DNSSANPatterns[1].MatchString("cds.acme.example") || cfg.DNSSANPatterns[1].MatchString("evil.cds.acme.example") {
+	if !cfg.DNSSANPatterns[1].MatchString("ta.acme.example") || cfg.DNSSANPatterns[1].MatchString("evil.ta.acme.example") {
 		t.Fatal("leaf name is not matched as a whole name")
 	}
 }
@@ -127,7 +127,7 @@ func TestParseRefusesEachMalformedField(t *testing.T) {
 		change func(*wire)
 		want   string
 	}{
-		{"schema", func(w *wire) { w.SchemaVersion = "c8s-cds/v2" }, "schemaVersion"},
+		{"schema", func(w *wire) { w.SchemaVersion = "c8s-ta/v2" }, "schemaVersion"},
 		{"cluster label", func(w *wire) { w.ClusterID = "Acme_Prod" }, "clusterID"},
 		{"no operator keys", func(w *wire) { w.OperatorPublicKeys = "" }, "operatorPublicKeys"},
 		{"operator key is not a key", func(w *wire) { w.OperatorPublicKeys = "not a key" }, "operatorPublicKeys"},
@@ -162,7 +162,7 @@ func TestParseRefusesEachMalformedField(t *testing.T) {
 func TestParseRefusesAnUndeclaredField(t *testing.T) {
 	_, operatorPEM := testKey(t)
 	_, anchorPEM := testKey(t)
-	data := append(render(t, testDocument(t, operatorPEM, anchorPEM)), []byte("cdsAddress: 10.0.0.1:8443\n")...)
+	data := append(render(t, testDocument(t, operatorPEM, anchorPEM)), []byte("taAddress: 10.0.0.1:8443\n")...)
 	if _, err := Parse(data); err == nil {
 		t.Fatal("Parse accepted a setting Trust Authority does not define")
 	}

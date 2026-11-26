@@ -18,10 +18,10 @@ import (
 )
 
 // An injected sidecar dials the endpoint its node mounts; without a mount
-// --cds-url stands as it was given, and Validate canonicalises it.
+// --ta-url stands as it was given, and Validate canonicalises it.
 func TestResolveTAEndpointTakesTheNodesEndpoint(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "cds-address")
-	if err := os.WriteFile(path, cmdsutil.FormatTAAddress("cds.example.org:30808"), 0o600); err != nil {
+	path := filepath.Join(t.TempDir(), "ta-address")
+	if err := os.WriteFile(path, cmdsutil.FormatTAAddress("ta.example.org:30808"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	previousPath := nodeAddressPath
@@ -34,25 +34,25 @@ func TestResolveTAEndpointTakesTheNodesEndpoint(t *testing.T) {
 
 	injected := &Config{}
 	if err := injected.ResolveTAEndpoint(); err != nil {
-		t.Fatalf("ResolveCDSEndpoint: %v", err)
+		t.Fatalf("ResolveTAEndpoint: %v", err)
 	}
-	if injected.TAURL != "https://cds.example.org:30808" {
-		t.Fatalf("CDSURL = %q, want the node's endpoint", injected.TAURL)
+	if injected.TAURL != "https://ta.example.org:30808" {
+		t.Fatalf("TAURL = %q, want the node's endpoint", injected.TAURL)
 	}
 	line := logged.String()
 	if !strings.Contains(line, `msg="Trust Authority endpoint resolved"`) ||
-		!strings.Contains(line, "cds_url=https://cds.example.org:30808") ||
+		!strings.Contains(line, "ta_url=https://ta.example.org:30808") ||
 		!strings.Contains(line, "from_node=true") {
 		t.Fatalf("logged %q, want the resolved endpoint line", line)
 	}
 
 	nodeAddressPath = filepath.Join(t.TempDir(), "absent")
-	supplied := &Config{TAURL: "https://cds:8443/"}
+	supplied := &Config{TAURL: "https://ta:8443/"}
 	if err := supplied.ResolveTAEndpoint(); err != nil {
-		t.Fatalf("ResolveCDSEndpoint: %v", err)
+		t.Fatalf("ResolveTAEndpoint: %v", err)
 	}
-	if supplied.TAURL != "https://cds:8443/" {
-		t.Fatalf("CDSURL = %q, want --cds-url as it was given", supplied.TAURL)
+	if supplied.TAURL != "https://ta:8443/" {
+		t.Fatalf("TAURL = %q, want --ta-url as it was given", supplied.TAURL)
 	}
 }
 

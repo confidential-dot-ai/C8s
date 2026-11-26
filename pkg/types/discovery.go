@@ -10,7 +10,7 @@ type DiscoveryDocument struct {
 	Version     string               `json:"version"`
 	GeneratedAt string               `json:"generated_at"`
 	PublicTLS   PublicTLSDiscovery   `json:"public_tls"`
-	CDSTLS      CDSTLSDiscovery      `json:"cds_tls"`
+	TATLS       TATLSDiscovery       `json:"ta_tls"`
 	Attestation AttestationDiscovery `json:"attestation"`
 }
 
@@ -20,9 +20,9 @@ type PublicTLSDiscovery struct {
 	Mode     FrontDoorMode `json:"mode"`
 }
 
-// CDSTLSDiscovery carries the Trust Authority-issued serving certificate and where it (and
+// TATLSDiscovery carries the Trust Authority-issued serving certificate and where it (and
 // the mesh CA) are served.
-type CDSTLSDiscovery struct {
+type TATLSDiscovery struct {
 	CertificatePEM    string `json:"certificate_pem"`
 	CertificateSHA256 string `json:"certificate_sha256"`
 	CertificateURL    string `json:"certificate_url,omitempty"`

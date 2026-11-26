@@ -5,6 +5,6 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
 {{ include "c8s.commonLabels" . | indent 4 }}
-    app.kubernetes.io/component: cds
+    app.kubernetes.io/component: ta
 data:
   allowlist-seed.json: {{ include "worker.allowlistSeedJSON" . | trim | quote }}

@@ -78,6 +78,7 @@ func pullInitialOnce(
 ) (string, error) {
 	args.logger.Info("fetching initial allowlist from the Trust Authority", "attempt", attempt)
 	served, notModified, err := fetchServed(ctx, args.client, args.timeout, "")
+	args.target.policy().clock.observe(served.Date)
 	switch {
 	case err != nil:
 		return "", err
@@ -93,6 +94,7 @@ func pullInitialOnce(
 	if err := args.target.install(ctx, served.Allowlist, version); err != nil {
 		return "", err
 	}
+	args.target.policy().freshness.replied(served.CertificateLifetime, true)
 	args.pull.reached()
 	args.logger.Info("initial allowlist pulled from the Trust Authority",
 		"workloads", len(served.Allowlist.Workloads),
@@ -121,7 +123,9 @@ type pullLoopArgs struct {
 // forward version arrives. 304 raises the applied version to the one Trust Authority
 // serves the document at; it and errors leave the index untouched. A
 // version the measurer refuses for good also advances the ETag and is logged
-// once per digest.
+// once per digest. Every tick ends the component sets whose deadline the
+// Trust Authority's time has passed, and reports a node past its freshness
+// limit, which admits no new container of a pod the served document admits.
 func runPullLoop(ctx context.Context, args pullLoopArgs) {
 	ticker := time.NewTicker(args.interval)
 	defer ticker.Stop()
@@ -133,6 +137,8 @@ func runPullLoop(ctx context.Context, args pullLoopArgs) {
 		timeout: args.timeout,
 		logger:  args.logger,
 		etag:    args.etag,
+		// pullInitial returns the ETag of the document it installed.
+		appliedETag: args.etag,
 	}
 	for {
 		select {
@@ -140,6 +146,8 @@ func runPullLoop(ctx context.Context, args pullLoopArgs) {
 			return
 		case <-ticker.C:
 			loop.poll(ctx)
+			loop.reportFreshness()
+			loop.target.endSets(ctx)
 		}
 	}
 }
@@ -155,27 +163,69 @@ type pullLoop struct {
 
 	// etag names the document Trust Authority answers 304 for.
 	etag string
+	// appliedETag names the document admission applies, which the ETag runs
+	// ahead of once a document is refused for good.
+	appliedETag string
 	// refusedDigest and unmeasuredDigest are the documents last logged at
 	// Error as refused for good and as not yet measured.
 	refusedDigest    string
 	unmeasuredDigest string
+	// behind is the freshness the last tick reported, so a node falling
+	// behind and catching up are each logged once.
+	behind bool
 }
 
 func (l *pullLoop) poll(ctx context.Context) {
 	served, notModified, err := fetchServed(ctx, l.client, l.timeout, l.etag)
+	l.target.policy().clock.observe(served.Date)
+	fresh := false
 	switch {
 	case err != nil:
 		l.pull.failed(err)
 		l.logger.Warn("pull loop fetch failed", "error", err)
+		l.freshness().unanswered()
+		return
 	case notModified:
 		l.keepUnchanged(served)
+		fresh = l.applies(l.etag)
 	case served.Allowlist == nil:
 		l.logger.Warn("pull loop fetch returned nil allowlist")
 	case l.rolledBack(served):
 		l.ignoreRollback(served)
 	case l.settle(ctx, served):
-		l.etag, l.unmeasuredDigest = served.ETag, ""
+		l.etag = served.ETag
+		l.unmeasuredDigest = ""
+		fresh = l.applies(served.ETag)
 	}
+	l.freshness().replied(served.CertificateLifetime, fresh)
+}
+
+// applies reports whether admission applies the document a reply named: a
+// node fed a document it refuses for good, and answered 304 for it after,
+// applies another one and is not fresh.
+func (l *pullLoop) applies(etag string) bool {
+	return etag != "" && etag == l.appliedETag
+}
+
+func (l *pullLoop) freshness() *freshness {
+	return l.target.policy().freshness
+}
+
+// reportFreshness logs this node falling past its freshness limit, and
+// catching up again, once per lapse.
+func (l *pullLoop) reportFreshness() {
+	behind := l.freshness().behind()
+	if behind == l.behind {
+		return
+	}
+	l.behind = behind
+	if !behind {
+		l.logger.Info("an allowlist of the Trust Authority's landed: this node admits new pods again")
+		return
+	}
+	_, limit := l.freshness().report()
+	l.logger.Error("no allowlist of the Trust Authority's within one certificate lifetime: this node admits no new container of a pod the served allowlist admits until a poll lands",
+		"limit", limit)
 }
 
 func (l *pullLoop) keepUnchanged(served allowlistclient.Served) {
@@ -224,6 +274,7 @@ func (l *pullLoop) replace(
 		l.logger.Warn("pull loop: retained Pod policy refused update", "error", err)
 		return false
 	}
+	l.appliedETag = served.ETag
 	l.pull.reached()
 	l.logger.Info("pull loop: allowlist refreshed",
 		"workloads", len(served.Allowlist.Workloads),

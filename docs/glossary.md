@@ -33,7 +33,7 @@ CVM mode is [overview.md](overview.md#cvm-modes-and-hardware-platforms).
 | mount class | A mount rule's `kind`: `emptyDir`, `data`, `host`, `nodeRootFile`, or `fsVerityFile`; `platform` is the class the node assigns its own mounts, which no rule names. | [allowlist-entries.md](allowlist-entries.md) |
 | operator key | The EC keypair authorizing policy writes; TA pins its public half. | [allowlist-and-capabilities.md](allowlist-and-capabilities.md) |
 | operator write token | The write token of one policy write: an operator signature over that method, path, and body. | [allowlist-and-capabilities.md](allowlist-and-capabilities.md) |
-| platform role | An identity a measured base grants one C8s node-side invocation, such as the credentials role. | [allowlist-and-capabilities.md](allowlist-and-capabilities.md#host-privilege) |
+| platform role | An identity a measured base or a component set in force grants one C8s node-side invocation, such as the credentials role. | [allowlist-and-capabilities.md](allowlist-and-capabilities.md#host-privilege) |
 | policy history | The allowlist policies a TDX node extends into RTMR[3] for verifiers to replay, when policy measurement is on. | [allowlist-and-capabilities.md](allowlist-and-capabilities.md#measured-policy-history) |
 | privilege floor | The measured limits `c8s-runc` enforces on every container of a member pod. | [node-exec-mode.md](node-exec-mode.md) |
 | workload entry | One allowlist entry: a named container set with argv, mount, and environment policy. | [allowlist-entries.md](allowlist-entries.md) |
@@ -63,7 +63,7 @@ CVM mode is [overview.md](overview.md#cvm-modes-and-hardware-platforms).
 | **Ingress and routing** | | |
 | attest-lb | Attested handshake that binds the serving leaf of the connection a client is already on. | [routes-evidence.md](routes-evidence.md) |
 | attest-pq | Attested handshake whose X-Wing key exchange lets a client over-encrypt requests inside ordinary TLS. | [routes-evidence.md](routes-evidence.md) |
-| public TLS mode | How the router gets its public certificate: `cds` or `acme`. | [operator.md](operator.md) |
+| public TLS mode | How the router gets its public certificate: `ta` or `acme`. | [operator.md](operator.md) |
 | route digest | The SHA-256 of the route manifest bytes, bound into the router's attestation. | [routes-evidence.md](routes-evidence.md) |
 | route manifest | Operator-signed hosts, paths, and backends. The router serves nothing else. | [operator.md](operator.md#route-manifest) |
 | router | The front door: terminates public TLS and routes application traffic by the signed manifest. | [operator.md](operator.md) |

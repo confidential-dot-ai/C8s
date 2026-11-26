@@ -24,7 +24,7 @@ func testDocumentFor(t *testing.T, operatorPEM string, anchorPEM string) Documen
 		Workloads:       workloads,
 		Nodes:           []byte(testNodePins(t, anchorPEM)),
 		NodeCIDRs:       []string{"10.0.0.0/24"},
-		LeafDNSNames:    []string{"cds.acme.example"},
+		LeafDNSNames:    []string{"ta.acme.example"},
 		LeafDNSPatterns: []string{testServicePattern},
 	}
 }

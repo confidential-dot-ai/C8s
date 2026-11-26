@@ -1,4 +1,4 @@
-// Package cdsconfig is the Trust Authority VM's launch file: one document holding every
+// Package taconfig is the Trust Authority VM's launch file: one document holding every
 // per-cluster setting Trust Authority runs on, bound to its VM by the launch measurement.
 // The host can read a launch file, so it carries no secrets.
 package taconfig
@@ -21,7 +21,7 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
-const SchemaVersion = "c8s-cds/v1"
+const SchemaVersion = "c8s-ta/v1"
 
 type Config struct {
 	// ClusterID names the cluster. Two clusters sharing an image and operator

@@ -242,29 +242,29 @@ volume opens once its consumer's entry and its key are both back
 ## The router
 
 The router is the cluster's only public entry point, in its own `c8s-router`
-namespace. Its pod holds nginx, `cds-attest`, the allowlist-route proxy and the
-member shape the chart renders rather than injects. The `cds-attest` container
+namespace. Its pod holds nginx, `ta-attest`, the allowlist-route proxy and the
+member shape the chart renders rather than injects. The `ta-attest` container
 provides the `c8s ta-attest` command's router services. Its front-door mode
-selects what terminates public TLS: `cds` on an installed cluster, and on a
+selects what terminates public TLS: `ta` on an installed cluster, and on a
 baked node whichever its signed launch file names:
 
 | Mode | Credential | Attested handshakes |
 |---|---|---|
-| `cds` (default) | A TA-issued mesh leaf; the key stays in the pod's TEE | attest-pq and attest-lb |
+| `ta` (default) | A TA-issued mesh leaf; the key stays in the pod's TEE | attest-pq and attest-lb |
 | `acme` | A multi-SAN WebPKI leaf the in-pod `c8s acme` sidecar obtains over HTTP-01; TEE-held, `bare-metal` only | attest-pq and attest-lb |
 
 The two attested handshakes, attest-pq and attest-lb, are
 [routes-evidence.md](routes-evidence.md)'s. The mode is a trust statement:
-`cds-attest` commits it into both transcripts and refuses attest-lb unless the
+`ta-attest` commits it into both transcripts and refuses attest-lb unless the
 serving key is TEE-held, since a host holding the key could terminate a client's
 TLS with the same leaf. For the same reason `c8s allowlist` and `c8s routes`
-refuse a front door outside mode `cds`, wanting a direct TA URL.
-In mode `cds` attest-lb binds the mesh identity leaf, which is the leaf nginx
+refuse a front door outside mode `ta`, wanting a direct TA URL.
+In mode `ta` attest-lb binds the mesh identity leaf, which is the leaf nginx
 serves; a mesh leaf or CA outside its validity window is a credential failure,
 503 `binding_unavailable`. In mode `acme` it binds the leaf
 `--serving-cert-file` names and refuses with 503 `serving_leaf_rejected` while
 that leaf is outside its validity window or served with a chain that has
-expired. In mode `cds`, an expired intermediate in `tls.crt` gets
+expired. In mode `ta`, an expired intermediate in `tls.crt` gets
 `serving_leaf_rejected`, and a `tls.crt` chain block that does not parse gets
 503 `binding_unavailable` from attest-lb; `/readyz` and attest-pq are
 unaffected.
@@ -284,7 +284,7 @@ the old one.
 
 The TA stores one operator-signed `c8s.routes/v1` manifest at `/routes`, in the
 same store as the served allowlist, so it shares its lifetime; there is no route
-seed. `cds-attest` polls `GET /routes` every `router.routing.pollInterval` (30s)
+seed. `ta-attest` polls `GET /routes` every `router.routing.pollInterval` (30s)
 over armTLS against the same TA pins, verifies the manifest's write token under
 the operator keys, and routes by nothing else. A baked node takes those keys
 from the TA configuration its document pins; elsewhere they are Kubernetes
@@ -330,7 +330,7 @@ detectable only by pinning the route digest or the operator keys.
   withdrawal, and starts it again when all served credentials are readable.
   Readiness fails while nginx is stopped. An unexpected nginx exit terminates
   the container for kubelet to restart.
-- With the front door in `cds` mode the serving certificate is the router's
+- With the front door in `ta` mode the serving certificate is the router's
   mesh certificate, so a client pinning it attests again at every renewal.
 - An attested session routes only by the manifest and the router allowlist
   digest its handshake bound. Once either changes the router answers 503 and
@@ -375,7 +375,7 @@ and remove it with `c8s routes rm-pattern --host-suffix <suffix>`.
   workload and the label in the peer's leaf; a wrong or forged annotation
   costs a 502, never a request at the wrong agent. A label no pod publishes
   gets 404.
-- The router's upstream identity (`cds-attest`) carries its own TCP out of
+- The router's upstream identity (`ta-attest`) carries its own TCP out of
   the router pod uncaptured, wherever it goes: a pod CVM's endpoint lies
   outside the cluster's ranges, on whatever port its cloud published, and a
   captured dial would be wrapped in a second mesh handshake. Every
@@ -406,8 +406,8 @@ signing and in the guest. Cloud launches a pod CVM from a Pod manifest through
 its API or console with this guest contract. For automatic placement from
 Kubernetes, enable the optional [Pod CVM provider](pod-cvm-provider.md): it
 signs the scheduler-assigned Pod, launches its Cloud VM, projects attested
-status and owns cleanup. The provider requires explicit `cdsAddress` and
-`cdsImagePolicyFile` configuration, plus a guest image and Cloud launch
+status and owns cleanup. The provider requires explicit `taAddress` and
+`taImagePolicyFile` configuration, plus a guest image and Cloud launch
 contract accepting `c8s-launch/v2`. Follow its [configuration and upgrade
 requirements](pod-cvm-provider.md#platform-configuration). The manual commands
 below use the same guest contract.
@@ -415,7 +415,7 @@ below use the same guest contract.
 ```sh
 c8s launch-config new-pod --out pod1 --cluster-id demo --name pod-1 \
   --image-manifest manifest.json \
-  --ta-address ta.example.com:8443 --ta-image-policy-file cds-pin.json
+  --ta-address ta.example.com:8443 --ta-image-policy-file ta-pin.json
 ```
 
 This writes a generic `role: pod` document, naming no pod, signed by a separate pod launch key
@@ -606,7 +606,7 @@ image digests from a `-f` file, beside the mesh file every install takes:
 ```sh
 c8s install --platform aks-snp --chart charts/cloud \
   -f images.yaml -f values.yaml \
-  --ta-address 10.0.0.9:8443 --ta-pin cds-pin.json \
+  --ta-address 10.0.0.9:8443 --ta-pin ta-pin.json \
   --operator-keys operator.pub
 ```
 
@@ -650,7 +650,7 @@ helm template c8s charts/cloud \
   --namespace c8s-system --kube-version 1.31.0 \
   -f charts/cloud/values-aks-snp.yaml \
   --set ta.address=10.0.0.9:8443 \
-  --set-file ta.measurementsConfig=cds-pin.json \
+  --set-file ta.measurementsConfig=ta-pin.json \
   --set image.tag=main \
   --set attestationApi.image.tag=main \
   --set armtlsMesh.image.tag=main \
@@ -659,5 +659,5 @@ helm template c8s charts/cloud \
   --set 'nriImagePolicy.mesh.clusterRanges={10.244.0.0/16,10.96.0.0/12}'
 ```
 
-The address is this cluster's TA and `cds-pin.json` the document
+The address is this cluster's TA and `ta-pin.json` the document
 `c8s ta config new` wrote beside its configuration.

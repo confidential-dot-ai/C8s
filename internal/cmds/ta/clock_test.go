@@ -81,7 +81,7 @@ func TestClockQuarantineHTTPOnExistingConnection(t *testing.T) {
 
 func TestClockBeforeObservationFutureTokenStillGetsUnauthorized(t *testing.T) {
 	key, _ := operatorKeyPair(t)
-	body := []byte(anySeed(map[string]string{"cds": digestA}))
+	body := []byte(anySeed(map[string]string{"ta": digestA}))
 	sum := sha256.Sum256(body)
 	issued := time.Now().Add(time.Minute)
 	token, err := jwt.NewWithClaims(jwt.SigningMethodES256, jwt.MapClaims{

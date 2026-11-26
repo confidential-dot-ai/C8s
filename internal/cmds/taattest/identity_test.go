@@ -131,7 +131,7 @@ func TestIdentityBoundAttestationAndChannel(t *testing.T) {
 	srv := NewServer(Config{
 		Routes:               testRoutes(t),
 		Evidence:             provider,
-		FrontDoorMode:        types.FrontDoorModeCDS,
+		FrontDoorMode:        types.FrontDoorModeTA,
 		MeshIdentityCertFile: identity.certFile,
 		MeshIdentityKeyFile:  identity.keyFile,
 		MeshIdentityCAFile:   identity.caFile,
@@ -215,7 +215,7 @@ func validAttestPQBody(t *testing.T) []byte {
 }
 
 func TestIdentityBoundAttestationFailsClosedWithoutIdentity(t *testing.T) {
-	srv := NewServer(Config{Routes: testRoutes(t), Evidence: &capturingProvider{}, FrontDoorMode: types.FrontDoorModeCDS, Bindings: NewBindings()})
+	srv := NewServer(Config{Routes: testRoutes(t), Evidence: &capturingProvider{}, FrontDoorMode: types.FrontDoorModeTA, Bindings: NewBindings()})
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	resp := postAttestPQ(t, ts.URL, validAttestPQBody(t))
@@ -229,7 +229,7 @@ func TestIdentityBoundAttestationFailsClosedOnInvalidConfiguredIdentity(t *testi
 	srv := NewServer(Config{
 		Routes:               testRoutes(t),
 		Evidence:             &capturingProvider{},
-		FrontDoorMode:        types.FrontDoorModeCDS,
+		FrontDoorMode:        types.FrontDoorModeTA,
 		MeshIdentityCertFile: "/does/not/exist/cert.pem",
 		MeshIdentityKeyFile:  "/does/not/exist/key.pem",
 		MeshIdentityCAFile:   "/does/not/exist/ca.pem",
@@ -446,7 +446,7 @@ func TestAttestationRejectsQuerySelectors(t *testing.T) {
 	srv := NewServer(Config{
 		Routes:               testRoutes(t),
 		Evidence:             &capturingProvider{},
-		FrontDoorMode:        types.FrontDoorModeCDS,
+		FrontDoorMode:        types.FrontDoorModeTA,
 		ServingCertFile:      identity.certFile,
 		MeshIdentityCertFile: identity.certFile,
 		MeshIdentityKeyFile:  identity.keyFile,
@@ -492,7 +492,7 @@ func TestIdentityBoundAttestationRejectsDegenerateKey(t *testing.T) {
 	srv := NewServer(Config{
 		Routes:               testRoutes(t),
 		Evidence:             &capturingProvider{},
-		FrontDoorMode:        types.FrontDoorModeCDS,
+		FrontDoorMode:        types.FrontDoorModeTA,
 		MeshIdentityCertFile: identity.certFile,
 		MeshIdentityKeyFile:  identity.keyFile,
 		MeshIdentityCAFile:   identity.caFile,

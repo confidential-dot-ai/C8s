@@ -90,32 +90,32 @@ const (
 	MemberCAPath  = MemberCertDir + "/ca.crt"
 )
 
-// CDSPinsPath is where an injected credential client reads the Trust Authority attestation
+// TAPinsPath is where an injected credential client reads the Trust Authority attestation
 // policy it holds the Trust Authority to. Compiled for the same reason as the socket path:
 // the node bind-mounts its own policy there, so neither the pod nor the control
-// plane can name another source (see cmdsutil.ResolveCDSPins). The path is the
+// plane can name another source (see cmdsutil.ResolveTAPins). The path is the
 // enforcer's alone — a chart-rendered client reads the node config it mounts
 // itself, and keeps its own policy flag.
-const CDSPinsPath = "/run/c8s/cds-pins.json"
+const TAPinsPath = "/run/c8s/ta-pins.json"
 
-// RouterCDSPinsPath is where the router's route-manifest poller reads the same
+// RouterTAPinsPath is where the router's route-manifest poller reads the same
 // policy. The router runs on the upstream identity, so the credential
 // clients' path would hand it their trust root.
-const RouterCDSPinsPath = "/run/c8s/router-cds-pins.json"
+const RouterTAPinsPath = "/run/c8s/router-ta-pins.json"
 
 // AttestationAPISocket is the node's own attestation-api as an injected
 // credential client sees it: the socket in the directory the NRI plugin
 // mounts. Compiled for the same reason as the paths above — the verifier
-// decides whether the Trust Authority a client dials satisfies CDSPinsPath, so a client
+// decides whether the Trust Authority a client dials satisfies TAPinsPath, so a client
 // the node pins reaches no other one (see cmdsutil.RequireNodeVerifier).
 const AttestationAPISocket = SidecarSocketDir + "/attestation-api.sock"
 
-// CDSAddressPath is where an injected credential client reads the Trust Authority endpoint
+// TAAddressPath is where an injected credential client reads the Trust Authority endpoint
 // it dials, as <addr>:<port>. Compiled for the same reason as the pins: the
 // node writes the address its pod ruleset admits for the credential role, so a
 // client reaches the one Trust Authority it is permitted to reach and never an address the
-// control plane names (see cmdsutil.ResolveCDSEndpoint).
-const CDSAddressPath = "/run/c8s/cds-address"
+// control plane names (see cmdsutil.ResolveTAURL).
+const TAAddressPath = "/run/c8s/ta-address"
 
 // AnnotationInjected is stamped on a pod by the mutating webhook after
 // injection; the inventory's NRI plugin mounts its socket directory only under
@@ -147,7 +147,7 @@ func SplitList(value string) []string {
 // webhook-injected sidecars that dial sockets in the inventory's directory
 // (workload-claims.sock, attestation-api.sock, volumed.sock); on node-CVM the
 // NRI plugin bind-mounts the directory into these containers and into an
-// application's own cds-attest sidecar (IsSocketConsumer).
+// application's own ta-attest sidecar (IsSocketConsumer).
 const (
 	CertContainerName   = "c8s-cert"
 	SecretContainerName = "c8s-secret"
@@ -264,21 +264,6 @@ func ParseMeshProbePath(rendered string) (int32, string, error) {
 	return int32(port), appPath, nil
 }
 
-// MeshRole and CredentialsRole are the platform roles of the containers the
-// webhook adds to every member pod: the endpoint that carries the pod's
-// traffic, and the clients that fetch its credentials. Workload matching runs
-// without them (internal/secrets.WorkloadContainers), so a workload entry
-// never enumerates them. A role a pod runs for a purpose of its own, like the
-// router's, is matched like any other container.
-const (
-	MeshRole        = "mesh"
-	CredentialsRole = "credentials"
-)
-
-// RouterRole is the role of the router's front door. Trust Authority gives a sandbox
-// running one a short-lived leaf.
-const RouterRole = "router"
-
 // CredentialsUID is the reserved identity of the injected credential clients.
 // The node binds it to the Trust Authority address, and the enforcer refuses it in any
 // other container, so a pod cannot reach the Trust Authority with a socket of its own.
@@ -325,14 +310,14 @@ func IsSidecarContainer(name string) bool {
 	return name == CertContainerName || name == SecretContainerName || name == VolumeContainerName
 }
 
-// AttestContainerName is the cds-attest sidecar an application may run itself
+// AttestContainerName is the ta-attest sidecar an application may run itself
 // to serve per-pod attestation receipts. The webhook does not inject it, so it
 // is not an injected container name; it only receives the socket mount.
-const AttestContainerName = "cds-attest"
+const AttestContainerName = "ta-attest"
 
 // IsSocketConsumer reports whether name receives the read-only inventory
 // socket-directory mount: the injected sidecars and an application's
-// cds-attest. The name is not a boundary; every socket in the directory binds
+// ta-attest. The name is not a boundary; every socket in the directory binds
 // its caller by peer credentials.
 func IsSocketConsumer(name string) bool {
 	return IsSidecarContainer(name) || name == AttestContainerName
@@ -340,7 +325,7 @@ func IsSocketConsumer(name string) bool {
 
 // IsInjectedContainerName reports whether name is one the admission webhook
 // injects. Names are host-written, so it holds only over authored input;
-// runtime matching goes by the role a node's measured base binds to a launch
+// runtime matching goes by the role a node's policy binds to a launch
 // (internal/secrets.WorkloadContainers).
 func IsInjectedContainerName(name string) bool {
 	return IsSidecarContainer(name) || name == CertWaitContainerName || name == MeshContainerName
@@ -444,10 +429,10 @@ type SandboxContainer struct {
 	Env    *allowlist.EnvObservation `json:"env,omitempty"`
 	Mounts []allowlist.ObservedMount `json:"mounts"`
 	Digest string                    `json:"digest"`
-	// Role is the platform role the node's own measured base binds to this
-	// launch, and is empty for a container outside every role. It is the
-	// enforcer's reading of its boot config, so nothing a Trust Authority serves and no
-	// pod spec can claim one (pkg/allowlist).
+	// Role is the platform role the node's measured base, or a component set
+	// in force, binds to this launch, and is empty for a container outside
+	// every role. It is the enforcer's own reading of its policy, so no pod
+	// spec can claim one (pkg/allowlist).
 	Role string `json:"role,omitempty"`
 	// Argv is the effective OCI process.args — the merged image-config and
 	// pod-spec command, which is what the argv policy is written against.

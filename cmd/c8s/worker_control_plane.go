@@ -43,6 +43,7 @@ var (
 		"ClusterRoleBinding//c8s-worker-client-cert-renewal",
 		"ClusterRoleBinding//c8s-worker-kube-proxy",
 		"CustomResourceDefinition//confidentialworkloads.confidential.ai",
+		"DaemonSet/c8s-system/c8s-volumed",
 		"Deployment/c8s-router/c8s-router",
 		"MutatingWebhookConfiguration//c8s-pod-injector",
 		"Namespace//c8s-router",
@@ -54,6 +55,7 @@ var (
 		"Service/kube-system/dcgm-exporter",
 		"Service/kube-system/kube-dns",
 		"ServiceAccount/c8s-router/c8s-router",
+		"ServiceAccount/c8s-system/c8s-volumed",
 		"ValidatingWebhookConfiguration//c8s-pod-validator",
 	}
 	workerImageObjects = []string{
@@ -105,6 +107,8 @@ grants the operator's Pod CVM provider needs (run the operator with
 	f.StringVar(&cfg.imageRepository, "image-repository", "", "operator/get-cert container repository; empty uses the chart default")
 	f.StringVar(&cfg.armtlsMeshImageDigest, "armtls-mesh-image-digest", "", "digest of the armTLS mesh container image (sha256:..., required)")
 	f.StringVar(&cfg.armtlsMeshImageRepository, "armtls-mesh-image-repository", "", "armTLS mesh container repository; empty uses the chart default")
+	f.StringVar(&cfg.volumedImageDigest, "volumed-image-digest", "", "digest of the volumed container image (sha256:..., required)")
+	f.StringVar(&cfg.volumedImageRepository, "volumed-image-repository", "", "volumed container repository; empty uses the chart default")
 	f.StringVar(&cfg.chartDir, "chart-dir", "", "c8s-worker chart directory; empty uses the chart bundled in this binary")
 	f.StringVar(&cfg.outputDir, "output-dir", "", "directory for cluster.yaml (required)")
 	f.BoolVar(&cfg.podCVMProvider, "pod-cvm-provider", false, "grant the operator's Pod CVM provider its nodes, pods/status and c8s-system Secrets")

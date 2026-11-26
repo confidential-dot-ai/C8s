@@ -106,7 +106,7 @@ func newHarnessAt(t *testing.T, ta *fakeTA, taURL string) *harness {
 	t.Helper()
 	certPath, keyPath, pub := testutil.WriteLeaf(t, t.TempDir())
 	h := &harness{ta: ta, taURL: taURL, socket: testutil.StartInventory(t), leafPub: pub}
-	h.common = []string{"--cds-url", taURL, "--attestation-api-url", "unix:///nonexistent/attest.sock",
+	h.common = []string{"--ta-url", taURL, "--attestation-api-url", "unix:///nonexistent/attest.sock",
 		"--cert", certPath, "--key", keyPath, "--socket", h.socket, "--timeout", "5s"}
 	h.pinned = append(append([]string{}, h.common...),
 		"--image-policy-json", testutil.TAPinDocument(testutil.TestMeasurement, testutil.TALaunchFile))
@@ -468,10 +468,10 @@ func TestUsageErrorsExit2(t *testing.T) {
 		})
 	}
 	for name, args := range map[string][]string{
-		"no cds-url":         {"--cert", "c", "--key", "k", "challenge"},
-		"no cert":            {"--cds-url", "https://cds.example", "challenge"},
-		"bad url":            {"--cds-url", "cds.example", "--cert", "c", "--key", "k", "challenge"},
-		"no attestation api": {"--cds-url", "https://cds.example", "--cert", "c", "--key", "k", "challenge"},
+		"no ta-url":          {"--cert", "c", "--key", "k", "challenge"},
+		"no cert":            {"--ta-url", "https://ta.example", "challenge"},
+		"bad url":            {"--ta-url", "ta.example", "--cert", "c", "--key", "k", "challenge"},
+		"no attestation api": {"--ta-url", "https://ta.example", "--cert", "c", "--key", "k", "challenge"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if code, _, errOut := execute(t, args...); code != exitUsage || errOut == "" {
@@ -523,7 +523,7 @@ func (f *fakeTA) fetched() int {
 // the test's duration.
 func writeNodePins(t *testing.T) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "cds-pins.json")
+	path := filepath.Join(t.TempDir(), "ta-pins.json")
 	document := testutil.TAPinDocument(testutil.TestMeasurement, testutil.TALaunchFile)
 	if err := os.WriteFile(path, []byte(document), 0o644); err != nil {
 		t.Fatal(err)

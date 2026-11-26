@@ -52,11 +52,11 @@ func run(t *testing.T, args ...string) (stdout, stderr string, err error) {
 // against, so reading it from an endpoint whose build is not pinned would
 // launder "any attested TEE" into a pin. The refusal lands before any request.
 func TestRefusesAnUnpinnedTA(t *testing.T) {
-	seen, url := newAttestedTA(t, http.StatusOK, testutil.PEMCerts(testutil.MeshCA(t, "cds-m")))
+	seen, url := newAttestedTA(t, http.StatusOK, testutil.PEMCerts(testutil.MeshCA(t, "ta-m")))
 
 	_, _, err := run(t, "--url", url)
 	if !errors.Is(err, taconn.ErrUnpinnedEndpoint) {
-		t.Fatalf("err = %v, want errors.Is cdsconn.ErrUnpinnedEndpoint", err)
+		t.Fatalf("err = %v, want errors.Is taconn.ErrUnpinnedEndpoint", err)
 	}
 	if !strings.Contains(err.Error(), "--ta-image-policy-file") {
 		t.Fatalf("refusal does not name --image-policy-file: %v", err)
@@ -70,7 +70,7 @@ func TestRefusesAnUnpinnedTA(t *testing.T) {
 // anchor — --insecure buys a read here the way it buys one elsewhere.
 func TestRefusesAPlaintextURL(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write(testutil.PEMCerts(testutil.MeshCA(t, "cds-m")))
+		_, _ = w.Write(testutil.PEMCerts(testutil.MeshCA(t, "ta-m")))
 	}))
 	t.Cleanup(srv.Close)
 
@@ -102,7 +102,7 @@ func TestRefusesAnUnparseableURLWithoutBlamingTheScheme(t *testing.T) {
 // serves them (newest CA first, retained CAs after), and every certificate's
 // digest is reported so an operator can pin it out of band.
 func TestWritesTheServedChainAndReportsEachDigest(t *testing.T) {
-	newest, retained := testutil.MeshCA(t, "cds-m-2"), testutil.MeshCA(t, "cds-m-1")
+	newest, retained := testutil.MeshCA(t, "ta-m-2"), testutil.MeshCA(t, "ta-m-1")
 	_, url := newAttestedTA(t, http.StatusOK, testutil.PEMCerts(newest, retained))
 	out := filepath.Join(t.TempDir(), "mesh-ca.pem")
 
@@ -128,7 +128,7 @@ func TestWritesTheServedChainAndReportsEachDigest(t *testing.T) {
 // With no --out the bundle goes to stdout, so it pipes into the flags that take
 // it without an intermediate file, while the digests stay on stderr.
 func TestWritesToStdoutWithoutOut(t *testing.T) {
-	ca := testutil.MeshCA(t, "cds-m")
+	ca := testutil.MeshCA(t, "ta-m")
 	_, url := newAttestedTA(t, http.StatusOK, testutil.PEMCerts(ca))
 
 	stdout, _, err := run(t, "--url", url, "--image-policy-file", testutil.TAPinFile(t))
@@ -144,7 +144,7 @@ func TestWritesToStdoutWithoutOut(t *testing.T) {
 // The anchor file holds certificates and nothing else: whatever else an
 // endpoint puts in the response does not become part of what an operator pins.
 func TestDropsNonCertificateBlocks(t *testing.T) {
-	ca := testutil.MeshCA(t, "cds-m")
+	ca := testutil.MeshCA(t, "ta-m")
 	body := append(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: []byte("filler")}), testutil.PEMCerts(ca)...)
 	_, url := newAttestedTA(t, http.StatusOK, body)
 	out := filepath.Join(t.TempDir(), "mesh-ca.pem")
@@ -220,7 +220,7 @@ func TestImagePolicyGatesCARead(t *testing.T) {
 		{"different image", strings.Repeat("ab", 48), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			ca := testutil.MeshCA(t, "cds-m")
+			ca := testutil.MeshCA(t, "ta-m")
 			seen, url := newAttestedTA(t, http.StatusOK, testutil.PEMCerts(ca))
 			policy := filepath.Join(t.TempDir(), "policy.json")
 			data := testutil.TAPinDocument(tc.digest, testutil.TALaunchFile)
@@ -249,7 +249,7 @@ func TestImagePolicyGatesCARead(t *testing.T) {
 
 // ca parses --operator-key and --insecure though it reads neither.
 func TestReadsWithTheFlagsItIgnores(t *testing.T) {
-	ca := testutil.MeshCA(t, "cds-m")
+	ca := testutil.MeshCA(t, "ta-m")
 	_, url := newAttestedTA(t, http.StatusOK, testutil.PEMCerts(ca))
 
 	stdout, _, err := run(t, "--url", url, "--image-policy-file", testutil.TAPinFile(t), "--operator-key", "/nonexistent", "--insecure")

@@ -36,7 +36,7 @@ const nodeOperatorKeysFile = nodeservices.PublicDir + "/operator-pubkey"
 var defaultReservedPaths = []string{
 	"/allowlist",
 	"/.well-known/c8s/",
-	"/.well-known/cds-cert.pem",
+	"/.well-known/ta-cert.pem",
 	"/.well-known/mesh-ca.pem",
 	"/.well-known/acme-challenge/",
 	"/v1/discovery",
@@ -60,7 +60,6 @@ type routingConfig struct {
 
 func bindRoutingFlags(f *pflag.FlagSet, cfg *routingConfig) {
 	f.StringVar(&cfg.taURL, "ta-url", "", "Trust Authority base URL (https, armTLS-verified) to poll the signed route manifest from; required unless this node's enforcer mounts the endpoint")
-	cmdsutil.AliasFlag(f, "ta-url", "cds-url")
 	cmdsutil.BindTAImagePolicyFlags(f, &cfg.imagePolicyFile, nil, "pins the Trust Authority endpoint (REQUIRED), every entry bound to the launch file that Trust Authority runs on")
 	f.StringVar(&cfg.operatorKeysFile, "operator-keys-file", "", "PEM operator public keys a route manifest must be signed under, used when the node's launch configuration carries none; unset, the keys come from the verified Trust Authority's GET /operator-keys")
 	f.DurationVar(&cfg.pollInterval, "routes-poll-interval", 30*time.Second, "how often to poll the Trust Authority for the route manifest")
@@ -107,7 +106,7 @@ func checkRoutingFlags(cfg config) error {
 	return nil
 }
 
-// routingEngine is the manifest routing a cds-attest process runs: the poller,
+// routingEngine is the manifest routing a ta-attest process runs: the poller,
 // the proxy the tunnel shares, and the routing listener.
 type routingEngine struct {
 	cfg    routingConfig
@@ -122,7 +121,7 @@ type routingEngine struct {
 // connections whose binding in bindings no longer holds.
 func newRoutingEngine(ctx context.Context, cfg config, bindings *Bindings, logger *slog.Logger) (*routingEngine, error) {
 	r := cfg.routing
-	pins, err := routeSourcePins(ctx, r, workloadclaims.RouterCDSPinsPath)
+	pins, err := routeSourcePins(ctx, r, workloadclaims.RouterTAPinsPath)
 	if err != nil {
 		return nil, err
 	}
@@ -204,7 +203,7 @@ func routeSourcePins(ctx context.Context, r routingConfig, followed string) (arm
 // resolved is the URL this process dials, after ExpandHostIP replaced a node
 // address reference with the address the enforcer published.
 func checkNodeVerifier(resolved string) error {
-	if err := cmdsutil.RequireNodeVerifier(workloadclaims.CDSPinsPath, workloadclaims.AttestationAPISocket, resolved); err != nil {
+	if err := cmdsutil.RequireNodeVerifier(workloadclaims.TAPinsPath, workloadclaims.AttestationAPISocket, resolved); err != nil {
 		return err
 	}
 	return checkVerifierEndpoint(resolved, cmdsutil.NodeIPPath)

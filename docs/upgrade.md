@@ -9,6 +9,10 @@ entries reach the nodes only if you publish them through the running TA first,
 which is why the steps are ordered this way
 ([allowlist-and-capabilities.md](allowlist-and-capabilities.md#bootstrap)).
 
+This release reads only a TA launch file whose `schemaVersion` is `c8s-ta/v1`.
+Reinstall a cluster whose TA was launched on another schema, together with its
+TA: this release refuses that launch file, the TA pin and the node documents.
+
 ## Prerequisites
 
 - The operator private key matching the public keys in the TA's measured
@@ -35,12 +39,6 @@ Steps 1 and 5 take their replacements:
 | `--image-tag`, `--resolve-digests` | nothing |
 | `--cvm-mode bare-metal` | nothing |
 | nothing | `--pod-cidr <cidr>`, step 5 |
-
-The chart reads the Trust Authority address, measurements and optional operator
-keys together from `ta`. A release with `cds` values can keep using that
-block. If both blocks supply settings, their values must match. To change
-the trust root with Helm, run `helm upgrade --reset-values` with the complete
-release configuration and the new trust settings under `ta`.
 
 An AKS cluster on Azure CNI Overlay, the AKS default, publishes no
 `spec.podCIDR` on its nodes; install refuses such a cluster unless step 5's
@@ -72,10 +70,16 @@ not the ones its pods need — the same flags and `-f` file:
 
 ```sh
 TA=https://<TA_ADDRESS>       # the TA this cluster trusts
-helm pull oci://ghcr.io/confidential-dot-ai/charts/c8s-cloud --version <X.Y.Z> --untar
-helm template c8s ./c8s-cloud --namespace c8s-system --kube-version 1.31.0 \
-  -f ./c8s-cloud/values-<PLATFORM>.yaml -f values.yaml \
-  --set-string ta.address=<TA_ADDRESS> --set-file ta.measurementsConfig=cds-pin.json \
+helm pull oci://ghcr.io/confidential-dot-ai/charts/c8s-cloud \
+  --version <X.Y.Z> \
+  --untar
+helm template c8s ./c8s-cloud \
+  --namespace c8s-system \
+  --kube-version 1.31.0 \
+  -f ./c8s-cloud/values-<PLATFORM>.yaml \
+  -f values.yaml \
+  --set-string ta.address=<TA_ADDRESS> \
+  --set-file ta.measurementsConfig=ta-pin.json \
   --set-file ta.operatorKeys=c8s-operator-pub.pem \
   --show-only templates/allowlist-seed.yaml |
   yq '.data["allowlist-seed.json"]' > seed.json
@@ -107,7 +111,9 @@ can be below the version the node enforces now.
 ## 3. Publish the TA seed
 
 ```sh
-c8s allowlist apply seed.json --url "$TA" --image-policy-file cds-pin.json \
+c8s allowlist apply seed.json \
+  --url "$TA" \
+  --image-policy-file ta-pin.json \
   --operator-key c8s-operator.key
 ```
 
@@ -116,10 +122,32 @@ Every entry gets a diff line — `+ <name> (new)`, `~ <name>`, or
 the whole live entry of every name. A lint error prints on stderr and nothing is
 written.
 
+A cluster of measured workers admits c8s's own components — the injected
+sidecars and the router — from the component sets in force, not from a worker
+image's base allowlist, so publish the new release's set too, naming what
+happens to the one it replaces:
+
+```sh
+c8s allowlist components add component-set-<PLATFORM>.json \
+  --url "$TA" \
+  --image-policy-file ta-pin.json \
+  --operator-key c8s-operator.key \
+  --retire <X.Y.Z>=<DEADLINE>
+```
+
+`component-set-<PLATFORM>.json` is the release asset for the CPU TEE of the
+worker image, and `<X.Y.Z>` the version of the set in force
+([releases.md](releases.md)). `--remove <X.Y.Z>` ends the old set with this
+write instead of at a deadline, and a new cluster takes this write, with
+neither flag, before its first pod
+([allowlist-and-capabilities.md](allowlist-and-capabilities.md#component-sets)).
+
 ## 4. Check the TA's version, and raise it if a node is ahead
 
 ```sh
-c8s allowlist list --url "$TA" --image-policy-file cds-pin.json
+c8s allowlist list \
+  --url "$TA" \
+  --image-policy-file ta-pin.json
 ```
 
 ```text

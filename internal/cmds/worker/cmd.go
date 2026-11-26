@@ -65,11 +65,8 @@ parses it with, then written to --out, or to stdout without one.`,
 	f := cmd.Flags()
 	f.StringVar(&d.out, "out", "", "file to write the document to, which must not exist (default stdout)")
 	f.StringVar(&d.ta.Address, "ta-address", "", "<host>:<port> the cluster's Trust Authority serves on, the host a DNS name its clients resolve or an IPv4 address")
-	cmdsutil.AliasFlag(f, "ta-address", "cds-address")
 	f.StringVar(&d.taPinPath, "ta-pin", "", "measurements document pinning the cluster's Trust Authority VM to its configuration, as 'c8s ta config new' writes it")
-	cmdsutil.AliasFlag(f, "ta-pin", "cds-pin")
 	f.Uint64Var(&d.taPinFloor, "ta-pin-floor", 0, "lowest cluster version a worker takes a Trust Authority pin decree at")
-	cmdsutil.AliasFlag(f, "ta-pin-floor", "cds-pin-floor")
 	f.StringVar(&d.tlsSAN, "tls-san", "", "DNS name of the router's front-door certificate, one the pinned Trust Authority configuration lets a leaf carry")
 	nodeservices.BindRouterFlags(f, &d.router)
 	f.StringVar(&d.kubernetes.APIServer, "api-server", "", "<host>:<port> of the cluster's Kubernetes API server, the host a DNS name or an IPv4 address")
@@ -124,19 +121,17 @@ func (d draft) render() ([]byte, error) {
 
 // NewFloorCmd returns `worker floor`, run when a worker image is built.
 func NewFloorCmd() *cobra.Command {
-	var floorTemplatePath, renderDir, staticPodDir, out string
+	var floorTemplatePath, staticPodDir, out string
 	cmd := &cobra.Command{
 		Use:   "floor",
 		Short: "Build a worker image's NRI floor",
 		Long: `Build a worker image's NRI floor from the image's floor template, its
-digests filled in, and the allowlist seed 'c8s node-image render' wrote to
---render-dir. The floor keeps the template's settings and entries, adds the
-chart's router entry and an entry pinning each static pod template in
---static-pods, and leaves the mesh's resolver and cluster ranges to worker
-stage. It refuses a template key it does not know, a template entry whose
-container holds no platform role, and a router entry that leaves its launch
-open, takes a mount the control plane fills, or names a file under
-/run/c8s-node that worker stage does not publish.`,
+digests filled in. The floor keeps the template's settings, holds an entry
+pinning each static pod template in --static-pods, and leaves the mesh's
+resolver and cluster ranges to worker stage. The template's platform role
+entries stay out of the floor: a cluster admits them from the component set
+'c8s node-image render' publishes. It refuses a template key it does not know
+and a static pod template it cannot pin.`,
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -144,15 +139,11 @@ open, takes a mount the control plane fills, or names a file under
 			if err != nil {
 				return err
 			}
-			seed, err := os.ReadFile(filepath.Join(renderDir, "allowlist-seed.json"))
-			if err != nil {
-				return err
-			}
 			staticPods, err := readTemplates(staticPodDir)
 			if err != nil {
 				return err
 			}
-			floor, err := Floor(template, seed, staticPods)
+			floor, err := Floor(template, staticPods)
 			if err != nil {
 				return err
 			}
@@ -161,10 +152,42 @@ open, takes a mount the control plane fills, or names a file under
 	}
 	f := cmd.Flags()
 	f.StringVar(&floorTemplatePath, "floor-template", "", "the worker image's NRI floor template, its digests filled in")
-	f.StringVar(&renderDir, "render-dir", "", "the --output-dir of 'c8s node-image render'")
 	f.StringVar(&staticPodDir, "static-pods", "", "the worker image's static pod templates, as stage reads them")
 	f.StringVar(&out, "out", "", "file to write the worker's floor to")
-	cmdsutil.RequireFlags(cmd, "floor-template", "render-dir", "static-pods", "out")
+	cmdsutil.RequireFlags(cmd, "floor-template", "static-pods", "out")
+	return cmd
+}
+
+// NewPodFloorCmd returns `worker pod-floor`, run when a Pod CVM image is
+// built.
+func NewPodFloorCmd() *cobra.Command {
+	var floorTemplatePath, out string
+	cmd := &cobra.Command{
+		Use:   "pod-floor",
+		Short: "Build a Pod CVM image's NRI floor",
+		Long: `Build a Pod CVM image's NRI floor from the image's floor template, its
+digests filled in. The floor keeps the template's settings and its platform
+role entries: a pod CVM follows no cluster allowlist and renders its one pod's
+mesh endpoint from the entry its own image measures. It refuses a template key
+it does not know and a template entry whose container holds no platform role.`,
+		Args:         cobra.NoArgs,
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			template, err := os.ReadFile(floorTemplatePath)
+			if err != nil {
+				return err
+			}
+			floor, err := PodImageFloor(template)
+			if err != nil {
+				return err
+			}
+			return os.WriteFile(out, floor, 0o644)
+		},
+	}
+	f := cmd.Flags()
+	f.StringVar(&floorTemplatePath, "floor-template", "", "the worker image's NRI floor template, its digests filled in")
+	f.StringVar(&out, "out", "", "file to write the Pod CVM image's floor to")
+	cmdsutil.RequireFlags(cmd, "floor-template", "out")
 	return cmd
 }
 

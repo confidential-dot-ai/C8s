@@ -32,7 +32,7 @@ Where a scenario needs the cluster to see a request no well-behaved client
 sends, the steps exec a probe built into the `c8s` binary that is already in
 the pod. `c8s secret-probe` (`internal/cmds/secretprobe`) is hidden from
 `c8s --help` because it is a test instrument, not a client for applications:
-run with `kubectl exec -c c8s-cert <pod> -- /c8s secret-probe --cds-url URL
+run with `kubectl exec -c c8s-cert <pod> -- /c8s secret-probe --ta-url URL
 --attestation-api-url URL --cert FILE --key FILE <action>` inside the injected
 certificate sidecar, it performs one workload secret request with every input
 under the caller's control. It verifies the Trust Authority (TA) as the sidecars do, through
@@ -196,7 +196,10 @@ kind the cloud API is [`test/mock-cloud`](../mock-cloud), which starts no VM,
 so every scenario ends before a guest is verified: `pod_cvm_guest` is
 unsupported there, and a scenario that needs a pod running in its pod CVM is
 skipped. A scenario that needs a pod its guest was never sent asks
-`pod_cvm_no_guest`, which only such a backend answers.
+`pod_cvm_no_guest`, which only such a backend answers. A sentence that bounds
+when the cloud API receives a call judges by the time `cloud_calls` gives for
+it, on the assumption that the cloud API and the steps share a clock, as on
+kind.
 
 [`backends/common.sh`](backends/common.sh) states the interface: every
 function, its arguments, what it prints, and when it answers *unsupported*:

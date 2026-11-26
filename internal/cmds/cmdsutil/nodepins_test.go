@@ -23,7 +23,7 @@ func mountPins(t *testing.T, path, measurement string) {
 // A client re-reads the mounted policy on a pin miss, so its next request is
 // made against the image Trust Authority now runs.
 func TestNodePinsFollowARewrittenPolicy(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "cds-pins.json")
+	path := filepath.Join(t.TempDir(), "ta-pins.json")
 	mountPins(t, path, testutil.TestMeasurement)
 	pins, err := FollowNodePins(t.Context(), path)
 	if err != nil {
@@ -49,7 +49,7 @@ func TestNodePinsFollowARewrittenPolicy(t *testing.T) {
 // The enforcer truncates and writes the same inode, so a client can read the
 // file halfway through: that leaves the set it holds.
 func TestNodePinsKeepTheirSetOnAHalfWrittenPolicy(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "cds-pins.json")
+	path := filepath.Join(t.TempDir(), "ta-pins.json")
 	mountPins(t, path, testutil.TestMeasurement)
 	pins, err := FollowNodePins(t.Context(), path)
 	if err != nil {
@@ -71,7 +71,7 @@ func TestNodePinsKeepTheirSetOnAHalfWrittenPolicy(t *testing.T) {
 // A client whose requests keep succeeding has no pin miss to re-read on, so
 // the source re-reads on its own.
 func TestNodePinsRereadWithoutAPinMiss(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "cds-pins.json")
+	path := filepath.Join(t.TempDir(), "ta-pins.json")
 	mountPins(t, path, testutil.TestMeasurement)
 	pins, err := FollowNodePins(t.Context(), path)
 	if err != nil {
@@ -100,7 +100,7 @@ func TestFollowNodePinsReportsNoPolicyWhereTheNodeMountsNone(t *testing.T) {
 		t.Fatalf("pins = %v, err = %v, want neither", pins, err)
 	}
 
-	unbound := filepath.Join(t.TempDir(), "cds-pins.json")
+	unbound := filepath.Join(t.TempDir(), "ta-pins.json")
 	if err := os.WriteFile(unbound, []byte(`{"schema_version":"1","tee":"sev-snp","measurements":[]}`), 0o644); err != nil {
 		t.Fatal(err)
 	}

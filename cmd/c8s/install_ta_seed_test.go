@@ -120,10 +120,10 @@ func TestCheckNamedTAReturnsUnknownPolicyWhenUnreadable(t *testing.T) {
 		t.Fatal(err)
 	}
 	installTA = &taPin{path: taPinFile(t, []string{installSeedEntryName}, "192.0.2.0/24"), config: config}
-	values := map[string]any{"cds": map[string]any{"address": installTAAddressUnreachable}}
+	values := map[string]any{"ta": map[string]any{"address": installTAAddressUnreachable}}
 	served, warn, err := checkNamedTA(context.Background(), seedRender{chart: s.release}, installTA, values)
 	if err != nil || served != nil || !strings.Contains(warn, "cannot read the allowlist") {
-		t.Fatalf("checkNamedCDS = (%v, %q, %v), want unknown policy and a warning", served, warn, err)
+		t.Fatalf("checkNamedTA = (%v, %q, %v), want unknown policy and a warning", served, warn, err)
 	}
 }
 

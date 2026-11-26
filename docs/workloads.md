@@ -31,12 +31,12 @@ than a name. The front door relays the allowlist API only, so reach the TA itsel
 
 ```sh
 TA=https://<TA_ADDRESS>
-PIN="--url $TA --image-policy-file cds-pin.json"
+PIN="--url $TA --image-policy-file ta-pin.json"
 KEY="--operator-key c8s-operator.key"
 ```
 
 `<TA_ADDRESS>` is the `<host>:<port>` the install named with `--ta-address`,
-and `cds-pin.json` the document it named with `--ta-pin`: it binds the exact
+and `ta-pin.json` the document it named with `--ta-pin`: it binds the exact
 configuration that VM runs on, so it names this cluster's TA rather than any
 VM of the same image. Every later step uses `$PIN` and `$KEY`, so run this
 block in each new shell.
@@ -59,13 +59,18 @@ else a restart drops).
 
 The entry makes your containers admissible, and its name is the identity the TA
 stamps on the pod's certificate when exactly one entry matches. Derive it from
-the live object, so it covers what actually runs, init containers included:
+a manifest containing one workload, including its init containers:
 
 ```sh
-kubectl -n <NAMESPACE> get deploy <NAME> -o json |
-  c8s allowlist derive <ENTRY> - --env any --mounts deny > entry.json
+c8s allowlist derive <ENTRY> workload.yaml --env any --mounts deny > entry.json
 c8s allowlist apply entry.json $PIN $KEY
 ```
+
+For YAML, supply one document of at most 1 MiB and 32 nesting levels, with unique mapping keys.
+Expand anchors, aliases and merges, and quote boolean-like keys such as `"on"`.
+
+To include changes made during admission, pipe `kubectl -n <NAMESPACE> get pod <POD> -o json`
+to the same derive command with `-` in place of `workload.yaml`.
 
 Use the same `<ENTRY>` string you annotate the pod with. Each container's
 command, arguments, environment, and mounts carry a policy: `deny` admits

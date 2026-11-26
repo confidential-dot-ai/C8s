@@ -46,7 +46,7 @@ type config struct {
 	routing routingConfig
 }
 
-// NewCmd returns the `cds-attest` subcommand: a sidecar that runs inside the
+// NewCmd returns the `ta-attest` subcommand: a sidecar that runs inside the
 // router pod, routes application requests by the operator-signed route
 // manifest, and serves the *dynamic* client-facing attestation +
 // over-encryption endpoints (the c8s-verify protocol). The router nginx
@@ -56,9 +56,8 @@ type config struct {
 func NewCmd() *cobra.Command {
 	var cfg config
 	cmd := &cobra.Command{
-		Use:     "ta-attest",
-		Aliases: []string{"cds-attest"},
-		Short:   "Run the router routing, attestation and over-encryption sidecar",
+		Use:   "ta-attest",
+		Short: "Run the router routing, attestation and over-encryption sidecar",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return run(cmd.Context(), cfg)
 		},
@@ -67,8 +66,8 @@ func NewCmd() *cobra.Command {
 	f.StringVar(&cfg.host, "host", "127.0.0.1", "listen host (loopback: nginx proxies to it)")
 	f.IntVarP(&cfg.port, "port", "p", 8800, "listen port")
 	f.StringVar(&cfg.logLevel, "log-level", "info", "log level: debug, info, warn, error")
-	f.StringVar((*string)(&cfg.frontDoorMode), "front-door-mode", "", "REQUIRED: which credential terminates public TLS in front of this sidecar: cds (TEE-held mesh-issued serving key; attest-lb served), acme (TEE-held in-guest ACME serving key; attest-lb served), or webpki (host-visible Secret; attest-lb refused with external_tls)")
-	f.StringVar(&cfg.servingCertFile, "serving-cert-file", "", "path to the LB serving-leaf PEM (the cert nginx presents). In acme front-door mode, GET /.well-known/c8s/attest-lb binds report_data to this exact leaf DER and refuses it outside its validity window; cds mode binds the mesh identity leaf and ignores this file. Re-read per request to follow renewal.")
+	f.StringVar((*string)(&cfg.frontDoorMode), "front-door-mode", "", "REQUIRED: which credential terminates public TLS in front of this sidecar: ta (TEE-held mesh-issued serving key; attest-lb served), acme (TEE-held in-guest ACME serving key; attest-lb served), or webpki (host-visible Secret; attest-lb refused with external_tls)")
+	f.StringVar(&cfg.servingCertFile, "serving-cert-file", "", "path to the LB serving-leaf PEM (the cert nginx presents). In acme front-door mode, GET /.well-known/c8s/attest-lb binds report_data to this exact leaf DER and refuses it outside its validity window; ta mode binds the mesh identity leaf and ignores this file. Re-read per request to follow renewal.")
 	f.StringVar(&cfg.expectedWorkload, "expected-workload", "", "gate /readyz on the mesh identity leaf carrying a matched-workload stamp with this exact name; empty keeps /readyz unconditionally 200")
 	f.StringVar(&cfg.measuredPolicies, "measured-policies-file", "", "the node's journal of allowlist policies extended into TDX RTMR[3]; attest-pq and attest-lb bundles carry it as measured_policies. Empty omits the list")
 	f.StringVar(&cfg.attestationAPIURL, "attestation-api-url", "", "attestation-api URL (production evidence source)"+cmdsutil.NodeAddressHelp)
@@ -122,12 +121,12 @@ func run(ctx context.Context, cfg config) error {
 	if cfg.establishRate <= 0 || cfg.establishBurst <= 0 {
 		return errors.New("--establish-rate and --establish-burst must be positive")
 	}
-	taURL, fromNode, err := cmdsutil.ResolveTAURL(workloadclaims.CDSAddressPath, cfg.routing.taURL)
+	taURL, fromNode, err := cmdsutil.ResolveTAURL(workloadclaims.TAAddressPath, cfg.routing.taURL)
 	if err != nil {
 		return err
 	}
 	cfg.routing.taURL = taURL
-	logger.Info("Trust Authority endpoint resolved", "cds_url", cfg.routing.taURL, "from_node", fromNode)
+	logger.Info("Trust Authority endpoint resolved", "ta_url", cfg.routing.taURL, "from_node", fromNode)
 	if err := checkRoutingFlags(cfg); err != nil {
 		return err
 	}
@@ -195,9 +194,9 @@ func attestProvider(cfg config) (EvidenceProvider, error) {
 	// No default: serving attest-lb is a trust decision about where the
 	// serving key lives, so the deployer must state it.
 	switch cfg.frontDoorMode {
-	case types.FrontDoorModeCDS, types.FrontDoorModeWebPKI, types.FrontDoorModeACME:
+	case types.FrontDoorModeTA, types.FrontDoorModeWebPKI, types.FrontDoorModeACME:
 	default:
-		return nil, fmt.Errorf("--front-door-mode must be %q, %q, or %q, got %q", types.FrontDoorModeCDS, types.FrontDoorModeWebPKI, types.FrontDoorModeACME, cfg.frontDoorMode)
+		return nil, fmt.Errorf("--front-door-mode must be %q, %q, or %q, got %q", types.FrontDoorModeTA, types.FrontDoorModeWebPKI, types.FrontDoorModeACME, cfg.frontDoorMode)
 	}
 	// Same rule as front-door-mode: the advertised TEE is a trust statement,
 	// so the deployer must state it.

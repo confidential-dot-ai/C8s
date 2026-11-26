@@ -16,20 +16,25 @@ type policyTarget interface {
 	// replace puts a later pull into force and stops the running containers
 	// it no longer admits.
 	replace(ctx context.Context, pulled *allowlist.Allowlist, version uint64) error
+	// endSets puts the end of a retired component set into force: the sets a
+	// kept document holds are the ones in force at the Trust Authority's time.
+	endSets(ctx context.Context)
 }
 
 func policyTargetFor(cfg *config, plugin *plugin) policyTarget {
 	if cfg.podRole() {
 		return podTarget{plugin: plugin}
 	}
-	return nodeTarget{store: plugin.policy, killRevoked: plugin.KillRevoked}
+	return nodeTarget{store: plugin.policy, recheckRunning: plugin.recheckRunning}
 }
 
 // nodeTarget is the node's admission index. Its startup install leaves the
 // running containers to the plugin's deferred startup check.
 type nodeTarget struct {
-	store       *policyStore
-	killRevoked func(context.Context)
+	store *policyStore
+	// recheckRunning ends the pods whose component sets have ended and kills
+	// the single containers the policy no longer admits.
+	recheckRunning func(context.Context)
 }
 
 func (n nodeTarget) policy() *policyStore {
@@ -51,8 +56,14 @@ func (n nodeTarget) replace(
 	version uint64,
 ) error {
 	n.store.apply(pulled, version)
-	n.killRevoked(ctx)
+	n.recheckRunning(ctx)
 	return nil
+}
+
+func (n nodeTarget) endSets(ctx context.Context) {
+	if n.store.rebuildEndedSets() {
+		n.recheckRunning(ctx)
+	}
 }
 
 // podTarget is a Pod guest's policy, which applyPodPolicy installs under
@@ -79,4 +90,8 @@ func (p podTarget) replace(
 	version uint64,
 ) error {
 	return p.plugin.applyPodPolicy(ctx, pulled, version)
+}
+
+func (p podTarget) endSets(ctx context.Context) {
+	p.plugin.endPodSets(ctx)
 }

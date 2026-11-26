@@ -24,7 +24,7 @@ import (
 
 // AdmitInputs are what a worker document is admitted against: the customer's
 // Trust Authority pin, the worker image's measurements, and the node images the cluster
-// certifies now, as the node-images decree's --cds-pin, --worker-image and
+// certifies now, as the node-images decree's --ta-pin, --worker-image and
 // --nodes carry them.
 type AdmitInputs struct {
 	TAPin       []byte
@@ -206,13 +206,13 @@ func checkTAPin(ta cmdsutil.TA, own []byte) error {
 	}
 	theirs, err := refvalues.Parse([]byte(ta.Measurements))
 	if err != nil {
-		return fmt.Errorf("cds.measurements: %w", err)
+		return fmt.Errorf("ta.measurements: %w", err)
 	}
 	if theirs.Family != mine.Family {
-		return fmt.Errorf("cds.measurements pins a %s Trust Authority and --ta-pin a %s one", theirs.Family, mine.Family)
+		return fmt.Errorf("ta.measurements pins a %s Trust Authority and --ta-pin a %s one", theirs.Family, mine.Family)
 	}
 	if missing, extra := refvalues.Diff(mine, theirs); len(missing) > 0 || len(extra) > 0 {
-		return errors.New("cds.measurements pins another Trust Authority than --ta-pin: a worker launched with this document would trust it")
+		return errors.New("ta.measurements pins another Trust Authority than --ta-pin: a worker launched with this document would trust it")
 	}
 	return nil
 }

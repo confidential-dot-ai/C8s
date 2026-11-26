@@ -264,7 +264,7 @@ func TestChartNriInstallerChecksTheBootConfigFirst(t *testing.T) {
 	if calledWith(calls, "nsenter -t 1 -m -- containerd") || n.restarted(t) {
 		t.Errorf("went on to containerd after the plugin refused its config; calls %q", calls)
 	}
-	for _, staged := range []string{"/etc/nri/conf.d/cds-address", "/etc/nri/conf.d/cds.json"} {
+	for _, staged := range []string{"/etc/nri/conf.d/ta-address", "/etc/nri/conf.d/ta.json"} {
 		if _, err := os.Stat(filepath.Join(n.podRoot, staged)); err != nil {
 			t.Errorf("%s not staged for the check: %v", staged, err)
 		}

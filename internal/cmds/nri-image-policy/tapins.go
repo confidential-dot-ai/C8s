@@ -12,7 +12,7 @@ import (
 
 // renderedTAPinsName is the policy document the plugin hands its injected
 // credential clients (renderNodeDocument).
-const renderedTAPinsName = "cds-pins.json"
+const renderedTAPinsName = "ta-pins.json"
 
 // EnforcerRuntimeDir is the plugin's own directory on the node, holding the
 // documents it hands its injected credential clients: no pod can write it, and

@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
 )
 
@@ -191,11 +190,11 @@ func (s *Store) startJournal(at time.Time) error {
 // the store when its digest differs from the head's, and returns that
 // document's canonical bytes.
 func publishTx(tx *sql.Tx, at time.Time) ([]byte, error) {
-	workloads, err := loadWorkloads(tx)
+	document, err := loadDocument(tx)
 	if err != nil {
 		return nil, err
 	}
-	body, err := (&pkgallowlist.Allowlist{Schema: pkgallowlist.Schema, Workloads: workloads}).Canonical()
+	body, err := document.Canonical()
 	if err != nil {
 		return nil, err
 	}

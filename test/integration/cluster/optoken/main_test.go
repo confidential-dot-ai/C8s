@@ -47,7 +47,7 @@ func TestRunProducesAuthorizingHeader(t *testing.T) {
 		t.Fatalf("header = %q, want a Bearer token", header)
 	}
 
-	req, err := http.NewRequest(http.MethodPut, "https://cds/allowlist/workloads/x", nil)
+	req, err := http.NewRequest(http.MethodPut, "https://ta/allowlist/workloads/x", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +86,7 @@ func TestRunValidity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	req, err := http.NewRequest(http.MethodPut, "https://cds/allowlist/workloads/x", nil)
+	req, err := http.NewRequest(http.MethodPut, "https://ta/allowlist/workloads/x", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -34,14 +34,14 @@ const placeholderTAPin = `{
     {
       "name": "placeholder",
       "measurement": "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
-      "launch_file": "this render names no CDS"
+      "launch_file": "this render names no Trust Authority"
     }
   ]
 }`
 
-// documentationRangeCDSAddress is the RFC 5737 documentation address a render
+// documentationRangeTAAddress is the RFC 5737 documentation address a render
 // that names no Trust Authority carries.
-const documentationRangeCDSAddress = "192.0.2.1:8443"
+const documentationRangeTAAddress = "192.0.2.1:8443"
 
 // seedRender is one render of this release's component entries: the chart,
 // the release it is applied as, and every values source the install gives
@@ -54,8 +54,7 @@ type seedRender struct {
 	valueFiles  []string
 	// helm reads this last, as it does on the install itself.
 	computed string
-	legacyTA bool
-	// cds names a Trust Authority the release itself does not, as --set arguments that
+	// ta names a Trust Authority the release itself does not, as --set arguments that
 	// outrank every file above.
 	ta []string
 }
@@ -98,13 +97,9 @@ func writeInstallSeed(ctx context.Context, render seedRender, path string) error
 		return fmt.Errorf("write the placeholder Trust Authority pin: %w", err)
 	}
 	defer os.Remove(pin)
-	key := "ta"
-	if render.legacyTA {
-		key = "cds"
-	}
 	render.ta = []string{
-		"--set-string", key + ".address=" + documentationRangeCDSAddress,
-		"--set-file", key + ".measurementsConfig=" + pin,
+		"--set-string", "ta.address=" + documentationRangeTAAddress,
+		"--set-file", "ta.measurementsConfig=" + pin,
 	}
 	seed, err := installSeed(ctx, render)
 	if err != nil {

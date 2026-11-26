@@ -18,7 +18,7 @@ import (
 
 const (
 	clusterID  = "lane"
-	launchFile = "schemaVersion: c8s-cds/v1\nclusterID: lane\n"
+	launchFile = "schemaVersion: c8s-ta/v1\nclusterID: lane\n"
 )
 
 func operatorKey(t *testing.T) (*ecdsa.PrivateKey, []*ecdsa.PublicKey) {
@@ -37,7 +37,7 @@ func taImages(t *testing.T, digest byte) []byte {
 	document, err := refvalues.Format(refvalues.ReferenceValues{
 		Family: teetypes.FamilySNP,
 		Images: []remote.ImagePin{{
-			Name:       "cds-smp4",
+			Name:       "ta-smp4",
 			Digest:     bytes.Repeat([]byte{digest}, refvalues.DigestSize),
 			LaunchFile: []byte(launchFile),
 		}},
@@ -98,7 +98,7 @@ func setField(t *testing.T, d *Decree, name string) {
 	switch name {
 	case "base_version":
 		d.BaseVersion = 7
-	case "cds_pins":
+	case "ta_pins":
 		d.TAPins = taPins(t, 0x11)
 	case "node_pins":
 		d.NodePins = nodeImages(t)
@@ -362,7 +362,7 @@ func clearField(t *testing.T, d *Decree, name string) {
 	switch name {
 	case "base_version":
 		d.BaseVersion = 0
-	case "cds_pins":
+	case "ta_pins":
 		d.TAPins = nil
 	case "node_pins":
 		d.NodePins = nil

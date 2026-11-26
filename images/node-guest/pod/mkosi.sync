@@ -5,7 +5,9 @@
 #   1. the bridge, host-local and loopback CNI plugins the pod network
 #      template names, from the CNI plugins release the worker sync verified
 #      into the package cache;
-#   2. the platform the pod's launch staging and status service attest on.
+#   2. the platform the pod's launch staging and status service attest on;
+#   3. the Pod CVM image's NRI floor, over the worker profile's: a pod CVM
+#      renders its pod's mesh endpoint from the entry its image measures.
 set -euo pipefail
 
 STAGE_DIR="$SRCDIR/mkosi.local/mkosi.extra"
@@ -22,9 +24,17 @@ archives=("$CACHE_DIR"/cni-plugins-linux-amd64-*.tgz)
 mkdir -p "$STAGE_DIR/opt/cni/bin"
 tar -xzf "${archives[0]}" -C "$STAGE_DIR/opt/cni/bin" ./bridge ./host-local ./loopback
 
+C8S="$STAGE_DIR/usr/local/bin/c8s"
+FLOOR_TEMPLATE="$CACHE_DIR/floor-template.yaml"
+[ -x "$C8S" ] || fail "no executable c8s binary at usr/local/bin/c8s"
+[ -f "$FLOOR_TEMPLATE" ] || fail "no filled floor template at ${FLOOR_TEMPLATE#"$SRCDIR"/}; the worker sync writes it"
+"$C8S" worker pod-floor \
+    --floor-template "$FLOOR_TEMPLATE" \
+    --out "$STAGE_DIR/usr/lib/c8s/image-policy.yaml"
+
 for unit in pod-stage podcvm-status; do
     mkdir -p "$STAGE_DIR/etc/systemd/system/$unit.service.d"
     printf '[Service]\nEnvironment=CRED_PLATFORM=%s\n' "$PLATFORM" \
         > "$STAGE_DIR/etc/systemd/system/$unit.service.d/10-platform.conf"
 done
-echo "pod sync: staged the pod CNI plugins and the $PLATFORM platform drop-ins"
+echo "pod sync: staged the pod CNI plugins, the Pod CVM floor and the $PLATFORM platform drop-ins"

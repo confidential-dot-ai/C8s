@@ -359,7 +359,7 @@ func TestRun_WorkloadClaimsListenFailureSurfaces(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, NodeIPFile), []byte("10.0.0.7\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "cds-address"), []byte("10.9.9.9:8443\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "ta-address"), []byte("10.9.9.9:8443\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	occupySocketPath(t, dir)
@@ -381,9 +381,9 @@ allowlist:
             command: {policy: any}
             args: {policy: any}
   pull:
-    cds_address_file: %s/cds-address
+    ta_address_file: %s/ta-address
     attestation_api_url: http://127.0.0.1:1
-    cds_measurements_config: %s
+    ta_measurements_config: %s
 policy:
   mode: fail-closed
   enforce_existing: false
@@ -417,13 +417,15 @@ func occupySocketPath(t *testing.T, socketDir string) {
 // degrade-to-base condition.
 func TestRun_PluginDeathDuringInitialPullIsFatal(t *testing.T) {
 	t.Setenv("NRI_PLUGIN_NAME", "")
-	origDelay, origRetries := allowlistApiInitialDelay, allowlistApiMaxRetries
+	origDelay := allowlistApiInitialDelay
+	origRetries := allowlistApiMaxRetries
 	allowlistApiInitialDelay = 5 * time.Millisecond
 	// Keep retrying until the plugin death is observed; each fetch attempt
 	// fails instantly against the closed port.
 	allowlistApiMaxRetries = 1000
 	defer func() {
-		allowlistApiInitialDelay, allowlistApiMaxRetries = origDelay, origRetries
+		allowlistApiInitialDelay = origDelay
+		allowlistApiMaxRetries = origRetries
 	}()
 
 	dir := t.TempDir()
@@ -446,7 +448,7 @@ allowlist:
   pull:
     url: https://127.0.0.1:1/
     attestation_api_url: http://127.0.0.1:1
-    cds_measurements_config: %s
+    ta_measurements_config: %s
 policy:
   mode: fail-closed
   enforce_existing: false
@@ -468,11 +470,13 @@ logging:
 // the fail-soft path instead and surface the plugin's own failure.
 func TestRun_SlowTADuringInitialPullIsNotShutdown(t *testing.T) {
 	t.Setenv("NRI_PLUGIN_NAME", "")
-	origDelay, origRetries := allowlistApiInitialDelay, allowlistApiMaxRetries
+	origDelay := allowlistApiInitialDelay
+	origRetries := allowlistApiMaxRetries
 	allowlistApiInitialDelay = 5 * time.Millisecond
 	allowlistApiMaxRetries = 1
 	defer func() {
-		allowlistApiInitialDelay, allowlistApiMaxRetries = origDelay, origRetries
+		allowlistApiInitialDelay = origDelay
+		allowlistApiMaxRetries = origRetries
 	}()
 
 	// Both endpoints accept and then hang, so an attempt expires on its own
@@ -509,7 +513,7 @@ allowlist:
   pull:
     url: https://%s/
     attestation_api_url: %s
-    cds_measurements_config: %s
+    ta_measurements_config: %s
     interval: 30s
     timeout: 300ms
 policy:
@@ -588,7 +592,7 @@ func TestTheNodePinSourceRefusesWithoutPins(t *testing.T) {
 		Timeout:           time.Second,
 	}.taPinSource(discardLogger())
 	if !errors.Is(err, cmdsutil.ErrTAPinUnbound) {
-		t.Fatalf("err = %v, want errors.Is cmdsutil.ErrCDSPinUnbound", err)
+		t.Fatalf("err = %v, want errors.Is cmdsutil.ErrTAPinUnbound", err)
 	}
 }
 
@@ -607,7 +611,7 @@ func TestPullInitial_BacksOffBetweenAttempts(t *testing.T) {
 	defer srv.Close()
 
 	client := allowlistclient.NewClientWithHTTP(srv.URL, &http.Client{Timeout: time.Second})
-	store := newPolicyStore(nil)
+	store := newPolicyStore(nil, localClock())
 
 	start := time.Now()
 	_, err := pullInitial(context.Background(), pullArgs{
@@ -631,7 +635,7 @@ func TestPullInitial_BacksOffBetweenAttempts(t *testing.T) {
 
 func TestNewPlugin_WorkloadClaimsWiring(t *testing.T) {
 	t.Setenv("NRI_PLUGIN_NAME", "")
-	store := newPolicyStore(nil)
+	store := newPolicyStore(nil, localClock())
 	for _, tc := range []struct {
 		name         string
 		socketDir    string
@@ -955,5 +959,37 @@ func TestCreateSocketDir(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0o755 {
 		t.Errorf("mode of an existing directory = %o, want the 755 its owner set", info.Mode().Perm())
+	}
+}
+
+// The body says whether the last poll was fresh and how long this node admits
+// from a served allowlist without one, so an operator sees a node falling
+// behind before it falls back.
+func TestStartHealthServer_HealthzReportsFreshness(t *testing.T) {
+	sock := filepath.Join(t.TempDir(), "health.sock")
+	p := newTestPlugin(&config{Policy: policyConfig{Mode: ModeFailClosed}})
+	p.SetReady()
+	if err := startHealthServer(t.Context(), healthServerConfig{
+		logger:       discardLogger(),
+		plugin:       p,
+		pull:         newAllowlistPull("ta.example", time.Now, discardLogger()),
+		addr:         "unix://" + sock,
+		readTimeout:  time.Second,
+		writeTimeout: time.Second,
+	}); err != nil {
+		t.Fatalf("startHealthServer: %v", err)
+	}
+	httpClient := unixHealthClient(sock)
+
+	if _, body := healthz(t, httpClient); body.Fresh || body.FreshnessLimitSeconds != int64(freshnessLimitCap.Seconds()) {
+		t.Fatalf("before any poll: fresh %v limit %d, want false and the cap", body.Fresh, body.FreshnessLimitSeconds)
+	}
+	p.policy.freshness.replied(time.Hour, true)
+	if _, body := healthz(t, httpClient); !body.Fresh || body.FreshnessLimitSeconds != 3600 {
+		t.Fatalf("after a fresh poll: fresh %v limit %d, want true and the reported hour", body.Fresh, body.FreshnessLimitSeconds)
+	}
+	p.policy.freshness.unanswered()
+	if _, body := healthz(t, httpClient); body.Fresh {
+		t.Fatal("after an unanswered poll the body still reports the node fresh")
 	}
 }

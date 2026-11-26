@@ -20,6 +20,7 @@ C8s assigns them under its own Private Enterprise Number:
 1.3.6.1.4.1.66378.1.8  reserved (an earlier build's assigned workload ID)
 1.3.6.1.4.1.66378.1.9  client document digest
 1.3.6.1.4.1.66378.1.10 Trust Authority (TA) broker (an extended key usage, not an extension)
+1.3.6.1.4.1.66378.1.11 component set
 ```
 
 `.6` and `.7` are used on TA replica peer certificates.
@@ -47,8 +48,9 @@ C8s assigns them under its own Private Enterprise Number:
 | `…1.4` | A leaf whose request proved a sandbox | The pod sandbox ID the container runtime gave the pod this leaf was issued to | the TA, when it serves secrets and volume keys to that pod; the pod's own injected sidecars, get-cert and the mesh endpoint (`c8s-mesh`), reading their own leaf; `c8s verify --sandbox-id` |
 | `…1.5` | A leaf whose attested container set matched exactly one allowlist entry, a Pod CVM's included ([armtls.md](armtls.md#pod-cvm-issuance)) | The matched entry name, and the allowlist snapshot the match was decided under | The router, before it writes a request to a workload backend; `c8s verify --workload` and `--allowlist` |
 | `…1.9` | A Pod CVM leaf whose verified Pod claims name a client document | SHA-256 of the client document the Pod's signed assignment carried | Mesh peers, through `armtls.Peer`; `c8s verify --client-document` |
+| `…1.11` | A leaf whose pod is on at least one component set in force ([armtls.md](armtls.md#sandbox-identity)) | The newest of those sets: its release version and the digest of its entries | `c8s verify`, which prints it |
 
-A leaf is signed by the mesh CA, so `…1.2`, `…1.4`, `…1.5` and `…1.9` are statements by
+A leaf is signed by the mesh CA, so `…1.2`, `…1.4`, `…1.5`, `…1.9` and `…1.11` are statements by
 the TA: they are worth nothing on a certificate whose chain the reader has not
 verified against the mesh CA. `…1.1` is the one extension the hardware vouches
 for, and it covers the public key alone.
@@ -153,13 +155,32 @@ as absence.
 The DNS label an agent is reached under is the lowercase, unpadded RFC 4648
 base32 of the digest's first 16 bytes, 26 characters (`armtls.AgentLabel`).
 
+## Component set (`…1.11`)
+
+```text
+ComponentSet ::= SEQUENCE {
+    version UTF8String,        -- MAJOR.MINOR.PATCH, the release the set is keyed by
+    digest  OCTET STRING (32)  -- SHA-256 of the set's entries
+}
+```
+
+The component set whose entries admitted the c8s component containers the pod
+runs — the newest when more than one does
+([allowlist-entries.md](allowlist-entries.md#component-sets)). A pod whose
+component containers no set admits carries none. Canonical DER only: trailing
+bytes, a non-minimal encoding or a version outside `MAJOR.MINOR.PATCH` fail
+closed, and a certificate carrying two of them is an error, never read as
+absence.
+
+The mesh CA's signature vouches for this stamp, never the hardware evidence.
+
 ## TA broker certificate (`…1.10`)
 
 Not an extension: the sole extended key usage of the certificate the mesh CA
 issues each TA replica's broker key. That key signs pod secret release
 statements to a KMS ([pod-secrets.md](pod-secrets.md)). Without server or
 client authentication usage, the certificate authenticates no TLS peer. Its
-subject is `CN=c8s CDS broker`, its lifetime one hour, and it carries none of
+subject is `CN=c8s Trust Authority broker`, its lifetime one hour, and it carries none of
 the extensions above.
 
 ## Subject, key usage and lifetime

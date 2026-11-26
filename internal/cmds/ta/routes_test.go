@@ -408,7 +408,7 @@ func TestNewHTTPServerSetsTimeouts(t *testing.T) {
 
 func TestValidateConfigRejectsUnsafeValues(t *testing.T) {
 	valid := config{
-		measured:                   measuredConfig(t, cluster{operatorPEM: operatorKeysPEM(t), workloads: map[string]string{"cds": digestA}}),
+		measured:                   measuredConfig(t, cluster{operatorPEM: operatorKeysPEM(t), workloads: map[string]string{"ta": digestA}}),
 		maxHeaderBytes:             1,
 		namedCertTTL:               issuer.MaxNamedLeafTTL,
 		routerCertTTL:              20 * time.Second,
@@ -540,7 +540,7 @@ func TestReadinessFn(t *testing.T) {
 
 func TestNewRouter_PanicsOnNilMeshCA(t *testing.T) {
 	defer func() {
-		if got := recover(); got != "cds: dependencies.MeshCA must be set" {
+		if got := recover(); got != "ta: dependencies.MeshCA must be set" {
 			t.Fatalf("panic = %v, want nil MeshCA dependency panic", got)
 		}
 	}()

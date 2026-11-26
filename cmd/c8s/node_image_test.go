@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"maps"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"reflect"
@@ -28,6 +29,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/confidential-kubernetes/charts"
+	workerprofile "github.com/confidential-dot-ai/confidential-kubernetes/images/node-guest/worker"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/nodeservices"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/taconfig"
@@ -37,11 +39,35 @@ import (
 
 var nodeImageTestMeshDigest = "sha256:" + strings.Repeat("d", 64)
 
+var nodeImageTestVolumedDigest = "sha256:" + strings.Repeat("e", 64)
+
+// floorTemplateFile is the worker image's floor template, as the image build
+// reads it from the checkout.
+const floorTemplateFile = "../../images/node-guest/worker/image-policy.yaml.in"
+
+// The image build fills and bakes the template from the checkout while the
+// release's render fills the one this binary embeds, so the two must be the
+// same bytes.
+func TestEmbeddedFloorTemplateIsTheImageBuildsFile(t *testing.T) {
+	file, err := os.ReadFile(floorTemplateFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(workerprofile.FloorTemplate, file) {
+		t.Errorf("the embedded floor template differs from %s", floorTemplateFile)
+	}
+}
+
+// nodeImageTestSetVersion is the release the stamped render publishes its
+// component set under.
+const nodeImageTestSetVersion = "0.43.0"
+
 // node-image render writes what mkosi.sync installs or reads and nothing
 // else: c8s-lib's nginx files and the worker chart's static pods byte for
-// byte, the nginx image the cluster's router runs, and a seed that boots with
-// the measured floor and admits that router.
+// byte, the nginx image the cluster's router runs, a seed that boots with
+// the measured floor and admits that router, and this release's component set.
 func TestNodeImageRender(t *testing.T) {
+	setCLIVersion(t, "v"+nodeImageTestSetVersion)
 	for _, platform := range []string{"tdx", "sev-snp"} {
 		t.Run(platform, func(t *testing.T) {
 			out := t.TempDir()
@@ -50,6 +76,7 @@ func TestNodeImageRender(t *testing.T) {
 				"render", "--hardware-platform", platform, "--kube-version", "v1.36.6",
 				"--image-digest", testDigest, "--image-repository", "registry.example.com/c8s-operator",
 				"--armtls-mesh-image-digest", nodeImageTestMeshDigest, "--armtls-mesh-image-repository", "registry.example.com/armtls-mesh",
+				"--volumed-image-digest", nodeImageTestVolumedDigest, "--volumed-image-repository", "registry.example.com/volumed",
 				"--output-dir", out,
 			})
 			if err := cmd.Execute(); err != nil {
@@ -73,7 +100,7 @@ func TestNodeImageRender(t *testing.T) {
 			}
 			names := slices.Sorted(maps.Keys(got))
 			wantNames := slices.Sorted(maps.Keys(want))
-			wantNames = append(wantNames, "allowlist-seed.json", "router-image.txt")
+			wantNames = append(wantNames, "allowlist-seed.json", "component-set.json", "router-image.txt")
 			slices.Sort(wantNames)
 			if !slices.Equal(names, wantNames) {
 				t.Fatalf("node-image render wrote %v, want %v", names, wantNames)
@@ -95,7 +122,9 @@ func TestNodeImageRender(t *testing.T) {
 			}
 			var labelled []string
 			for name, workload := range allowlist.Workloads {
-				if !strings.HasPrefix(name, "c8s-router-") {
+				// The router's and volumed's entries declare whole pods, which
+				// carry no one image label.
+				if !strings.HasPrefix(name, "c8s-router-") && !strings.HasPrefix(name, "c8s-volumed-") {
 					labelled = append(labelled, workload.Label)
 				}
 			}
@@ -115,6 +144,107 @@ func TestNodeImageRender(t *testing.T) {
 			}
 			assertRouterDeclaresItsHostPorts(t, allowlist.Workloads[routerEntryName(t, cluster)], deployment)
 			assertLocalPathDenied(t, allowlist)
+			assertComponentSet(t, got["component-set.json"], routerEntryName(t, cluster), allowlist)
+		})
+	}
+}
+
+// assertComponentSet checks the set the render publishes: the release's
+// version, the sidecars' images as this render pinned them, the router entry
+// named name as the seed carries it, and volumed's as the node service.
+func assertComponentSet(t *testing.T, file []byte, name string, seed *pkgallowlist.Allowlist) {
+	t.Helper()
+	doc, err := pkgallowlist.ParseJSON(file)
+	if err != nil {
+		t.Fatalf("component-set.json does not parse: %v", err)
+	}
+	set, published := doc.Components[nodeImageTestSetVersion]
+	if !published || len(doc.Workloads) != 0 {
+		t.Fatalf("component-set.json holds the sets %v and %d workload entries, want the release's set alone",
+			slices.Sorted(maps.Keys(doc.Components)), len(doc.Workloads))
+	}
+	images := map[string]string{}
+	for _, entry := range set.Entries {
+		for _, c := range slices.Concat(entry.InitContainers, entry.Containers) {
+			images[c.Digest.String()] = c.Image
+		}
+	}
+	for digest, want := range map[string]string{
+		testDigest:                 "registry.example.com/c8s-operator@" + testDigest,
+		nodeImageTestMeshDigest:    "registry.example.com/armtls-mesh@" + nodeImageTestMeshDigest,
+		nodeImageTestVolumedDigest: "registry.example.com/volumed@" + nodeImageTestVolumedDigest,
+	} {
+		if images[digest] != want {
+			t.Errorf("the set labels %s %q, want %q", digest, images[digest], want)
+		}
+	}
+	if router := seed.Workloads[name]; !reflect.DeepEqual(set.Entries[name], router) {
+		t.Errorf("the set's %s entry =\n%+v\nwant the seed's\n%+v", name, set.Entries[name], router)
+	}
+	volumedName, volumed := seededEntry(t, seed, "c8s-volumed-")
+	volumed.NodeService = true
+	if !reflect.DeepEqual(set.Entries[volumedName], volumed) {
+		t.Errorf("the set's %s entry =\n%+v\nwant the seed's as a node service\n%+v",
+			volumedName, set.Entries[volumedName], volumed)
+	}
+}
+
+// A build that is no release publishes no component set: a set is keyed by
+// the release that built it. The seed is written either way.
+func TestNodeImageRenderPublishesNoSetForADevBuild(t *testing.T) {
+	if _, err := exec.LookPath("helm"); err != nil {
+		t.Fatal("helm CLI not found")
+	}
+	setCLIVersion(t, "dev")
+	out := t.TempDir()
+	cmd := newNodeImageCmd()
+	var log bytes.Buffer
+	cmd.SetErr(&log)
+	cmd.SetArgs([]string{
+		"render", "--hardware-platform", "tdx", "--kube-version", "v1.36.6",
+		"--image-digest", testDigest, "--armtls-mesh-image-digest", nodeImageTestMeshDigest,
+		"--volumed-image-digest", nodeImageTestVolumedDigest,
+		"--output-dir", out,
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(out, "component-set.json")); !os.IsNotExist(err) {
+		t.Errorf("stat component-set.json = %v, want it unwritten", err)
+	}
+	if _, err := os.Stat(filepath.Join(out, "allowlist-seed.json")); err != nil {
+		t.Errorf("the render wrote no seed: %v", err)
+	}
+	if !strings.Contains(log.String(), `"dev" is no release tag`) {
+		t.Errorf("the render said %q, want it name the version it refuses the set over", log.String())
+	}
+}
+
+// A set is keyed by the release that built it, so every release tag keys one,
+// a beta's included, and nothing else does.
+func TestComponentSetVersion(t *testing.T) {
+	for _, tc := range []struct {
+		build, want string
+	}{
+		{"v0.43.0", "0.43.0"},
+		{"v0.44.0-beta.1", "0.44.0-beta.1"},
+		{"dev", ""},
+		{"v0.43", ""},
+		{"v0.43.0+2026", ""},
+		{"0.43.0", ""},
+	} {
+		t.Run(tc.build, func(t *testing.T) {
+			setCLIVersion(t, tc.build)
+			got, err := componentSetVersion()
+			if tc.want == "" {
+				if err == nil {
+					t.Fatalf("componentSetVersion = %q, want a refusal", got)
+				}
+				return
+			}
+			if err != nil || got != tc.want {
+				t.Fatalf("componentSetVersion = %q, %v, want %q", got, err, tc.want)
+			}
 		})
 	}
 }
@@ -249,6 +379,8 @@ func TestNodeImageRenderRejectsBadInputsBeforeHelm(t *testing.T) {
 		{"missing mesh digest", func(c *nodeImageRenderConfig) { c.armtlsMeshImageDigest = "" }},
 		{"tagged mesh repository", func(c *nodeImageRenderConfig) { c.armtlsMeshImageRepository = "example.com/armtls-mesh:main" }},
 		{"invalid mesh repository", func(c *nodeImageRenderConfig) { c.armtlsMeshImageRepository = "invalid repo" }},
+		{"missing volumed digest", func(c *nodeImageRenderConfig) { c.volumedImageDigest = "" }},
+		{"tagged volumed repository", func(c *nodeImageRenderConfig) { c.volumedImageRepository = "example.com/volumed:main" }},
 		{"tag as digest", func(c *nodeImageRenderConfig) { c.imageDigest = "main" }},
 		{"tagged repository", func(c *nodeImageRenderConfig) { c.imageRepository += ":main" }},
 		{"missing output", func(c *nodeImageRenderConfig) { c.outputDir = "" }},
@@ -256,9 +388,17 @@ func TestNodeImageRenderRejectsBadInputsBeforeHelm(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFakeBin(t)
 			f.tool(t, "helm", "exit 99")
-			cfg := nodeImageRenderConfig{platform: "tdx", kubeVersion: "v1.34.5", imageDigest: testDigest, armtlsMeshImageDigest: nodeImageTestMeshDigest, imageRepository: "ghcr.io/confidential-dot-ai/c8s-operator", outputDir: t.TempDir()}
+			cfg := nodeImageRenderConfig{
+				platform:              "tdx",
+				kubeVersion:           "v1.34.5",
+				imageDigest:           testDigest,
+				imageRepository:       "ghcr.io/confidential-dot-ai/c8s-operator",
+				armtlsMeshImageDigest: nodeImageTestMeshDigest,
+				volumedImageDigest:    nodeImageTestVolumedDigest,
+				outputDir:             t.TempDir(),
+			}
 			tc.change(&cfg)
-			if err := renderNodeImage(context.Background(), cfg); err == nil {
+			if err := renderNodeImage(context.Background(), cfg, io.Discard); err == nil {
 				t.Fatal("accepted invalid build inputs")
 			}
 			if calls := f.calls(t); len(calls) != 0 {
@@ -274,7 +414,7 @@ func TestNodeImageRenderRejectsBadInputsBeforeHelm(t *testing.T) {
 func bootstrapTAPin(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	manifest := filepath.Join(dir, "cds-manifest.json")
+	manifest := filepath.Join(dir, "ta-manifest.json")
 	body := fmt.Sprintf(`{"snp_variants":[{"smp":4,"measurement":{"algorithm":"sha384","snp_launch_digest":%q}}]}`,
 		strings.Repeat("50", refvalues.DigestSize))
 	if err := os.WriteFile(manifest, []byte(body), 0o600); err != nil {
@@ -307,7 +447,7 @@ func bootstrapTAPin(t *testing.T) string {
 // chart entries. Unit fixtures alone cannot catch collisions between the two.
 func testNodeImageBootstrap(t *testing.T, seed []byte, platform string) {
 	t.Helper()
-	floor, err := os.ReadFile(filepath.Join("..", "..", "images", "node-guest", "worker", "image-policy.yaml.in"))
+	floor, err := os.ReadFile(floorTemplateFile)
 	if err != nil {
 		t.Fatal(err)
 	}

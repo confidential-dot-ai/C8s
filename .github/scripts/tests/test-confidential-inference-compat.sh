@@ -47,9 +47,9 @@ export PATH="$work/bin:$PATH" FAKE_REQUEST="$work/request" FAKE_ARGS="$work/args
 
 # The c8s repository: one hashed source file, one other source file, a test
 # and a doc.
-mkdir -p "$work/c8s/internal/cmds/cds" "$work/c8s/pkg/allowlist" "$work/c8s/docs"
+mkdir -p "$work/c8s/internal/cmds/ta" "$work/c8s/pkg/allowlist" "$work/c8s/docs"
 git -C "$work/c8s" init -q
-echo 'package cds' >"$work/c8s/internal/cmds/cds/routes.go"
+echo 'package ta' >"$work/c8s/internal/cmds/ta/routes.go"
 echo 'package allowlist' >"$work/c8s/pkg/allowlist/allowlist.go"
 echo 'package allowlist' >"$work/c8s/pkg/allowlist/allowlist_test.go"
 echo '# c8s' >"$work/c8s/docs/README.md"
@@ -61,7 +61,7 @@ mkdir -p "$work/ci/release/inputs" "$work/ci/docs" "$work/ci/scripts" \
 printf 'c8s:\n  release: v1.0.0\n  sourceCommit: %s\n' "$pinned" >"$work/ci/release/spec.yaml"
 jq -n --arg commit "$pinned" '{commits: [{commit: $commit, tag: "v1.0.0",
   attestationProtocol: "c8s/attest-pq/v1", requiredVerifierFlags: ["--allowlist"],
-  capabilities: {}, files: {"internal/cmds/cds/routes.go": "sha256:0"}}]}' \
+  capabilities: {}, files: {"internal/cmds/ta/routes.go": "sha256:0"}}]}' \
   >"$work/ci/release/inputs/c8s-source-lock.json"
 for name in docs/network-ports.yaml scripts/bump-c8s.py scripts/c8s_release.py \
     scripts/check-c8s-admission.py scripts/fetch-node-manifest.py \
@@ -96,7 +96,7 @@ grep -q 'feat(allowlist): add Parse' <<<"$user" || fail "the request lacks the c
 grep -q '+package allowlist; func Parse' <<<"$user" || fail "the request lacks the diff"
 system=$(jq -r '.messages[0].content' "$work/request")
 grep -q 'contract scripts/bump-c8s.py' <<<"$system" || fail "the request lacks a contract file"
-grep -q '"internal/cmds/cds/routes.go"' <<<"$system" || fail "the request lacks the hashed source files"
+grep -q '"internal/cmds/ta/routes.go"' <<<"$system" || fail "the request lacks the hashed source files"
 grep -q 'sha256:0' <<<"$system" && fail "the request carries the source hashes"
 pass
 
@@ -125,10 +125,10 @@ pass
 
 # Deleting a hashed source file is incompatible without asking the model.
 rm "$work/request"
-git -C "$work/c8s" mv internal/cmds/cds internal/cmds/ta
-renamed=$(commit "refactor(ta): rename the authority package")
+git -C "$work/c8s" mv internal/cmds/ta/routes.go internal/cmds/ta/router.go
+renamed=$(commit "refactor(ta): rename the routes file")
 REPLY=unused judge "$api_change" "$renamed"
-[[ $status -eq 1 && $(head -n1 "$work/report") = INCOMPATIBLE && $(cat "$work/report") = *internal/cmds/cds/routes.go* ]] ||
+[[ $status -eq 1 && $(head -n1 "$work/report") = INCOMPATIBLE && $(cat "$work/report") = *internal/cmds/ta/routes.go* ]] ||
   fail "renaming a hashed file was not incompatible: $(cat "$work/report")"
 [ ! -e "$work/request" ] || fail "a deleted hashed file asked the model"
 pass

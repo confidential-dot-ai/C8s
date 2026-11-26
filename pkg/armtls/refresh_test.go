@@ -194,7 +194,7 @@ func TestARefreshingTransportRunsAgainOnlyWhereThePinsMoved(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewRefreshingTransport: %v", err)
 			}
-			request, err := http.NewRequest(http.MethodGet, "https://cds.example/allowlist", nil)
+			request, err := http.NewRequest(http.MethodGet, "https://ta.example/allowlist", nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -227,7 +227,7 @@ func TestARefreshingTransportDoesNotReplayAnUnrepeatableBody(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRefreshingTransport: %v", err)
 	}
-	request, err := http.NewRequest(http.MethodPut, "https://cds.example/allowlist", strings.NewReader("{}"))
+	request, err := http.NewRequest(http.MethodPut, "https://ta.example/allowlist", strings.NewReader("{}"))
 	if err != nil {
 		t.Fatal(err)
 	}

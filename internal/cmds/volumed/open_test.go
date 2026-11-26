@@ -29,8 +29,11 @@ type fakeOps struct {
 
 	// honorCtx makes every op fail once its context is done.
 	honorCtx bool
-	// afterCryptOpen fires once the first privileged step has landed.
-	afterCryptOpen func()
+	// afterCryptOpen fires once the first privileged step has landed, and
+	// afterCryptClose once a teardown has removed the key, so an open can be
+	// raced against either.
+	afterCryptOpen  func()
+	afterCryptClose func()
 }
 
 // mountCall records what one Mount was asked to do.
@@ -96,8 +99,11 @@ func (f *fakeOps) CryptClose(ctx context.Context, mapper string) error {
 		return err
 	}
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	delete(f.cryptOpen, mapper)
+	f.mu.Unlock()
+	if f.afterCryptClose != nil {
+		f.afterCryptClose()
+	}
 	return nil
 }
 
@@ -753,24 +759,28 @@ func TestOpenUnwindsAfterTheCallerContextIsCancelled(t *testing.T) {
 	}
 }
 
-// A volume stack outlives the volumed that opened it: the mappings are kernel
-// state, and nothing else on a node reaps them. Until they go they hold the
-// backing disk open, so the next install cannot reopen the volume.
-func TestSweepStaleClosesMappingsLeftByAnEarlierVolumed(t *testing.T) {
+// A node reboot, or a volumed that died before it could record an open, leaves
+// mappings no record covers. Nothing else on a node reaps them, and until they
+// go they hold the backing disk open.
+func TestAdoptClosesAMappingNoRecordCovers(t *testing.T) {
 	ops := newOps()
 	ops.cryptOpen["c8s-crypt-podA-weights"] = true
 	ops.verityOpen["c8s-verity-podA-weights"] = true
 
 	o := testOpener(t, ops)
-	closed, stuck := o.SweepStale(context.Background())
-	if closed != 2 {
-		t.Errorf("closed %d mappings, want the crypt and verity pair", closed)
+	o.Records = newRecords()
+	got := o.Adopt(context.Background(), livenessFor{live: map[string]bool{"podA": true}})
+	if got.Adopted != 0 {
+		t.Errorf("adopted %d unrecorded mappings", got.Adopted)
 	}
-	if len(stuck) != 0 {
-		t.Errorf("reported %v as still in use", stuck)
+	if got.Closed != 2 {
+		t.Errorf("closed %d mappings, want the crypt and verity pair", got.Closed)
+	}
+	if len(got.Stuck) != 0 {
+		t.Errorf("reported %v as still in use", got.Stuck)
 	}
 	if len(ops.cryptOpen) != 0 || len(ops.verityOpen) != 0 {
-		t.Errorf("mappings survived the sweep: crypt=%v verity=%v", ops.cryptOpen, ops.verityOpen)
+		t.Errorf("mappings survived: crypt=%v verity=%v", ops.cryptOpen, ops.verityOpen)
 	}
 	// verity is stacked on crypt and holds it open, so closing crypt first
 	// would fail against a real device-mapper.
@@ -788,42 +798,289 @@ func TestSweepStaleClosesMappingsLeftByAnEarlierVolumed(t *testing.T) {
 	}
 }
 
-// The sweep runs before this process has any state, so the kernel is what
-// decides: a mapping something still has mounted refuses to close, and a
-// workload's volume is not pulled out from under it.
-func TestSweepStaleLeavesAMappingStillInUse(t *testing.T) {
+// The kernel has the last word: a mapping something still has mounted refuses
+// to close, so a workload's volume is not pulled out from under it.
+func TestAdoptReportsAMappingThatRefusesToClose(t *testing.T) {
 	ops := newOps()
 	ops.cryptOpen["c8s-crypt-podA-weights"] = true
 	ops.verityOpen["c8s-verity-podA-weights"] = true
 	ops.failOn = "VerityClose"
 
 	o := testOpener(t, ops)
-	closed, stuck := o.SweepStale(context.Background())
-	if closed != 1 {
-		t.Errorf("closed %d, want only the crypt mapping", closed)
+	got := o.Adopt(context.Background(), livenessFor{})
+	if got.Closed != 1 {
+		t.Errorf("closed %d, want only the crypt mapping", got.Closed)
 	}
-	if len(stuck) != 1 || stuck[0] != "c8s-verity-podA-weights" {
-		t.Errorf("stuck = %v, want the verity mapping that refused", stuck)
+	if len(got.Stuck) != 1 || got.Stuck[0] != "c8s-verity-podA-weights" {
+		t.Errorf("stuck = %v, want the verity mapping that refused", got.Stuck)
 	}
 	if !ops.verityOpen["c8s-verity-podA-weights"] {
 		t.Error("a mapping that refused to close was reported as gone")
 	}
 }
 
-// Sweeping by name prefix keeps it to volumes this platform opened; the node's
+// Closing by name prefix keeps it to volumes this platform opened; the node's
 // other device-mapper targets are not ours to close.
-func TestSweepStaleTouchesOnlyC8sMappings(t *testing.T) {
+func TestAdoptTouchesOnlyC8sMappings(t *testing.T) {
 	ops := newOps()
 	ops.cryptOpen["luks-tenant-disk"] = true
 	ops.verityOpen["c8s-verity-podA-weights"] = true
 
 	o := testOpener(t, ops)
-	closed, _ := o.SweepStale(context.Background())
-	if closed != 1 {
-		t.Errorf("closed %d, want only the c8s mapping", closed)
+	got := o.Adopt(context.Background(), livenessFor{})
+	if got.Closed != 1 {
+		t.Errorf("closed %d, want only the c8s mapping", got.Closed)
 	}
 	if !ops.cryptOpen["luks-tenant-disk"] {
 		t.Error("closed a device-mapper target this platform did not open")
+	}
+}
+
+// restart is the volumed that replaces one which had volumes open: the kernel
+// state and the records are what it inherits.
+func restart(o *Opener, ops DeviceOps) *Opener {
+	return &Opener{Ops: ops, Targets: o.Targets, Records: o.Records}
+}
+
+// The kernel keeps a volume mounted while volumed restarts, so the new volumed
+// must keep it and tear it down when its pod goes — the pod is still using it.
+func TestAdoptKeepsARecordedVolumeWhosePodIsStillThere(t *testing.T) {
+	ops := newOps()
+	first := testOpener(t, ops)
+	first.Records = newRecords()
+	if err := first.Open(t.Context(), testRequest(t)); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	restarted := restart(first, ops)
+	got := restarted.Adopt(t.Context(), livenessFor{live: map[string]bool{testPodUID: true}})
+	if got.Adopted != 1 || got.Closed != 0 || len(got.Stuck) != 0 {
+		t.Fatalf("adopted %d, closed %d, stuck %v; want the recorded volume kept", got.Adopted, got.Closed, got.Stuck)
+	}
+	if c, v, m := ops.leaked(); c != 1 || v != 1 || m != 1 {
+		t.Fatalf("a live pod's volume was torn down: crypt=%d verity=%d mounts=%d", c, v, m)
+	}
+	if restarted.Len() != 1 {
+		t.Fatalf("the restarted daemon holds %d volumes, want the adopted one", restarted.Len())
+	}
+
+	reaper := &Reaper{Opener: restarted, Liveness: livenessFor{}, ConfirmGone: 1}
+	if n := reaper.Sweep(t.Context()); n != 1 {
+		t.Fatalf("the reaper closed %d adopted volumes once their pod had gone", n)
+	}
+	if c, v, m := ops.leaked(); c != 0 || v != 0 || m != 0 {
+		t.Errorf("leaked crypt=%d verity=%d mounts=%d after the pod went", c, v, m)
+	}
+	if recs := first.Records.(*fakeRecords).all(); len(recs) != 0 {
+		t.Errorf("records %+v outlived the volume", recs)
+	}
+}
+
+// A pod that went while no volumed ran has nobody to post its close, so startup
+// is where its volume is collected.
+func TestAdoptClosesARecordedVolumeWhosePodHasGone(t *testing.T) {
+	ops := newOps()
+	first := testOpener(t, ops)
+	first.Records = newRecords()
+	if err := first.Open(t.Context(), testRequest(t)); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	restarted := restart(first, ops)
+	got := restarted.Adopt(t.Context(), livenessFor{})
+	if got.Adopted != 0 || got.Closed != 1 || len(got.Stuck) != 0 {
+		t.Fatalf("adopted %d, closed %d, stuck %v; want the volume closed", got.Adopted, got.Closed, got.Stuck)
+	}
+	if c, v, m := ops.leaked(); c != 0 || v != 0 || m != 0 {
+		t.Errorf("leaked crypt=%d verity=%d mounts=%d", c, v, m)
+	}
+	if restarted.Len() != 0 {
+		t.Errorf("a gone pod's volume was adopted")
+	}
+	if recs := first.Records.(*fakeRecords).all(); len(recs) != 0 {
+		t.Errorf("records %+v outlived the volume", recs)
+	}
+}
+
+// A record whose mapping is gone — the node rebooted under it — is a record of
+// nothing.
+func TestAdoptRemovesARecordNoMappingCovers(t *testing.T) {
+	recs := newRecords()
+	if err := recs.Put(testRecord()); err != nil {
+		t.Fatal(err)
+	}
+	o := testOpener(t, newOps())
+	o.Records = recs
+	got := o.Adopt(context.Background(), livenessFor{live: map[string]bool{testPodUID: true}})
+	if got.Adopted != 0 || got.Closed != 0 || len(got.Stuck) != 0 {
+		t.Fatalf("adopted %d, closed %d, stuck %v", got.Adopted, got.Closed, got.Stuck)
+	}
+	if left := recs.all(); len(left) != 0 {
+		t.Errorf("records %+v name no mapping and were kept", left)
+	}
+}
+
+// A pod whose liveness cannot be answered is left alone, because a volume torn
+// down under a running workload does not come back; the reaper asks again.
+func TestAdoptKeepsAVolumeWhosePodLivenessIsUnknown(t *testing.T) {
+	ops := newOps()
+	first := testOpener(t, ops)
+	first.Records = newRecords()
+	if err := first.Open(t.Context(), testRequest(t)); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	restarted := restart(first, ops)
+	got := restarted.Adopt(t.Context(), livenessFor{err: errors.New("cgroup root unreadable")})
+	if got.Adopted != 1 || got.Closed != 0 {
+		t.Fatalf("adopted %d, closed %d; want the volume kept", got.Adopted, got.Closed)
+	}
+}
+
+// An adopted mapping is held with everything the open knew, so the checks that
+// guard a second open still apply to it.
+func TestAdoptedVolumeStillGuardsItsDevice(t *testing.T) {
+	ops := newOps()
+	root, base := kubeletTree(t)
+	for _, name := range []string{"weights", "cache"} {
+		if err := os.Mkdir(filepath.Join(base, KubeVolumeName(name)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first := &Opener{Ops: ops, Targets: KubeletTargets{Root: root}, Records: newRecords()}
+	mutable := testMutableRequest(t)
+	if err := first.Open(t.Context(), mutable); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	restarted := restart(first, ops)
+	if got := restarted.Adopt(t.Context(), livenessFor{live: map[string]bool{testPodUID: true}}); got.Adopted != 1 {
+		t.Fatalf("adopted %d volumes", got.Adopted)
+	}
+
+	// The same device under a second name: one writer per device, or the
+	// filesystem is corrupted.
+	blob, err := volume.NewMutableBlob("cache", volumeKey())
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := Request{Pod: mutable.Pod, Name: "cache", Device: mutable.Device, Blob: blob}
+	if err := restarted.Open(t.Context(), second); !errors.Is(err, ErrVolumeInUse) {
+		t.Fatalf("got %v, want ErrVolumeInUse against an adopted mutable mount", err)
+	}
+
+	// The sidecar is restarted for its pod's life, and repeats its open.
+	if err := restarted.Open(t.Context(), mutable); err != nil {
+		t.Fatalf("an identical request against an adopted volume: %v", err)
+	}
+	if err := restarted.Open(t.Context(), wrongKeyFor(t, mutable)); !errors.Is(err, ErrNotAuthorized) {
+		t.Fatalf("got %v, want ErrNotAuthorized for a wrong key against an adopted volume", err)
+	}
+}
+
+// wrongKeyFor is req with a key it was not opened with.
+func wrongKeyFor(t *testing.T, req Request) Request {
+	t.Helper()
+	blob, err := volume.NewMutableBlob(req.Name, make([]byte, volume.KeyBytes))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Blob = blob
+	return req
+}
+
+// A record is written before the caller is told the volume is open, and removed
+// once it is closed.
+func TestOpenRecordsTheMountAndCloseForgetsIt(t *testing.T) {
+	ops := newOps()
+	recs := newRecords()
+	o := testOpener(t, ops)
+	o.Records = recs
+	req := testRequest(t)
+	if err := o.Open(t.Context(), req); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	got := recs.all()
+	if len(got) != 1 {
+		t.Fatalf("records = %+v, want one per open volume", got)
+	}
+	rec := got[0]
+	if rec.Pod != req.Pod || rec.Volume != req.Name || rec.Device != req.Device {
+		t.Errorf("record = %+v, does not describe %+v", rec, req)
+	}
+	if rec.Mapper != mapperName(cryptKind, req.Pod.UID, req.Name) {
+		t.Errorf("record mapper = %q", rec.Mapper)
+	}
+	if !strings.HasSuffix(rec.Target, KubeVolumeName(req.Name)) {
+		t.Errorf("record target = %q, want the pod's volume directory", rec.Target)
+	}
+
+	o.Close(t.Context(), req.Pod.UID, req.Name)
+	if left := recs.all(); len(left) != 0 {
+		t.Errorf("records %+v outlived the volume", left)
+	}
+}
+
+// A mapping that refuses to close keeps its record: it still holds the key and
+// the device, so the next volumed must find it rather than close it blind.
+func TestCloseKeepsTheRecordOfAMappingThatRefusesToClose(t *testing.T) {
+	ops := newOps()
+	ops.failOn = "CryptClose"
+	recs := newRecords()
+	o := testOpener(t, ops)
+	o.Records = recs
+	if err := o.Open(t.Context(), testRequest(t)); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	o.Close(t.Context(), testPodUID, "weights")
+	if len(recs.all()) != 1 {
+		t.Errorf("the record of a mapping that refused to close was removed")
+	}
+	if o.Len() != 1 {
+		t.Errorf("opener holds %d mounts, want the one that refused to close", o.Len())
+	}
+}
+
+// An unrecorded volume is one the next volumed closes under its pod, so an open
+// that cannot be recorded fails and unwinds instead.
+func TestOpenFailsWhenTheMountCannotBeRecorded(t *testing.T) {
+	ops := newOps()
+	recs := newRecords()
+	recs.putErr = errors.New("state directory is read-only")
+	o := testOpener(t, ops)
+	o.Records = recs
+
+	if err := o.Open(t.Context(), testRequest(t)); err == nil {
+		t.Fatal("an open that could not be recorded succeeded")
+	}
+	if c, v, m := ops.leaked(); c != 0 || v != 0 || m != 0 {
+		t.Errorf("leaked crypt=%d verity=%d mounts=%d", c, v, m)
+	}
+	if o.Len() != 0 {
+		t.Errorf("an unrecorded mount was published")
+	}
+}
+
+// Records that cannot be read are reported, and the mappings they would have
+// covered are closed rather than kept on trust.
+func TestAdoptReportsUnreadableRecords(t *testing.T) {
+	ops := newOps()
+	first := testOpener(t, ops)
+	first.Records = newRecords()
+	if err := first.Open(t.Context(), testRequest(t)); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	first.Records.(*fakeRecords).listErr = errors.New("state directory is unreadable")
+
+	restarted := restart(first, ops)
+	got := restarted.Adopt(t.Context(), livenessFor{live: map[string]bool{testPodUID: true}})
+	if got.Adopted != 0 || got.Closed != 2 {
+		t.Errorf("adopted %d, closed %d; want both uncovered mappings closed", got.Adopted, got.Closed)
+	}
+	if len(got.Stuck) != 1 || !strings.Contains(got.Stuck[0], "unreadable") {
+		t.Errorf("stuck = %v, want the record failure reported", got.Stuck)
 	}
 }
 
@@ -870,6 +1127,71 @@ func TestCloseKeepsTheRecordOfAStuckMapping(t *testing.T) {
 	}
 	if o.Len() != 0 {
 		t.Fatalf("opener holds %d mounts, want 0", o.Len())
+	}
+}
+
+// kubelet restarts the sidecar of a pod the reaper is collecting, so an open
+// of the same volume can land the moment its teardown finishes. The record of
+// the mapping that is now published must survive the close, or the next
+// volumed finds a live volume unrecorded and closes it under the pod.
+func TestCloseKeepsTheRecordOfAVolumeReopenedUnderIt(t *testing.T) {
+	ops := newOps()
+	recs := newRecords()
+	o := testOpener(t, ops)
+	o.Records = recs
+	req := testRequest(t)
+	if err := o.Open(t.Context(), req); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	var once sync.Once
+	ops.afterCryptClose = func() {
+		once.Do(func() {
+			if err := o.Open(t.Context(), req); err != nil {
+				t.Errorf("open racing the close: %v", err)
+			}
+		})
+	}
+	o.Close(t.Context(), req.Pod.UID, req.Name)
+
+	if o.Len() != 1 {
+		t.Fatalf("opener holds %d mounts, want the volume opened under the close", o.Len())
+	}
+	if left := recs.all(); len(left) != 1 {
+		t.Fatalf("records = %+v, want the one for the published mapping", left)
+	}
+	if c, v, m := ops.leaked(); c != 1 || v != 1 || m != 1 {
+		t.Fatalf("the reopened volume is crypt=%d verity=%d mounts=%d, want all held", c, v, m)
+	}
+}
+
+// The sidecar's close and the reaper's collection of the same volume arrive
+// together. Only one may run the teardown: the second would remove a mapping
+// name the kernel no longer has, or one a later open has republished.
+func TestConcurrentClosesTearDownOnce(t *testing.T) {
+	ops := newOps()
+	o := testOpener(t, ops)
+	o.Records = newRecords()
+	req := testRequest(t)
+	if err := o.Open(t.Context(), req); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	var closers sync.WaitGroup
+	for range 4 {
+		closers.Add(1)
+		go func() {
+			defer closers.Done()
+			o.Close(context.Background(), req.Pod.UID, req.Name)
+		}()
+	}
+	closers.Wait()
+
+	if n := strings.Count(ops.sequence(), "CryptClose"); n != 1 {
+		t.Fatalf("the mapping was closed %d times, want once", n)
+	}
+	if o.Len() != 0 {
+		t.Fatalf("opener holds %d mounts after the closes", o.Len())
 	}
 }
 

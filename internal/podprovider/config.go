@@ -44,8 +44,8 @@ type Config struct {
 	Image                      string   `json:"image"`
 	ImageManifestFile          string   `json:"imageManifestFile"`
 	LaunchKeyFile              string   `json:"launchKeyFile"`
-	TAAddress                  string   `json:"cdsAddress"`
-	TAImagePolicyFile          string   `json:"cdsImagePolicyFile"`
+	TAAddress                  string   `json:"taAddress"`
+	TAImagePolicyFile          string   `json:"taImagePolicyFile"`
 	WorkloadsFile              string   `json:"workloadsFile"`
 	ClusterID                  string   `json:"clusterID"`
 	Size                       string   `json:"size"`
@@ -132,7 +132,7 @@ func (c *Config) validate() error {
 		c.ReservedMemoryMiB = 1024
 	}
 	if _, _, err := cmdsutil.SplitTAAddress(c.TAAddress); err != nil {
-		return fmt.Errorf("cdsAddress %w", err)
+		return fmt.Errorf("taAddress %w", err)
 	}
 	return nil
 }

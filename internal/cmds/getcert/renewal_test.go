@@ -345,7 +345,7 @@ func TestRenewalRetryInterval(t *testing.T) {
 
 func TestValidateConfigUnnamedRenewInterval(t *testing.T) {
 	base := config{
-		TAURL:             "https://cds:8443",
+		TAURL:             "https://ta:8443",
 		AttestationApiURL: "http://localhost:8400",
 		SAN:               "workload.example.com",
 	}

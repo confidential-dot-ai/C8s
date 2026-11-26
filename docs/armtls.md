@@ -143,7 +143,7 @@ uncaptured:
   port 15021.
 - **Platform-role sockets**: the credential clients that reach the TA, the
   endpoint itself, and, in the router's pod, the route authority
-  (`cds-attest`), which authenticates each backend itself
+  (`ta-attest`), which authenticates each backend itself
   ([operator.md](operator.md#pattern-rules)).
 - **Declared egress**: what the pod's workload entry declares, once the pod
   matches that entry ([allowlist-entries.md](allowlist-entries.md)).
@@ -195,9 +195,12 @@ SHA384("c8s-pod-attestation/v1\0" || SHA384(SPKI DER) || challenge || SHA384(cla
 ```
 
 the TA verifies that binding and replays the whole measurement list against its
-separate Pod image policy. Every measured digest must be in the current workload
-policy. When the Pod's whole observation set, without the platform's mesh
-endpoint, matches exactly one allowlist entry of the same policy snapshot,
+separate Pod image policy. Every measured digest must be admitted by an entry in
+force, and the roles the guest's measured base bound decide the Pod's component
+sets, exactly as a node sandbox's inventory answer is judged above — mixing
+refused, the leaf bounded by the admission. When the Pod's whole observation
+set, without the platform's mesh endpoint, matches exactly one allowlist entry
+of the same policy snapshot,
 the leaf carries the matched-workload stamp, as a node workload's does, under
 the named-leaf lifetime cap. Otherwise it is the unnamed membership leaf: no
 match, more than one match, or an image no single entry lists. Neither a
@@ -275,6 +278,23 @@ configuration's `nodeCIDRs`; an empty bound refuses every token). The TA then
 verifies the token and asks `/digests/{id}`, where every image reported must be
 in the allowlist — the operator policy of workload
 entries the TA serves and every node enforces — and an empty answer is refused.
+An entry of a component set in force admits an image as a workload entry does,
+so a sidecar the cluster's release declares needs no workload entry
+([allowlist-entries.md](allowlist-entries.md#component-sets)). The deadline
+alone ends that admission: the same inventory answer passes the gate before the
+deadline and fails after it, with no write in between.
+
+The containers the inventory reports with a c8s component role decide which
+sets the pod is on: the sets in force that admit every one of them. A pod whose
+component containers share no such set — two sets, or one set beside a
+container only a node's measured base admits — is refused a certificate, a
+secret and a volume key. A pod no set admits a component container of is judged
+by the workloads section alone, as a pod from before sets is.
+
+A leaf expires with the admission its images passed the gate on. For an image
+the workloads section does not list, that is the last in-force set listing it,
+and the earliest of those ends bounds the leaf: the pod renews under the set
+that replaces them or loses its identity.
 
 Issuance gates on membership, not on a whole workload entry
 ([allowlist-and-capabilities.md](allowlist-and-capabilities.md) owns that rule),

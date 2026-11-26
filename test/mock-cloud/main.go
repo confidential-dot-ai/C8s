@@ -14,6 +14,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 )
 
 // The size every instance reports, whatever size the create names.
@@ -97,12 +98,13 @@ type behaviour struct {
 	Lingering bool `json:"lingering,omitempty"`
 }
 
-// call is one API request as received.
+// call is one API request as received, and when.
 type call struct {
 	Method         string          `json:"method"`
 	Path           string          `json:"path"`
 	IdempotencyKey string          `json:"idempotencyKey,omitempty"`
 	Body           json.RawMessage `json:"body,omitempty"`
+	ReceivedAt     time.Time       `json:"receivedAt"`
 }
 
 type cloud struct {
@@ -168,13 +170,15 @@ func (c *cloud) listInstances(w http.ResponseWriter, _ *http.Request) {
 // token, the outage, and the lock the handler runs under.
 func (c *cloud) api(handle func(http.ResponseWriter, *http.Request, []byte)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Before the body and the lock: waiting on either is not the caller's delay.
+		received := time.Now()
 		var body json.RawMessage
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			body = nil
 		}
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		c.calls = append(c.calls, call{Method: r.Method, Path: r.URL.RequestURI(), IdempotencyKey: r.Header.Get("Idempotency-Key"), Body: body})
+		c.calls = append(c.calls, call{Method: r.Method, Path: r.URL.RequestURI(), IdempotencyKey: r.Header.Get("Idempotency-Key"), Body: body, ReceivedAt: received})
 		switch {
 		case !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer "):
 			refuse(w, problem{Status: http.StatusUnauthorized, Code: "unauthenticated"})

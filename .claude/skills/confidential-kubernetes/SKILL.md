@@ -70,7 +70,7 @@ The docs call the node shape the CVM mode: `bare-metal` (the measured worker
 image), `gke` or `aks`.
 
 - **TA.** A measured VM outside the cluster (`images/ta-guest`), booted on the
-  configuration `c8s ta config new` writes and pinned by the `cds-pin.json`
+  configuration `c8s ta config new` writes and pinned by the `ta-pin.json`
   written with it. No chart deploys it, and only test harnesses run it as a
   container. It runs as one VM, or as replicas that share
   state over a replicated log and take operator-signed decrees
@@ -104,7 +104,7 @@ and the commands defined in `cmd/c8s` itself: `install`, `uninstall`, `operator`
 | `nri-image-policy`: admission plugin, admission inventory, packet rules | the node host | `internal/cmds/nri-image-policy`, `internal/podmesh` |
 | `c8s-runc`: privilege floor, exec denial | measured images | `internal/cmds/c8srunc` |
 | Sidecars: `get-cert` (`c8s-cert`), `armtls-mesh` (`c8s-mesh`), `probe-file` (`c8s-cert-wait`), and when a pod asks for them `get-secret` (`c8s-secret`) and `get-volume` (`c8s-volume`) | every member pod | `internal/cmds/{getcert,armtlsmesh,probefile,getsecret,getvolume,sidecar}` |
-| `ta-attest`, `allowlist-proxy`, `acme` | the router pod (the attestation container is named `cds-attest`) | `internal/cmds/{taattest,allowlistproxy,acme}`, `pkg/overenc`, `pkg/routes` |
+| `ta-attest`, `allowlist-proxy`, `acme` | the router pod (the attestation container is named `ta-attest`) | `internal/cmds/{taattest,allowlistproxy,acme}`, `pkg/overenc`, `pkg/routes` |
 | `volumed`, `attest-proxy`, `volume attach\|detach` | the node | `internal/cmds/{volumed,attestproxy,volume}` |
 | `worker stage`, `launch-config stage`, `node-services`, `pod-status` | guest boot | `internal/cmds/{worker,nodeservices,podstatus}`, `internal/podlaunch` |
 | Operator CLIs: `keys`, `measurements`, `allowlist`, `routes`, `secrets`, `volume create`, `verify`, `ta verify\|ca\|config\|ha` | the operator's machine | `internal/cmds/{keys,measurements,allowlist,routes,secrets,volume,verify,taca,talaunch,ta}`, with `internal/cmds/taconn` for the TA connection |
@@ -323,7 +323,7 @@ error strings. Do not reintroduce them.
 | `internal/helmchart/c8s`, `c8sComponents` | `charts/`, `charts/lib/files/components.yaml` |
 | The `node-guest-image/` directory | `images/node-guest/` |
 | `confos-pod-exec`, `cw-label-integrity`, `hostNamespacePolicy.*` | Kubelet handlers off plus `c8s-runc`; `pod-validator`; the cloud chart's `<release>-deny-host-namespaces`, which has no switch |
-| `router.publicTLS.mode` | The front-door mode; the charts set `cds` or `acme` |
+| `router.publicTLS.mode` | The front-door mode; the charts set `ta` or `acme` |
 | Evidence fallback in the mesh, `RequireCAEvidence`, `CheckWorkloadPin` | The chain path alone; `MatchedWorkloadFromCert` |
 | Empty pins meaning "any genuine TEE" inside the cluster | Empty pins are refused there |
 | kata, peer-pods, `tls-lb`, `tee-proxy`, `/sign-csr`, `/attest-key`, `/handshake`, EAR and JWKS signing, OID arc `59888`, the admission plugin's push mode | Nothing; the per-pod VM today is the Pod CVM |

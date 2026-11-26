@@ -48,7 +48,7 @@ func TestPodSecretVolumeOnlyForWorkloadReadersOnMemory(t *testing.T) {
 	}{
 		{name: "valid"},
 		{"platform role", func(_ *api.PodSandbox, _ *api.Container, _ *[]allowlist.ObservedMount, role *string) {
-			*role = meshRole
+			*role = allowlist.RoleMesh
 		}},
 		{"writable", func(_ *api.PodSandbox, c *api.Container, _ *[]allowlist.ObservedMount, _ *string) {
 			c.Mounts[0].Options = append(c.Mounts[0].Options, "rw")
@@ -85,7 +85,7 @@ func TestPodSecretVolumeOnlyForWorkloadReadersOnMemory(t *testing.T) {
 // A container without the volume is untouched, whatever its role.
 func TestPodSecretVolumeIgnoresOtherContainers(t *testing.T) {
 	pod, _, _ := secretReaderFixture()
-	if err := secretPlugin(pod).podSecretReader(pod, &api.Container{Name: "other"}, meshRole, nil); err != nil {
+	if err := secretPlugin(pod).podSecretReader(pod, &api.Container{Name: "other"}, allowlist.RoleMesh, nil); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -139,7 +139,7 @@ func TestPodSecretReaderSkipsUnrelatedMountsAndNodeRoles(t *testing.T) {
 		t.Fatalf("workload reader: %v", err)
 	}
 	node := &plugin{cfg: &config{}}
-	if err := node.podSecretReader(pod, ctr, meshRole, mounts); err != nil {
+	if err := node.podSecretReader(pod, ctr, allowlist.RoleMesh, mounts); err != nil {
 		t.Fatalf("node role: %v", err)
 	}
 }
@@ -371,7 +371,7 @@ func TestRequestPodSecretFailures(t *testing.T) {
 		client    *http.Client
 		want      string
 	}{
-		{"malformed URL", "https://cds\x7f", garbled.Client(), "invalid control character"},
+		{"malformed URL", "https://ta\x7f", garbled.Client(), "invalid control character"},
 		{"unreachable", "https://ta.example", unreachable, "connect"},
 		{"undecodable answer", garbled.URL, garbled.Client(), "decode Pod secret response"},
 		{"answer past the cap", oversized.URL, oversized.Client(), "read Pod secret response"},

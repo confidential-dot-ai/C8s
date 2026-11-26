@@ -77,10 +77,10 @@ func newOperatorClusterBooting(
 	dir := t.TempDir()
 	c := operatorCluster{
 		config:      config,
-		configPath:  filepath.Join(dir, "cds-config.yaml"),
+		configPath:  filepath.Join(dir, "ta-config.yaml"),
 		keyPath:     filepath.Join(dir, "operator.pem"),
 		operatorPEM: operatorPEM,
-		taPinPath:   filepath.Join(dir, "cds-pin.json"),
+		taPinPath:   filepath.Join(dir, "ta-pin.json"),
 	}
 	writeTestFile(t, c.configPath, c.config)
 	writeTestFile(t, c.keyPath, keyPEM)
@@ -302,8 +302,8 @@ func TestPinDecreeNeedsTheVersionItAppliesOn(t *testing.T) {
 		"--config", c.configPath,
 		"--operator-key", c.keyPath,
 		"--out", filepath.Join(t.TempDir(), "pins.json"),
-		"--to", "cds-1.acme.example",
-		"--cds-pin", c.taPinPath,
+		"--to", "ta-1.acme.example",
+		"--ta-pin", c.taPinPath,
 		"--platform", "sev-snp",
 		"--vcpus", "2",
 		"--image-manifest", snpManifest(t, smp2Digest),
@@ -680,7 +680,7 @@ func TestAReplicaAddressNamesAHostAndAPort(t *testing.T) {
 		port    uint16
 	}{
 		{"10.0.0.5", "10.0.0.5", replicaPort},
-		{"cds-1.example.org", "cds-1.example.org", replicaPort},
+		{"ta-1.example.org", "ta-1.example.org", replicaPort},
 		{"127.0.0.1:8441", "127.0.0.1", 8441},
 	} {
 		t.Run(tc.address, func(t *testing.T) {

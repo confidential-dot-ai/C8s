@@ -75,7 +75,7 @@ type Defaults struct {
 	Use string
 	// Short is the one-line help.
 	Short string
-	// Kind preselects the component (cds|lb|workload|auto).
+	// Kind preselects the component (ta|lb|workload|auto).
 	Kind string
 	// Mode preselects the evidence mode (auto|armtls-cert|discovery|attest-pq).
 	Mode string
@@ -176,7 +176,7 @@ Evidence sources:
                          --observed-serving-cert and --attestation-nonce the
                          receipt was fetched with.
 
-  c8s ta verify https://cds.example.com:8443 --image-policy-file cds-pin.json
+  c8s ta verify https://ta.example.com:8443 --image-policy-file ta-pin.json
   c8s verify https://lb.example.com:443 --kind lb --measurements <sha384-hex> --mesh-ca mesh-ca.pem
 
 A front door serving a CA-issued leaf is verified only with its mesh anchor;
@@ -280,8 +280,6 @@ func run(ctx context.Context, cfg config, out, errOut io.Writer) int {
 		return exitUsage
 	}
 	switch cfg.kind {
-	case "cds":
-		cfg.kind = "ta"
 	case "", "auto", "ta", "lb", "workload":
 	default:
 		fmt.Fprintf(errOut, "error: unknown --kind %q (valid kinds: auto, ta, lb, workload)\n", cfg.kind)

@@ -9,9 +9,9 @@ cluster is [operator.md](operator.md); running several of them is
 
 ## Where it runs
 
-`cds-pin.json`, the document every client holds the TA to, binds two values: a
+`ta-pin.json`, the document every client holds the TA to, binds two values: a
 launch digest from the `manifest.json` published with the `ta-guest` image,
-and the exact bytes of the `cds-config.yaml` the VM booted, which on SEV-SNP
+and the exact bytes of the `ta-config.yaml` the VM booted, which on SEV-SNP
 the launcher commits as `HOST_DATA`
 ([launch requirements](../images/ta-guest/README.md#launch-requirements)).
 
@@ -22,7 +22,7 @@ VM runs on SEV-SNP or TDX hardware you hold, beside the cloud cluster rather
 than in it — a host launching it under an IGVM-capable QEMU, or a KubeVirt VM
 on a cluster of your own confidential hosts. The cloud cluster holds its
 address and its pin, which `c8s install --ta-address <HOST>:<PORT> --ta-pin
-cds-pin.json` carries into the release, and nothing else of it.
+ta-pin.json` carries into the release, and nothing else of it.
 
 ## The flows it needs
 

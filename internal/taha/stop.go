@@ -120,9 +120,9 @@ func (s *stops) halt(err error, kind stopKind) error {
 		}
 	}
 	if kind == localFault {
-		slog.Error("cds-ha: this replica can no longer follow the log (its own fault); it stops serving and exits to rejoin", "reason", stop.msg)
+		slog.Error("ta-ha: this replica can no longer follow the log (its own fault); it stops serving and exits to rejoin", "reason", stop.msg)
 	} else {
-		slog.Error("cds-ha: ALARM: this replica cannot apply a committed log entry; it stops serving and keeps its log for an operator", "reason", stop.msg)
+		slog.Error("ta-ha: ALARM: this replica cannot apply a committed log entry; it stops serving and keeps its log for an operator", "reason", stop.msg)
 	}
 	return err
 }
@@ -147,7 +147,7 @@ func (s *stops) Stall(err error) {
 		s.reason.CompareAndSwap(stall, nil)
 		return
 	}
-	slog.Error("cds-ha: this replica's state machine is stalled on a command; it stops serving until the command returns", "reason", stall.msg)
+	slog.Error("ta-ha: this replica's state machine is stalled on a command; it stops serving until the command returns", "reason", stall.msg)
 }
 
 // A stall that outlasted its cluster is a fault of this replica's own: the
@@ -163,7 +163,7 @@ func (s *stops) hang(stall *stopReason, why string) {
 	if !s.reason.CompareAndSwap(stall, hung) {
 		return
 	}
-	slog.Error("cds-ha: this replica's state machine is held on a command for good; it stops serving and exits to rejoin",
+	slog.Error("ta-ha: this replica's state machine is held on a command for good; it stops serving and exits to rejoin",
 		"reason", hung.msg)
 }
 
@@ -176,6 +176,6 @@ func (s *stops) endStall() {
 		return
 	}
 	if s.reason.CompareAndSwap(p, nil) {
-		slog.Info("cds-ha: the stalled command returned; this replica follows the log again", "stalled", p.msg)
+		slog.Info("ta-ha: the stalled command returned; this replica follows the log again", "stalled", p.msg)
 	}
 }

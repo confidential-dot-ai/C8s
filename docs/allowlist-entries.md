@@ -226,6 +226,92 @@ An entry with host ports pins every container's launch: `command`, `args` and
 mapping no entry declares, and a container of such a pod unless the entry
 declaring its mappings admits that launch.
 
+## Component sets
+
+The `components` section lists the component sets the cluster admits. A set is
+one release's entries for the containers c8s itself runs: the injected
+sidecars, the router and the node services.
+
+```json
+{
+  "schema": "c8s.allowlist/v1",
+  "workloads": {},
+  "components": {
+    "0.43.0": {
+      "entries": {
+        "c8s-mesh-endpoint": {
+          "containers": [{
+            "digest": "sha256:<mesh>",
+            "role": "mesh",
+            "command": {"policy": "exact", "argv": ["/app/c8s", "armtls-mesh"]},
+            "args": {"policy": "any"},
+            "mounts": {"policy": "exact", "rules": [
+              {"destination": "/run/c8s", "kind": "emptyDir", "source": "c8s-run"}
+            ]}
+          }]
+        }
+      }
+    },
+    "0.42.1": {
+      "retire": {"deadline": "2026-12-01T00:00:00Z"},
+      "entries": {}
+    }
+  }
+}
+```
+
+A set is keyed by the release that built it: its tag without the leading `v`,
+`MAJOR.MINOR.PATCH` with no leading zeros, carrying the pre-release a beta tag
+has (`0.44.0-beta.1`) and no build metadata. Sets order as semver orders those
+releases, a pre-release before the version it leads to. Each entry has the shape of a workload entry and may
+carry two fields a workload entry may not: a container's `role`, and the
+entry's `nodeService`, which marks the entry of a node service — a pod of one
+container serving the whole node. A set entry's mount rule may also name one of
+the pod's own volumes in `source`.
+
+A `nodeService` entry grants its container the host privilege a worker's static
+pod holds, host ports aside: a host namespace, a host bind mount, a device and
+the marks of a privileged container, which every other pod of a node is refused
+([allowlist-and-capabilities.md](allowlist-and-capabilities.md#host-privilege)).
+It is granted while all three hold:
+
+- the container's launch is the one the entry pins — digest, `command`, `args`,
+  `env` and `mounts`;
+- it is the only container of its pod;
+- no other pod on the node runs that entry's container.
+
+A launch the entry admits in a pod that breaks the second or third rule is
+refused, naming the rule. Host ports stay refused unless the entry declares
+them. A retiring set admits its node service until its deadline, so the pod
+starts again after a crash.
+
+A set without `retire` is current. A set with one is retiring. A set is in
+force while it is current, or retiring with its deadline still ahead. A
+deadline is RFC 3339 UTC with second precision (`2026-12-01T00:00:00Z`); any
+other spelling is refused, so one instant has one form in the signed bytes.
+
+Every set is checked:
+
+- the version is a release version as above, with major version `0`;
+- a `retire` carries a deadline;
+- every entry is a valid workload entry;
+- every container names one of the roles `mesh`, `credentials`, `router`,
+  `acme` and `upstream` or none, pins its `command` and its `mounts` (`exact`),
+  and declares no `capabilities`;
+- no two containers of the set share a launch — the same digest under the same
+  `command` argv, `args` policy and mount rules;
+- a `nodeService` entry has one container and no init container, and its
+  `command`, `args`, `env` and `mounts` are all `exact`.
+
+Sets are operator-written: the measured Trust Authority configuration seeds the workloads
+section only, and a seed document naming a `components` section fails startup.
+
+A write is refused whole when one of its sets fails a check, names an
+unsupported major version, or carries a field this release does not know. A
+node parses what it is served leniently: it drops that set alone with a
+warning and applies the rest of the document. A `role` or a `nodeService`
+under `workloads` is refused on write and dropped from a served document.
+
 ## Matching
 
 A declared container admits a running one when the digest is equal and every
@@ -258,6 +344,11 @@ Reads are unauthenticated; writes are signed with the operator key from
 | `edit <name>` | fetch, `$EDITOR`, validate, diff, confirm, apply |
 | `delete <name>...` | delete entries |
 | `upload <file>` | replace the whole document; `--force`, `--require`, `--cvm-mode`, `--strict`, `--dry-run` |
+| `components add FILE` | add a component set; `--retire VERSION=DEADLINE`, `--remove VERSION` |
+| `components retire <version> <deadline>` | set or move a set's deadline; `--force` |
+| `components unretire <version>` | take a set's deadline off |
+| `components remove <version>` | drop a set; `--force` |
+| `components list` | print every set, its state, entry count and digest |
 
 `derive` takes `--env=any|deny` or `--env-file` (exactly one is required),
 `--mounts=any|deny` or `--mounts-file` (omitted leaves every container at

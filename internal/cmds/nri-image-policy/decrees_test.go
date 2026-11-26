@@ -44,7 +44,7 @@ func clusterLaunchFile(t *testing.T, key *ecdsa.PrivateKey) string {
 		Type:  "PUBLIC KEY",
 		Bytes: der,
 	})), "\n")
-	return "schemaVersion: c8s-cds/v1\nclusterID: " + decreeClusterID + "\noperatorPublicKeys: |\n  " +
+	return "schemaVersion: c8s-ta/v1\nclusterID: " + decreeClusterID + "\noperatorPublicKeys: |\n  " +
 		strings.ReplaceAll(block, "\n", "\n  ") + "\nha:\n  voters: 3\n"
 }
 
@@ -67,7 +67,7 @@ func clusterPinDecree(t *testing.T, key *ecdsa.PrivateKey, launchFile, measureme
 	document, err := refvalues.Format(refvalues.ReferenceValues{
 		Family: teetypes.FamilySNP,
 		Images: []remote.ImagePin{{
-			Name:       "cds",
+			Name:       "ta",
 			Digest:     digest,
 			LaunchFile: []byte(launchFile),
 		}},
@@ -110,7 +110,7 @@ func followingNode(t *testing.T, launchFile string, served *tadecree.Signed) (*p
 		MinInterval: time.Nanosecond,
 	})
 	if err != nil {
-		t.Fatalf("cdspins.New: %v", err)
+		t.Fatalf("tapins.New: %v", err)
 	}
 	decrees := &followedPins{
 		Source: source,
@@ -122,7 +122,7 @@ func followingNode(t *testing.T, launchFile string, served *tadecree.Signed) (*p
 		Allowlist:      allowlistConfig{Pull: pullConfig{TAMeasurementsConfig: pin}},
 	})
 	if err := p.prepareTAPins(decrees); err != nil {
-		t.Fatalf("prepareCDSPins: %v", err)
+		t.Fatalf("prepareTAPins: %v", err)
 	}
 	holdContainersForFirstDecree(p, decrees)
 	return p, decrees
@@ -213,11 +213,11 @@ func TestTheRouterTakesTheFollowedPinsAtItsOwnPath(t *testing.T) {
 	ctr.User = &api.User{Uid: workloadclaims.UpstreamUID}
 
 	adjustment := mustCredentialMounts(t, p, pod, ctr)
-	mount := mountTo(adjustment, workloadclaims.RouterCDSPinsPath)
+	mount := mountTo(adjustment, workloadclaims.RouterTAPinsPath)
 	if mount == nil || mount.GetSource() != p.taPins {
 		t.Fatalf("the router's pin mount = %v, want the node's own policy", mount)
 	}
-	if mountTo(adjustment, workloadclaims.CDSPinsPath) != nil {
+	if mountTo(adjustment, workloadclaims.TAPinsPath) != nil {
 		t.Fatal("the router was handed a credential client's pin path")
 	}
 }
@@ -229,7 +229,7 @@ func TestANodePinningASingleTAFollowsNoDecree(t *testing.T) {
 	pin := taPinFile(t, testutil.TAPinDocument(testutil.TestMeasurement, testutil.TALaunchFile))
 	pins, decrees, err := pullConfig{
 		TAMeasurementsConfig: pin,
-		URL:                  "https://cds.example",
+		URL:                  "https://ta.example",
 	}.taPinSource(discardLogger())
 	if err != nil {
 		t.Fatalf("the node's Trust Authority pins: %v", err)
@@ -266,7 +266,7 @@ func TestADecreeBelowTheNodesFloorIsRefused(t *testing.T) {
 				TAPinFloor:           floor,
 			}.taDecrees(bootstrap, discardLogger())
 			if err != nil {
-				t.Fatalf("cdsDecrees: %v", err)
+				t.Fatalf("taDecrees: %v", err)
 			}
 
 			err = decrees.Refresh()

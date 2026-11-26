@@ -58,7 +58,7 @@ func assignmentFixture(t *testing.T) (*assignmentService, *ecdsa.PrivateKey, *ec
 		SchemaVersion: podlaunch.SchemaVersion, ClusterID: "cluster", Role: podlaunch.Pod,
 		Node:                 podlaunch.Node{Name: "guest"},
 		PodOperatorPublicKey: public(key),
-		TA:                   cmdsutil.TA{Address: "cds.example.org:8443", Measurements: testutil.TAPinDocument(testutil.TestMeasurement, testutil.TALaunchFile)},
+		TA:                   cmdsutil.TA{Address: "ta.example.org:8443", Measurements: testutil.TAPinDocument(testutil.TestMeasurement, testutil.TALaunchFile)},
 		Image:                podlaunch.Image{Platform: "tdx", Measurement: strings.Repeat("11", 48), RTMRs: map[int]string{1: strings.Repeat("22", 48), 2: strings.Repeat("33", 48)}},
 	}
 	store := &memoryAssignmentStore{}

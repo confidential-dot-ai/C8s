@@ -12,7 +12,6 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
-	nriimagepolicy "github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/nri-image-policy"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
@@ -22,7 +21,7 @@ import (
 func testTA(t *testing.T) cmdsutil.TA {
 	t.Helper()
 	return cmdsutil.TA{
-		Address:      "cds.example.org:8443",
+		Address:      "ta.example.org:8443",
 		Measurements: string(externalTAPin(t)),
 		PinFloor:     9,
 	}
@@ -97,12 +96,12 @@ func TestPreparePreservesTheMeasuredFloor(t *testing.T) {
 		t.Fatalf("chart components missing from bootstrap base: %v", base.Workloads)
 	}
 	pull := ga["pull"].(map[string]any)
-	if pull["url"] != cmdsutil.TAURL(ta.Address) || pull["cds_measurements_config"] != PublicDir+"/cds.json" || pull["timeout"] != "30s" {
+	if pull["url"] != cmdsutil.TAURL(ta.Address) || pull["ta_measurements_config"] != PublicDir+"/ta.json" || pull["timeout"] != "30s" {
 		t.Fatalf("bad pull config: %v", pull)
 	}
 	// The floor must arrive as the number the enforcer reads.
 	if floor := publishedPinFloor(t, pull); floor != ta.PinFloor {
-		t.Fatalf("pull cds_pin_floor = %d, want the document's %d", floor, ta.PinFloor)
+		t.Fatalf("pull ta_pin_floor = %d, want the document's %d", floor, ta.PinFloor)
 	}
 }
 
@@ -206,15 +205,15 @@ func TestPrepareWritesRouterInputs(t *testing.T) {
 		want   map[string]string
 	}{
 		{"unset", Router{}, map[string]string{
-			"tls.conf":           "include /usr/lib/c8s/router-nginx/tls-cds.conf;\n",
+			"tls.conf":           "include /usr/lib/c8s/router-nginx/tls-ta.conf;\n",
 			"hostnames":          "",
 			"acme-email":         "",
 			"acme-directory-url": "",
-			"front-door-mode":    "cds\n",
+			"front-door-mode":    "ta\n",
 			"request-body.conf":  "client_max_body_size 1048576;\n",
 		}},
 		{"body limit", Router{MaxRequestBodyBytes: 64 << 20}, map[string]string{
-			"front-door-mode":   "cds\n",
+			"front-door-mode":   "ta\n",
 			"request-body.conf": "client_max_body_size 67108864;\n",
 		}},
 		{"public", Router{
@@ -288,8 +287,8 @@ func TestPrepareBindsTheCredentialRoleToTheStagedTA(t *testing.T) {
 		t.Errorf("staging changed the measured mesh role: %+v", got)
 	}
 	credentials := staged.Roles[1]
-	if credentials.Name != nriimagepolicy.CredentialRole || credentials.UID != workloadclaims.CredentialsUID {
-		t.Errorf("credential role = %+v, want %s on the reserved uid %d", credentials, nriimagepolicy.CredentialRole, workloadclaims.CredentialsUID)
+	if credentials.Name != allowlist.RoleCredentials || credentials.UID != workloadclaims.CredentialsUID {
+		t.Errorf("credential role = %+v, want %s on the reserved uid %d", credentials, allowlist.RoleCredentials, workloadclaims.CredentialsUID)
 	}
 	if credentials.Port != 8443 {
 		t.Errorf("credential role port = %d, want the port this cluster's Trust Authority serves on", credentials.Port)
@@ -313,7 +312,7 @@ func TestPrepareRefusesToRebindTheCredentialRole(t *testing.T) {
 		name string
 		role string
 	}{
-		{"the role bound twice", "    - name: " + nriimagepolicy.CredentialRole + "\n      uid: 1400\n      destinations: [\"192.0.2.9:8443\"]\n"},
+		{"the role bound twice", "    - name: " + allowlist.RoleCredentials + "\n      uid: 1400\n      destinations: [\"192.0.2.9:8443\"]\n"},
 		{"its uid held by another role", "    - name: router\n      uid: 1338\n      destinations: [\"192.0.2.9:8443\"]\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -434,7 +433,7 @@ func publishedPinFloor(t *testing.T, pull map[string]any) cmdsutil.ClusterVersio
 		t.Fatal(err)
 	}
 	var read struct {
-		PinFloor cmdsutil.ClusterVersion `yaml:"cds_pin_floor"`
+		PinFloor cmdsutil.ClusterVersion `yaml:"ta_pin_floor"`
 	}
 	if err := yaml.Unmarshal(data, &read); err != nil {
 		t.Fatal(err)

@@ -9,6 +9,7 @@ import (
 
 	"github.com/containerd/nri/pkg/api"
 
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
@@ -36,7 +37,7 @@ func renderInTempDir(t *testing.T) {
 // cluster trusts, as the installer copies it beside the plugin's config.
 func installedTAAddress(t *testing.T, address string) allowlistConfig {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "cds-address")
+	path := filepath.Join(t.TempDir(), "ta-address")
 	if err := os.WriteFile(path, []byte(address+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +49,7 @@ func installedTAAddress(t *testing.T, address string) allowlistConfig {
 func measuredTAPolicy(port uint16) *meshPolicy {
 	policy := meshRoles()
 	policy.Roles = append(policy.Roles, roleBinding{
-		Name: CredentialRole,
+		Name: allowlist.RoleCredentials,
 		UID:  workloadclaims.CredentialsUID,
 		Port: port,
 	})
@@ -60,12 +61,12 @@ func measuredTAPolicy(port uint16) *meshPolicy {
 func TestMeasuredPolicyDecidesTheCredentialPort(t *testing.T) {
 	cfg := &config{
 		WorkloadClaims: workloadClaimsConfig{SocketDir: nodeDir(t, "10.0.0.7")},
-		Allowlist:      installedTAAddress(t, "cds.example.org:8443"),
+		Allowlist:      installedTAAddress(t, "ta.example.org:8443"),
 		Mesh:           measuredTAPolicy(30808),
 	}
 	address, err := loadTAAddress(cfg.Allowlist.Pull)
 	if err != nil {
-		t.Fatalf("loadCDSAddress: %v", err)
+		t.Fatalf("loadTAAddress: %v", err)
 	}
 	cfg.taAddress = address
 	if err := bindCredentialRole(cfg); err != nil {
@@ -77,10 +78,10 @@ func TestMeasuredPolicyDecidesTheCredentialPort(t *testing.T) {
 	}
 	renderInTempDir(t)
 	p := &plugin{cfg: cfg}
-	if err := p.prepareCDSAddress(); err != nil {
-		t.Fatalf("prepareCDSAddress: %v", err)
+	if err := p.prepareTAAddress(); err != nil {
+		t.Fatalf("prepareTAAddress: %v", err)
 	}
-	if got := readAddress(t, p.taAddress); got != "cds.example.org:8443" {
+	if got := readAddress(t, p.taAddress); got != "ta.example.org:8443" {
 		t.Fatalf("handed address = %q, want the Trust Authority this node reaches", got)
 	}
 }
@@ -91,15 +92,15 @@ func TestMeasuredPolicyDecidesTheCredentialPort(t *testing.T) {
 func TestInstallBindsTheCredentialRoleToItsAddressFile(t *testing.T) {
 	cfg := &config{
 		WorkloadClaims: workloadClaimsConfig{SocketDir: nodeDir(t, "10.0.0.7")},
-		Allowlist:      installedTAAddress(t, "cds.example.org:8443"),
+		Allowlist:      installedTAAddress(t, "ta.example.org:8443"),
 		Mesh:           meshRoles(),
 	}
 	address, err := loadTAAddress(cfg.Allowlist.Pull)
 	if err != nil {
-		t.Fatalf("loadCDSAddress: %v", err)
+		t.Fatalf("loadTAAddress: %v", err)
 	}
 	cfg.taAddress = address
-	if got := cfg.pullURL(); got != "https://cds.example.org:8443" {
+	if got := cfg.pullURL(); got != "https://ta.example.org:8443" {
 		t.Fatalf("pull URL = %q, want the endpoint the file names", got)
 	}
 	if err := bindCredentialRole(cfg); err != nil {
@@ -117,10 +118,10 @@ func TestInstallBindsTheCredentialRoleToItsAddressFile(t *testing.T) {
 	}
 	renderInTempDir(t)
 	p := &plugin{cfg: cfg}
-	if err := p.prepareCDSAddress(); err != nil {
-		t.Fatalf("prepareCDSAddress: %v", err)
+	if err := p.prepareTAAddress(); err != nil {
+		t.Fatalf("prepareTAAddress: %v", err)
 	}
-	if got := readAddress(t, p.taAddress); got != "cds.example.org:8443" {
+	if got := readAddress(t, p.taAddress); got != "ta.example.org:8443" {
 		t.Fatalf("handed address = %q, want the Trust Authority the address file names", got)
 	}
 }
@@ -131,7 +132,7 @@ func TestTAEndpointIsRequiredWhereClientsAreInjected(t *testing.T) {
 	renderInTempDir(t)
 	cfg := &config{WorkloadClaims: workloadClaimsConfig{SocketDir: t.TempDir()}, Mesh: meshRoles()}
 	p := &plugin{cfg: cfg}
-	err := p.prepareCDSAddress()
+	err := p.prepareTAAddress()
 	if err == nil {
 		t.Fatal("a node with no Trust Authority endpoint started")
 	}
@@ -148,9 +149,9 @@ func TestAddressFileMustNameAnEndpoint(t *testing.T) {
 		name    string
 		address string
 	}{
-		{name: "no port", address: "cds.cluster.local"},
+		{name: "no port", address: "ta.cluster.local"},
 		{name: "port 0", address: "10.9.9.9:0"},
-		{name: "a URL", address: "https://cds.cluster.local:8443"},
+		{name: "a URL", address: "https://ta.cluster.local:8443"},
 		{name: "empty", address: ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -173,13 +174,13 @@ func TestRenderedDocumentsAreOutsideTheMountedSocketDirectory(t *testing.T) {
 	cfg := &config{
 		Platform:       "sev-snp",
 		WorkloadClaims: workloadClaimsConfig{SocketDir: socketDir},
-		Allowlist:      installedTAAddress(t, "cds.example.org:8443"),
+		Allowlist:      installedTAAddress(t, "ta.example.org:8443"),
 		Mesh:           meshRoles(),
 	}
 	cfg.Allowlist.Pull.TAMeasurementsConfig = testTAPinFile(t)
 	address, err := loadTAAddress(cfg.Allowlist.Pull)
 	if err != nil {
-		t.Fatalf("loadCDSAddress: %v", err)
+		t.Fatalf("loadTAAddress: %v", err)
 	}
 	cfg.taAddress = address
 	if err := bindCredentialRole(cfg); err != nil {
@@ -188,10 +189,10 @@ func TestRenderedDocumentsAreOutsideTheMountedSocketDirectory(t *testing.T) {
 	renderInTempDir(t)
 	p := &plugin{cfg: cfg}
 	if err := p.prepareTAPins(nodeTAPins(t, p)); err != nil {
-		t.Fatalf("prepareCDSPins: %v", err)
+		t.Fatalf("prepareTAPins: %v", err)
 	}
-	if err := p.prepareCDSAddress(); err != nil {
-		t.Fatalf("prepareCDSAddress: %v", err)
+	if err := p.prepareTAAddress(); err != nil {
+		t.Fatalf("prepareTAAddress: %v", err)
 	}
 	for _, rendered := range []string{p.taPins, p.taAddress} {
 		if strings.HasPrefix(rendered, socketDir) {
@@ -204,8 +205,8 @@ func TestRenderedDocumentsAreOutsideTheMountedSocketDirectory(t *testing.T) {
 // own arguments.
 func TestNoInjectedClientsNoAddress(t *testing.T) {
 	p := &plugin{cfg: &config{}}
-	if err := p.prepareCDSAddress(); err != nil {
-		t.Fatalf("prepareCDSAddress: %v", err)
+	if err := p.prepareTAAddress(); err != nil {
+		t.Fatalf("prepareTAAddress: %v", err)
 	}
 	if p.taAddress != "" {
 		t.Fatalf("address path = %q, want none", p.taAddress)
@@ -217,7 +218,7 @@ func TestNoInjectedClientsNoAddress(t *testing.T) {
 func TestTAAddressIsMountedIntoCredentialSidecars(t *testing.T) {
 	p := &plugin{
 		cfg:       &config{},
-		taAddress: "/var/run/nri-image-policy/cds-address",
+		taAddress: "/var/run/nri-image-policy/ta-address",
 	}
 	pod := &api.PodSandbox{Annotations: map[string]string{workloadclaims.AnnotationInjected: "true"}}
 	mount := addressMount(t, mustCredentialMounts(t, p, pod, &api.Container{Name: workloadclaims.CertContainerName}))
@@ -238,7 +239,7 @@ func TestTAAddressIsMountedIntoCredentialSidecars(t *testing.T) {
 func TestTAAddressIsMountedIntoTheRoutingRole(t *testing.T) {
 	p := &plugin{
 		cfg:       &config{},
-		taAddress: "/var/run/nri-image-policy/cds-address",
+		taAddress: "/var/run/nri-image-policy/ta-address",
 	}
 	pod := &api.PodSandbox{Namespace: routerNamespace}
 	routing := &api.Container{Name: workloadclaims.AttestContainerName, User: &api.User{Uid: workloadclaims.UpstreamUID}}
@@ -269,11 +270,11 @@ func TestTAAddressIsMountedIntoTheRoutingRole(t *testing.T) {
 func addressMount(t *testing.T, adjustment *api.ContainerAdjustment) *api.Mount {
 	t.Helper()
 	for _, m := range adjustment.GetMounts() {
-		if m.GetDestination() == workloadclaims.CDSAddressPath {
+		if m.GetDestination() == workloadclaims.TAAddressPath {
 			return m
 		}
 	}
-	t.Fatalf("no mount at %s: %+v", workloadclaims.CDSAddressPath, adjustment.GetMounts())
+	t.Fatalf("no mount at %s: %+v", workloadclaims.TAAddressPath, adjustment.GetMounts())
 	return nil
 }
 

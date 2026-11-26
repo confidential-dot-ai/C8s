@@ -14,12 +14,12 @@ import (
 // its own answer.
 func TestDiscoveryResolvesEveryAddressOfEveryEntry(t *testing.T) {
 	behind := map[string][]netip.AddrPort{
-		"one.cds.test": {
+		"one.ta.test": {
 			netip.MustParseAddrPort("10.0.0.1:8444"),
 			netip.MustParseAddrPort("10.0.0.2:8444"),
 		},
-		"two.cds.test": {netip.MustParseAddrPort("10.0.0.3:8444")},
-		"10.0.0.4":     {netip.MustParseAddrPort("10.0.0.4:8444")},
+		"two.ta.test": {netip.MustParseAddrPort("10.0.0.3:8444")},
+		"10.0.0.4":    {netip.MustParseAddrPort("10.0.0.4:8444")},
 	}
 	node := discoveringNode(t, slices.Sorted(maps.Keys(behind)), func(_ context.Context, entry string) ([]netip.AddrPort, error) {
 		return behind[entry], nil
@@ -30,7 +30,7 @@ func TestDiscoveryResolvesEveryAddressOfEveryEntry(t *testing.T) {
 	if !found.complete {
 		t.Fatal("every entry answered and discovery is incomplete")
 	}
-	want := slices.Concat(behind["one.cds.test"], behind["two.cds.test"], behind["10.0.0.4"])
+	want := slices.Concat(behind["one.ta.test"], behind["two.ta.test"], behind["10.0.0.4"])
 	found.addresses = sortedAddresses(found.addresses)
 	if !slices.Equal(found.addresses, sortedAddresses(want)) {
 		t.Fatalf("discovery found %v, want %v", found.addresses, want)
@@ -50,8 +50,8 @@ func TestDiscoveryIsIncompleteWhileAnEntryDoesNotAnswer(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			node := discoveringNode(t, []string{"one.cds.test", "two.cds.test"}, func(ctx context.Context, entry string) ([]netip.AddrPort, error) {
-				if entry == "two.cds.test" {
+			node := discoveringNode(t, []string{"one.ta.test", "two.ta.test"}, func(ctx context.Context, entry string) ([]netip.AddrPort, error) {
+				if entry == "two.ta.test" {
 					return resolve(ctx, entry)
 				}
 				return []netip.AddrPort{answered}, nil
@@ -80,7 +80,7 @@ func TestAnAddressEntryResolvesToThePeerPort(t *testing.T) {
 	if !slices.Equal(addresses, []netip.AddrPort{netip.MustParseAddrPort("10.0.0.7:8444")}) {
 		t.Fatalf("the entry resolved to %v", addresses)
 	}
-	if _, err := resolveAtPort(t.Context(), "one.cds.test:8444", 8444); err == nil {
+	if _, err := resolveAtPort(t.Context(), "one.ta.test:8444", 8444); err == nil {
 		t.Fatal("an entry carrying a port resolved")
 	}
 }

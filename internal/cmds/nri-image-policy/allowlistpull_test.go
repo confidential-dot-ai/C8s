@@ -17,27 +17,27 @@ import (
 // testPull is a tracker whose clock the caller moves.
 func testPull(logger *slog.Logger) (*allowlistPull, func(time.Duration)) {
 	now := time.Now()
-	pull := newAllowlistPull("cds.private:8443", func() time.Time { return now }, logger)
+	pull := newAllowlistPull("ta.private:8443", func() time.Time { return now }, logger)
 	return pull, func(waited time.Duration) { now = now.Add(waited) }
 }
 
 // quietPull is a tracker for the pull tests that assert on the index.
 func quietPull() *allowlistPull {
-	return newAllowlistPull("cds.test:8443", time.Now, discardLogger())
+	return newAllowlistPull("ta.test:8443", time.Now, discardLogger())
 }
 
 func TestAllowlistPullStallNamesTheUnreachedTA(t *testing.T) {
 	pull, advance := testPull(discardLogger())
 
-	pull.failed(errors.New("lookup cds.private: no such host"))
+	pull.failed(errors.New("lookup ta.private: no such host"))
 	if stall := pull.stall(); stall != "" {
 		t.Fatalf("stall = %q before the bound, want none", stall)
 	}
 
 	advance(pullStallAfter)
-	pull.failed(errors.New("lookup cds.private: no such host"))
+	pull.failed(errors.New("lookup ta.private: no such host"))
 	stall := pull.stall()
-	if !strings.Contains(stall, "cds.private:8443") || !strings.Contains(stall, "no such host") {
+	if !strings.Contains(stall, "ta.private:8443") || !strings.Contains(stall, "no such host") {
 		t.Fatalf("stall = %q, want the Trust Authority endpoint and the resolution failure", stall)
 	}
 
@@ -85,13 +85,13 @@ func TestPullLoopStallsOnATAItCannotReach(t *testing.T) {
 	go func() {
 		runPullLoop(ctx, pullLoopArgs{
 			pull:     pull,
-			client:   allowlistclient.NewClientWithHTTP("https://cds.invalid:8443", &http.Client{Timeout: time.Second}),
+			client:   allowlistclient.NewClientWithHTTP("https://ta.invalid:8443", &http.Client{Timeout: time.Second}),
 			interval: 10 * time.Millisecond,
 			timeout:  time.Second,
 			logger:   discardLogger(),
 			target: nodeTarget{
-				store:       newPolicyStore(nil),
-				killRevoked: func(context.Context) {},
+				store:          newPolicyStore(nil, localClock()),
+				recheckRunning: func(context.Context) {},
 			},
 		})
 		close(done)
@@ -104,7 +104,7 @@ func TestPullLoopStallsOnATAItCannotReach(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if stall := pull.stall(); !strings.Contains(stall, "cds.private:8443") {
+	if stall := pull.stall(); !strings.Contains(stall, "ta.private:8443") {
 		t.Fatalf("stall = %q, want the Trust Authority this node reached none from", stall)
 	}
 	cancel()
@@ -133,9 +133,9 @@ func TestStartHealthServer_HealthzShowsTheAllowlistStall(t *testing.T) {
 	}
 
 	advance(pullStallAfter)
-	pull.failed(errors.New("lookup cds.private: no such host"))
+	pull.failed(errors.New("lookup ta.private: no such host"))
 	_, body := healthz(t, httpClient)
-	if !strings.Contains(body.AllowlistStall, "cds.private:8443") {
+	if !strings.Contains(body.AllowlistStall, "ta.private:8443") {
 		t.Fatalf("allowlist_stall = %q, want the Trust Authority this node reached none from", body.AllowlistStall)
 	}
 }

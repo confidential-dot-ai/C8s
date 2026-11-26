@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/httputil"
 	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
@@ -113,7 +114,22 @@ type Handler struct {
 	// every request: without it a workload could name its own pod.
 	InventoryHosts workloadclaims.CIDRHosts
 
+	// Now decides which component sets are in force for a request; nil reads
+	// the wall clock.
+	Now func() time.Time
+
 	Logger *slog.Logger
+}
+
+func (h Handler) now() time.Time { return nowOrWallClock(h.Now) }
+
+// nowOrWallClock is the instant a handler decides for: its clock seam, or the
+// wall clock when it has none.
+func nowOrWallClock(clock func() time.Time) time.Time {
+	if clock != nil {
+		return clock()
+	}
+	return time.Now()
 }
 
 // grant is the allowlist entry authorization matched: workload keys the store's
@@ -342,11 +358,22 @@ func (h Handler) authorize(ctx context.Context, r *http.Request, nonce []byte) (
 	if err != nil {
 		return grant{}, fmt.Errorf("load allowlist: %w", err)
 	}
-	containers, err := h.workloadContainers(ctx, host, sandboxID)
+	reported, err := h.sandboxContainers(ctx, host, sandboxID)
 	if err != nil {
 		return grant{}, deny("%v", err)
 	}
-	name, workload, err := al.MatchWorkload(containers)
+	now := h.now()
+	if err := workloadclaims.RequireAllowlisted(al, reported, now); err != nil {
+		return grant{}, deny("sandbox %s: %v", sandboxID, err)
+	}
+	if _, err := workloadclaims.ComponentSets(al, reported, now); err != nil {
+		return grant{}, deny("sandbox %s: %v", sandboxID, err)
+	}
+	containers := WorkloadContainers(reported)
+	if len(containers) == 0 {
+		return grant{}, deny("sandbox %s reports no workload containers", sandboxID)
+	}
+	name, workload, err := al.MatchWorkloadAt(containers, now)
 	if err != nil {
 		return grant{}, deny("sandbox %s: %v", sandboxID, err)
 	}
@@ -434,29 +461,19 @@ func (h Handler) verifyToken(ctx context.Context, token *workloadclaims.SignedSa
 	return host, nil
 }
 
-// workloadContainers asks the bound inventory what the sandbox has run and
-// removes the platform's own containers, so a workload entry never has to
-// enumerate C8s's own.
-func (h Handler) workloadContainers(ctx context.Context, host, sandboxID string) ([]pkgallowlist.RunningContainer, error) {
+// sandboxContainers asks the bound inventory what the sandbox has run.
+func (h Handler) sandboxContainers(ctx context.Context, host, sandboxID string) ([]workloadclaims.SandboxContainer, error) {
 	resp, err := h.Inventory.FetchSandbox(ctx, host, sandboxID)
 	if err != nil {
 		return nil, fmt.Errorf("resolve sandbox containers: %w", err)
 	}
-	reported, err := resp.RequireContainers()
-	if err != nil {
-		return nil, err
-	}
-	out := WorkloadContainers(reported)
-	if len(out) == 0 {
-		return nil, fmt.Errorf("sandbox %s reports no workload containers", sandboxID)
-	}
-	return out, nil
+	return resp.RequireContainers()
 }
 
 // WorkloadContainers converts an inventory's reported container set to the
 // candidate set workload matching runs on, dropping every container the
-// reporting node's measured base binds a platform client role to
-// (workloadclaims.MeshRole, workloadclaims.CredentialsRole), so a workload
+// reporting node binds a platform client role to
+// (pkgallowlist.RoleMesh, pkgallowlist.RoleCredentials), so a workload
 // entry never has to enumerate the containers C8s adds to every member pod. A
 // role a pod runs for a purpose of its own, like the router's, stays and is
 // declared. It is a pure function of the report — the one drop-set
@@ -469,11 +486,10 @@ func (h Handler) workloadContainers(ctx context.Context, host, sandboxID string)
 func WorkloadContainers(reported []workloadclaims.SandboxContainer) []pkgallowlist.RunningContainer {
 	out := make([]pkgallowlist.RunningContainer, 0, len(reported))
 	for _, c := range reported {
-		if c.Role == workloadclaims.MeshRole || c.Role == workloadclaims.CredentialsRole {
+		if c.Role == pkgallowlist.RoleMesh || c.Role == pkgallowlist.RoleCredentials {
 			continue
 		}
-		r := pkgallowlist.RunningContainer{Digest: c.Digest, Argv: c.Argv, Env: c.Env, Mounts: c.Mounts}
-		out = append(out, r)
+		out = append(out, c.Running())
 	}
 	return out
 }

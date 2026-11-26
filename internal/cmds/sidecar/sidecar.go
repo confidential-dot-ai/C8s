@@ -57,7 +57,6 @@ func (c Config) Endpoint() string {
 func BindFlags(f *pflag.FlagSet, cfg *Config) {
 	cmdsutil.BindTAImagePolicyFlags(f, &cfg.MeasurementsConfig, &cfg.MeasurementsConfigJSON, "pins the Trust Authority endpoint, every entry bound to the launch file that Trust Authority runs on; required unless the node pins Trust Authority")
 	f.StringVar(&cfg.TAURL, "ta-url", "", "HTTPS Trust Authority base URL; refused in an injected sidecar, which dials the endpoint the node mounts")
-	cmdsutil.AliasFlag(f, "ta-url", "cds-url")
 	f.StringVar(&cfg.AttestationApiURL, "attestation-api-url", "", "local attestation-api used to verify Trust Authority's armTLS certificate")
 	f.StringVar(&cfg.CertPath, "cert", "/run/c8s/certs/tls.crt", "the pod's Trust Authority-issued certificate, presented to the Trust Authority")
 	f.StringVar(&cfg.KeyPath, "key", "/run/c8s/certs/tls.key", "private key for --cert")
@@ -69,7 +68,7 @@ func BindFlags(f *pflag.FlagSet, cfg *Config) {
 
 // nodeAddressPath is where the enforcer mounts the Trust Authority endpoint an injected
 // client dials; a var so tests can mount their own.
-var nodeAddressPath = workloadclaims.CDSAddressPath
+var nodeAddressPath = workloadclaims.TAAddressPath
 
 // ResolveTAEndpoint fixes the Trust Authority this sidecar dials: the endpoint its node
 // hands an injected client, otherwise --ta-url. Each command calls it while
@@ -80,7 +79,7 @@ func (c *Config) ResolveTAEndpoint() error {
 		return err
 	}
 	c.TAURL = taURL
-	slog.Info("Trust Authority endpoint resolved", "cds_url", c.TAURL, "from_node", fromNode)
+	slog.Info("Trust Authority endpoint resolved", "ta_url", c.TAURL, "from_node", fromNode)
 	return nil
 }
 
@@ -100,7 +99,7 @@ func (c *Config) Validate() error {
 	if err := cmdsutil.ValidateAttestationAPIURL("--attestation-api-url", c.AttestationApiURL); err != nil {
 		return err
 	}
-	if err := cmdsutil.RequireNodeVerifier(workloadclaims.CDSPinsPath, workloadclaims.AttestationAPISocket, c.AttestationApiURL); err != nil {
+	if err := cmdsutil.RequireNodeVerifier(workloadclaims.TAPinsPath, workloadclaims.AttestationAPISocket, c.AttestationApiURL); err != nil {
 		return err
 	}
 	if c.Attempts < 0 {
@@ -115,7 +114,7 @@ func (c *Config) Validate() error {
 // ParsePins resolves the pins this sidecar holds its Trust Authority to: the node's policy
 // where the enforcer mounts it, otherwise --ta-image-policy-file.
 func (c *Config) ParsePins(ctx context.Context) (armtls.PinSource, error) {
-	return cmdsutil.ClientTAPins(ctx, workloadclaims.CDSPinsPath,
+	return cmdsutil.ClientTAPins(ctx, workloadclaims.TAPinsPath,
 		cmdsutil.ImagePolicySource{
 			File: c.MeasurementsConfig,
 			JSON: c.MeasurementsConfigJSON,

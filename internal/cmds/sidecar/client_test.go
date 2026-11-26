@@ -51,7 +51,7 @@ func testConfig(url string) Config {
 func TestNewClientReturnsLeafKey(t *testing.T) {
 	dir := t.TempDir()
 	certPath, keyPath, want := testutil.WriteLeaf(t, dir)
-	cfg := testConfig("https://cds.example")
+	cfg := testConfig("https://ta.example")
 	cfg.CertPath, cfg.KeyPath = certPath, keyPath
 
 	client, pub, err := NewClient(cfg, testPins())
@@ -79,7 +79,7 @@ func TestNewClientWithoutLeaf(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
-			cfg := testConfig("https://cds.example")
+			cfg := testConfig("https://ta.example")
 			cfg.CertPath = filepath.Join(dir, tc.cert)
 			cfg.KeyPath = filepath.Join(dir, tc.key)
 			if tc.name == "garbage" {
@@ -158,7 +158,7 @@ func TestFetchChallengeUnreachable(t *testing.T) {
 // A nil challenge or token leaves its header unset; a non-nil one is encoded
 // the way Trust Authority decodes it. The path is not touched on the way out.
 func TestNewStoreRequestHeadersAndPath(t *testing.T) {
-	req, err := NewStoreRequest(context.Background(), "https://cds.example", http.MethodGet, "/a//b%2Fc", []byte("chal"), []byte(`{"token":"x"}`))
+	req, err := NewStoreRequest(context.Background(), "https://ta.example", http.MethodGet, "/a//b%2Fc", []byte("chal"), []byte(`{"token":"x"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +172,7 @@ func TestNewStoreRequestHeadersAndPath(t *testing.T) {
 		t.Fatalf("Authorization = %q, want %q", got, want)
 	}
 
-	bare, err := NewStoreRequest(context.Background(), "https://cds.example", http.MethodGet, "/a", nil, nil)
+	bare, err := NewStoreRequest(context.Background(), "https://ta.example", http.MethodGet, "/a", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

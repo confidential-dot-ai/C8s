@@ -92,7 +92,7 @@ func TestObtainCertificateWithEvidenceReturnsAttestationMaterial(t *testing.T) {
 	mux.HandleFunc("/attest", func(w http.ResponseWriter, r *http.Request) {
 		var req attestRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Fatalf("decode cds attest request: %v", err)
+			t.Fatalf("decode attest request: %v", err)
 		}
 		if req.Challenge != challenge {
 			t.Fatalf("challenge = %q, want %q", req.Challenge, challenge)

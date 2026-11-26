@@ -35,12 +35,12 @@ func cluster(t *testing.T, key *ecdsa.PrivateKey) []byte {
 		Type:  "PUBLIC KEY",
 		Bytes: der,
 	})
-	return []byte("schemaVersion: c8s-cds/v1\nclusterID: " + clusterID + "\noperatorPublicKeys: |\n  " +
+	return []byte("schemaVersion: c8s-ta/v1\nclusterID: " + clusterID + "\noperatorPublicKeys: |\n  " +
 		strings.ReplaceAll(strings.TrimRight(string(block), "\n"), "\n", "\n  ") + "\nha:\n  voters: 3\n")
 }
 
 // singleTA is the launch file of a Trust Authority that runs alone.
-const singleTA = "schemaVersion: c8s-cds/v1\nclusterID: " + clusterID + "\n"
+const singleTA = "schemaVersion: c8s-ta/v1\nclusterID: " + clusterID + "\n"
 
 func operatorKey(t *testing.T) *ecdsa.PrivateKey {
 	t.Helper()
@@ -57,7 +57,7 @@ func pinSet(t *testing.T, launchFile []byte, digests ...byte) refvalues.Referenc
 	set := refvalues.ReferenceValues{Family: teetypes.FamilySNP}
 	for _, digest := range digests {
 		set.Images = append(set.Images, remote.ImagePin{
-			Name:       "cds-" + strconv.Itoa(int(digest)),
+			Name:       "ta-" + strconv.Itoa(int(digest)),
 			Digest:     bytes.Repeat([]byte{digest}, refvalues.DigestSize),
 			LaunchFile: launchFile,
 		})
@@ -131,7 +131,7 @@ func follower(t *testing.T, launchFile []byte, cfg Config) *Source {
 		cfg.Fetch = func(context.Context) (*tadecree.Signed, error) { return nil, nil }
 	}
 	if cfg.StateFile == "" {
-		cfg.StateFile = filepath.Join(t.TempDir(), "cds-decree.json")
+		cfg.StateFile = filepath.Join(t.TempDir(), "ta-decree.json")
 	}
 	source, err := New(cfg)
 	if err != nil {
@@ -352,7 +352,7 @@ func TestAnAttestedReplayIsRefused(t *testing.T) {
 func TestTheDecreeInForceSurvivesARestart(t *testing.T) {
 	key := operatorKey(t)
 	launchFile := cluster(t, key)
-	stateFile := filepath.Join(t.TempDir(), "run", "cds-decree.json")
+	stateFile := filepath.Join(t.TempDir(), "run", "ta-decree.json")
 	answers := &served{decree: pinDecree(t, key, launchFile, 7, 0x22)}
 	if err := follower(t, launchFile, Config{Attested: answers.attested, StateFile: stateFile}).Refresh(); err != nil {
 		t.Fatalf("Refresh: %v", err)
@@ -372,7 +372,7 @@ func TestTheDecreeInForceSurvivesARestart(t *testing.T) {
 func TestAStoredDecreeBelowANewFloorIsDropped(t *testing.T) {
 	key := operatorKey(t)
 	launchFile := cluster(t, key)
-	stateFile := filepath.Join(t.TempDir(), "cds-decree.json")
+	stateFile := filepath.Join(t.TempDir(), "ta-decree.json")
 	answers := &served{decree: pinDecree(t, key, launchFile, 7, 0x22)}
 	if err := follower(t, launchFile, Config{Attested: answers.attested, StateFile: stateFile}).Refresh(); err != nil {
 		t.Fatalf("Refresh: %v", err)
@@ -397,7 +397,7 @@ func TestAnUnreadableStateFileFails(t *testing.T) {
 		"no decree in force":   `{"in_force":null,"attested":null}`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			stateFile := filepath.Join(t.TempDir(), "cds-decree.json")
+			stateFile := filepath.Join(t.TempDir(), "ta-decree.json")
 			if err := os.WriteFile(stateFile, []byte(content), 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -451,10 +451,10 @@ func TestATAThatRunsAloneIsFollowedByNoOne(t *testing.T) {
 		Bootstrap: pinSet(t, []byte(singleTA), 0x11),
 		Attested:  refused,
 		Fetch:     func(context.Context) (*tadecree.Signed, error) { return nil, nil },
-		StateFile: filepath.Join(t.TempDir(), "cds-decree.json"),
+		StateFile: filepath.Join(t.TempDir(), "ta-decree.json"),
 	})
 	if !errors.Is(err, ErrSingleTA) {
-		t.Fatalf("error = %v, want errors.Is ErrSingleCDS", err)
+		t.Fatalf("error = %v, want errors.Is ErrSingleTA", err)
 	}
 }
 
@@ -467,7 +467,7 @@ func TestASourceNeedsItsFetchersAndItsStateFile(t *testing.T) {
 		Bootstrap: pinSet(t, launchFile, 0x11),
 		Attested:  refused,
 		Fetch:     func(context.Context) (*tadecree.Signed, error) { return nil, nil },
-		StateFile: filepath.Join(t.TempDir(), "cds-decree.json"),
+		StateFile: filepath.Join(t.TempDir(), "ta-decree.json"),
 	}
 	short := map[string]Config{
 		"no attested fetcher": {
@@ -505,7 +505,7 @@ func TestABootstrapSetThatNamesNoTAIsRefused(t *testing.T) {
 		Bootstrap: refvalues.ReferenceValues{},
 		Attested:  refused,
 		Fetch:     func(context.Context) (*tadecree.Signed, error) { return nil, nil },
-		StateFile: filepath.Join(t.TempDir(), "cds-decree.json"),
+		StateFile: filepath.Join(t.TempDir(), "ta-decree.json"),
 	})
 	if err == nil {
 		t.Fatal("a bootstrap set pinning no Trust Authority was accepted")

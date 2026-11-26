@@ -95,6 +95,9 @@ type Opener struct {
 	Targets Targets
 	// MaxMounts caps live volumes; zero means DefaultMaxMounts.
 	MaxMounts int
+	// Records persists what is open across this daemon's own restart; nil
+	// keeps no records, and nothing then survives a restart.
+	Records MountRecords
 
 	mu     sync.Mutex
 	mounts map[string]*mount
@@ -133,10 +136,7 @@ func (o *Opener) Open(ctx context.Context, req Request) error {
 	commitment := commitmentFor(key, req.Blob)
 
 	o.mu.Lock()
-	if o.mounts == nil {
-		o.mounts = map[string]*mount{}
-		o.opening = map[string]bool{}
-	}
+	o.ensureMaps()
 	if existing, ok := o.mounts[mountKey(req.Pod.UID, req.Name)]; ok {
 		o.mu.Unlock()
 		if subtle.ConstantTimeCompare(existing.commitment[:], commitment[:]) != 1 {
@@ -175,22 +175,52 @@ func (o *Opener) Open(ctx context.Context, req Request) error {
 		o.teardown(ctx, m)
 		return err
 	}
-	// A concurrent identical request may have won the race; keep one mapping
-	// and tear the loser down outside the lock.
-	o.mu.Lock()
-	existing, lost := o.mounts[mountKey(req.Pod.UID, req.Name)]
-	if !lost {
-		o.mounts[mountKey(req.Pod.UID, req.Name)] = m
+	existing, err := o.publish(m)
+	if err != nil {
+		o.teardown(ctx, m)
+		return err
 	}
-	o.mu.Unlock()
-	if !lost {
+	if existing == nil {
 		return nil
 	}
+	// A concurrent identical request won the race; keep its mapping and tear
+	// this one down.
 	o.teardown(ctx, m)
 	if subtle.ConstantTimeCompare(existing.commitment[:], commitment[:]) != 1 {
 		return ErrNotAuthorized
 	}
 	return nil
+}
+
+// publish takes ownership of a completed mount, returning the mount a
+// concurrent request published first if there is one. Recording and publishing
+// happen under one lock, so a close cannot land between them.
+//
+// A mount that cannot be recorded is not published: the next volumed closes an
+// unrecorded mapping, so an unrecorded mount would be torn out from under its
+// pod on the next restart.
+func (o *Opener) publish(m *mount) (*mount, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	key := mountKey(m.pod.UID, m.name)
+	if existing, ok := o.mounts[key]; ok {
+		return existing, nil
+	}
+	if o.Records != nil {
+		if err := o.Records.Put(recordFor(m)); err != nil {
+			return nil, err
+		}
+	}
+	o.mounts[key] = m
+	return nil, nil
+}
+
+// Caller holds mu.
+func (o *Opener) ensureMaps() {
+	if o.mounts == nil {
+		o.mounts = map[string]*mount{}
+		o.opening = map[string]bool{}
+	}
 }
 
 // deviceConflict reports whether opening device in mode mutable conflicts with
@@ -253,15 +283,21 @@ func (o *Opener) open(ctx context.Context, req Request, key []byte, commitment [
 // Close tears down one volume. Idempotent: a volume already gone is not an
 // error, because teardown races kubelet removing the pod directory.
 func (o *Opener) Close(ctx context.Context, podUID, name string) {
+	o.closeVolume(ctx, mountKey(podUID, name))
+}
+
+// closeVolume takes the volume at key and tears it down, reporting whether it
+// closed. Taking it is one critical section, so two closers of one volume
+// cannot both run its teardown.
+func (o *Opener) closeVolume(ctx context.Context, key string) bool {
 	o.mu.Lock()
-	m, ok := o.mounts[mountKey(podUID, name)]
-	if ok {
-		delete(o.mounts, mountKey(podUID, name))
-	}
+	m, ok := o.mounts[key]
+	delete(o.mounts, key)
 	o.mu.Unlock()
-	if ok {
-		o.closeMount(ctx, mountKey(podUID, name), m)
+	if !ok {
+		return false
 	}
+	return o.closeMount(ctx, key, m)
 }
 
 // ClosePod tears down every volume a pod holds — the sidecar's termination
@@ -292,16 +328,23 @@ func (o *Opener) ClosePod(ctx context.Context, podUID string) int {
 // closeMount tears m down and reports success. A mapping that refuses to close
 // keeps its record: it still holds the key and the device, so it must stay
 // visible to deviceConflict and to the reaper, which retries it each sweep.
+//
+// INVARIANT: a published mount has a record. An Open of the same pod and
+// volume racing this teardown publishes its own mapping under key, with the
+// record this one must not then remove.
 func (o *Opener) closeMount(ctx context.Context, key string, m *mount) bool {
-	if o.teardown(ctx, m) {
-		return true
-	}
+	closed := o.teardown(ctx, m)
 	o.mu.Lock()
-	if _, taken := o.mounts[key]; !taken {
-		o.mounts[key] = m
+	defer o.mu.Unlock()
+	if _, taken := o.mounts[key]; taken {
+		return closed
 	}
-	o.mu.Unlock()
-	return false
+	if !closed {
+		o.mounts[key] = m
+		return false
+	}
+	o.removeRecord(m.pod.UID, m.name)
+	return true
 }
 
 // teardown unwinds in reverse and does not stop at the first failure: the
@@ -315,36 +358,102 @@ func (o *Opener) teardown(ctx context.Context, m *mount) bool {
 	return o.Ops.CryptClose(cleanup, m.cryptDev) == nil
 }
 
-// SweepStale closes the C8s mappings left on this node by an earlier volumed,
-// and reports how many it closed and which it could not.
+// Reconciliation is what Adopt did to this node's C8s mappings: the volumes it
+// kept, the volumes and stray mappings it closed, and what refused to close or
+// could not be read.
+type Reconciliation struct {
+	Adopted int
+	Closed  int
+	Stuck   []string
+}
+
+// Adopt reconciles the C8s mappings on this node with the records of the
+// volumed that opened them.
 //
-// Nothing else on a node can reap these: they outlive the release that made
-// them, and until they are closed they hold the backing disk open, so the next
-// install cannot reopen it. This runs once, before the daemon serves, which is
-// what makes the residue self-healing rather than permanent.
+// A recorded mapping whose pod is still on the node is kept, and from here on
+// held and reaped exactly as if this process had opened it. Everything else
+// goes: a volume whose pod is gone, a mapping no record covers — after a node
+// reboot, or from a volumed that could not record its open — and a record
+// naming no mapping. Nothing else on a node reaps a mapping, and until it is
+// closed it holds the backing disk open.
 //
-// INVARIANT: the kernel is the liveness check. A mapping something still has
+// INVARIANT: the kernel has the last word. A mapping something still has
 // mounted refuses to close, so a workload's volume cannot be pulled out from
-// under it — including one whose pod outlived the volumed that opened it. That
-// is stronger than inferring liveness here, which would be a decision this
-// process has no state to make.
-func (o *Opener) SweepStale(ctx context.Context) (closed int, stuck []string) {
+// under it even when the records say it should go.
+func (o *Opener) Adopt(ctx context.Context, live PodLiveness) Reconciliation {
 	mappings, err := o.Ops.ListMappings(ctx)
 	if err != nil {
-		return 0, []string{fmt.Sprintf("unreadable %s: %v", mapperDir, err)}
+		return Reconciliation{Stuck: []string{fmt.Sprintf("unreadable %s: %v", mapperDir, err)}}
 	}
+	var out Reconciliation
+	records, err := o.listRecords()
+	if err != nil {
+		out.Stuck = append(out.Stuck, fmt.Sprintf("unreadable mount records: %v", err))
+	}
+
+	taken := o.takeRecorded(records, mappings, live)
+	out.Adopted = len(taken.held)
+	// Closing an adopted volume is the same teardown a pod that goes now gets.
+	for _, m := range taken.gone {
+		if !o.closeVolume(ctx, mountKey(m.pod.UID, m.name)) {
+			out.Stuck = append(out.Stuck, m.cryptDev)
+			continue
+		}
+		out.Closed++
+	}
+	strayClosed, strayStuck := o.closeStray(ctx, mappings, taken.ours)
+	out.Closed += strayClosed
+	out.Stuck = append(out.Stuck, strayStuck...)
+	return out
+}
+
+// recorded is what the records said about this node's mappings: the mapper
+// names this Opener now owns, the volumes whose pod is still there and the
+// volumes to close.
+type recorded struct {
+	ours map[string]bool
+	held []*mount
+	gone []*mount
+}
+
+// takeRecorded holds every recorded volume whose mapping is still published,
+// dropping the records that cover nothing.
+func (o *Opener) takeRecorded(records []Record, mappings []string, live PodLiveness) recorded {
+	published := map[string]bool{}
+	for _, name := range mappings {
+		published[name] = true
+	}
+	taken := recorded{ours: map[string]bool{}}
+	for _, rec := range records {
+		m, err := rec.mount()
+		if err != nil || !published[m.cryptDev] {
+			o.removeRecord(rec.Pod.UID, rec.Volume)
+			continue
+		}
+		o.adopt(m)
+		taken.ours[m.cryptDev] = true
+		taken.ours[mapperName(verityKind, m.pod.UID, m.name)] = true
+		if heldByLivePod(m, live) {
+			taken.held = append(taken.held, m)
+			continue
+		}
+		taken.gone = append(taken.gone, m)
+	}
+	return taken
+}
+
+// closeStray closes the C8s mappings this Opener does not own.
+func (o *Opener) closeStray(ctx context.Context, mappings []string, ours map[string]bool) (int, []string) {
+	closed := 0
+	var stuck []string
 	// verity is stacked on crypt and holds it open, so it goes first.
 	for _, kind := range []string{verityKind, cryptKind} {
 		prefix := "c8s-" + kind + "-"
 		for _, name := range mappings {
-			if !strings.HasPrefix(name, prefix) {
+			if ours[name] || !strings.HasPrefix(name, prefix) {
 				continue
 			}
-			close := o.Ops.VerityClose
-			if kind == cryptKind {
-				close = o.Ops.CryptClose
-			}
-			if err := close(ctx, name); err != nil {
+			if err := o.closeMapping(ctx, kind, name); err != nil {
 				stuck = append(stuck, name)
 				continue
 			}
@@ -352,6 +461,46 @@ func (o *Opener) SweepStale(ctx context.Context) (closed int, stuck []string) {
 		}
 	}
 	return closed, stuck
+}
+
+// heldByLivePod reports whether a recorded volume's pod is still on the node.
+// A pod whose liveness cannot be determined counts as there: the reaper asks
+// again every sweep, while a volume torn down under a running workload does not
+// come back.
+func heldByLivePod(m *mount, live PodLiveness) bool {
+	alive, err := live.Live(m.pod)
+	return alive || err != nil
+}
+
+func (o *Opener) closeMapping(ctx context.Context, kind, mapper string) error {
+	if kind == verityKind {
+		return o.Ops.VerityClose(ctx, mapper)
+	}
+	return o.Ops.CryptClose(ctx, mapper)
+}
+
+// adopt holds a mapping an earlier volumed opened.
+func (o *Opener) adopt(m *mount) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.ensureMaps()
+	o.mounts[mountKey(m.pod.UID, m.name)] = m
+}
+
+func (o *Opener) listRecords() ([]Record, error) {
+	if o.Records == nil {
+		return nil, nil
+	}
+	return o.Records.List()
+}
+
+// removeRecord drops a record whose volume is no longer this daemon's concern.
+// A record that will not go is closed over at the next startup, which finds it
+// naming no mapping.
+func (o *Opener) removeRecord(podUID, volumeName string) {
+	if o.Records != nil {
+		_ = o.Records.Remove(podUID, volumeName)
+	}
 }
 
 // Pods returns the distinct pods holding a volume, so teardown can ask which of
@@ -407,7 +556,7 @@ func mountKey(podUID, name string) string { return podUID + "/" + name }
 // mapperName is scoped by pod so two pods opening the same volume get their own
 // mappings, and one pod's teardown cannot remove another's.
 // The two halves of a volume's device stack, and the mapper-name prefixes
-// SweepStale matches on.
+// Adopt matches on.
 const (
 	cryptKind  = "crypt"
 	verityKind = "verity"

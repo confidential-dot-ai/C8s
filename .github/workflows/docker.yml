@@ -132,9 +132,10 @@ jobs:
             c8s:
               # cmd/c8s is the multi-mode binary used by the operator image;
               # it imports every internal/cmds subcommand, including get-cert.
-              # charts/ is embedded into the binary (see charts/embed.go), so
-              # a chart-only change must rebuild it too.
-              - '{charts/**,cmd/c8s/**,internal/cmds/**,internal/helmchart/**}'
+              # charts/ and the worker floor template are embedded into the
+              # binary (charts/embed.go, images/node-guest/worker/embed.go), so
+              # a change to either must rebuild it too.
+              - '{charts/**,cmd/c8s/**,internal/cmds/**,internal/helmchart/**,images/node-guest/worker/embed.go,images/node-guest/worker/image-policy.yaml.in}'
             ta:
               - '{cmd/ta/**,internal/cmds/ta/**}'
             get-cert:
@@ -332,7 +333,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Setup ORAS
-        uses: oras-project/setup-oras@5e2f2482b30b0cb3e14e67f89a80c88c659a7c63 # v2.0.3
+        uses: oras-project/setup-oras@ac735097e22fe643015b0d19645f7c9a69942128 # v2.0.4
       - name: Retag :main -> :${{ github.sha }} (short)
         env:
           IMAGE: ${{ matrix.image }}

@@ -65,7 +65,7 @@ public keys you trust. 'show' verifies against them when given; 'add' and
 routes.
 
 Point --url at Trust Authority itself, with no path, because the router does not relay
-/routes, and pin Trust Authority with --image-policy-file cds-pin.json, the pin
+/routes, and pin Trust Authority with --image-policy-file ta-pin.json, the pin
 'c8s ta config new' wrote.`,
 		SilenceUsage: true,
 	}
@@ -148,7 +148,7 @@ func put(ctx context.Context, c routesclient.Client, manifest []byte, signer ope
 		case se.Status == http.StatusConflict, se.Status == http.StatusPreconditionFailed:
 			return fmt.Errorf("%w; %s", err, rebase)
 		case se.Status == http.StatusUnauthorized:
-			return fmt.Errorf("%w; check that the public key of --operator-key is in cds.operatorKeys", err)
+			return fmt.Errorf("%w; check that the public key of --operator-key is in ta.operatorKeys", err)
 		}
 	}
 	return err

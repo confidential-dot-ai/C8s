@@ -1,9 +1,13 @@
 package helmchart
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
+
+// Helm words an unknown key differently by version.
+var unknownTAKey = regexp.MustCompile(`(?i)additional propert(y ta is|ies 'ta') not allowed`)
 
 // Pod issuance authority belongs in the measured Trust Authority configuration, never in
 // the cluster chart or its credential clients.
@@ -17,12 +21,7 @@ func TestChartCannotConfigurePodIssuance(t *testing.T) {
 		refused func(out string) bool
 	}{
 		{"cloud", helmTemplate, func(out string) bool { return strings.Contains(out, "podImagePolicy") }},
-		// Helm's wording for an unknown key differs by version ("Additional
-		// property cds is not allowed" vs "additional properties 'cds' not
-		// allowed"), so match on the shared stem.
-		{"worker", helmTemplateWorker, func(out string) bool {
-			return strings.Contains(strings.ToLower(out), "additional propert") && strings.Contains(out, "cds")
-		}},
+		{"worker", helmTemplateWorker, unknownTAKey.MatchString},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out, err := tc.render(t)
@@ -30,7 +29,7 @@ func TestChartCannotConfigurePodIssuance(t *testing.T) {
 				t.Fatalf("render: %v\n%s", err, out)
 			}
 			for _, workload := range renderedPodSpecs(t, out) {
-				if workload.name == "c8s-cds" {
+				if workload.name == "c8s-ta" {
 					t.Fatal("chart rendered an unmeasured Trust Authority")
 				}
 				for _, c := range append(workload.spec.Containers, workload.spec.InitContainers...) {
@@ -41,7 +40,7 @@ func TestChartCannotConfigurePodIssuance(t *testing.T) {
 					}
 				}
 			}
-			out, err = tc.render(t, "--set-file", "cds.podImagePolicy="+policy)
+			out, err = tc.render(t, "--set-file", "ta.podImagePolicy="+policy)
 			if err == nil || !tc.refused(out) {
 				t.Fatalf("chart accepted an unmeasured Pod policy: %v\n%s", err, out)
 			}

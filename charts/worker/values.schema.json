@@ -4,7 +4,8 @@
   "required": [
     "armtlsMesh",
     "image",
-    "router"
+    "router",
+    "volumed"
   ],
   "properties": {
     "armtlsMesh": {
@@ -128,6 +129,32 @@
                 "snp",
                 "tdx"
               ]
+            }
+          }
+        }
+      }
+    },
+    "volumed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "image"
+      ],
+      "properties": {
+        "image": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "digest"
+          ],
+          "properties": {
+            "digest": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "repository": {
+              "type": "string",
+              "minLength": 1
             }
           }
         }

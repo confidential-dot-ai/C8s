@@ -161,7 +161,7 @@ func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health
 
 	auditLogger := audit.NewLogger()
 
-	store := newPolicyStore(cfg.Allowlist.Base)
+	store := newPolicyStore(cfg.Allowlist.Base, newTAClock(time.Now))
 
 	// Every Trust Authority client of this node is built on one pin source, so the
 	// source comes before the first of them.
@@ -222,7 +222,7 @@ func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health
 		return fmt.Errorf("prepare the Trust Authority pins handed to injected clients: %w", err)
 	}
 	holdContainersForFirstDecree(plugin, decrees)
-	if err := plugin.prepareCDSAddress(); err != nil {
+	if err := plugin.prepareTAAddress(); err != nil {
 		return fmt.Errorf("prepare the Trust Authority address handed to injected clients: %w", err)
 	}
 	logger.Info("Trust Authority policy for injected clients", "pins", plugin.taPins, "address", plugin.taAddress)
@@ -465,6 +465,11 @@ type healthResponse struct {
 	// PodEnded reports that the Pod identity ended for the rest of this boot.
 	PodEnded       bool   `json:"pod_ended,omitempty"`
 	AllowlistStall string `json:"allowlist_stall,omitempty"`
+	// Fresh reports the last poll naming the allowlist admission applies,
+	// and FreshnessLimitSeconds how long this node admits from a served
+	// allowlist without such a poll. Absent where nothing is pulled.
+	Fresh                 bool  `json:"fresh"`
+	FreshnessLimitSeconds int64 `json:"freshness_limit_seconds,omitempty"`
 }
 
 // startHealthServer starts an HTTP server for readiness/liveness probes.
@@ -477,6 +482,11 @@ func startHealthServer(ctx context.Context, cfg healthServerConfig) error {
 			Status:           "ok",
 			AllowlistVersion: cfg.plugin.AppliedAllowlistVersion(),
 			AllowlistStall:   cfg.allowlistStall(),
+		}
+		if cfg.pull != nil {
+			fresh, limit := cfg.plugin.policy.freshness.report()
+			body.Fresh = fresh
+			body.FreshnessLimitSeconds = int64(limit.Seconds())
 		}
 		if cfg.plugin.cfg.podRole() {
 			body.PodUID = cfg.plugin.cfg.Pod.UID

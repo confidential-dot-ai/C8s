@@ -28,10 +28,10 @@ decree that admits it names the worker image it is bound to
 | Field | Required | Holds |
 |---|---|---|
 | `schemaVersion` | yes | `c8s-worker/v1`. |
-| `cds.address` | yes | The TA endpoint, `<host>:<port>`, the host a DNS name or an IPv4 address. A name is resolved by the clients that dial it, through the resolvers the worker image is built with, so it must resolve there. |
-| `cds.measurements` | yes | One measurements JSON document ([measurements.md](measurements.md)), pinning the TA image to the launch file that VM boots with. Every entry must bind that file. |
-| `cds.pinFloor` | no | The lowest cluster version a worker takes a TA pin decree at. |
-| `tlsSAN` | yes | The DNS name of the router's front-door certificate. The TA configuration `cds.measurements` binds must let a leaf carry it. |
+| `ta.address` | yes | The TA endpoint, `<host>:<port>`, the host a DNS name or an IPv4 address. A name is resolved by the clients that dial it, through the resolvers the worker image is built with, so it must resolve there. |
+| `ta.measurements` | yes | One measurements JSON document ([measurements.md](measurements.md)), pinning the TA image to the launch file that VM boots with. Every entry must bind that file. |
+| `ta.pinFloor` | no | The lowest cluster version a worker takes a TA pin decree at. |
+| `tlsSAN` | yes | The DNS name of the router's front-door certificate. The TA configuration `ta.measurements` binds must let a leaf carry it. |
 | `router.hostnames` | no | Up to 100 lowercase DNS names the router serves. A non-empty list puts the baked front door in ACME mode at boot. |
 | `router.acmeEmail` | no | Bare email address for the ACME account. Requires `hostnames`. |
 | `router.acmeDirectoryURL` | no | An `https` ACME directory URL, for example a staging directory. Requires `hostnames`. |
@@ -44,7 +44,7 @@ decree that admits it names the worker image it is bound to
 
 Neither range may reach into `0.0.0.0/8`, `127.0.0.0/8`, `169.254.0.0/16` or
 `224.0.0.0/4`, overlap the other, or overlap a node subnet (`nodeCIDRs`) of
-the TA configuration that `cds.measurements` binds.
+the TA configuration that `ta.measurements` binds.
 
 ## Admitting a worker document
 
@@ -55,14 +55,14 @@ document, the decree adds that entry itself:
 
 ```sh
 c8s ta ha decree node-images \
-    --config cds-config.yaml \
+    --config ta-config.yaml \
     --operator-key operator.key \
     --base-version 12 \
     --nodes nodes-v12.json \
     --worker-document worker.yaml \
     --worker-image worker-image.json \
     --to ta-1.example.org \
-    --ta-pin cds-pin.json
+    --ta-pin ta-pin.json
 ```
 
 | Flag | Holds |
@@ -70,7 +70,7 @@ c8s ta ha decree node-images \
 | `--worker-document` | The worker document, read once. |
 | `--worker-image` | The worker image's measurements, as `c8s measurements derive` writes them: the TEE family of `--nodes`, and no launch binding. |
 | `--nodes` | The node images the cluster certifies now: the set of the `node-images` decree in force. |
-| `--ta-pin` | Your TA pin, as `c8s ta config new` wrote it. The document's `cds.measurements` must pin the same TEE family and the same images, each bound to the same configuration. |
+| `--ta-pin` | Your TA pin, as `c8s ta config new` wrote it. The document's `ta.measurements` must pin the same TEE family and the same images, each bound to the same configuration. |
 
 The decree certifies, under `schema_version` `"2"`, every entry of `--nodes`,
 unchanged, followed by each `--worker-image` entry with `launch_file_digest`
@@ -149,11 +149,11 @@ refused. It writes:
 
 | Output | Holds |
 |---|---|
-| `/run/c8s-node/cds.json` | The `cds.measurements` pin. |
+| `/run/c8s-node/ta.json` | The `ta.measurements` pin. |
 | `/run/c8s-node/router/*` | The router settings `router.*` gives. |
-| `/run/c8s-node/operator-pubkey` | The operator keys of the TA configuration `cds.measurements` binds, which the router verifies route manifests under. |
+| `/run/c8s-node/operator-pubkey` | The operator keys of the TA configuration `ta.measurements` binds, which the router verifies route manifests under. |
 | `/run/c8s-node/tls-san` | `tlsSAN`. |
-| `/etc/nri/conf.d/image-policy.yaml` | The image's NRI floor, pulling from `cds.address` with `cds.pinFloor` as its pin floor, the credential role reaching the TA port, `podCIDR` and `serviceCIDR` as the mesh policy's cluster ranges, `clusterDNS` as its resolver, and its static-pod pins filled with this worker's values. Stage loads it as the NRI plugin will, and refuses one the plugin would refuse or that does not set `worker: true`. |
+| `/etc/nri/conf.d/image-policy.yaml` | The image's NRI floor, pulling from `ta.address` with `ta.pinFloor` as its pin floor, the credential role reaching the TA port, `podCIDR` and `serviceCIDR` as the mesh policy's cluster ranges, `clusterDNS` as its resolver, and its static-pod pins filled with this worker's values. Stage loads it as the NRI plugin will, and refuses one the plugin would refuse or that does not set `worker: true`. |
 | `/run/nri-image-policy/node-ip` | The host's primary IPv4, the address the NRI inventory advertises. |
 | `/run/kubernetes/bootstrap-kubelet.conf` | Mode 0600: `https://` and `kubernetes.apiServer`, verified against `kubernetes.caCertificate` alone, with the bootstrap token. |
 | `/run/kubernetes/kubelet-config.yaml` | The kubelet's configuration: `kubernetes.clusterDNS` for the cluster domain `cluster.local`, the static pods' directory, no anonymous access or read-only port, and debugging, log, profiling and debug-flag handlers off, so the kubelet serves no exec, attach, port-forward, logs or checkpoint. What it still serves (`/pods`, `/stats`, `/metrics`) takes bearer tokens the API server reviews and authorizes. |
@@ -188,10 +188,13 @@ given the worker image build's `--hardware-platform`, `--kube-version` and
 image flags, writes `DIR/cluster.yaml`, the objects the cluster holds for its
 workers:
 
-- the c8s-worker chart's CRD, namespaces, router and admission webhooks, with
-  the webhooks at `https://<--webhook-host>:9443` and the operator's grants
-  bound to the user `c8s-operator`; the router, pulled rather than baked, may
-  run on any worker; each worker's NRI plugin admits host privilege;
+- the c8s-worker chart's CRD, namespaces, router, volumed DaemonSet and
+  admission webhooks, with the webhooks at `https://<--webhook-host>:9443` and
+  the operator's grants bound to the user `c8s-operator`; the router, pulled
+  rather than baked, may run on any worker; volumed runs its own image on every
+  node labelled `confidential.ai/worker=true`, which the worker's kubelet
+  registers with, and is admitted as a node service
+  ([volumes.md](volumes.md)); each worker's NRI plugin admits host privilege;
 - the grants the static pods need, bound to every node;
 - the grants a kubelet's join rests on, which only kubeadm binds: requesting a
   client certificate with the bootstrap token, and automatic approval of that
@@ -249,7 +252,23 @@ it. Kubernetes assigns the pod ranges, and the operator uses the worker's
 CRD identity allocation and L7 policy settings.
 
 The image flags must be the worker image build's, so the router it renders is
-the launch the image's floor pins. Each API server reaches the operator at
+the launch the release's component set pins.
+
+The worker image's measured base admits its own static pods alone, so the
+cluster needs one signed write before its first pod: the release's component
+set, which carries the entries of the injected sidecars, the router and volumed
+([allowlist-and-capabilities.md](allowlist-and-capabilities.md#component-sets)).
+
+```sh
+c8s allowlist components add component-set-<PLATFORM>.json \
+  --url https://<TA_ADDRESS> \
+  --image-policy-file ta-pin.json \
+  --operator-key operator.key
+```
+
+`component-set-<PLATFORM>.json` is the release asset for the CPU TEE the
+workers boot ([releases.md](releases.md)). Until it lands, a worker refuses
+every injected sidecar, the router and volumed. Each API server reaches the operator at
 `--webhook-host`, so a control plane with several replicas runs an operator
 beside each. The control plane the workers join must also accept the bootstrap
 token and run the client-certificate signer and approver, give each node a pod

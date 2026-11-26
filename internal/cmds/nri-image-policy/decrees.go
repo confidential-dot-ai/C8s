@@ -16,7 +16,7 @@ import (
 
 // decreeStateName carries the decree across a restart of the plugin; a reboot
 // starts from the launch document again.
-const decreeStateName = "cds-decree.json"
+const decreeStateName = "ta-decree.json"
 
 // followedPins is the node's Trust Authority pin set as the cluster's pin decrees move
 // it. Each change is written into the policy the plugin mounts into its
@@ -74,7 +74,7 @@ func (f *followedPins) handToClients() {
 }
 
 // taDecrees asks a replica the node already pins first, and falls back to an
-// unverified fetch only where none answers. It answers [cdspins.ErrSingleTA]
+// unverified fetch only where none answers. It answers [tapins.ErrSingleTA]
 // where the launch file this node pins names one Trust Authority.
 func (c pullConfig) taDecrees(bootstrap refvalues.ReferenceValues, logger *slog.Logger) (*followedPins, error) {
 	url := strings.TrimRight(c.URL, "/")

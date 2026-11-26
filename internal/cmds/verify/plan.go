@@ -296,10 +296,10 @@ func requireTAIdentity(cfg config, refValues refvalues.ReferenceValues) error {
 		return nil
 	}
 	if len(cfg.measurements) > 0 || cfg.measurementsFile != "" {
-		return fmt.Errorf("%s cannot pin a Trust Authority, which is pinned to the configuration it runs on: pass --image-policy-file <cds-pin.json>", allowlistFlagsUsed(cfg))
+		return fmt.Errorf("%s cannot pin a Trust Authority, which is pinned to the configuration it runs on: pass --image-policy-file <ta-pin.json>", allowlistFlagsUsed(cfg))
 	}
 	if cfg.imageManifest != "" {
-		return fmt.Errorf("--image-manifest cannot pin a Trust Authority, which is pinned to the configuration it runs on: pass --image-policy-file <cds-pin.json>")
+		return fmt.Errorf("--image-manifest cannot pin a Trust Authority, which is pinned to the configuration it runs on: pass --image-policy-file <ta-pin.json>")
 	}
 	if _, err := cmdsutil.TALaunchFile(refValues); err != nil {
 		return fmt.Errorf("--image-policy-file %w", err)

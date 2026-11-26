@@ -207,7 +207,8 @@ func TestForgetWithAReusedNamespace(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			gate, state, _ := exitsGate(t)
 			released := recordReleases(gate)
-			state.exits, state.guarded = relayExit, true
+			state.exits = relayExit
+			state.guarded = true
 			gate.pods["reusing-sandbox"] = reusing.state
 			collector := meshPod("default", "collector", testNetNS)
 			gate.forget(collector.GetId())
@@ -404,7 +405,7 @@ func TestRecoveredExitsReconstructsTheGrant(t *testing.T) {
 		})
 	}
 
-	p := &plugin{policy: newPolicyStore(nil), mesh: newMeshGate(*meshRoles(), discardLogger())}
+	p := &plugin{policy: newPolicyStore(nil, localClock()), mesh: newMeshGate(*meshRoles(), discardLogger())}
 	if got := p.recoveredExits(recovered(collectorDigest)); got.cause == nil || got.exits != nil || got.entry != "" {
 		t.Fatalf("recoveredExits with no served allowlist = %+v, want an empty grant with a cause", got)
 	}

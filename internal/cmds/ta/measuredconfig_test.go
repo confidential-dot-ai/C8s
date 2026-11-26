@@ -77,7 +77,7 @@ func measuredDocument(t *testing.T, c cluster) []byte {
 		"workloads":          anySeed(c.workloads),
 		"nodes":              c.nodePins(),
 		"nodeCIDRs":          []string{"10.0.0.0/24"},
-		"leafDNSNames":       []string{"cds.example.com"},
+		"leafDNSNames":       []string{"ta.example.com"},
 		"leafDNSPatterns":    []string{`^[a-z0-9-]+[.][a-z0-9-]+[.]svc$`},
 	})
 	if err != nil {
@@ -229,7 +229,7 @@ func replicatedDocument(t *testing.T, operatorPEM []byte) []byte {
 // writeMeasuredDocument stages the document where a launched VM reads it.
 func writeMeasuredDocument(t *testing.T) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "cds-config.yaml")
+	path := filepath.Join(t.TempDir(), "ta-config.yaml")
 	document := measuredDocument(t, cluster{operatorPEM: operatorKeysPEM(t), workloads: map[string]string{"attestation-api": digestA}})
 	if err := os.WriteFile(path, document, 0o600); err != nil {
 		t.Fatal(err)

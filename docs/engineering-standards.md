@@ -145,6 +145,9 @@ cases. For a bug fix, add a regression test that fails for the defect when pract
 Use representative benchmarks for performance claims. Run checks appropriate to the
 change and report the commands, results and remaining coverage limits.
 
+Where CI reports mutation testing, a lived mutant on a line the PR changed gets a
+test that fails on it, or a sentence in the PR description saying why it stays.
+
 A mocked or ordinary Kubernetes test establishes only the behavior it exercises.
 Confidential-platform claims require evidence from the applicable TEE environment.
 Preserve attestation, authorization and GPU CC gates during testing; record a

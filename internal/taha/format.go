@@ -27,7 +27,7 @@ const Format uint32 = 1
 const baseFormat uint32 = 1
 
 // ErrNewerFormat is a log entry in a newer format than this replica reads.
-var ErrNewerFormat = errors.New("cds-ha: log entry in a newer format than this replica reads")
+var ErrNewerFormat = errors.New("ta-ha: log entry in a newer format than this replica reads")
 
 func (c ClusterState) format() uint32 {
 	return cmp.Or(c.Format, baseFormat)
@@ -52,12 +52,12 @@ func (n *Node) raiseFormat() {
 		return
 	}
 	if _, err := n.propose(Entry{Kind: KindFormat, SetFormat: read}); err != nil {
-		slog.Warn("cds-ha: the format every seat of this cluster reads did not commit",
+		slog.Warn("ta-ha: the format every seat of this cluster reads did not commit",
 			"format", read,
 			"error", err)
 		return
 	}
-	slog.Info("cds-ha: this cluster agreed on the format every voter seat reads",
+	slog.Info("ta-ha: this cluster agreed on the format every voter seat reads",
 		"audit", true,
 		"from", agreed,
 		"to", read)
@@ -83,7 +83,7 @@ func (n *Node) formatEverySeatReads(seen seating) (uint32, bool) {
 // Once per reason, not every pass.
 func (n *Node) formatHeldBy(member raft.ServerID, err error) {
 	if n.formatLog.changed(string(member) + " " + err.Error()) {
-		slog.Info("cds-ha: this cluster holds the format it agreed on: a voter seat did not answer what it reads",
+		slog.Info("ta-ha: this cluster holds the format it agreed on: a voter seat did not answer what it reads",
 			"member", member, "error", err)
 	}
 }

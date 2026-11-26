@@ -31,7 +31,6 @@ type renderChart struct {
 	path       string
 	components []c8sComponent
 	imagePins  map[string]any
-	legacyTA   bool
 }
 
 // installChart is the --chart directory with the images its values set, or
@@ -60,17 +59,11 @@ func chartFlagChart(ctx context.Context, dir string) (renderChart, error) {
 	if _, err := os.Stat(filepath.Join(dir, "Chart.yaml")); err != nil {
 		return renderChart{}, fmt.Errorf("--%s %s names no chart directory: %w", flagChart, dir, err)
 	}
-	defaults, err := chartValues(ctx, dir)
-	if err != nil {
-		return renderChart{}, err
-	}
-	components, err := chartComponentsFromValues(dir, defaults)
+	components, err := chartComponents(ctx, dir)
 	if err != nil {
 		return renderChart{}, fmt.Errorf("read chart components: %w", err)
 	}
-	_, ta := defaults["ta"]
-	_, legacy := defaults["cds"]
-	return renderChart{path: dir, components: components, legacyTA: legacy && !ta}, nil
+	return renderChart{path: dir, components: components}, nil
 }
 
 func bundledChartWithReleaseDigests(ctx context.Context, chartVersion, work string) (renderChart, error) {

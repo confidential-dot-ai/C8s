@@ -16,6 +16,7 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/podlaunch"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/podmesh"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
@@ -129,7 +130,7 @@ func TestRenderPodRuntimeBindsTAPullAndKeepsOnlyMeasuredMeshAndSignedBase(t *tes
 	root := preparePodRoot(t)
 	withExemption := strings.Replace(podFloor, "  enforce_existing: true\n",
 		"  enforce_existing: true\n  exempt_repositories:\n    kube-system: [mcr.microsoft.com/oss/kubernetes/]\n", 1)
-	writeInput(t, root, "/usr/lib/c8s/image-policy.yaml", []byte(strings.Replace(withExemption, "    timeout: 30s", "    timeout: 30s\n    interval: 7s\n    cds_pin_floor: 1\n    measure_policies: false", 1)))
+	writeInput(t, root, "/usr/lib/c8s/image-policy.yaml", []byte(strings.Replace(withExemption, "    timeout: 30s", "    timeout: 30s\n    interval: 7s\n    ta_pin_floor: 1\n    measure_policies: false", 1)))
 	assigned := assignedPod(t, podManifest)
 	runtime, err := RenderPodRuntime(root, assigned)
 	if err != nil {
@@ -150,23 +151,18 @@ func TestRenderPodRuntimeBindsTAPullAndKeepsOnlyMeasuredMeshAndSignedBase(t *tes
 	}
 	a := got["allowlist"].(map[string]any)
 	pull, ok := a["pull"].(map[string]any)
-	if !ok || pull["url"] != cmdsutil.TAURL(assigned.TA.Address) || pull["cds_measurements_config"] != PublicDir+"/cds.json" || pull["timeout"] != "30s" || pull["interval"] != "7s" || pull["measure_policies"] != false {
+	if !ok || pull["url"] != cmdsutil.TAURL(assigned.TA.Address) || pull["ta_measurements_config"] != PublicDir+"/ta.json" || pull["timeout"] != "30s" || pull["interval"] != "7s" || pull["measure_policies"] != false {
 		t.Fatalf("pod Trust Authority pull = %v", pull)
 	}
 	if floor := publishedPinFloor(t, pull); floor != assigned.TA.PinFloor {
 		t.Fatalf("pod Trust Authority pin floor = %d, want signed floor %d", floor, assigned.TA.PinFloor)
 	}
-	for _, legacy := range []string{"cds_measurements", "cds_rtmrs"} {
-		if _, exists := pull[legacy]; exists {
-			t.Fatalf("pod Trust Authority pull kept competing %s", legacy)
-		}
-	}
 	writeInput(t, root, floorConfigPath, runtime.Policy)
 	mesh := stagedMeshPolicy(t, root)
-	if len(mesh.ExemptNamespaces) != 0 || len(mesh.Roles) != 1 || mesh.Roles[0].Name != workloadclaims.MeshRole {
+	if len(mesh.ExemptNamespaces) != 0 || len(mesh.Roles) != 1 || mesh.Roles[0].Name != allowlist.RoleMesh {
 		t.Fatalf("Pod mesh floor = %+v", mesh)
 	}
-	if !reflect.DeepEqual(mesh.Roles, []stagedRole{{Name: workloadclaims.MeshRole, UID: workloadclaims.MeshUID}}) || mesh.Capture != (stagedCapture{Outbound: 15001, Inbound: 15006, Health: 15021}) {
+	if !reflect.DeepEqual(mesh.Roles, []stagedRole{{Name: allowlist.RoleMesh, UID: workloadclaims.MeshUID}}) || mesh.Capture != (stagedCapture{Outbound: 15001, Inbound: 15006, Health: 15021}) {
 		t.Fatalf("baked mesh role or capture settings changed: %+v", mesh)
 	}
 	if resolver := got["mesh"].(map[string]any)["resolver"]; resolver != "1.1.1.1" {
@@ -182,7 +178,7 @@ func TestRenderPodRuntimeBindsTAPullAndKeepsOnlyMeasuredMeshAndSignedBase(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(base.Workloads) != 2 || len(base.Workloads["app"].Containers) != 1 || base.Workloads["c8s-mesh-endpoint"].Containers[0].Role != workloadclaims.MeshRole {
+	if len(base.Workloads) != 2 || len(base.Workloads["app"].Containers) != 1 || base.Workloads["c8s-mesh-endpoint"].Containers[0].Role != allowlist.RoleMesh {
 		t.Fatalf("base = %v, want signed workloads plus the measured endpoint", base.Workloads)
 	}
 	policy := got["policy"].(map[string]any)
@@ -343,7 +339,7 @@ func TestRenderPodRuntimeFailsClosed(t *testing.T) {
 		change func(*podlaunch.AssignedPod)
 		want   string
 	}{
-		{"no Trust Authority address", podFloor, func(a *podlaunch.AssignedPod) { a.TA.Address = "" }, "cds.address"},
+		{"no Trust Authority address", podFloor, func(a *podlaunch.AssignedPod) { a.TA.Address = "" }, "ta.address"},
 		{"bad entries", podFloor, func(a *podlaunch.AssignedPod) { a.Entries = "{" }, "assignment entries"},
 		{"bad manifest", podFloor, func(a *podlaunch.AssignedPod) { a.Pod.Manifest = "kind: Deployment" }, "pod.manifest"},
 		{"no endpoint", meshFloor, func(*podlaunch.AssignedPod) {}, "no mesh endpoint"},

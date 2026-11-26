@@ -8,21 +8,22 @@ import (
 	"strings"
 
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 // renderedTAAddressName is the endpoint document in the plugin's runtime
 // directory (renderNodeDocument).
-const renderedTAAddressName = "cds-address"
+const renderedTAAddressName = "ta-address"
 
-// prepareCDSAddress writes the Trust Authority endpoint this node's injected credential
+// prepareTAAddress writes the Trust Authority endpoint this node's injected credential
 // clients dial, before any container can be created.
-func (p *plugin) prepareCDSAddress() error {
+func (p *plugin) prepareTAAddress() error {
 	if !p.cfg.injectsCredentialClients() {
 		return nil
 	}
 	if p.cfg.taAddress == "" {
-		return fmt.Errorf("nothing names the Trust Authority this node reaches: a measured config names it in allowlist.pull.url, and an install in allowlist.pull.cds_address_file")
+		return fmt.Errorf("nothing names the Trust Authority this node reaches: a measured config names it in allowlist.pull.url, and an install in allowlist.pull.ta_address_file")
 	}
 	path, err := renderNodeDocument(renderedTAAddressName, cmdsutil.FormatTAAddress(p.cfg.taAddress))
 	if err != nil {
@@ -52,7 +53,7 @@ func loadTAAddress(c pullConfig) (string, error) {
 		return "", err
 	}
 	if !mounted {
-		return "", fmt.Errorf("allowlist.pull.cds_address_file %s: no such file", c.TAAddressFile)
+		return "", fmt.Errorf("allowlist.pull.ta_address_file %s: no such file", c.TAAddressFile)
 	}
 	return address, nil
 }
@@ -71,7 +72,7 @@ func bindCredentialRole(cfg *config) error {
 	if cfg.Allowlist.Pull.TAAddressFile == "" {
 		// Nothing an install mounted names the Trust Authority this node reaches. A node
 		// that injects credential clients refuses to start without a bound
-		// role; one that injects none needs no binding (prepareCDSAddress).
+		// role; one that injects none needs no binding (prepareTAAddress).
 		return nil
 	}
 	_, port, err := cmdsutil.SplitTAAddress(cfg.taAddress)
@@ -79,7 +80,7 @@ func bindCredentialRole(cfg *config) error {
 		return err
 	}
 	cfg.Mesh.Roles = append(cfg.Mesh.Roles, roleBinding{
-		Name: CredentialRole,
+		Name: allowlist.RoleCredentials,
 		UID:  workloadclaims.CredentialsUID,
 		Port: port,
 	})
@@ -88,7 +89,7 @@ func bindCredentialRole(cfg *config) error {
 
 // credentialRole is this node's binding of the credential role.
 func (c *config) credentialRole() (roleBinding, bool) {
-	return c.Mesh.role(CredentialRole)
+	return c.Mesh.role(allowlist.RoleCredentials)
 }
 
 // nodeOwnAddress is this node's own address, from the same inputs the sandbox

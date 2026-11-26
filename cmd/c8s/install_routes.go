@@ -183,7 +183,7 @@ func preflightUpstreamRoutes() error {
 	if installOperatorKeyPath() == "" {
 		return nil
 	}
-	o := installTAConn("https://cds")
+	o := installTAConn("https://ta")
 	signer, err := o.Signer()
 	if err != nil {
 		return err
@@ -210,7 +210,7 @@ func installedOperatorKeys() (keys []*ecdsa.PublicKey, source string, err error)
 		}
 		source = "--operator-keys"
 	} else {
-		values, _, err := taValuesFromFiles(installValues)
+		values, err := taValuesFromFiles(installValues)
 		if err != nil {
 			return nil, "", err
 		}

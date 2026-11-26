@@ -39,7 +39,7 @@ const testPinNodeCIDR = "192.0.2.0/24"
 func pinnedTAPinFile(t *testing.T) string {
 	t.Helper()
 	config := strings.Join([]string{
-		"schemaVersion: c8s-cds/v1",
+		"schemaVersion: c8s-ta/v1",
 		"clusterID: test",
 		"operatorPublicKeys: |\n  " + strings.ReplaceAll(strings.TrimSpace(testPinOperatorKeys), "\n", "\n  "),
 		`workloads: '{"schema":"c8s.allowlist/v1","workloads":{"` + installSeedEntryName + `":` + testSeedEntry + `}}'`,
@@ -51,7 +51,7 @@ func pinnedTAPinFile(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return writePin(t, `{"schema_version":"2","tee":"sev-snp","measurements":[{"name":"cds","measurement":"`+
+	return writePin(t, `{"schema_version":"2","tee":"sev-snp","measurements":[{"name":"ta","measurement":"`+
 		strings.Repeat("cd", 48)+`","launch_file":`+string(file)+`}]}`)
 }
 
@@ -272,7 +272,7 @@ nriImagePolicy:
         repository: ghcr.io/confidential-dot-ai/nri-image-policy
 ta:
     address: 127.0.0.1:1
-    measurementsConfig: '{"schema_version":"2","tee":"sev-snp","measurements":[{"name":"cds","measurement":"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd","launch_file":"schemaVersion: c8s-cds/v1\nclusterID: test\noperatorPublicKeys: |\n  -----BEGIN PUBLIC KEY-----\n  MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE+ozuS8lfikNld52SnfWYj1/SlUGr\n  mG5PZp8/jAWmARD163wkoiQC2tlHUNJ6nqkN79y37EBKHGFV3B3CW+Ah6A==\n  -----END PUBLIC KEY-----\nworkloads: ''{\"schema\":\"c8s.allowlist/v1\",\"workloads\":{\"app\":{\"label\":\"registry/app@sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"containers\":[{\"digest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"image\":\"registry/app@sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"command\":{\"policy\":\"any\"},\"args\":{\"policy\":\"any\"},\"mounts\":{\"policy\":\"any\"}}]}}}''\nnodes: ''{\"schema_version\":\"1\",\"tee\":\"sev-snp\",\"measurements\":[{\"name\":\"node\",\"measurement\":\"abababababababababababababababababababababababababababababababababababababababababababababababab\"}]}''\nnodeCIDRs:\n  - 192.0.2.0/24\nleafDNSNames:\n  - router.example.com\n"}]}'
+    measurementsConfig: '{"schema_version":"2","tee":"sev-snp","measurements":[{"name":"ta","measurement":"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd","launch_file":"schemaVersion: c8s-ta/v1\nclusterID: test\noperatorPublicKeys: |\n  -----BEGIN PUBLIC KEY-----\n  MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE+ozuS8lfikNld52SnfWYj1/SlUGr\n  mG5PZp8/jAWmARD163wkoiQC2tlHUNJ6nqkN79y37EBKHGFV3B3CW+Ah6A==\n  -----END PUBLIC KEY-----\nworkloads: ''{\"schema\":\"c8s.allowlist/v1\",\"workloads\":{\"app\":{\"label\":\"registry/app@sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"containers\":[{\"digest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"image\":\"registry/app@sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"command\":{\"policy\":\"any\"},\"args\":{\"policy\":\"any\"},\"mounts\":{\"policy\":\"any\"}}]}}}''\nnodes: ''{\"schema_version\":\"1\",\"tee\":\"sev-snp\",\"measurements\":[{\"name\":\"node\",\"measurement\":\"abababababababababababababababababababababababababababababababababababababababababababababababab\"}]}''\nnodeCIDRs:\n  - 192.0.2.0/24\nleafDNSNames:\n  - router.example.com\n"}]}'
     operatorKeys: |
         -----BEGIN PUBLIC KEY-----
         MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE+ozuS8lfikNld52SnfWYj1/SlUGr

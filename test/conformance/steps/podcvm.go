@@ -74,7 +74,8 @@ type podCVMState struct {
 // cvmSpec is how a pod of these scenarios differs from the plain one: its
 // opt-in value and the fields admission or the provider judges. uid is set
 // once the API server holds the pod, and created is no later than the moment
-// the provider can have written its record.
+// the provider can have written its record. deleted is no later than the
+// moment the scenario's delete can have reached the API server.
 type cvmSpec struct {
 	optIn        string
 	namesNode    bool
@@ -86,6 +87,7 @@ type cvmSpec struct {
 	oversize     bool
 	uid          string
 	created      time.Time
+	deleted      time.Time
 }
 
 func (w *world) cvm(name string) (*pod, *cvmSpec, error) {

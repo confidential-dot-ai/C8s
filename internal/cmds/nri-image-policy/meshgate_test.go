@@ -194,7 +194,7 @@ func TestMeshGateAdmitsThePodInOrder(t *testing.T) {
 	pod := meshPod("default", "pod", testNetNS)
 	gate, state := gateWithPod(pod)
 	mesh := gateCtr("c8s-mesh", testMeshUID)
-	if _, _, err := gate.admissible(pod, mesh, gatedContainer{role: meshRole}); err != nil {
+	if _, _, err := gate.admissible(pod, mesh, gatedContainer{role: allowlist.RoleMesh}); err != nil {
 		t.Fatalf("the mesh endpoint was refused before its own start: %v", err)
 	}
 	if _, _, err := gate.memberNamespace(pod.GetId()); err == nil {
@@ -278,7 +278,7 @@ func TestMeshGateAdmitsAnAdmittedRoleLaunchAgain(t *testing.T) {
 		{
 			name: "a role that never ran here",
 			launch: gatedContainer{
-				role:   meshRole,
+				role:   allowlist.RoleMesh,
 				digest: pushDigestA,
 				argv:   launch.argv,
 			},
@@ -309,7 +309,7 @@ func TestMeshGateKeepsARouterNamespacePodRoleOnly(t *testing.T) {
 
 	router := gateCtr("nginx", testRouterUID)
 	launch := gatedContainer{
-		role:         routerRole,
+		role:         allowlist.RoleRouter,
 		mountsPinned: true,
 	}
 	if _, _, err := gate.admissible(pod, router, launch); err != nil {
@@ -341,9 +341,9 @@ func TestMeshGateKeepsARouterNamespacePodRoleOnly(t *testing.T) {
 	// The upstream identity reaches this cluster's members uncaptured, so the
 	// role holding it runs here under a declaration that pins its mounts and
 	// as that identity alone.
-	attest := gateCtr("cds-attest", workloadclaims.UpstreamUID)
+	attest := gateCtr("ta-attest", workloadclaims.UpstreamUID)
 	routing := gatedContainer{
-		role:         upstreamRole,
+		role:         allowlist.RoleUpstream,
 		mountsPinned: true,
 	}
 	if _, _, err := gate.admissible(pod, attest, routing); err != nil {
@@ -395,7 +395,7 @@ func TestMeshGateRefusesASharedPIDNamespace(t *testing.T) {
 			shared := gateCtr("nginx", testRouterUID)
 			shared.Linux = &api.LinuxContainer{Namespaces: namespaces}
 			launch := gatedContainer{
-				role:         routerRole,
+				role:         allowlist.RoleRouter,
 				mountsPinned: true,
 			}
 			_, _, err := gate.admissible(pod, shared, launch)
@@ -596,7 +596,7 @@ func TestAReplacementOfARefusedPodIsDecidedOnItsOwn(t *testing.T) {
 func TestProtectedPodRestoresTheContainersItFinds(t *testing.T) {
 	mesh := recoveredContainer{
 		ctr:     gateCtr("c8s-mesh", testMeshUID),
-		launch:  gatedContainer{role: meshRole, mountsPinned: true, digest: digestOther, argv: []string{"/app/c8s", "armtls-mesh"}},
+		launch:  gatedContainer{role: allowlist.RoleMesh, mountsPinned: true, digest: digestOther, argv: []string{"/app/c8s", "armtls-mesh"}},
 		running: true,
 	}
 	app := recoveredContainer{ctr: gateCtr("app", testWorkloadUID), running: true}
@@ -633,7 +633,7 @@ func TestProtectedPodRestoresTheContainersItFinds(t *testing.T) {
 		},
 		"a role on another identity": {
 			pod:   meshPod("default", "pod", testNetNS),
-			ctr:   recoveredContainer{ctr: gateCtr("c8s-mesh", testWorkloadUID), launch: gatedContainer{role: meshRole}, running: true},
+			ctr:   recoveredContainer{ctr: gateCtr("c8s-mesh", testWorkloadUID), launch: gatedContainer{role: allowlist.RoleMesh}, running: true},
 			wants: "runs as uid",
 		},
 		"a shared pid namespace": {
@@ -895,7 +895,7 @@ func TestValidateContainerAdjustmentGatesOnProtection(t *testing.T) {
 // adds itself leaves it standing, while a mount of the pod's own at the same
 // destination counts and does not match the declaration.
 func TestValidateContainerAdjustmentPinsThePodsOwnMounts(t *testing.T) {
-	const enforcerAddress = "/run/c8s-enforcer/cds-address"
+	const enforcerAddress = "/run/c8s-enforcer/ta-address"
 	base := roleBase(t, pushDigestB, testCertRole, []string{"/c8s", "get-cert"})
 	base.Workloads["pinned-entry"] = allowlist.Workload{Containers: []allowlist.Container{{
 		Digest: mustDigest(t, pushDigestB),
@@ -923,12 +923,12 @@ func TestValidateContainerAdjustmentPinsThePodsOwnMounts(t *testing.T) {
 	}{
 		{
 			name:   "the enforcer's own bind",
-			adjust: []*api.Mount{readOnlyBind(enforcerAddress, workloadclaims.CDSAddressPath)},
+			adjust: []*api.Mount{readOnlyBind(enforcerAddress, workloadclaims.TAAddressPath)},
 			pinned: true,
 		},
 		{
 			name:     "a mount of the pod's own at that destination",
-			declared: []*api.Mount{readOnlyBind("/run/c8s-elsewhere", workloadclaims.CDSAddressPath)},
+			declared: []*api.Mount{readOnlyBind("/run/c8s-elsewhere", workloadclaims.TAAddressPath)},
 			pinned:   false,
 		},
 	} {
@@ -1015,7 +1015,7 @@ func TestPodMetadataGrantsNoRole(t *testing.T) {
 // started — not from its name.
 func TestStartContainerOpensTheGateOnTheMeshEndpointAlone(t *testing.T) {
 	argv := []string{"/usr/local/bin/armtls-mesh"}
-	base := roleBase(t, pushDigestB, meshRole, argv)
+	base := roleBase(t, pushDigestB, allowlist.RoleMesh, argv)
 	p, _ := newCachedPlugin(&config{
 		Allowlist: allowlistConfig{
 			Base:    base,
@@ -1064,8 +1064,8 @@ func TestMeshEndpointStartOpensTheGateWhileInitializing(t *testing.T) {
 	p, _ := newCachedPlugin(&config{
 		Policy: policyConfig{Mode: ModeFailClosed},
 		Allowlist: allowlistConfig{
-			Base: roleBase(t, pushDigestB, meshRole, []string{"/app/c8s", "armtls-mesh"}),
-			Pull: pullConfig{URL: "https://cds"},
+			Base: roleBase(t, pushDigestB, allowlist.RoleMesh, []string{"/app/c8s", "armtls-mesh"}),
+			Pull: pullConfig{URL: "https://ta"},
 		},
 	}, anyAllowlist(map[string]string{pushDigestA: "served"}))
 	pod := meshPod("default", "pod", testNetNS)

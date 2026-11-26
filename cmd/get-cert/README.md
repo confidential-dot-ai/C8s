@@ -22,7 +22,7 @@ Obtain a certificate with a DNS SAN:
 ```bash
 get-cert \
   --ta-url https://ta:8443 \
-  --ta-image-policy-file cds-pin.json \
+  --ta-image-policy-file ta-pin.json \
   --attestation-api-url unix:///run/c8s/workload-claims/attestation-api.sock \
   --san api.example.com \
   --cert-path /tls/cert.pem \
@@ -30,10 +30,10 @@ get-cert \
   --ca-path /tls/ca.pem
 ```
 
-The example names the TA and pins it with `cds-pin.json`, the pin
+The example names the TA and pins it with `ta-pin.json`, the pin
 `c8s ta config new` wrote, for a pod whose node supplies neither. The node's
-admission plugin mounts the TA address at `/run/c8s/cds-address` and its pins
-at `/run/c8s/cds-pins.json` into an injected sidecar. get-cert then reads each
+admission plugin mounts the TA address at `/run/c8s/ta-address` and its pins
+at `/run/c8s/ta-pins.json` into an injected sidecar. get-cert then reads each
 from its mount and refuses the flag that would also supply it:
 `--ta-url` for the address, `--ta-image-policy-file` or `--ta-image-policy-json`
 for the pins. While the pins and the node's attestation-api socket are both
@@ -88,7 +88,7 @@ a changed CA certificate only under the pod's bound issuer key.
 | `--discovery-out` | | *(empty)* | Path to write JSON discovery metadata for the issued certificate and attestation evidence |
 | `--discovery-ta-cert-url` | | *(empty)* | Public URL path where the TA certificate PEM is served |
 | `--discovery-mesh-ca-url` | | *(empty)* | Public URL path where the mesh CA PEM is served |
-| `--discovery-public-tls-mode` | | `cds` | Public TLS mode to report in discovery metadata: `cds`, `webpki` or `acme` |
+| `--discovery-public-tls-mode` | | `ta` | Public TLS mode to report in discovery metadata: `ta`, `webpki` or `acme` |
 | `--discovery-public-tls-mode-file` | | *(empty)* | File holding the public TLS mode, read at start; replaces `--discovery-public-tls-mode` |
 | `--discovery-public-tls-hostnames-file` | | *(empty)* | File holding launch-selected public hostnames; discovery reports the first without changing the TA certificate SAN |
 | `--verbose` | `-v` | `false` | Enable debug logging |

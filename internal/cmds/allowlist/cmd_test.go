@@ -182,7 +182,7 @@ func TestMissingComponents(t *testing.T) {
 // the "nginx" needle as a substring) can't silently defeat the upload guard.
 func TestMissingComponentsMatchesRealChartImages(t *testing.T) {
 	chartImages := map[string]string{
-		"a": "ghcr.io/confidential-dot-ai/cds@sha256:1",
+		"a": "ghcr.io/confidential-dot-ai/ta@sha256:1",
 		"b": "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:2",
 		"c": "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:3",
 		"d": "ghcr.io/confidential-dot-ai/attestation-api@sha256:4",
@@ -235,7 +235,7 @@ func TestUploadRefusesMissingCoreWithoutForce(t *testing.T) {
 	dir := t.TempDir()
 	file := writeAllowlistFile(t, dir, map[string]string{digA: "registry/app/only@" + digA})
 
-	_, _, err := runCmd("upload", file, "--url", "https://cds.example:8443")
+	_, _, err := runCmd("upload", file, "--url", "https://ta.example:8443")
 	if err == nil {
 		t.Fatal("expected upload to refuse a file missing core components")
 	}
@@ -432,7 +432,7 @@ pins in its measured launch configuration ('c8s ta config new
 
 The default chart publishes /allowlist through router. Point --url at that
 front door only when it uses Trust Authority-issued public TLS (discovery reports
-public_tls.mode=cds), and use the router launch digest with --measurements. A
+public_tls.mode=ta), and use the router launch digest with --measurements. A
 WebPKI front door cannot yet bind its public certificate to the attestation
 evidence, so this CLI refuses it; use a direct Trust Authority armTLS URL instead (for
 example through a port-forward) and pin the Trust Authority launch digest. To generate an

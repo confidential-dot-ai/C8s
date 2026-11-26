@@ -69,7 +69,7 @@ func writeTestServingLeafWithValidity(t *testing.T, notBefore, notAfter time.Tim
 	return path, der
 }
 
-// newAttestLBServer serves attest-lb in cds mode, where the mesh leaf is the
+// newAttestLBServer serves attest-lb in ta mode, where the mesh leaf is the
 // serving leaf and --serving-cert-file is not read.
 func newAttestLBServer(t *testing.T, identity testMeshIdentity) (*httptest.Server, *capturingProvider) {
 	t.Helper()
@@ -77,7 +77,7 @@ func newAttestLBServer(t *testing.T, identity testMeshIdentity) (*httptest.Serve
 	srv := NewServer(Config{
 		Routes:               testRoutes(t),
 		Evidence:             prov,
-		FrontDoorMode:        types.FrontDoorModeCDS,
+		FrontDoorMode:        types.FrontDoorModeTA,
 		ServingCertFile:      identity.certFile,
 		MeshIdentityCertFile: identity.certFile,
 		MeshIdentityKeyFile:  identity.keyFile,
@@ -132,8 +132,8 @@ func TestAttestLBBindsServingLeafAndMeshIdentity(t *testing.T) {
 	// Recompute the transcript the way a client does — from the leaf observed
 	// on the connection plus the served mesh chain — and require the hardware
 	// report_data and the ECDSA proof to verify against it.
-	if b.FrontDoorMode != types.FrontDoorModeCDS {
-		t.Errorf("front_door_mode = %q, want %q", b.FrontDoorMode, types.FrontDoorModeCDS)
+	if b.FrontDoorMode != types.FrontDoorModeTA {
+		t.Errorf("front_door_mode = %q, want %q", b.FrontDoorMode, types.FrontDoorModeTA)
 	}
 	want, err := overenc.LBTranscriptHash(b.FrontDoorMode, nonce, servingDER, identity.leaf.Raw, identity.ca.Raw, testRouteDigest[:])
 	if err != nil {
@@ -158,12 +158,12 @@ func TestAttestLBBindsServingLeafAndMeshIdentity(t *testing.T) {
 	if !ecdsa.VerifyASN1(&identity.key.PublicKey, digest[:], signature) {
 		t.Fatal("mesh identity proof signature did not verify over the lb transcript")
 	}
-	if !strings.Contains(b.CDSCertPEM, "CERTIFICATE") {
-		t.Fatalf("bundle carries no mesh chain: %q", b.CDSCertPEM)
+	if !strings.Contains(b.TACertPEM, "CERTIFICATE") {
+		t.Fatalf("bundle carries no mesh chain: %q", b.TACertPEM)
 	}
 }
 
-// attest-lb commits the mesh identity leaf in cds mode, whatever
+// attest-lb commits the mesh identity leaf in ta mode, whatever
 // --serving-cert-file names, and in acme mode the leaf that file names, only
 // inside its validity window. A refusal requests no evidence.
 func TestAttestLBServingLeafAdmission(t *testing.T) {
@@ -221,11 +221,11 @@ func TestAttestLBServingLeafAdmission(t *testing.T) {
 		serving func(*testing.T, testMeshIdentity) string
 		wantErr string
 	}{
-		{name: "cds mesh leaf", mode: types.FrontDoorModeCDS, serving: meshLeaf},
-		{name: "cds ignores other leaf", mode: types.FrontDoorModeCDS, serving: otherLeaf},
-		{name: "cds ignores expired mesh copy", mode: types.FrontDoorModeCDS, serving: expiredMeshCopy},
-		{name: "cds expired chain", mode: types.FrontDoorModeCDS, serving: meshExpiredChain, wantErr: types.ErrorCodeServingLeafRejected},
-		{name: "cds malformed chain block", mode: types.FrontDoorModeCDS, serving: meshGarbageChain, wantErr: types.ErrorCodeBindingUnavailable},
+		{name: "ta mesh leaf", mode: types.FrontDoorModeTA, serving: meshLeaf},
+		{name: "ta ignores other leaf", mode: types.FrontDoorModeTA, serving: otherLeaf},
+		{name: "ta ignores expired mesh copy", mode: types.FrontDoorModeTA, serving: expiredMeshCopy},
+		{name: "ta expired chain", mode: types.FrontDoorModeTA, serving: meshExpiredChain, wantErr: types.ErrorCodeServingLeafRejected},
+		{name: "ta malformed chain block", mode: types.FrontDoorModeTA, serving: meshGarbageChain, wantErr: types.ErrorCodeBindingUnavailable},
 		{name: "acme ignores the mesh chain", mode: types.FrontDoorModeACME, serving: func(t *testing.T, identity testMeshIdentity) string {
 			meshExpiredChain(t, identity)
 			return otherLeaf(t, identity)
@@ -315,13 +315,13 @@ func TestAttestLBTranscriptDiffersFromPQ(t *testing.T) {
 	identity := writeTestMeshIdentity(t)
 	_, servingDER := writeTestServingLeaf(t)
 	nonce := make([]byte, 32)
-	pq, err := overenc.IdentityTranscriptHash(types.FrontDoorModeCDS,
+	pq, err := overenc.IdentityTranscriptHash(types.FrontDoorModeTA,
 		make([]byte, overenc.XWingEKBytes), make([]byte, overenc.XWingCTBytes),
 		make([]byte, overenc.SessionIDBytes), nonce, identity.leaf.Raw, identity.ca.Raw, testRouteDigest[:])
 	if err != nil {
 		t.Fatal(err)
 	}
-	lb, err := overenc.LBTranscriptHash(types.FrontDoorModeCDS, nonce, servingDER, identity.leaf.Raw, identity.ca.Raw, testRouteDigest[:])
+	lb, err := overenc.LBTranscriptHash(types.FrontDoorModeTA, nonce, servingDER, identity.leaf.Raw, identity.ca.Raw, testRouteDigest[:])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -621,7 +621,7 @@ func TestReadyzGatesOnMatchedWorkloadStamp(t *testing.T) {
 	}
 }
 
-// A malformed block after the leaf in tls.crt only matters to a cds front
+// A malformed block after the leaf in tls.crt only matters to a ta front
 // door's attest-lb: /readyz and attest-pq keep working, and attest-lb answers
 // binding_unavailable rather than binding a leaf nginx will not load.
 func TestMalformedChainBlockOnlyRefusesAttestLB(t *testing.T) {
@@ -644,7 +644,7 @@ func TestMalformedChainBlockOnlyRefusesAttestLB(t *testing.T) {
 	if b := fetchBundle(t, ts.URL, ck, bytes.Repeat([]byte{0x5a}, 32)); b.Version != types.BindingAttestPQ {
 		t.Fatalf("attest-pq bundle version = %q, want %q", b.Version, types.BindingAttestPQ)
 	}
-	// The attest-lb refusal itself is the "cds malformed chain block" case of
+	// The attest-lb refusal itself is the "ta malformed chain block" case of
 	// TestAttestLBServingLeafAdmission.
 }
 

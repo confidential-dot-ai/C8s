@@ -123,7 +123,7 @@ differ. A cluster of workers boots the C8s measured node image;
 | Privilege floor | `c8s-runc`, measured | none | none |
 | Exec, attach, port-forward | served by no kubelet handler, denied under the runtime | the ordinary path | the ordinary path |
 | Evidence | the CPU TEE directly | the CPU TEE directly | the Azure vTPM (`az-snp`, `az-tdx`) |
-| volumed | `volumed.service` | chart DaemonSet, `--volumes` | chart DaemonSet, `--volumes` |
+| volumed | chart DaemonSet, admitted as a node service | chart DaemonSet, `--volumes` | chart DaemonSet, `--volumes` |
 | Launch configuration | the worker document `worker.yaml` | none | none |
 
 Node services are `attestation-api` and the admission plugin; the base

@@ -22,7 +22,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/taconn"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/fileutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/helmchart"
@@ -135,10 +134,6 @@ func chartComponents(ctx context.Context, chartPath string) ([]c8sComponent, err
 	if err != nil {
 		return nil, err
 	}
-	return chartComponentsFromValues(chartPath, values)
-}
-
-func chartComponentsFromValues(chartPath string, values map[string]any) ([]c8sComponent, error) {
 	file, err := chartComponentsFile(chartPath)
 	if err != nil {
 		return nil, err
@@ -565,7 +560,6 @@ func (r releaseRender) seedRender() seedRender {
 		kubeVersion: r.kubeVersion,
 		valueFiles:  r.valuesFiles,
 		computed:    r.computed,
-		legacyTA:    r.chart.legacyTA,
 	}
 }
 
@@ -587,13 +581,6 @@ func renderRelease(
 	values, err := buildComputedValues(chart.imagePins)
 	if err != nil {
 		return releaseRender{}, nil, err
-	}
-	if chart.legacyTA {
-		delete(values, "cds")
-		if ta, ok := values["ta"]; ok {
-			values["cds"] = ta
-			delete(values, "ta")
-		}
 	}
 	adoption, err := resolvedWorkloadImageValues(ctx, adopted, installUpstream)
 	if err != nil {
@@ -759,7 +746,7 @@ func applyRelease(
 }
 
 func printInstallVerifyHint(values map[string]any, storedRouteDigest string) {
-	verifyURL, verifyPin := "https://<ta-address>", "<cds-pin.json>"
+	verifyURL, verifyPin := "https://<ta-address>", "<ta-pin.json>"
 	if url, err := installTAURL(values); err == nil {
 		verifyURL = url
 	}
@@ -919,9 +906,7 @@ func init() {
 	installCmd.Flags().StringVar(&installPlatform, flagPlatform, "", "the cluster's confidential VMs: aks-snp and aks-tdx (Azure, evidence from the vTPM), or gke-snp (GKE, evidence from the SNP report). Selects the chart's values-<platform>.yaml; without it the -f files set the platform's values")
 	installCmd.Flags().StringVar(&installChartDir, flagChart, "", "chart directory to render instead of the bundled chart, with the component images it and the -f files set; required for a build that is not a release")
 	installCmd.Flags().StringVar(&installTAAddress, flagTAAddress, "", "<host>:<port> of the Trust Authority this cluster uses, with a DNS name or IPv4 address. Sets ta.address")
-	cmdsutil.AliasFlag(installCmd.Flags(), flagTAAddress, "cds-address")
 	installCmd.Flags().StringVar(&installTAPin, flagTAPin, "", "path to the Trust Authority pin document from c8s ta config new. Sets ta.measurementsConfig")
-	cmdsutil.AliasFlag(installCmd.Flags(), flagTAPin, "cds-pin")
 	installCmd.Flags().StringArrayVar(&installPodCIDRs, flagPodCIDR, nil, "a range this cluster assigns pod addresses from, the one 'c8s ta config new --pod-cidr' names; repeatable. The Trust Authority's node subnets are checked against these ranges and the ones the nodes publish, and every pod must answer inside them")
 	installCmd.Flags().StringVar(&installSeedOut, flagSeedOut, "", "write the component allowlist entries this install needs served to <file> and stop, changing nothing in the cluster: it reads the cluster's Kubernetes version, so the seed matches the render this install applies. The input 'c8s ta config new --allowlist-seed' takes before the Trust Authority this install then names exists")
 	installCmd.Flags().StringVar(&installImagePullSecret, "image-pull-secret", "", "name of an existing registry-credential Secret (kubernetes.io/dockerconfigjson) in the release namespace; the chart appends it to every component's imagePullSecrets, so all pods can pull the c8s images from an authenticated registry (e.g. a private mirror) from first start. The Secret itself is never created or managed by the install — the install fails fast if it is missing or has the wrong type")

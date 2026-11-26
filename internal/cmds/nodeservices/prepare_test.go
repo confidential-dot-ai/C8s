@@ -75,7 +75,7 @@ func TestPrepareNamesTheExternalTA(t *testing.T) {
 	if err := yaml.Unmarshal(data, &staged); err != nil {
 		t.Fatal(err)
 	}
-	if got := staged.Allowlist.Pull["url"]; got != "https://cds.example.org:8443" {
+	if got := staged.Allowlist.Pull["url"]; got != "https://ta.example.org:8443" {
 		t.Errorf("pull url = %v, want the Trust Authority the document names", got)
 	}
 	roles := stagedMeshPolicy(t, root).Roles
@@ -85,7 +85,7 @@ func TestPrepareNamesTheExternalTA(t *testing.T) {
 	if roles[1].Port != 8443 {
 		t.Errorf("credential role port = %d, want the port the document's Trust Authority serves on", roles[1].Port)
 	}
-	published, err := refvalues.Load(filepath.Join(root, PublicDir, "cds.json"))
+	published, err := refvalues.Load(filepath.Join(root, PublicDir, "ta.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,12 +117,12 @@ func TestPrepareRefusesAnUnrenderableTAPolicy(t *testing.T) {
 // this node's, with one entry per vCPU count it may boot with.
 func externalTAPin(t *testing.T) []byte {
 	t.Helper()
-	launchFile := []byte("schemaVersion: c8s-cds/v1\n")
+	launchFile := []byte("schemaVersion: c8s-ta/v1\n")
 	data, err := refvalues.Format(refvalues.ReferenceValues{
 		Family: teetypes.FamilySNP,
 		Images: []remote.ImagePin{
-			{Name: "cds-smp4", Digest: bytes.Repeat([]byte{0x50}, 48), LaunchFile: launchFile},
-			{Name: "cds-smp8", Digest: bytes.Repeat([]byte{0x51}, 48), LaunchFile: launchFile},
+			{Name: "ta-smp4", Digest: bytes.Repeat([]byte{0x50}, 48), LaunchFile: launchFile},
+			{Name: "ta-smp8", Digest: bytes.Repeat([]byte{0x51}, 48), LaunchFile: launchFile},
 		},
 	})
 	if err != nil {

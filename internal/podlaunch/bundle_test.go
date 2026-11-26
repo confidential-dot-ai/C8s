@@ -18,7 +18,7 @@ func podBundleOptions(t *testing.T) PodBundleOptions {
 		ClusterID:         "cluster-one",
 		ManifestPath:      writeManifest(t, "tdx"),
 		NodeName:          "p-1",
-		TAAddress:         "cds.example.org:8443",
+		TAAddress:         "ta.example.org:8443",
 		TAImagePolicyPath: writePodTAPin(t),
 	}
 }
@@ -34,10 +34,10 @@ func TestNewPodBundleRefuses(t *testing.T) {
 		{"no node name", func(_ *testing.T, o *PodBundleOptions) { o.NodeName = "" }, "are required"},
 		{"missing Trust Authority policy", func(t *testing.T, o *PodBundleOptions) {
 			o.TAImagePolicyPath = filepath.Join(t.TempDir(), "absent.json")
-		}, "--cds-image-policy-file"},
+		}, "--ta-image-policy-file"},
 		{"Trust Authority policy is not a pin document", func(t *testing.T, o *PodBundleOptions) {
-			o.TAImagePolicyPath = writeFile(t, "cds.json", "not a policy")
-		}, "cds.measurements"},
+			o.TAImagePolicyPath = writeFile(t, "ta.json", "not a policy")
+		}, "ta.measurements"},
 		{"missing image manifest", func(t *testing.T, o *PodBundleOptions) {
 			o.ManifestPath = filepath.Join(t.TempDir(), "absent.json")
 		}, "--image-manifest"},

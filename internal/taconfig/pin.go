@@ -12,7 +12,7 @@ import (
 
 // pinName names the Trust Authority image in the pin document; entries are matched on
 // their measurements, never on the name.
-const pinName = "cds"
+const pinName = "ta"
 
 // ParsePlatform accepts a bare TEE family only: a cloud paravisor's launch
 // binding carries no file for a pin to bind.

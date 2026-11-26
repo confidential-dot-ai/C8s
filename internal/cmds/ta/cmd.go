@@ -1,4 +1,4 @@
-// Package cds implements the Trust Authority subcommand:
+// Package ta implements the Trust Authority subcommand:
 // the C8s trust root (attestation, mesh CA, leaf signing).
 package ta
 
@@ -29,9 +29,8 @@ const (
 func NewCmd() *cobra.Command {
 	var cfg config
 	cmd := &cobra.Command{
-		Use:     "ta",
-		Aliases: []string{"cds"},
-		Short:   "Run the Trust Authority",
+		Use:   "ta",
+		Short: "Run the Trust Authority",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runMeasuredConfig(cmd.Context(), cfg)
 		},
@@ -39,7 +38,7 @@ func NewCmd() *cobra.Command {
 
 	flags := cmd.Flags()
 
-	flags.StringVar(&cfg.configPath, "config", "", "path to the Trust Authority configuration document (c8s-cds/v1) this VM was launched with (REQUIRED). Trust Authority serves the cluster it describes only if a verified self-report binds the file byte for byte")
+	flags.StringVar(&cfg.configPath, "config", "", "path to the Trust Authority configuration document (c8s-ta/v1) this VM was launched with (REQUIRED). Trust Authority serves the cluster it describes only if a verified self-report binds the file byte for byte")
 	flags.StringVar(&cfg.host, "host", "0.0.0.0", "listen address; auto selects this VM's primary IPv4 address")
 	flags.IntVarP(&cfg.port, "port", "p", 8443, "listen port")
 	flags.StringVar(&cfg.logLevel, "log-level", "info", "log level: debug, info, warn, error")

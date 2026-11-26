@@ -75,13 +75,13 @@ const minRaftTimer = 5 * time.Millisecond
 func (t Timing) check() error {
 	switch {
 	case t.Heartbeat < 2*minRaftTimer:
-		return fmt.Errorf("cds-ha: a heartbeat of %s leaves a leader lease below %s", t.Heartbeat, minRaftTimer)
+		return fmt.Errorf("ta-ha: a heartbeat of %s leaves a leader lease below %s", t.Heartbeat, minRaftTimer)
 	case t.Election < t.Heartbeat:
-		return fmt.Errorf("cds-ha: an election timer of %s is shorter than the %s heartbeat", t.Election, t.Heartbeat)
+		return fmt.Errorf("ta-ha: an election timer of %s is shorter than the %s heartbeat", t.Election, t.Heartbeat)
 	case t.Tick >= controlDeadline:
-		return fmt.Errorf("cds-ha: a tick of %s outlasts the %s a replica waits for a peer's next control request", t.Tick, controlDeadline)
+		return fmt.Errorf("ta-ha: a tick of %s outlasts the %s a replica waits for a peer's next control request", t.Tick, controlDeadline)
 	case t.Lease < 3*t.Tick:
-		return fmt.Errorf("cds-ha: a read lease of %s is not three turns of a %s loop", t.Lease, t.Tick)
+		return fmt.Errorf("ta-ha: a read lease of %s is not three turns of a %s loop", t.Lease, t.Tick)
 	}
 	return nil
 }
@@ -125,15 +125,15 @@ func (c Config) resolve(ctx context.Context, entry string) ([]netip.AddrPort, er
 func (c Config) check() error {
 	switch {
 	case c.OperatorClockSkew < 0:
-		return errors.New("cds-ha: operator clock skew must be nonnegative")
+		return errors.New("ta-ha: operator clock skew must be nonnegative")
 	case len(c.LaunchFile) == 0:
-		return errors.New("cds-ha: a replica launches with the configuration file it booted")
+		return errors.New("ta-ha: a replica launches with the configuration file it booted")
 	case !c.Peer.IsValid() || c.Peer.Addr().IsUnspecified():
-		return fmt.Errorf("cds-ha: a replica launches with the address its peers dial, and %q is none", c.Peer)
+		return fmt.Errorf("ta-ha: a replica launches with the address its peers dial, and %q is none", c.Peer)
 	case c.Allowlist == nil || c.Secrets == nil || c.Ledger == nil:
-		return errors.New("cds-ha: a replica launches with its allowlist, secret and binding stores")
+		return errors.New("ta-ha: a replica launches with its allowlist, secret and binding stores")
 	case len(c.Replicas) == 0:
-		return errors.New("cds-ha: a replica launches with the replica set of its cluster")
+		return errors.New("ta-ha: a replica launches with the replica set of its cluster")
 	}
 	return c.Timing.check()
 }
@@ -314,7 +314,7 @@ func (n *Node) renewIdentity() {
 		return
 	}
 	if err := n.mintIdentity(); err != nil {
-		slog.Warn("cds-ha: this replica could not renew the evidence its peers admit it by", "error", err)
+		slog.Warn("ta-ha: this replica could not renew the evidence its peers admit it by", "error", err)
 	}
 }
 
@@ -325,7 +325,7 @@ func (n *Node) certificate() *tls.Certificate {
 // Start opens the peer port and starts Raft; Run drives the replica from there.
 func (n *Node) Start() error {
 	if n.raft != nil {
-		return errors.New("cds-ha: this replica is started")
+		return errors.New("ta-ha: this replica is started")
 	}
 	listener, err := net.Listen("tcp", n.cfg.Peer.String())
 	if err != nil {
@@ -384,7 +384,7 @@ func (n *Node) admits() []remote.ImagePin {
 	}
 	images, err := clusterImages(core, n.cfg.LaunchFile)
 	if err != nil {
-		slog.Error("cds-ha: this replica admits no peer: the cluster's Trust Authority images are none of this launch file's", "error", err)
+		slog.Error("ta-ha: this replica admits no peer: the cluster's Trust Authority images are none of this launch file's", "error", err)
 		return admitsNobody
 	}
 	return images
@@ -439,7 +439,7 @@ func (n *Node) raftConfig() *raft.Config {
 // raftLogger carries Raft's warnings into this process's log.
 func raftLogger() hclog.Logger {
 	return hclog.New(&hclog.LoggerOptions{
-		Name:        "cds-ha raft",
+		Name:        "ta-ha raft",
 		Level:       hclog.Warn,
 		DisableTime: true,
 		Output:      slog.NewLogLogger(slog.Default().Handler(), slog.LevelWarn).Writer(),
@@ -454,7 +454,7 @@ func raftLogger() hclog.Logger {
 // and closes the peer port before it returns.
 func (n *Node) Run(ctx context.Context) error {
 	if n.raft == nil {
-		return errors.New("cds-ha: this replica is not started")
+		return errors.New("ta-ha: this replica is not started")
 	}
 	defer n.stop()
 	stopWorkers := startWorkers(ctx,
@@ -528,7 +528,7 @@ func (n *Node) recheckPeers() {
 func (n *Node) stop() {
 	n.shutDownRaft()
 	if err := n.transport.Close(); err != nil {
-		slog.Error("cds-ha: this replica's peer port did not close", "error", err)
+		slog.Error("ta-ha: this replica's peer port did not close", "error", err)
 	}
 }
 
@@ -542,10 +542,10 @@ func (n *Node) shutDownRaft() {
 	select {
 	case err := <-stopped:
 		if err != nil {
-			slog.Error("cds-ha: this replica's Raft did not shut down", "error", err)
+			slog.Error("ta-ha: this replica's Raft did not shut down", "error", err)
 		}
 	case <-time.After(n.cfg.Timing.Apply):
-		slog.Error("cds-ha: this replica's Raft did not shut down; its goroutines are left running",
+		slog.Error("ta-ha: this replica's Raft did not shut down; its goroutines are left running",
 			"waited", n.cfg.Timing.Apply)
 	}
 }
@@ -566,7 +566,7 @@ func (n *Node) propose(e Entry) (Result, error) {
 		return res, err
 	}
 	if leadersOwn(e) {
-		return Result{}, errors.New("cds-ha: this replica does not lead the cluster")
+		return Result{}, errors.New("ta-ha: this replica does not lead the cluster")
 	}
 	return n.forward(entry)
 }
@@ -583,7 +583,7 @@ func (n *Node) commit(entry []byte) (Result, uint64, error) {
 	}
 	res, applied := committed.Response().(Result)
 	if !applied {
-		return Result{}, 0, fmt.Errorf("cds-ha: the state machine answered a %T", committed.Response())
+		return Result{}, 0, fmt.Errorf("ta-ha: the state machine answered a %T", committed.Response())
 	}
 	// A stop leaves the store command's result incomplete.
 	if res.Stop != nil {
@@ -598,10 +598,10 @@ func (n *Node) proposable(e Entry, entry []byte) error {
 		return err
 	}
 	if e.Kind != KindDecree && !n.fsm.ClusterState().Joined() {
-		return errors.New("cds-ha: this replica holds no cluster")
+		return errors.New("ta-ha: this replica holds no cluster")
 	}
 	if reason := n.fsm.Stuck(); reason != "" {
-		return errors.New("cds-ha: this replica stopped following the log: " + reason)
+		return errors.New("ta-ha: this replica stopped following the log: " + reason)
 	}
 	return n.fsm.Admit(entry)
 }

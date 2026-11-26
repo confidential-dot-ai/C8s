@@ -14,6 +14,7 @@ import (
 	nriimagepolicy "github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/nri-image-policy"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/podlaunch"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
@@ -47,7 +48,7 @@ func TestNodeImagePodRoleConfig_LoadsBaseAndPullAndEnforces(t *testing.T) {
 	if cfg.Mesh == nil || cfg.Pod == nil || len(cfg.Mesh.ExemptNamespaces) != 0 || len(cfg.Mesh.Roles) != 1 {
 		t.Fatal("pod-role config must keep the endpoint's mesh floor without node exemptions")
 	}
-	if cfg.Mesh.Roles[0].Name != workloadclaims.MeshRole || cfg.Mesh.Roles[0].UID != workloadclaims.MeshUID {
+	if cfg.Mesh.Roles[0].Name != allowlist.RoleMesh || cfg.Mesh.Roles[0].UID != workloadclaims.MeshUID {
 		t.Fatalf("mesh role = %+v", cfg.Mesh.Roles)
 	}
 	floor, err := nriimagepolicy.LoadMeshFloor(filepath.Join(root, "etc/nri/conf.d/image-policy.yaml"))
@@ -59,7 +60,7 @@ func TestNodeImagePodRoleConfig_LoadsBaseAndPullAndEnforces(t *testing.T) {
 	}
 	base := cfg.Allowlist.Base.Workloads
 	endpoint := base["c8s-mesh-endpoint"].Containers
-	if len(base) != 2 || base["app"].Containers[0].Role != "" || len(endpoint) != 1 || endpoint[0].Role != workloadclaims.MeshRole || endpoint[0].Digest.String() != nriimagepolicy.MeshImageDigest {
+	if len(base) != 2 || base["app"].Containers[0].Role != "" || len(endpoint) != 1 || endpoint[0].Role != allowlist.RoleMesh || endpoint[0].Digest.String() != nriimagepolicy.MeshImageDigest {
 		t.Fatalf("base = %+v, want signed app and measured endpoint", base)
 	}
 	// The endpoint starts only at the digest the worker floor's sync pinned.
@@ -125,7 +126,7 @@ func podRoleInputs(t *testing.T) (string, *podlaunch.AssignedPod) {
 	assigned := &podlaunch.AssignedPod{
 		Document: podlaunch.Document{
 			Role:                 podlaunch.Pod,
-			TA:                   cmdsutil.TA{Address: "cds.example.test:8443", Measurements: taPolicy},
+			TA:                   cmdsutil.TA{Address: "ta.example.test:8443", Measurements: taPolicy},
 			PodOperatorPublicKey: podKey,
 			Image:                podlaunch.Image{Platform: "tdx"},
 			Node:                 podlaunch.Node{Name: "p-pod"},

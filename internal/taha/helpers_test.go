@@ -36,7 +36,7 @@ const (
 	testCluster = "lane"
 	// launchFile stands in for the measured configuration every replica of
 	// the test cluster boots.
-	launchFile = "schemaVersion: c8s-cds/v1\nclusterID: lane\n"
+	launchFile = "schemaVersion: c8s-ta/v1\nclusterID: lane\n"
 	// testMember is the member id a replica minted at its start.
 	testMember = "ahn7yq4qnkwftxo6ihoyu2bxpi"
 )
@@ -248,7 +248,7 @@ func testPins(t *testing.T, digests ...byte) *tadecree.PinDocument {
 	images := make([]remote.ImagePin, 0, len(digests))
 	for _, digest := range digests {
 		images = append(images, remote.ImagePin{
-			Name:       fmt.Sprintf("cds-%02x", digest),
+			Name:       fmt.Sprintf("ta-%02x", digest),
 			Digest:     bytes.Repeat([]byte{digest}, refvalues.DigestSize),
 			LaunchFile: []byte(launchFile),
 		})
@@ -301,7 +301,7 @@ func nodeImagesBoundTo(t *testing.T, launched []byte, digests ...byte) *tadecree
 // The peer fixtures: this cluster's image and launch file, and another of each.
 var (
 	testLaunchFile  = []byte(launchFile)
-	otherLaunchFile = []byte("schemaVersion: c8s-cds/v1\nclusterID: other\n")
+	otherLaunchFile = []byte("schemaVersion: c8s-ta/v1\nclusterID: other\n")
 
 	testImage  = strings.Repeat("a1", 48)
 	otherImage = strings.Repeat("b2", 48)

@@ -23,13 +23,13 @@ func AttestedCertFromDiscovery(d *types.DiscoveryDocument) (*x509.Certificate, [
 	if len(d.Attestation.Evidence) == 0 {
 		return nil, [64]byte{}, fmt.Errorf("discovery document carries no attestation.evidence")
 	}
-	block, _ := pem.Decode([]byte(d.CDSTLS.CertificatePEM))
+	block, _ := pem.Decode([]byte(d.TATLS.CertificatePEM))
 	if block == nil || block.Type != "CERTIFICATE" {
-		return nil, [64]byte{}, fmt.Errorf("discovery cds_tls.certificate_pem is not a PEM certificate")
+		return nil, [64]byte{}, fmt.Errorf("discovery ta_tls.certificate_pem is not a PEM certificate")
 	}
 	cert, err := x509.ParseCertificate(block.Bytes)
 	if err != nil {
-		return nil, [64]byte{}, fmt.Errorf("parse cds cert: %w", err)
+		return nil, [64]byte{}, fmt.Errorf("parse Trust Authority cert: %w", err)
 	}
 	challenge, err := base64.StdEncoding.DecodeString(d.Attestation.Challenge)
 	if err != nil {

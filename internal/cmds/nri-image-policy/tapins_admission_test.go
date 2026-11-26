@@ -10,8 +10,8 @@ import (
 )
 
 func TestNodePolicyMountAdmission(t *testing.T) {
-	const pins = "/run/node-cds-policy.json"
-	const address = "/run/node-cds-address"
+	const pins = "/run/node-ta-policy.json"
+	const address = "/run/node-ta-address"
 	for _, tc := range []struct {
 		name        string
 		destination string
@@ -58,7 +58,7 @@ func TestNodePolicyMountAdmission(t *testing.T) {
 		},
 		{
 			name:        "node address without inventory sockets",
-			destination: workloadclaims.CDSAddressPath,
+			destination: workloadclaims.TAAddressPath,
 			source:      address,
 			consumer:    workloadclaims.CertContainerName,
 			options:     []string{"rbind", "ro"},
@@ -67,7 +67,7 @@ func TestNodePolicyMountAdmission(t *testing.T) {
 		},
 		{
 			name:        "foreign address",
-			destination: workloadclaims.CDSAddressPath,
+			destination: workloadclaims.TAAddressPath,
 			source:      "/other-node/address",
 			consumer:    workloadclaims.CertContainerName,
 			options:     []string{"rbind", "ro"},
@@ -75,7 +75,7 @@ func TestNodePolicyMountAdmission(t *testing.T) {
 		},
 		{
 			name:        "writable address",
-			destination: workloadclaims.CDSAddressPath,
+			destination: workloadclaims.TAAddressPath,
 			source:      address,
 			consumer:    workloadclaims.CertContainerName,
 			options:     []string{"rbind", "rw"},
@@ -98,7 +98,7 @@ func TestNodePolicyMountAdmission(t *testing.T) {
 			p, _ := newCachedPlugin(&config{
 				Policy: policyConfig{Mode: ModeFailClosed},
 				Allowlist: allowlistConfig{
-					Pull: pullConfig{URL: "https://cds"},
+					Pull: pullConfig{URL: "https://ta"},
 				},
 			}, al)
 			p.SetReady()
@@ -120,7 +120,7 @@ func TestNodePolicyMountAdmission(t *testing.T) {
 			}
 			destination := tc.destination
 			if destination == "" {
-				destination = workloadclaims.CDSPinsPath
+				destination = workloadclaims.TAPinsPath
 			}
 			policy := &api.Mount{
 				Source:      tc.source,

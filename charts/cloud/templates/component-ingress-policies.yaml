@@ -76,7 +76,7 @@ spec:
     - Ingress
   ingress:
     # nginx's public ports, from anywhere: the Service and the host ports
-    # target them. Naming them leaves the cds-attest and allowlist-proxy
+    # target them. Naming them leaves the ta-attest and allowlist-proxy
     # sidecars — which bind pod loopback and are reached through nginx —
     # unreachable if one ever rebinds.
     - ports:

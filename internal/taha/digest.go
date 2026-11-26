@@ -41,7 +41,7 @@ func (d digest) MarshalText() ([]byte, error) {
 func (d *digest) UnmarshalText(text []byte) error {
 	raw, err := hex.DecodeString(string(text))
 	if err != nil || len(raw) != len(d) {
-		return fmt.Errorf("cds-ha: %q is no SHA-256 digest", text)
+		return fmt.Errorf("ta-ha: %q is no SHA-256 digest", text)
 	}
 	*d = digest(raw)
 	return nil
@@ -195,7 +195,7 @@ func (d *digestLog) disagreesWith(p Point) bool {
 }
 
 // Separates the state digest from every other hash of the same bytes.
-const coreDigestDomain = "c8s-cds-ha-state-v1"
+const coreDigestDomain = "c8s-ta-ha-state-v1"
 
 // The state around the stores: ClusterState, which carries the mesh CA certificate,
 // then the mesh CA key and the decree record.

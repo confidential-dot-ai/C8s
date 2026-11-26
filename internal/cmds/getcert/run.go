@@ -134,8 +134,7 @@ consumers that read that volume.`,
 
 	flags := cmd.Flags()
 	cmdsutil.BindTAImagePolicyFlags(flags, &cfg.MeasurementsConfig, &cfg.MeasurementsConfigJSON, "pins the Trust Authority endpoint, every entry bound to the launch file that Trust Authority runs on; required unless the node pins Trust Authority")
-	flags.StringVar(&cfg.TAURL, "ta-url", "", "URL of the Trust Authority (e.g. https://cds:8443); refused in an injected sidecar, which dials the endpoint the node mounts")
-	cmdsutil.AliasFlag(flags, "ta-url", "cds-url")
+	flags.StringVar(&cfg.TAURL, "ta-url", "", "URL of the Trust Authority (e.g. https://ta:8443); refused in an injected sidecar, which dials the endpoint the node mounts")
 	flags.StringVar(&cfg.AttestationApiURL, "attestation-api-url", "", "URL of the node-local attestation-api (http://localhost:8400, or unix:// plus the on-node socket path the chart wires)"+cmdsutil.NodeAddressHelp)
 	flags.StringVar(&cfg.CertPath, "cert-path", "", "Path where the certificate chain PEM of the published generation is read")
 	flags.StringVar(&cfg.CAPath, "ca-path", "", "Path where the mesh CA PEM of the published generation is read; must be in the --cert-path directory")
@@ -152,9 +151,8 @@ consumers that read that volume.`,
 	flags.DurationVar(&cfg.CAWatchInterval, "ca-watch-interval", defaultTAWatchInterval, "Poll Trust Authority at this interval and renew when the published certificate falls behind it. Renew immediately when the Trust Authority serves a renewed certificate under the pod's bound CA key. A replacement CA key requires pod recreation. With a workload identity assertion, renew after a random delay of up to half the interval when the allowlist policy Trust Authority serves no longer matches the snapshot stamped in the leaf, which strict clients reject. The default applies only with --renew-interval; otherwise the watch is off (0 = disabled, otherwise minimum 1s)")
 	flags.StringVar(&cfg.DiscoveryOutPath, "discovery-out", "", "Path to write JSON discovery metadata for the issued certificate and attestation evidence")
 	flags.StringVar(&cfg.DiscoveryTACertURL, "discovery-ta-cert-url", "", "Public URL path where the Trust Authority certificate PEM is served")
-	cmdsutil.AliasFlag(flags, "discovery-ta-cert-url", "discovery-cds-cert-url")
 	flags.StringVar(&cfg.DiscoveryMeshCAURL, "discovery-mesh-ca-url", "", "Public URL path where the mesh CA PEM is served")
-	flags.StringVar(&cfg.DiscoveryPublicTLSMode, "discovery-public-tls-mode", "cds", "Public TLS mode to report in discovery metadata (cds, webpki, or acme)")
+	flags.StringVar(&cfg.DiscoveryPublicTLSMode, "discovery-public-tls-mode", "ta", "Public TLS mode to report in discovery metadata (ta, webpki, or acme)")
 	flags.StringVar(&cfg.DiscoveryPublicTLSModeFile, "discovery-public-tls-mode-file", "", "File holding the public TLS mode to report in discovery metadata, read at start; replaces --discovery-public-tls-mode")
 	flags.StringVar(&cfg.DiscoveryPublicTLSHostnamesFile, "discovery-public-tls-hostnames-file", "", "File holding launch-selected public hostnames; report the first name in discovery without changing the Trust Authority certificate SAN")
 	flags.DurationVar(&cfg.WorkloadClaimsTimeout, "workload-claims-timeout", 5*time.Second, "Timeout for the admission inventory request")
@@ -212,13 +210,13 @@ func taHTTPClient(ctx context.Context, cfg config) (*http.Client, error) {
 	}
 	client, err := armtls.NewRefreshingHTTPClient(pins, cfg.AttestationApiURL)
 	if err != nil {
-		return nil, fmt.Errorf("cds armTLS client: %w", err)
+		return nil, fmt.Errorf("the Trust Authority armTLS client: %w", err)
 	}
 	return client, nil
 }
 
 func taPins(ctx context.Context, cfg config) (armtls.PinSource, error) {
-	return cmdsutil.ClientTAPins(ctx, workloadclaims.CDSPinsPath,
+	return cmdsutil.ClientTAPins(ctx, workloadclaims.TAPinsPath,
 		cmdsutil.ImagePolicySource{
 			File: cfg.MeasurementsConfig,
 			JSON: cfg.MeasurementsConfigJSON,
@@ -240,7 +238,7 @@ func run(ctx context.Context, cfg config) error {
 	if err := resolveDiscoveryPublicTLSHostname(&cfg); err != nil {
 		return err
 	}
-	taURL, fromNode, err := cmdsutil.ResolveTAURL(workloadclaims.CDSAddressPath, cfg.TAURL)
+	taURL, fromNode, err := cmdsutil.ResolveTAURL(workloadclaims.TAAddressPath, cfg.TAURL)
 	if err != nil {
 		return err
 	}
@@ -248,7 +246,7 @@ func run(ctx context.Context, cfg config) error {
 	if cfg.TAURL == "" {
 		return errors.New("--ta-url is required: no node hands this client a Trust Authority endpoint")
 	}
-	slog.Info("starting get-cert", "san", cfg.SAN, "cds_url", cfg.TAURL, "cds_from_node", fromNode)
+	slog.Info("starting get-cert", "san", cfg.SAN, "ta_url", cfg.TAURL, "ta_from_node", fromNode)
 
 	rawAttestationURL := cfg.AttestationApiURL
 	attestationURL, err := cmdsutil.ExpandHostIP(rawAttestationURL)
@@ -446,7 +444,7 @@ func obtainCert(ctx context.Context, cfg config, client attestclient.Client, cre
 	}
 	nonce, err := base64.StdEncoding.DecodeString(challenge.Challenge)
 	if err != nil {
-		return fmt.Errorf("invalid challenge from cds: %w", err)
+		return fmt.Errorf("invalid challenge from the Trust Authority: %w", err)
 	}
 
 	var sandboxToken json.RawMessage
@@ -476,7 +474,7 @@ func obtainCert(ctx context.Context, cfg config, client attestclient.Client, cre
 		return err
 	}
 
-	slog.Info("requesting certificate from cds", "cds_url", cfg.TAURL, "san", cfg.SAN, "instance_id", creds.instanceID)
+	slog.Info("requesting certificate from the Trust Authority", "ta_url", cfg.TAURL, "san", cfg.SAN, "instance_id", creds.instanceID)
 	result, err := client.ObtainCertificateWithSandboxContext(ctx, cfg.AttestationApiURL, string(csrPEM), challenge.Challenge, sandboxToken)
 	if err != nil {
 		return fmt.Errorf("attestation failed: %w", err)
@@ -539,7 +537,7 @@ func validateConfig(cfg config) error {
 	if err := cmdsutil.ValidateAttestationAPIURL("--attestation-api-url", cfg.AttestationApiURL); err != nil {
 		return err
 	}
-	if err := cmdsutil.RequireNodeVerifier(workloadclaims.CDSPinsPath, workloadclaims.AttestationAPISocket, cfg.AttestationApiURL); err != nil {
+	if err := cmdsutil.RequireNodeVerifier(workloadclaims.TAPinsPath, workloadclaims.AttestationAPISocket, cfg.AttestationApiURL); err != nil {
 		return err
 	}
 	if cfg.SAN != "" {
@@ -549,9 +547,9 @@ func validateConfig(cfg config) error {
 	}
 	if cfg.DiscoveryOutPath != "" {
 		switch discoveryPublicTLSMode(cfg.DiscoveryPublicTLSMode) {
-		case types.FrontDoorModeCDS, types.FrontDoorModeWebPKI, types.FrontDoorModeACME:
+		case types.FrontDoorModeTA, types.FrontDoorModeWebPKI, types.FrontDoorModeACME:
 		default:
-			return fmt.Errorf("%w: --discovery-public-tls-mode must be 'cds', 'webpki', or 'acme', got %q", errInvalidDiscoveryPublicTLSMode, cfg.DiscoveryPublicTLSMode)
+			return fmt.Errorf("%w: --discovery-public-tls-mode must be 'ta', 'webpki', or 'acme', got %q", errInvalidDiscoveryPublicTLSMode, cfg.DiscoveryPublicTLSMode)
 		}
 	}
 	// Each tick is a Trust Authority round-trip, so a sub-second watch is never what an
@@ -808,7 +806,7 @@ func buildDiscoveryDocument(cfg config, result attestclient.CertificateResult) (
 			Hostname: hostname,
 			Mode:     discoveryPublicTLSMode(cfg.DiscoveryPublicTLSMode),
 		},
-		CDSTLS: types.CDSTLSDiscovery{
+		TATLS: types.TATLSDiscovery{
 			CertificatePEM:    result.Certificate,
 			CertificateSHA256: hex.EncodeToString(fingerprint[:]),
 			CertificateURL:    cfg.DiscoveryTACertURL,
@@ -836,7 +834,7 @@ func resolveDiscoveryPublicTLSHostname(cfg *config) error {
 	}
 	names := strings.Fields(string(data))
 	if len(names) == 0 {
-		if discoveryPublicTLSMode(cfg.DiscoveryPublicTLSMode) != types.FrontDoorModeCDS {
+		if discoveryPublicTLSMode(cfg.DiscoveryPublicTLSMode) != types.FrontDoorModeTA {
 			return fmt.Errorf("--discovery-public-tls-hostnames-file: public TLS mode requires a hostname")
 		}
 		cfg.DiscoveryPublicTLSHostname = cfg.SAN
@@ -847,7 +845,7 @@ func resolveDiscoveryPublicTLSHostname(cfg *config) error {
 			return fmt.Errorf("--discovery-public-tls-hostnames-file: %w", err)
 		}
 	}
-	if discoveryPublicTLSMode(cfg.DiscoveryPublicTLSMode) == types.FrontDoorModeCDS {
+	if discoveryPublicTLSMode(cfg.DiscoveryPublicTLSMode) == types.FrontDoorModeTA {
 		cfg.DiscoveryPublicTLSHostname = cfg.SAN
 	} else {
 		cfg.DiscoveryPublicTLSHostname = names[0]
@@ -857,7 +855,7 @@ func resolveDiscoveryPublicTLSHostname(cfg *config) error {
 
 func discoveryPublicTLSMode(mode string) types.FrontDoorMode {
 	if mode == "" {
-		return types.FrontDoorModeCDS
+		return types.FrontDoorModeTA
 	}
 	return types.FrontDoorMode(mode)
 }

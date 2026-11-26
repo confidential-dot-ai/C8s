@@ -7,16 +7,16 @@ import (
 	"strings"
 )
 
-// Key identifies a (digest, argv, env, mounts) admission in the
+// Key identifies a (digest, role, argv, env, mounts) admission in the
 // cumulative inventory. Host source commitments and access modes are included in identity.
 // The framing must be injective: a collision erases historical evidence and can
 // allow a sandbox to match a workload it did not actually run.
 //
-// Role is outside the key: the node's measured base is fixed for its life, so
-// the role is a function of the fields above.
+// Role is part of the key: two admissions of one launch under different roles
+// are two records.
 func (c SandboxContainer) Key() string {
 	var key strings.Builder
-	fmt.Fprintf(&key, "digest=%q argv=%q env=", c.Digest, c.Argv)
+	fmt.Fprintf(&key, "digest=%q role=%q argv=%q env=", c.Digest, c.Role, c.Argv)
 	if c.Env == nil {
 		key.WriteString("nil")
 	} else {

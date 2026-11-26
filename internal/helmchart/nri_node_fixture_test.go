@@ -77,7 +77,7 @@ func newNodeFixture(t *testing.T, containerdConfig string) *nodeFixture {
 		root:              filepath.Join(dir, "host"),
 		bin:               filepath.Join(dir, "bin"),
 		log:               filepath.Join(dir, "calls.log"),
-		taDir:             filepath.Join(dir, "cds"),
+		taDir:             filepath.Join(dir, "ta"),
 		podRoot:           filepath.Join(dir, "pod"),
 		pluginRunning:     filepath.Join(dir, "plugin-running"),
 		clock:             filepath.Join(dir, "clock"),
@@ -95,8 +95,8 @@ func newNodeFixture(t *testing.T, containerdConfig string) *nodeFixture {
 	}
 	writeTestFile(t, n.hostPath(nodeContainerdTOML), containerdConfig)
 	writeTestFile(t, n.clock, "1000\n")
-	writeTestFile(t, filepath.Join(n.taDir, "cds-address"), baseCDSAddress)
-	writeTestFile(t, filepath.Join(n.taDir, "cds.json"), "{}\n")
+	writeTestFile(t, filepath.Join(n.taDir, "ta-address"), baseTAAddress)
+	writeTestFile(t, filepath.Join(n.taDir, "ta.json"), "{}\n")
 	for name, body := range nodeStubs {
 		stub := "#!/bin/sh\nprintf '%s\\n' \"" + name + " $*\" >> \"$CALLS\"\n" + body + "\n"
 		if err := os.WriteFile(filepath.Join(n.bin, name), []byte(stub), 0o755); err != nil {
@@ -137,8 +137,8 @@ func (n *nodeFixture) boot(t *testing.T) {
 // opens them by, which in a test are under the fixture's pod root.
 func (n *nodeFixture) localize(script string) string {
 	for _, r := range [][2]string{
-		{"\nboot_cds_address='", "\nboot_cds_address='" + n.podRoot},
-		{"\nboot_cds_pin='", "\nboot_cds_pin='" + n.podRoot},
+		{"\nboot_ta_address='", "\nboot_ta_address='" + n.podRoot},
+		{"\nboot_ta_pin='", "\nboot_ta_pin='" + n.podRoot},
 		{"\nboot_syslog='", "\nboot_syslog='" + n.podRoot},
 		{"/host/", n.root + "/"},
 		{"/host${", n.root + "${"},
@@ -168,8 +168,8 @@ func (n *nodeFixture) run(t *testing.T, script string, env ...string) (string, e
 		"PLUGIN_BIN=" + n.hostPath(nodePluginPath),
 		"HOST_PLUGIN_PATH=" + nodePluginPath,
 		"HOST_CONFIG_PATH=" + nodeBootConfigPath,
-		"HOST_CDS_ADDRESS_PATH=/etc/nri/conf.d/cds-address",
-		"HOST_CDS_PIN_PATH=/etc/nri/conf.d/cds.json",
+		"HOST_TA_ADDRESS_PATH=/etc/nri/conf.d/ta-address",
+		"HOST_TA_PIN_PATH=/etc/nri/conf.d/ta.json",
 		"HOST_CONTAINERD_DIR=/etc/containerd",
 		"HOST_CACHE_DIR=/var/lib/nri-image-policy",
 		"HOST_HEALTH_SOCKET=/run/nri-image-policy/health.sock",

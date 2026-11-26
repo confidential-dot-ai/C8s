@@ -374,7 +374,7 @@ func shadows(wide, narrow pkgallowlist.Workload) bool {
 // same digest, argv and mounts either left to the host by wide or pinned the
 // same way by both, and an env policy wide covers. For argv, an exact command whose
 // arguments are open also subsumes any exact command it is a prefix of — the
-// seeded component shape, `/c8s` under any args, subsumes `/c8s cds-attest`
+// seeded component shape, `/c8s` under any args, subsumes `/c8s ta-attest`
 // under any policy.
 func subsumes(wide, narrow pkgallowlist.Container) bool {
 	if wide.Digest != narrow.Digest {

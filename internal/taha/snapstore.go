@@ -43,7 +43,7 @@ func (s *snapStore) latest() (index uint64, size, atMS int64) {
 func (s *snapStore) Create(version raft.SnapshotVersion, index, term uint64, configuration raft.Configuration,
 	configurationIndex uint64, _ raft.Transport) (raft.SnapshotSink, error) {
 	if version < raft.SnapshotVersionMin || version > raft.SnapshotVersionMax {
-		return nil, fmt.Errorf("cds-ha: snapshot version %d is not one this replica writes", version)
+		return nil, fmt.Errorf("ta-ha: snapshot version %d is not one this replica writes", version)
 	}
 	return &snapSink{
 		store: s,
@@ -72,7 +72,7 @@ func (s *snapStore) Open(id string) (*raft.SnapshotMeta, io.ReadCloser, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if s.newest == nil || s.newest.meta.ID != id {
-		return nil, nil, fmt.Errorf("cds-ha: this replica holds no snapshot %s", id)
+		return nil, nil, fmt.Errorf("ta-ha: this replica holds no snapshot %s", id)
 	}
 	meta := s.newest.meta
 	// A snapshot the store holds is never written again.
@@ -99,7 +99,7 @@ func (k *snapSink) Write(p []byte) (int, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	if k.done {
-		return 0, errors.New("cds-ha: this snapshot is written; it takes no more")
+		return 0, errors.New("ta-ha: this snapshot is written; it takes no more")
 	}
 	return k.buf.Write(p)
 }

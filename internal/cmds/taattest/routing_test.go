@@ -60,7 +60,7 @@ func (c *testClock) Advance(d time.Duration) {
 	c.now = c.now.Add(d)
 }
 
-// routedServer is a cds-attest server whose tunnel routes by a manifest,
+// routedServer is a ta-attest server whose tunnel routes by a manifest,
 // with a workload backend "web" holding a named leaf from the mesh CA. Its
 // /big answers with bigResponseBytes.
 type routedServer struct {
@@ -132,7 +132,7 @@ func newRoutedServer(t *testing.T, opts ...func(*routing.ProxyConfig, *Config)) 
 	srvCfg := Config{
 		Logger:          slog.New(slog.DiscardHandler),
 		Evidence:        fixedEvidence{},
-		FrontDoorMode:   types.FrontDoorModeCDS,
+		FrontDoorMode:   types.FrontDoorModeTA,
 		ServingCertFile: volumeFile(meshDir, "tls.crt"),
 		// The attestation endpoints bind the leaf the router dials with, as
 		// the chart mounts one credential for both.
@@ -539,7 +539,7 @@ func TestCheckRoutingFlags(t *testing.T) {
 	base := config{attestationAPIURL: "http://127.0.0.1:9"}
 	routed := func(edit func(*config)) config {
 		c := base
-		c.routing = routingConfig{taURL: "https://cds:8443", pollInterval: time.Second, backendTimeout: time.Hour, host: "127.0.0.1", port: 8802}
+		c.routing = routingConfig{taURL: "https://ta:8443", pollInterval: time.Second, backendTimeout: time.Hour, host: "127.0.0.1", port: 8802}
 		if edit != nil {
 			edit(&c)
 		}
@@ -551,9 +551,9 @@ func TestCheckRoutingFlags(t *testing.T) {
 		wantSub string
 	}{
 		{"routed", routed(nil), ""},
-		{"no cds", routed(func(c *config) { c.routing.taURL = "" }), "--ta-url is required"},
+		{"no Trust Authority", routed(func(c *config) { c.routing.taURL = "" }), "--ta-url is required"},
 		{"tunnel budget under one request", routed(func(c *config) { c.routing.tunnelBudget = quantityFlag{bytes: oneRequestBudget - 1, set: true} }), "--tunnel-budget"},
-		{"cds without attestation api", routed(func(c *config) { c.attestationAPIURL = "" }), "--attestation-api-url"},
+		{"Trust Authority without attestation api", routed(func(c *config) { c.attestationAPIURL = "" }), "--attestation-api-url"},
 		{"non-loopback routing host", routed(func(c *config) { c.routing.host = "0.0.0.0" }), "loopback"},
 		{"routing port above 65535", routed(func(c *config) { c.routing.port = 65536 }), "--routing-port must be between"},
 		{"negative routing port", routed(func(c *config) { c.routing.port = -1 }), "--routing-port must be between"},
@@ -561,7 +561,7 @@ func TestCheckRoutingFlags(t *testing.T) {
 		{"zero backend timeout", routed(func(c *config) { c.routing.backendTimeout = 0 }), "--backend-timeout"},
 		{"negative backend timeout", routed(func(c *config) { c.routing.backendTimeout = -time.Second }), "--backend-timeout"},
 		{"publish routes", routed(func(c *config) { c.routing.publish = true }), ""},
-		{"publish routes without cds", routed(func(c *config) { c.routing.publish = true; c.routing.taURL = "" }), "--publish-routes requires --ta-url"},
+		{"publish routes without a Trust Authority", routed(func(c *config) { c.routing.publish = true; c.routing.taURL = "" }), "--publish-routes requires --ta-url"},
 		{"measured policies", routed(func(c *config) { c.measuredPolicies = "/run/nri/measured-policies" }), ""},
 		{"default reserved paths", routed(func(c *config) { c.routing.reservedPaths = defaultReservedPaths }), ""},
 		{"reserved path /a//b", routed(func(c *config) { c.routing.reservedPaths = []string{"/ok", "/a//b"} }), "--reserved-paths"},
@@ -587,7 +587,7 @@ func TestCheckRoutingFlags(t *testing.T) {
 }
 
 func TestW6OperatorKeySource(t *testing.T) {
-	ta, err := routing.NewTAClient("https://cds:8443", http.DefaultClient)
+	ta, err := routing.NewTAClient("https://ta:8443", http.DefaultClient)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -646,7 +646,7 @@ func TestRoutingRefusesAnUnpinnedTA(t *testing.T) {
 	cfg := routedRunConfig(t, freePort(t))
 	cfg.routing.imagePolicyFile = ""
 	if _, err := newRoutingEngine(t.Context(), cfg, NewBindings(), slog.New(slog.DiscardHandler)); !errors.Is(err, cmdsutil.ErrTAPinUnbound) {
-		t.Fatalf("newRoutingEngine() = %v, want errors.Is cmdsutil.ErrCDSPinUnbound", err)
+		t.Fatalf("newRoutingEngine() = %v, want errors.Is cmdsutil.ErrTAPinUnbound", err)
 	}
 }
 
@@ -672,7 +672,7 @@ func TestRoutingFlagDefaults(t *testing.T) {
 	}
 }
 
-// TestRunRoutingListenerBeforeFirstApply runs cds-attest against a Trust Authority that
+// TestRunRoutingListenerBeforeFirstApply runs ta-attest against a Trust Authority that
 // cannot be reached: the routing listener answers 503 (A2) while readiness
 // stays 200.
 func TestRunRoutingListenerBeforeFirstApply(t *testing.T) {
@@ -783,7 +783,7 @@ func TestCheckVerifierEndpoint(t *testing.T) {
 // does not cost it the route manifest. Where the node mounts none, its own
 // --image-policy-file stands.
 func TestTheRouteSourceFollowsTheNodePins(t *testing.T) {
-	mounted := filepath.Join(t.TempDir(), "router-cds-pins.json")
+	mounted := filepath.Join(t.TempDir(), "router-ta-pins.json")
 	if err := os.WriteFile(mounted, []byte(testutil.TAPinDocument(testutil.NextTAImage, testutil.TALaunchFile)), 0o644); err != nil {
 		t.Fatal(err)
 	}

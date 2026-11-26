@@ -70,7 +70,7 @@ func launchDigestOf(digest byte) string {
 }
 
 // testReplicaEntry is the replica entry every replica's discovery resolves.
-const testReplicaEntry = "replicas.cds.test"
+const testReplicaEntry = "replicas.ta.test"
 
 // liveReplica is one replica process: its attestation-api and its node.
 type liveReplica struct {

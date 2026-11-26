@@ -24,7 +24,7 @@ func TestIdentityTranscriptHashBindsEveryField(t *testing.T) {
 	leaf := []byte("leaf-der")
 	ca := []byte("ca-der")
 	route := bytes.Repeat([]byte{0x99}, RouteDigestBytes)
-	const mode = "cds"
+	const mode = "ta"
 
 	base, err := IdentityTranscriptHash(mode, ek, ct, sessionID, nonce, leaf, ca, route)
 	if err != nil {
@@ -33,7 +33,7 @@ func TestIdentityTranscriptHashBindsEveryField(t *testing.T) {
 	if len(base) != sha512.Size384 {
 		t.Fatalf("transcript hash length = %d, want %d", len(base), sha512.Size384)
 	}
-	const vector = "90555fc4be6af7df26403a39bd747b42504bcca774d9f3d40a2028058631b4011c3efa8f7d615da588de1cc4a38fbf7f"
+	const vector = "64e9d444752e41d52945ed9957d78fb4a9895fd852fcd14ff940976ddfa980e45865367ba3301e56524b6719fa977076"
 	if hex.EncodeToString(base) != vector {
 		t.Fatalf("cross-language transcript vector = %x, want %s", base, vector)
 	}
@@ -72,7 +72,7 @@ func TestLBTranscriptHashBindsEveryField(t *testing.T) {
 	leaf := []byte("leaf-der")
 	ca := []byte("ca-der")
 	route := bytes.Repeat([]byte{0x99}, RouteDigestBytes)
-	const mode = "cds"
+	const mode = "ta"
 
 	base, err := LBTranscriptHash(mode, nonce, serving, leaf, ca, route)
 	if err != nil {
@@ -122,13 +122,13 @@ func TestLBTranscriptHashValidatesShape(t *testing.T) {
 		wantErr                  string
 	}{
 		{name: "mode empty", nonce: nonce, serving: []byte{1}, leaf: []byte{2}, ca: []byte{3}, route: route, wantErr: "lb transcript requires a front-door mode"},
-		{name: "nonce short", mode: "cds", nonce: make([]byte, 16), serving: []byte{1}, leaf: []byte{2}, ca: []byte{3}, route: route, wantErr: "lb transcript nonce must be 32 bytes, got 16"},
-		{name: "nonce long", mode: "cds", nonce: make([]byte, 33), serving: []byte{1}, leaf: []byte{2}, ca: []byte{3}, route: route, wantErr: "lb transcript nonce must be 32 bytes, got 33"},
-		{name: "serving leaf empty", mode: "cds", nonce: nonce, leaf: []byte{2}, ca: []byte{3}, route: route, wantErr: "lb transcript requires serving leaf, mesh leaf, and CA certificates"},
-		{name: "mesh leaf empty", mode: "cds", nonce: nonce, serving: []byte{1}, ca: []byte{3}, route: route, wantErr: "lb transcript requires serving leaf, mesh leaf, and CA certificates"},
-		{name: "ca empty", mode: "cds", nonce: nonce, serving: []byte{1}, leaf: []byte{2}, route: route, wantErr: "lb transcript requires serving leaf, mesh leaf, and CA certificates"},
-		{name: "route digest empty", mode: "cds", nonce: nonce, serving: []byte{1}, leaf: []byte{2}, ca: []byte{3}, wantErr: "lb transcript route digest must be 32 bytes, got 0"},
-		{name: "route digest short", mode: "cds", nonce: nonce, serving: []byte{1}, leaf: []byte{2}, ca: []byte{3}, route: make([]byte, 31), wantErr: "lb transcript route digest must be 32 bytes, got 31"},
+		{name: "nonce short", mode: "ta", nonce: make([]byte, 16), serving: []byte{1}, leaf: []byte{2}, ca: []byte{3}, route: route, wantErr: "lb transcript nonce must be 32 bytes, got 16"},
+		{name: "nonce long", mode: "ta", nonce: make([]byte, 33), serving: []byte{1}, leaf: []byte{2}, ca: []byte{3}, route: route, wantErr: "lb transcript nonce must be 32 bytes, got 33"},
+		{name: "serving leaf empty", mode: "ta", nonce: nonce, leaf: []byte{2}, ca: []byte{3}, route: route, wantErr: "lb transcript requires serving leaf, mesh leaf, and CA certificates"},
+		{name: "mesh leaf empty", mode: "ta", nonce: nonce, serving: []byte{1}, ca: []byte{3}, route: route, wantErr: "lb transcript requires serving leaf, mesh leaf, and CA certificates"},
+		{name: "ca empty", mode: "ta", nonce: nonce, serving: []byte{1}, leaf: []byte{2}, route: route, wantErr: "lb transcript requires serving leaf, mesh leaf, and CA certificates"},
+		{name: "route digest empty", mode: "ta", nonce: nonce, serving: []byte{1}, leaf: []byte{2}, ca: []byte{3}, wantErr: "lb transcript route digest must be 32 bytes, got 0"},
+		{name: "route digest short", mode: "ta", nonce: nonce, serving: []byte{1}, leaf: []byte{2}, ca: []byte{3}, route: make([]byte, 31), wantErr: "lb transcript route digest must be 32 bytes, got 31"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := LBTranscriptHash(tc.mode, tc.nonce, tc.serving, tc.leaf, tc.ca, tc.route)
@@ -198,14 +198,14 @@ func TestIdentityTranscriptHashValidatesShape(t *testing.T) {
 		wantErr                  string
 	}{
 		{name: "mode empty", ek: ek, ct: ct, sessionID: id, nonce: nonce, leaf: []byte{1}, ca: []byte{2}, route: route, wantErr: "identity transcript requires a front-door mode"},
-		{name: "ek", mode: "cds", ek: make([]byte, 1), ct: ct, sessionID: id, nonce: nonce, leaf: []byte{1}, ca: []byte{2}, route: route, wantErr: "identity transcript X-Wing key must be 1216 bytes, got 1"},
-		{name: "ct", mode: "cds", ek: ek, ct: make([]byte, 1), sessionID: id, nonce: nonce, leaf: []byte{1}, ca: []byte{2}, route: route, wantErr: "identity transcript X-Wing ciphertext must be 1120 bytes, got 1"},
-		{name: "session id", mode: "cds", ek: ek, ct: ct, sessionID: make([]byte, 1), nonce: nonce, leaf: []byte{1}, ca: []byte{2}, route: route, wantErr: "identity transcript session id must be 16 bytes, got 1"},
-		{name: "nonce", mode: "cds", ek: ek, ct: ct, sessionID: id, nonce: make([]byte, 16), leaf: []byte{1}, ca: []byte{2}, route: route, wantErr: "identity transcript nonce must be 32 bytes, got 16"},
-		{name: "leaf", mode: "cds", ek: ek, ct: ct, sessionID: id, nonce: nonce, ca: []byte{2}, route: route, wantErr: "identity transcript requires leaf and CA certificates"},
-		{name: "ca", mode: "cds", ek: ek, ct: ct, sessionID: id, nonce: nonce, leaf: []byte{1}, route: route, wantErr: "identity transcript requires leaf and CA certificates"},
-		{name: "route digest empty", mode: "cds", ek: ek, ct: ct, sessionID: id, nonce: nonce, leaf: []byte{1}, ca: []byte{2}, wantErr: "identity transcript route digest must be 32 bytes, got 0"},
-		{name: "route digest long", mode: "cds", ek: ek, ct: ct, sessionID: id, nonce: nonce, leaf: []byte{1}, ca: []byte{2}, route: make([]byte, 48), wantErr: "identity transcript route digest must be 32 bytes, got 48"},
+		{name: "ek", mode: "ta", ek: make([]byte, 1), ct: ct, sessionID: id, nonce: nonce, leaf: []byte{1}, ca: []byte{2}, route: route, wantErr: "identity transcript X-Wing key must be 1216 bytes, got 1"},
+		{name: "ct", mode: "ta", ek: ek, ct: make([]byte, 1), sessionID: id, nonce: nonce, leaf: []byte{1}, ca: []byte{2}, route: route, wantErr: "identity transcript X-Wing ciphertext must be 1120 bytes, got 1"},
+		{name: "session id", mode: "ta", ek: ek, ct: ct, sessionID: make([]byte, 1), nonce: nonce, leaf: []byte{1}, ca: []byte{2}, route: route, wantErr: "identity transcript session id must be 16 bytes, got 1"},
+		{name: "nonce", mode: "ta", ek: ek, ct: ct, sessionID: id, nonce: make([]byte, 16), leaf: []byte{1}, ca: []byte{2}, route: route, wantErr: "identity transcript nonce must be 32 bytes, got 16"},
+		{name: "leaf", mode: "ta", ek: ek, ct: ct, sessionID: id, nonce: nonce, ca: []byte{2}, route: route, wantErr: "identity transcript requires leaf and CA certificates"},
+		{name: "ca", mode: "ta", ek: ek, ct: ct, sessionID: id, nonce: nonce, leaf: []byte{1}, route: route, wantErr: "identity transcript requires leaf and CA certificates"},
+		{name: "route digest empty", mode: "ta", ek: ek, ct: ct, sessionID: id, nonce: nonce, leaf: []byte{1}, ca: []byte{2}, wantErr: "identity transcript route digest must be 32 bytes, got 0"},
+		{name: "route digest long", mode: "ta", ek: ek, ct: ct, sessionID: id, nonce: nonce, leaf: []byte{1}, ca: []byte{2}, route: make([]byte, 48), wantErr: "identity transcript route digest must be 32 bytes, got 48"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := IdentityTranscriptHash(tc.mode, tc.ek, tc.ct, tc.sessionID, tc.nonce, tc.leaf, tc.ca, tc.route)

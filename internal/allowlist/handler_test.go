@@ -98,8 +98,8 @@ func testAllowlistApp(t *testing.T) (http.Handler, *readiness.Checker, *operator
 	return allowlistTestRouter(wh, checker.Ready), &checker, signer
 }
 
-// allowlistTestRouter mounts the allowlist routes on a chi router, as the cds
-// router serves them.
+// allowlistTestRouter mounts the allowlist routes on a chi router, as the Trust
+// Authority router serves them.
 func allowlistTestRouter(wh allowlist.Handler, ready attestation.ReadinessFunc) http.Handler {
 	r := chi.NewRouter()
 	r.Get("/readyz", attestation.HandleReadyz(ready))
@@ -651,7 +651,8 @@ func TestAllowlistListAnswers304ToTheServedTag(t *testing.T) {
 // store's at the same version (a cluster cut over to), an earlier document of
 // the same store, and the weak version tag earlier releases served.
 func TestAllowlistListServesTheDocumentToAnyOtherTag(t *testing.T) {
-	previous, current := openInMemory(t), openInMemory(t)
+	previous := openInMemory(t)
+	current := openInMemory(t)
 	seedEntry(t, previous, "inference-worker-1", digestA)
 	seedEntry(t, current, "web", digestMissing)
 	_, previousVersion, _ := previous.LoadAll()
@@ -751,5 +752,26 @@ func TestAllowlistHandlersReturn500OnStoreFailure(t *testing.T) {
 				t.Fatalf("got status %d, want 500", rec.Code)
 			}
 		})
+	}
+}
+
+// A poller learns how long the leaves the Trust Authority issues live, on the
+// document and on a 304: it bounds how stale the policy behind a live
+// certificate can be.
+func TestAllowlistListReportsTheCertificateLifetime(t *testing.T) {
+	store := openInMemory(t)
+	seedEntry(t, store, "web", digestA)
+	h := allowlist.Handler{Allowlist: store, CertificateLifetime: 90 * time.Minute}
+
+	rec := list(h, "")
+	if got := rec.Header().Get(pkgallowlist.CertificateLifetimeHeader); got != "5400" {
+		t.Fatalf("%s = %q, want 5400", pkgallowlist.CertificateLifetimeHeader, got)
+	}
+	notModified := list(h, rec.Header().Get("ETag"))
+	if notModified.Code != http.StatusNotModified {
+		t.Fatalf("status = %d, want 304", notModified.Code)
+	}
+	if got := notModified.Header().Get(pkgallowlist.CertificateLifetimeHeader); got != "5400" {
+		t.Fatalf("304 %s = %q, want 5400", pkgallowlist.CertificateLifetimeHeader, got)
 	}
 }

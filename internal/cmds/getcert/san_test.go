@@ -40,7 +40,7 @@ func TestSANFileFailsBeforeNetworkOrOutputs(t *testing.T) {
 				TAURL:    "invalid",
 				CertPath: filepath.Join(root, "out", "cert.pem"),
 			})
-			if err == nil || strings.Contains(err.Error(), "cds-url") {
+			if err == nil || strings.Contains(err.Error(), "ta-url") {
 				t.Fatalf("did not reject SAN before client setup: %v", err)
 			}
 			if _, err := os.Stat(filepath.Join(root, "out")); !os.IsNotExist(err) {

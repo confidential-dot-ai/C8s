@@ -7,6 +7,7 @@ import (
 
 	"github.com/containerd/nri/pkg/api"
 
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
@@ -14,8 +15,8 @@ import (
 // read-only: the inventory's socket directory at
 // workloadclaims.SidecarSocketDir into the socket consumers
 // (workloadclaims.IsSocketConsumer) of an injected pod, the node's Trust Authority
-// attestation policy at workloadclaims.CDSPinsPath, and the Trust Authority endpoint it
-// dials at workloadclaims.CDSAddressPath. All are OCI-level replacements for a
+// attestation policy at workloadclaims.TAPinsPath, and the Trust Authority endpoint it
+// dials at workloadclaims.TAAddressPath. All are OCI-level replacements for a
 // pod-spec hostPath volume, which PodSecurity baseline and restricted would
 // reject. nil for every other container, and whenever the inventory is
 // disabled.
@@ -23,7 +24,7 @@ import (
 // The two policy mounts are what make the Trust Authority a client reaches trusted: it
 // reads compiled paths, so a pod cannot name another source and the control
 // plane cannot pass one as an argument. A container running as the credentials
-// identity that this node's measured base grants no such role is refused.
+// identity that this node's policy grants no such role is refused.
 func (c nodeCVM) containerMounts(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) (*api.ContainerAdjustment, error) {
 	p := c.p
 	if fetchesRouteManifest(pod, ctr) {
@@ -36,9 +37,9 @@ func (c nodeCVM) containerMounts(ctx context.Context, pod *api.PodSandbox, ctr *
 	if !holdsCredentialsIdentity(ctr) && !injected {
 		return nil, nil
 	}
-	if holdsCredentialsIdentity(ctr) && p.measuredRole(ctx, pod, ctr) != CredentialRole {
-		return nil, fmt.Errorf("container %q runs as the credentials identity (uid %d) but this node's measured base grants it no %s role, so it would reach Trust Authority unpinned",
-			ctr.GetName(), workloadclaims.CredentialsUID, CredentialRole)
+	if holdsCredentialsIdentity(ctr) && p.measuredRole(ctx, pod, ctr) != allowlist.RoleCredentials {
+		return nil, fmt.Errorf("container %q runs as the credentials identity (uid %d) but this node's policy grants it no %s role, so it would reach Trust Authority unpinned",
+			ctr.GetName(), workloadclaims.CredentialsUID, allowlist.RoleCredentials)
 	}
 	socketDir := ""
 	if servesInventory := p.inventory != nil; servesInventory {
@@ -47,8 +48,8 @@ func (c nodeCVM) containerMounts(ctx context.Context, pod *api.PodSandbox, ctr *
 	var mounts []*api.Mount
 	for _, bind := range []struct{ source, destination string }{
 		{socketDir, workloadclaims.SidecarSocketDir},
-		{p.taPins, workloadclaims.CDSPinsPath},
-		{p.taAddress, workloadclaims.CDSAddressPath},
+		{p.taPins, workloadclaims.TAPinsPath},
+		{p.taAddress, workloadclaims.TAAddressPath},
 	} {
 		if bind.source != "" && takesNodeMount(pod, ctr, bind.destination) {
 			mounts = append(mounts, readOnlyBind(bind.source, bind.destination))
@@ -107,10 +108,10 @@ func fetchesRouteManifest(pod *api.PodSandbox, ctr *api.Container) bool {
 func (p *plugin) routerTAMount() *api.ContainerAdjustment {
 	var mounts []*api.Mount
 	if p.taAddress != "" {
-		mounts = append(mounts, readOnlyBind(p.taAddress, workloadclaims.CDSAddressPath))
+		mounts = append(mounts, readOnlyBind(p.taAddress, workloadclaims.TAAddressPath))
 	}
 	if p.taPins != "" {
-		mounts = append(mounts, readOnlyBind(p.taPins, workloadclaims.RouterCDSPinsPath))
+		mounts = append(mounts, readOnlyBind(p.taPins, workloadclaims.RouterTAPinsPath))
 	}
 	if len(mounts) == 0 {
 		return nil
@@ -127,7 +128,7 @@ func injectedCredentialSidecar(pod *api.PodSandbox, ctr *api.Container) bool {
 		workloadclaims.IsSocketConsumer(ctr.GetName())
 }
 
-// measuredRole is the role the node's measured base grants this launch, from
+// measuredRole is the role the node's measured policy grants this launch, from
 // the evidence the runtime reports at CreateContainer: digest, argv,
 // environment and the mounts requested so far, classified as the final check
 // classifies them, so a declaration that pins a mount set is matched here too.

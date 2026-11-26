@@ -10,7 +10,7 @@ Public policy, not secret: an address and the digests a verifier compares
 evidence against. No component's arguments name either, so an entry of the
 allowlist seed this cluster serves does not depend on the Trust Authority serving it.
 */ -}}
-{{- $ta := include "c8s.trustAuthority" . | fromJson }}
+{{- $ta := .Values.ta | default dict }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -19,8 +19,8 @@ metadata:
   labels:
 {{ include "c8s.commonLabels" . | indent 4 }}
 data:
-  cds.json: {{ $ta.measurementsConfig | quote }}
-  cds-address: {{ $ta.address | quote }}
+  ta.json: {{ $ta.measurementsConfig | quote }}
+  ta-address: {{ $ta.address | quote }}
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -30,4 +30,4 @@ metadata:
   labels:
 {{ include "c8s.commonLabels" . | indent 4 }}
 data:
-  cds.json: {{ $ta.measurementsConfig | quote }}
+  ta.json: {{ $ta.measurementsConfig | quote }}

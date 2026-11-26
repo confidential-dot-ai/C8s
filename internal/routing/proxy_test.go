@@ -343,7 +343,7 @@ func TestA5SwapUnderLoad(t *testing.T) {
 	}
 }
 
-// outerRequest is the tunnel POST as nginx hands it to cds-attest.
+// outerRequest is the tunnel POST as nginx hands it to ta-attest.
 func outerRequest(host string) *http.Request {
 	r := httptest.NewRequest(http.MethodPost, "/.well-known/c8s/tunnel", nil)
 	r.Host = host

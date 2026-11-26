@@ -331,7 +331,7 @@ func TestPutSurfacesServerErrors(t *testing.T) {
 	f.failAll = true
 	key := writeOperatorKey(t)
 	_, _, err := run(t, "v", "put", "/a", "--url", url, "--insecure", "--operator-key", key)
-	if err == nil || !strings.Contains(err.Error(), "cds returned 500") {
+	if err == nil || !strings.Contains(err.Error(), "the Trust Authority returned 500") {
 		t.Fatalf("err = %v", err)
 	}
 }
@@ -477,7 +477,7 @@ func TestExplainSurfacesServerErrors(t *testing.T) {
 	key := writeOperatorKey(t)
 
 	_, _, err := run(t, "", "explain", "--sandbox", testSandboxID, "--url", srv.URL, "--insecure", "--operator-key", key)
-	if err == nil || !strings.Contains(err.Error(), "cds returned 401") {
+	if err == nil || !strings.Contains(err.Error(), "the Trust Authority returned 401") {
 		t.Fatalf("err = %v", err)
 	}
 }

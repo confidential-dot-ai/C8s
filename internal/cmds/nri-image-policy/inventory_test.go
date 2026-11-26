@@ -77,7 +77,7 @@ func TestInventoryPreservesUnavailableMountEvidence(t *testing.T) {
 // line. A launch the base names no role for is reported with none.
 func TestInventoryReportsTheMeasuredRole(t *testing.T) {
 	argv := []string{"/app/c8s", "armtls-mesh"}
-	base := roleBase(t, pushDigestB, meshRole, argv)
+	base := roleBase(t, pushDigestB, allowlist.RoleMesh, argv)
 	p, _ := newCachedPlugin(&config{
 		Allowlist: allowlistConfig{
 			Base:    base,
@@ -106,8 +106,8 @@ func TestInventoryReportsTheMeasuredRole(t *testing.T) {
 	for _, c := range reported {
 		roles[c.Digest] = c.Role
 	}
-	if roles[pushDigestB] != meshRole {
-		t.Fatalf("the mesh endpoint reports role %q, want %q", roles[pushDigestB], meshRole)
+	if roles[pushDigestB] != allowlist.RoleMesh {
+		t.Fatalf("the mesh endpoint reports role %q, want %q", roles[pushDigestB], allowlist.RoleMesh)
 	}
 	if roles[pushDigestA] != "" {
 		t.Fatalf("the workload container reports role %q, want none", roles[pushDigestA])

@@ -59,11 +59,11 @@ refuses `--mesh-ca`, `--sandbox-id`, `--workload`, `--client-document` and
 bundle from the TA:
 
 ```sh
-c8s ta ca --ta-url https://<TA_ADDRESS> --ta-image-policy-file cds-pin.json --out mesh-ca.pem
+c8s ta ca --ta-url https://<TA_ADDRESS> --ta-image-policy-file ta-pin.json --out mesh-ca.pem
 ```
 
 `<TA_ADDRESS>` is the `<host>:<port>` the install named with `--ta-address`,
-and `cds-pin.json` the document it named with `--ta-pin`, which pins the guest
+and `ta-pin.json` the document it named with `--ta-pin`, which pins the guest
 the TA runs. These commands take that document and no launch digest of their own.
 The certificate SHA-256 digests print on stderr; record them: a TA restart
 replaces the bundle.
@@ -113,7 +113,7 @@ identities it serves with `--served-policy-file` to check the set the TA says it
 enforces:
 
 ```sh
-c8s ta verify https://<TA_ADDRESS> --image-policy-file cds-pin.json \
+c8s ta verify https://<TA_ADDRESS> --image-policy-file ta-pin.json \
     --served-policy-file measurements.json
 ```
 
@@ -126,8 +126,8 @@ their bytes cannot be reproduced outside the build.
 Verify the router's attested handshake, which binds the connection you opened
 and the routes the router serves ([routes-evidence.md](routes-evidence.md)
 explains `attest-lb` and `attest-pq`). The router serves `attest-lb` on an
-installed cluster, where its public TLS mode is `cds`, and on a baked node
-whose launch file selects `cds` or `acme`. The TA answers on its own endpoint,
+installed cluster, where its public TLS mode is `ta`, and on a baked node
+whose launch file selects `ta` or `acme`. The TA answers on its own endpoint,
 where a hostname or chain mismatch does not fail the run: the evidence is
 verified, not WebPKI.
 
@@ -135,7 +135,7 @@ verified, not WebPKI.
 c8s verify https://<ROUTER_HOST> --kind lb --mode attest-lb \
     --measurements <NODE_MEASUREMENT> --mesh-ca mesh-ca.pem \
     --route-digest <ROUTE_DIGEST>
-c8s ta verify https://<TA_ADDRESS> --image-policy-file cds-pin.json
+c8s ta verify https://<TA_ADDRESS> --image-policy-file ta-pin.json
 ```
 
 `<ROUTER_HOST>` is the router's public host and `<ROUTE_DIGEST>` a digest from
@@ -149,7 +149,7 @@ Supply the VM's expected image policy to check its measurements in the same
 invocation. For example, to check the TA, run
 
 ```sh
-c8s ta verify https://<TA_ADDRESS> --image-policy-file cds-pin.json \
+c8s ta verify https://<TA_ADDRESS> --image-policy-file ta-pin.json \
     --tdx-tcb-status UpToDate
 ```
 
@@ -220,7 +220,16 @@ check prints, with `…` for elided lines:
   WARNING:      the attested front door was observed on this verify's single connection to a single router replica at a single instant: … clients must verify their own connection
   sandbox id:   <SANDBOX_ID>
                 verified: the leaf chains to the supplied mesh CA
+  component set: <VERSION>  (digest <SHA256_HEX>)
+                ca-vouched: the leaf chains to the supplied mesh CA
 ```
+
+The `component set` line appears when the leaf names one: the release whose
+component entries admitted the pod's c8s containers, and the digest of that
+set's entries (`component_set`, `component_set_digest` and
+`component_set_note` in JSON). The note under it says what stands behind the
+set, as the `sandbox id` and `workload` notes do: without `--mesh-ca` only the
+Trust Authority's signature on the leaf vouches for it.
 
 `WARNING:` names a limit of the policy you gave, such as an unpinned
 measurement, or of the observation made: the front-door warning above says the
@@ -237,7 +246,7 @@ The `*_note` fields and `chain_anchor` say what stands behind a reported
 value. A failed verdict states no passed policy check. Of the fields a check
 qualifies it keeps:
 
-- `sandbox_id` and `workload` with their `not verified:` notes.
+- `sandbox_id`, `workload` and `component_set` with their `not verified:` notes.
 - `operator_keys` and `operator_keys_note` only when the note says why the set
   was not pinned or not fetched; otherwise both are dropped.
 - `binding`, without the front-door handshake clause.
@@ -265,7 +274,7 @@ Get a digest from the operator who wrote the manifest, from a manifest file
 with `c8s routes digest FILE`, or from the TA, which refuses an unpinned endpoint:
 
 ```sh
-c8s routes show --url https://<TA_ADDRESS> --image-policy-file cds-pin.json
+c8s routes show --url https://<TA_ADDRESS> --image-policy-file ta-pin.json
 ```
 
 [releases.md](releases.md) shows which commit a release tag names.

@@ -105,7 +105,7 @@ func putBlob(ctx context.Context, hc *http.Client, baseURL, path string, blob Bl
 		return fmt.Errorf("%s already holds a value; a volume key is not replaceable — "+
 			"choose another path, or remove the volume that uses this one", path)
 	default:
-		return fmt.Errorf("cds returned %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+		return fmt.Errorf("the Trust Authority returned %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
 	}
 }
 

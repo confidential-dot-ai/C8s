@@ -5,7 +5,7 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
 )
 
-// Inputs is everything one cluster's Trust Authority VM is configured with, as `c8s cds
+// Inputs is everything one cluster's Trust Authority VM is configured with, as `c8s ta
 // config new` fills it. Each embedded policy is the exact bytes its own parser
 // reads.
 type Inputs struct {

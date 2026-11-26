@@ -88,7 +88,7 @@ func TestStartupSourceMode(t *testing.T) {
 		{
 			name: "pull",
 			cfg: &config{Allowlist: allowlistConfig{
-				Pull: pullConfig{URL: "https://cds.example"},
+				Pull: pullConfig{URL: "https://ta.example"},
 			}},
 			want: "pull",
 		},
@@ -132,7 +132,7 @@ func TestStartupSourceMode(t *testing.T) {
 // --- policyStore epoch anti-rollback ---
 
 func TestPolicyStoreEpochAntiRollback(t *testing.T) {
-	store := newPolicyStore(anyAllowlist(map[string]string{}))
+	store := newPolicyStore(anyAllowlist(map[string]string{}), localClock())
 
 	if !store.apply(anyAllowlist(map[string]string{pushDigestB: "v5"}), 5) {
 		t.Fatal("apply of version 5 rejected")
@@ -169,16 +169,160 @@ func TestPolicyStoreEpochAntiRollback(t *testing.T) {
 // Rollback protection is per-process-lifetime; state re-syncs from the Trust Authority.
 func TestPolicyStoreTrustsFirstVersionAfterRestart(t *testing.T) {
 	// A prior process reached version 9.
-	prior := newPolicyStore(anyAllowlist(map[string]string{}))
+	prior := newPolicyStore(anyAllowlist(map[string]string{}), localClock())
 	prior.apply(anyAllowlist(map[string]string{pushDigestB: "v9"}), 9)
 
 	// A restart is a brand-new store; its first apply is trusted regardless of value.
-	fresh := newPolicyStore(anyAllowlist(map[string]string{}))
+	fresh := newPolicyStore(anyAllowlist(map[string]string{}), localClock())
 	if !fresh.apply(anyAllowlist(map[string]string{pushDigestC: "v3"}), 3) {
 		t.Fatal("fresh store must trust the first version seen after a restart")
 	}
 	if fresh.current().version != 3 {
 		t.Fatalf("version = %d, want 3", fresh.current().version)
+	}
+}
+
+// componentContainer declares one c8s component container as a set entry
+// must: a pinned command and mount set, and no capability.
+func componentContainer(t *testing.T, digest, role string, argv []string) allowlist.Container {
+	t.Helper()
+	return allowlist.Container{
+		Digest:  mustDigest(t, digest),
+		Role:    role,
+		Command: allowlist.ArgvPolicy{Policy: allowlist.PolicyExact, Argv: argv},
+		Args:    allowlist.ArgvPolicy{Policy: allowlist.PolicyAny},
+		Mounts: allowlist.MountPolicy{Policy: allowlist.PolicyExact, Rules: []allowlist.MountRule{{
+			Destination: "/run/c8s",
+			Kind:        allowlist.MountEmptyDir,
+			Source:      "c8s-run",
+		}}},
+	}
+}
+
+// componentDocument is a document whose one component set, version 0.43.0,
+// declares containers and retires at retire when that is not nil.
+func componentDocument(t *testing.T, retire *allowlist.Retirement, containers ...allowlist.Container) *allowlist.Allowlist {
+	t.Helper()
+	return componentSetsDocument(t, nil, map[string]allowlist.ComponentSet{"0.43.0": componentSet(retire, containers...)})
+}
+
+// componentSet is one release's set: its containers under one entry, retiring
+// at retire when that is not nil.
+func componentSet(retire *allowlist.Retirement, containers ...allowlist.Container) allowlist.ComponentSet {
+	return allowlist.ComponentSet{
+		Retire:  retire,
+		Entries: map[string]allowlist.Workload{"c8s-component": {Containers: containers}},
+	}
+}
+
+// componentSetsDocument is a document carrying sets by version beside an
+// any-argv workload entry per digest in workloads. It is round-tripped through
+// the wire form, so a test judges what a node is served.
+func componentSetsDocument(t *testing.T, workloads map[string]string, sets map[string]allowlist.ComponentSet) *allowlist.Allowlist {
+	t.Helper()
+	document := anyAllowlist(workloads)
+	document.Components = sets
+	parsed, err := allowlist.ParseJSON(canonicalBody(t, document))
+	if err != nil {
+		t.Fatalf("component document: %v", err)
+	}
+	return parsed
+}
+
+// componentLaunch is the running container componentContainer declares, with
+// the mount evidence its exact policy requires.
+func componentLaunch(digest string, argv []string) allowlist.RunningContainer {
+	return allowlist.RunningContainer{Digest: digest, Argv: argv, Mounts: []allowlist.ObservedMount{{
+		Destination: "/run/c8s",
+		Volume:      "c8s-run",
+		Class:       allowlist.MountEmptyDir,
+		Storage:     allowlist.MountMemory,
+	}}}
+}
+
+// A role is bound by the measured base or by a component set in force, and two
+// indexes binding different roles to one launch bind none of them.
+func TestPolicyStoreRoleFromBaseOrSetInForce(t *testing.T) {
+	argv := []string{"/usr/local/bin/c8s", "armtls-mesh"}
+	launch := componentLaunch(pushDigestB, argv)
+	for _, tc := range []struct {
+		name string
+		base string
+		set  string
+		want string
+	}{
+		{name: "set alone", set: allowlist.RoleMesh, want: allowlist.RoleMesh},
+		{name: "base alone", base: allowlist.RoleMesh, want: allowlist.RoleMesh},
+		{name: "both the same", base: allowlist.RoleMesh, set: allowlist.RoleMesh, want: allowlist.RoleMesh},
+		{name: "disagreeing", base: allowlist.RoleCredentials, set: allowlist.RoleMesh},
+		{name: "neither"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base := anyAllowlist(map[string]string{})
+			if tc.base != "" {
+				base = roleBase(t, pushDigestB, tc.base, argv)
+			}
+			store := newPolicyStore(base, localClock())
+			var declared []allowlist.Container
+			if tc.set != "" {
+				declared = append(declared, componentContainer(t, pushDigestB, tc.set, argv))
+			}
+			store.apply(componentDocument(t, nil, declared...), 1)
+			if got := store.roleOf(launch); got != tc.want {
+				t.Fatalf("role = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// A set entry pins its mount set, so the role it binds runs where only a
+// mount-pinning declaration carries one, whatever the base entry says.
+func TestPolicyStoreBindsRoleMountsFromASetInForce(t *testing.T) {
+	argv := []string{"/usr/local/bin/c8s", "router"}
+	launch := componentLaunch(pushDigestB, argv)
+	store := newPolicyStore(anyAllowlist(map[string]string{}), localClock())
+	if store.bindsRoleMounts(launch, allowlist.RoleRouter) {
+		t.Fatal("a launch no index declares binds pinned mounts")
+	}
+	store.apply(componentDocument(t, nil, componentContainer(t, pushDigestB, allowlist.RoleRouter, argv)), 1)
+	if !store.bindsRoleMounts(launch, allowlist.RoleRouter) {
+		t.Fatal("the set entry pins its mounts, but the role is bound without them")
+	}
+}
+
+// A set ends when Trust Authority time reaches its deadline: the kept document
+// is rebuilt without it, at the same version, and what it alone admitted is
+// refused.
+func TestPolicyStoreEndsASetAtItsDeadline(t *testing.T) {
+	taTime := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	deadline := taTime.Add(time.Hour)
+	store := newPolicyStore(anyAllowlist(map[string]string{}), newTAClock(func() time.Time { return taTime }))
+	retiring := &allowlist.Retirement{Deadline: allowlist.Deadline{Time: deadline}}
+	argv := []string{"/usr/local/bin/c8s", "armtls-mesh"}
+	store.apply(componentDocument(t, retiring, componentContainer(t, pushDigestB, allowlist.RoleMesh, argv)), 4)
+
+	if !admitsDigest(store, pushDigestB) {
+		t.Fatal("the set in force does not admit its own entry")
+	}
+	if store.rebuildEndedSets() {
+		t.Fatal("a set in force was ended before its deadline")
+	}
+
+	taTime = deadline
+	if !store.rebuildEndedSets() {
+		t.Fatal("the retired set was kept in force past its deadline")
+	}
+	if admitsDigest(store, pushDigestB) {
+		t.Fatal("the retired set still admits its entry")
+	}
+	if got := store.roleOf(componentLaunch(pushDigestB, argv)); got != "" {
+		t.Fatalf("the retired set still binds the role %q", got)
+	}
+	if version := store.current().version; version != 4 {
+		t.Fatalf("version = %d, want 4: ending a set rewrites no policy", version)
+	}
+	if store.rebuildEndedSets() {
+		t.Fatal("the rebuilt snapshot reports an ended set again")
 	}
 }
 
@@ -194,6 +338,8 @@ type flippingHandler struct {
 	hits       atomic.Int32      // total requests seen
 	bodyByV    map[string][]byte // canonical allowlist body per version
 	statusCode int               // overrides normal logic when non-zero
+	lifetime   string            // certificate lifetime in seconds, none when empty
+	down       atomic.Bool       // answers 503 while set
 }
 
 func (f *flippingHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -205,11 +351,18 @@ func (f *flippingHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(f.statusCode)
 		return
 	}
+	if f.down.Load() {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
 
 	version := f.versions[f.idx]
 	etag := servedTag(f.bodyByV[version])
 	w.Header().Set("ETag", etag)
 	w.Header().Set(allowlist.VersionHeader, version)
+	if f.lifetime != "" {
+		w.Header().Set(allowlist.CertificateLifetimeHeader, f.lifetime)
+	}
 	if r.Header.Get("If-None-Match") == etag {
 		w.WriteHeader(http.StatusNotModified)
 		return
@@ -232,7 +385,7 @@ func TestPullLoopOnly200UpdatesIndexAndETag(t *testing.T) {
 	defer srv.Close()
 
 	client := allowlistclient.NewClientWithHTTP(srv.URL, &http.Client{Timeout: 2 * time.Second})
-	store := newPolicyStore(anyAllowlist(map[string]string{}))
+	store := newPolicyStore(anyAllowlist(map[string]string{}), localClock())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -249,8 +402,8 @@ func TestPullLoopOnly200UpdatesIndexAndETag(t *testing.T) {
 			logger:   discardLogger(),
 
 			target: nodeTarget{
-				store:       store,
-				killRevoked: func(context.Context) { sweeps++ },
+				store:          store,
+				recheckRunning: func(context.Context) { sweeps++ },
 			},
 		})
 		close(done)
@@ -274,12 +427,101 @@ func TestPullLoopOnly200UpdatesIndexAndETag(t *testing.T) {
 	}
 }
 
+// datedHandler serves one document, answers 304 for it afterwards, and dates
+// every reply from a clock the test moves, so the node's Trust Authority time
+// follows it.
+type datedHandler struct {
+	body []byte
+
+	mu   sync.Mutex
+	date time.Time
+}
+
+func (h *datedHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	etag := servedTag(h.body)
+	w.Header().Set("ETag", etag)
+	w.Header().Set(allowlist.VersionHeader, "3")
+	w.Header().Set("Date", h.servedAt().UTC().Format(http.TimeFormat))
+	if r.Header.Get("If-None-Match") == etag {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(h.body)
+}
+
+func (h *datedHandler) servedAt() time.Time {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.date
+}
+
+func (h *datedHandler) dateRepliesFrom(date time.Time) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.date = date
+}
+
+// waitFor polls until condition holds, and fails with what it was waiting for.
+func waitFor(t *testing.T, condition func() bool, waited string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for !condition() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", waited)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// A container a component set alone admits is refused within one poll of the
+// set's deadline, with no new document to apply: the 304 dating the reply past
+// the deadline is enough, and the running containers are rechecked.
+func TestPullLoopEndsARetiredSetOnA304(t *testing.T) {
+	taTime := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	deadline := taTime.Add(time.Hour)
+	argv := []string{"/usr/local/bin/c8s", "armtls-mesh"}
+	retiring := &allowlist.Retirement{Deadline: allowlist.Deadline{Time: deadline}}
+	document := componentDocument(t, retiring, componentContainer(t, pushDigestB, allowlist.RoleMesh, argv))
+	handler := &datedHandler{body: canonicalBody(t, document), date: taTime}
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	store := newPolicyStore(anyAllowlist(map[string]string{}), localClock())
+	var rechecks atomic.Int32
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go runPullLoop(ctx, pullLoopArgs{
+		pull:     quietPull(),
+		client:   allowlistclient.NewClientWithHTTP(srv.URL, &http.Client{Timeout: time.Second}),
+		interval: 5 * time.Millisecond,
+		timeout:  time.Second,
+		logger:   discardLogger(),
+
+		target: nodeTarget{
+			store:          store,
+			recheckRunning: func(context.Context) { rechecks.Add(1) },
+		},
+	})
+
+	waitFor(t, func() bool { return admitsDigest(store, pushDigestB) }, "the set in force to be applied")
+	handler.dateRepliesFrom(deadline)
+	waitFor(t, func() bool { return !admitsDigest(store, pushDigestB) }, "the retired set to end on the node")
+
+	if version := store.current().version; version != 3 {
+		t.Fatalf("version = %d, want 3: the set ended with no new document", version)
+	}
+	if got := rechecks.Load(); got < 2 {
+		t.Fatalf("running containers rechecked %d times, want the applied pull and the ended set", got)
+	}
+}
+
 // The node installs a pulled policy before it rechecks running containers.
 func TestPullLoopInstallsBeforeRecheckingContainers(t *testing.T) {
 	body := canonicalBody(t, anyAllowlist(map[string]string{pushDigestB: "image-2"}))
 	srv := httptest.NewServer(&flippingHandler{versions: []string{"7"}, bodyByV: map[string][]byte{"7": body}})
 	defer srv.Close()
-	store := newPolicyStore(anyAllowlist(map[string]string{pushDigestA: "image-1"}))
+	store := newPolicyStore(anyAllowlist(map[string]string{pushDigestA: "image-1"}), localClock())
 	ctx, cancel := context.WithCancel(t.Context())
 	rechecks := 0
 	runPullLoop(ctx, pullLoopArgs{
@@ -291,7 +533,7 @@ func TestPullLoopInstallsBeforeRecheckingContainers(t *testing.T) {
 
 		target: nodeTarget{
 			store: store,
-			killRevoked: func(context.Context) {
+			recheckRunning: func(context.Context) {
 				rechecks++
 				if version := store.current().version; version != 7 || !admitsDigest(store, pushDigestB) {
 					t.Errorf("recheck ran at version %d, want the pulled version 7 installed", version)
@@ -366,7 +608,7 @@ func TestPullLoop304LeavesIndexUntouched(t *testing.T) {
 	defer srv.Close()
 
 	client := allowlistclient.NewClientWithHTTP(srv.URL, &http.Client{Timeout: 2 * time.Second})
-	store := newPolicyStore(anyAllowlist(map[string]string{}))
+	store := newPolicyStore(anyAllowlist(map[string]string{}), localClock())
 	store.apply(anyAllowlist(map[string]string{pushDigestA: "image-1"}), 1)
 	before := store.current()
 
@@ -385,8 +627,8 @@ func TestPullLoop304LeavesIndexUntouched(t *testing.T) {
 			logger:   discardLogger(),
 
 			target: nodeTarget{
-				store:       store,
-				killRevoked: func(context.Context) {},
+				store:          store,
+				recheckRunning: func(context.Context) {},
 			},
 		})
 		close(done)
@@ -414,7 +656,7 @@ func TestPullLoop304RaisesAppliedVersion(t *testing.T) {
 	defer srv.Close()
 
 	client := allowlistclient.NewClientWithHTTP(srv.URL, &http.Client{Timeout: 2 * time.Second})
-	store := newPolicyStore(anyAllowlist(map[string]string{}))
+	store := newPolicyStore(anyAllowlist(map[string]string{}), localClock())
 	store.apply(anyAllowlist(map[string]string{pushDigestA: "image-1"}), 1)
 	index := store.current().index
 
@@ -432,8 +674,8 @@ func TestPullLoop304RaisesAppliedVersion(t *testing.T) {
 			logger:   discardLogger(),
 
 			target: nodeTarget{
-				store:       store,
-				killRevoked: func(context.Context) { t.Error("a 304 rechecked the running containers") },
+				store:          store,
+				recheckRunning: func(context.Context) { t.Error("a 304 rechecked the running containers") },
 			},
 		})
 		close(done)
@@ -468,7 +710,7 @@ func TestPullLoop304CountsAsReachingTA(t *testing.T) {
 
 	pull, advance := testPull(discardLogger())
 	advance(pullStallAfter)
-	pull.failed(errors.New("lookup cds.private: no such host"))
+	pull.failed(errors.New("lookup ta.private: no such host"))
 	if pull.stall() == "" {
 		t.Fatal("no stall reported for a Trust Authority the node reached nothing from")
 	}
@@ -487,8 +729,8 @@ func TestPullLoop304CountsAsReachingTA(t *testing.T) {
 			logger:   discardLogger(),
 
 			target: nodeTarget{
-				store:       newPolicyStore(anyAllowlist(map[string]string{})),
-				killRevoked: func(context.Context) { t.Error("a 304 rechecked the running containers") },
+				store:          newPolicyStore(anyAllowlist(map[string]string{}), localClock()),
+				recheckRunning: func(context.Context) { t.Error("a 304 rechecked the running containers") },
 			},
 		})
 		close(done)
@@ -515,8 +757,10 @@ func TestPullLoop5xxLeavesIndexUntouched(t *testing.T) {
 	defer srv.Close()
 
 	client := allowlistclient.NewClientWithHTTP(srv.URL, &http.Client{Timeout: 2 * time.Second})
-	store := newPolicyStore(anyAllowlist(map[string]string{}))
+	store := newPolicyStore(anyAllowlist(map[string]string{}), localClock())
 	store.apply(anyAllowlist(map[string]string{pushDigestA: "image-1"}), 5)
+	// As the startup fetch leaves a node: the document the ETag names applied.
+	store.freshness.replied(0, true)
 	before := store.current()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -533,8 +777,8 @@ func TestPullLoop5xxLeavesIndexUntouched(t *testing.T) {
 			logger:   discardLogger(),
 
 			target: nodeTarget{
-				store:       store,
-				killRevoked: func(context.Context) {},
+				store:          store,
+				recheckRunning: func(context.Context) {},
 			},
 		})
 		close(done)
@@ -557,7 +801,7 @@ func TestPullLoopKeepsTheBaseBesidePulled(t *testing.T) {
 	defer srv.Close()
 
 	client := allowlistclient.NewClientWithHTTP(srv.URL, &http.Client{Timeout: 2 * time.Second})
-	store := newPolicyStore(anyAllowlist(map[string]string{pushDigestA: "bootstrap-image"}))
+	store := newPolicyStore(anyAllowlist(map[string]string{pushDigestA: "bootstrap-image"}), localClock())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -573,8 +817,8 @@ func TestPullLoopKeepsTheBaseBesidePulled(t *testing.T) {
 			logger:   discardLogger(),
 
 			target: nodeTarget{
-				store:       store,
-				killRevoked: func(context.Context) {},
+				store:          store,
+				recheckRunning: func(context.Context) {},
 			},
 		})
 		close(done)
@@ -609,7 +853,7 @@ func TestPullLoopIgnoresRolledBackFetch(t *testing.T) {
 	defer srv.Close()
 
 	client := allowlistclient.NewClientWithHTTP(srv.URL, &http.Client{Timeout: 2 * time.Second})
-	store := newPolicyStore(anyAllowlist(map[string]string{}))
+	store := newPolicyStore(anyAllowlist(map[string]string{}), localClock())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -626,8 +870,8 @@ func TestPullLoopIgnoresRolledBackFetch(t *testing.T) {
 			logger:   discardLogger(),
 
 			target: nodeTarget{
-				store:       store,
-				killRevoked: func(context.Context) { sweeps++ },
+				store:          store,
+				recheckRunning: func(context.Context) { sweeps++ },
 			},
 		})
 		close(done)
@@ -677,7 +921,7 @@ func TestPullInitialSucceedsAfterTransientFailures(t *testing.T) {
 	defer srv.Close()
 
 	client := allowlistclient.NewClientWithHTTP(srv.URL, &http.Client{Timeout: 2 * time.Second})
-	store := newPolicyStore(anyAllowlist(map[string]string{pushDigestA: "bootstrap-image"}))
+	store := newPolicyStore(anyAllowlist(map[string]string{pushDigestA: "bootstrap-image"}), localClock())
 
 	pluginErrCh := make(chan error, 1)
 	ctx := t.Context()
@@ -715,7 +959,7 @@ func TestPullInitialFailsAfterMaxRetries(t *testing.T) {
 	defer srv.Close()
 
 	client := allowlistclient.NewClientWithHTTP(srv.URL, &http.Client{Timeout: 200 * time.Millisecond})
-	store := newPolicyStore(anyAllowlist(map[string]string{pushDigestA: "bootstrap-image"}))
+	store := newPolicyStore(anyAllowlist(map[string]string{pushDigestA: "bootstrap-image"}), localClock())
 	pluginErrCh := make(chan error, 1)
 	ctx := t.Context()
 
@@ -749,7 +993,7 @@ func TestPullInitialPluginDeathWrapsErrPluginDied(t *testing.T) {
 	_, err := pullInitial(context.Background(), pullArgs{
 		pull:        quietPull(),
 		client:      allowlistclient.NewClientWithHTTP("https://unused", &http.Client{}),
-		target:      nodeTarget{store: newPolicyStore(anyAllowlist(map[string]string{}))},
+		target:      nodeTarget{store: newPolicyStore(anyAllowlist(map[string]string{}), localClock())},
 		timeout:     time.Second,
 		pluginErrCh: pluginErrCh,
 		logger:      discardLogger(),
@@ -775,7 +1019,7 @@ func TestPullInitialNotModifiedDoesNotDereferenceNilAllowlist(t *testing.T) {
 	defer srv.Close()
 
 	client := allowlistclient.NewClientWithHTTP(srv.URL, &http.Client{Timeout: 200 * time.Millisecond})
-	store := newPolicyStore(anyAllowlist(map[string]string{pushDigestA: "bootstrap-image"}))
+	store := newPolicyStore(anyAllowlist(map[string]string{pushDigestA: "bootstrap-image"}), localClock())
 	before := store.current()
 	pluginErrCh := make(chan error, 1)
 	ctx := t.Context()
@@ -806,7 +1050,7 @@ func TestPullInitialCancelledMidRetry(t *testing.T) {
 	defer srv.Close()
 
 	client := allowlistclient.NewClientWithHTTP(srv.URL, &http.Client{Timeout: 200 * time.Millisecond})
-	store := newPolicyStore(anyAllowlist(map[string]string{}))
+	store := newPolicyStore(anyAllowlist(map[string]string{}), localClock())
 	pluginErrCh := make(chan error, 1)
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -880,7 +1124,7 @@ func TestPullInitialMeasuresBeforeApplying(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := httptest.NewServer(&flippingHandler{versions: []string{"1"}, bodyByV: map[string][]byte{"1": body}})
 			defer srv.Close()
-			store := newPolicyStore(anyAllowlist(map[string]string{}))
+			store := newPolicyStore(anyAllowlist(map[string]string{}), localClock())
 			var measured []string
 			measure := func(d string) error {
 				if admitsDigest(store, pushDigestA) {
@@ -918,7 +1162,7 @@ func TestPullLoopAppliesOnlyMeasuredPolicies(t *testing.T) {
 	bodyB := canonicalBody(t, anyAllowlist(map[string]string{pushDigestB: "image-2"}))
 	srv := httptest.NewServer(&flippingHandler{versions: []string{"1", "2"}, bodyByV: map[string][]byte{"1": bodyA, "2": bodyB}})
 	defer srv.Close()
-	store := newPolicyStore(anyAllowlist(map[string]string{}))
+	store := newPolicyStore(anyAllowlist(map[string]string{}), localClock())
 
 	ctx, cancel := context.WithCancel(t.Context())
 	var measured []string
@@ -942,8 +1186,8 @@ func TestPullLoopAppliesOnlyMeasuredPolicies(t *testing.T) {
 		logger:   discardLogger(),
 
 		target: nodeTarget{
-			store:       store,
-			killRevoked: func(context.Context) {},
+			store:          store,
+			recheckRunning: func(context.Context) {},
 		},
 	})
 
@@ -1021,10 +1265,11 @@ func (r *memRegister) Extension() ([]byte, error) {
 }
 
 // The hook extends each digest once and leaves the journal readable by the
-// router's non-root cds-attest, also after a failed extend rewrote it 0600.
+// router's non-root ta-attest, also after a failed extend rewrote it 0600.
 func TestPolicyMeasurerMeasures(t *testing.T) {
 	anchor := []byte("operator key")
-	origKey, origOpen := readOperatorKey, openPolicyJournal
+	origKey := readOperatorKey
+	origOpen := openPolicyJournal
 	t.Cleanup(func() { readOperatorKey, openPolicyJournal = origKey, origOpen })
 	readOperatorKey = func() ([]byte, error) { return anchor, nil }
 
@@ -1079,7 +1324,8 @@ func TestPolicyMeasurerMeasures(t *testing.T) {
 // one it already measured.
 func TestPolicyMeasurerStopsAtTheCap(t *testing.T) {
 	anchor := []byte("operator key")
-	origKey, origOpen := readOperatorKey, openPolicyJournal
+	origKey := readOperatorKey
+	origOpen := openPolicyJournal
 	t.Cleanup(func() { readOperatorKey, openPolicyJournal = origKey, origOpen })
 	readOperatorKey = func() ([]byte, error) { return anchor, nil }
 	reg := &memRegister{val: runtimemeasure.Seed(anchor)}
@@ -1150,7 +1396,7 @@ func TestPullLoopRefusedVersionNotRefetched(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	store := newPolicyStore(anyAllowlist(map[string]string{pushDigestA: "image-1"}))
+	store := newPolicyStore(anyAllowlist(map[string]string{pushDigestA: "image-1"}), localClock())
 	measures := 0
 	var logs bytes.Buffer
 	runPullLoop(ctx, pullLoopArgs{
@@ -1165,8 +1411,8 @@ func TestPullLoopRefusedVersionNotRefetched(t *testing.T) {
 		logger:   slog.New(slog.NewTextHandler(&logs, nil)),
 
 		target: nodeTarget{
-			store:       store,
-			killRevoked: func(context.Context) {},
+			store:          store,
+			recheckRunning: func(context.Context) {},
 		},
 	})
 
@@ -1204,8 +1450,8 @@ func TestPullLoopLogsMeasureFailureOnce(t *testing.T) {
 		logger:   slog.New(slog.NewTextHandler(&logs, nil)),
 
 		target: nodeTarget{
-			store:       newPolicyStore(anyAllowlist(map[string]string{pushDigestA: "image-1"})),
-			killRevoked: func(context.Context) {},
+			store:          newPolicyStore(anyAllowlist(map[string]string{pushDigestA: "image-1"}), localClock()),
+			recheckRunning: func(context.Context) {},
 		},
 	})
 
@@ -1221,7 +1467,8 @@ func TestPullLoopLogsMeasureFailureOnce(t *testing.T) {
 // journal again and measures.
 func TestPolicyMeasurerRetriesOpen(t *testing.T) {
 	anchor := []byte("operator key")
-	origKey, origOpen := readOperatorKey, openPolicyJournal
+	origKey := readOperatorKey
+	origOpen := openPolicyJournal
 	t.Cleanup(func() { readOperatorKey, openPolicyJournal = origKey, origOpen })
 	readOperatorKey = func() ([]byte, error) { return anchor, nil }
 	reg := &memRegister{val: runtimemeasure.Seed(anchor)}
@@ -1254,7 +1501,8 @@ func TestPolicyMeasurerRetriesOpen(t *testing.T) {
 // the hook extends nothing and reopens it on the next call.
 func TestPolicyMeasurerRetriesUnreadableRegister(t *testing.T) {
 	anchor := []byte("operator key")
-	origKey, origOpen := readOperatorKey, openPolicyJournal
+	origKey := readOperatorKey
+	origOpen := openPolicyJournal
 	t.Cleanup(func() { readOperatorKey, openPolicyJournal = origKey, origOpen })
 	readOperatorKey = func() ([]byte, error) { return anchor, nil }
 	reg := &memRegister{val: runtimemeasure.Seed(anchor), readFail: errors.New("register unreadable")}
@@ -1285,7 +1533,8 @@ func TestPolicyMeasurerRetriesUnreadableRegister(t *testing.T) {
 
 // A platform without a runtime register is a refusal that names the cause.
 func TestPolicyMeasurerNoRegister(t *testing.T) {
-	origKey, origOpen := readOperatorKey, openPolicyJournal
+	origKey := readOperatorKey
+	origOpen := openPolicyJournal
 	t.Cleanup(func() { readOperatorKey, openPolicyJournal = origKey, origOpen })
 	readOperatorKey = func() ([]byte, error) { return []byte("operator key"), nil }
 	openPolicyJournal = func(runtimeDir string, _ teetypes.PlatformType, anchor []byte) (*runtimemeasure.Journal, error) {
@@ -1329,8 +1578,8 @@ func TestPullLoopLogsMeasureFailureAfterRefusal(t *testing.T) {
 		logger:   slog.New(slog.NewTextHandler(&logs, nil)),
 
 		target: nodeTarget{
-			store:       newPolicyStore(anyAllowlist(map[string]string{pushDigestC: "image-3"})),
-			killRevoked: func(context.Context) {},
+			store:          newPolicyStore(anyAllowlist(map[string]string{pushDigestC: "image-3"}), localClock()),
+			recheckRunning: func(context.Context) {},
 		},
 	})
 
@@ -1342,7 +1591,8 @@ func TestPullLoopLogsMeasureFailureAfterRefusal(t *testing.T) {
 // A register that diverged from the journal refuses every policy for good.
 func TestPolicyMeasurerRefusesOnDivergedRegister(t *testing.T) {
 	anchor := []byte("operator key")
-	origKey, origOpen := readOperatorKey, openPolicyJournal
+	origKey := readOperatorKey
+	origOpen := openPolicyJournal
 	t.Cleanup(func() { readOperatorKey, openPolicyJournal = origKey, origOpen })
 	readOperatorKey = func() ([]byte, error) { return anchor, nil }
 	reg := &memRegister{val: runtimemeasure.Seed([]byte("another key"))}
@@ -1371,7 +1621,7 @@ func TestPullInitialStopsOnRefusal(t *testing.T) {
 	_, err := pullInitial(t.Context(), pullArgs{
 		pull:        quietPull(),
 		client:      allowlistclient.NewClientWithHTTP(srv.URL, &http.Client{Timeout: 2 * time.Second}),
-		target:      nodeTarget{store: newPolicyStore(anyAllowlist(map[string]string{}))},
+		target:      nodeTarget{store: newPolicyStore(anyAllowlist(map[string]string{}), localClock())},
 		measure:     func(string) error { return fmt.Errorf("%w: cap reached", errPolicyRefused) },
 		timeout:     time.Second,
 		pluginErrCh: make(chan error),
@@ -1379,5 +1629,181 @@ func TestPullInitialStopsOnRefusal(t *testing.T) {
 	})
 	if !errors.Is(err, errPolicyRefused) || handler.hits.Load() != 1 {
 		t.Fatalf("pullInitial = %v after %d fetches, want errPolicyRefused after 1", err, handler.hits.Load())
+	}
+}
+
+// --- the freshness limit ---
+
+// loop is a pull loop a freshness test runs: a server, the local clock
+// freshness is judged on, a measurer that refuses the documents it names, and
+// the recheck the loop asks for when it puts a document in force.
+type loop struct {
+	srv     *httptest.Server
+	clock   *movingClock
+	measure func(digest string) error
+	recheck func(context.Context)
+}
+
+// refusing is a measurer that refuses the document body for good.
+func refusing(body []byte) func(string) error {
+	return func(digest string) error {
+		if digest != servedDigest(body) {
+			return nil
+		}
+		return fmt.Errorf("%w: cap reached", errPolicyRefused)
+	}
+}
+
+// loopOn starts l and returns the store admission reads.
+func loopOn(t *testing.T, l loop) *policyStore {
+	t.Helper()
+	store := newPolicyStore(anyAllowlist(map[string]string{pushDigestC: "base-image"}), newTAClock(l.clock.now))
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	go runPullLoop(ctx, pullLoopArgs{
+		pull:     quietPull(),
+		client:   allowlistclient.NewClientWithHTTP(l.srv.URL, &http.Client{Timeout: time.Second}),
+		measure:  l.measure,
+		interval: 5 * time.Millisecond,
+		timeout:  time.Second,
+		logger:   discardLogger(),
+
+		target: nodeTarget{store: store, recheckRunning: l.recheck},
+	})
+	return store
+}
+
+// A poll is fresh while its reply names the document admission applies: the
+// 200 that lands it, and the 304s that follow. The limit is the certificate
+// lifetime the reply reports.
+func TestPullLoopIsFreshOn200AndOnA304NamingTheAppliedDocument(t *testing.T) {
+	handler := &flippingHandler{
+		versions: []string{"1"},
+		bodyByV:  map[string][]byte{"1": canonicalBody(t, anyAllowlist(map[string]string{pushDigestA: "image-1"}))},
+		lifetime: "3600",
+	}
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+	store := loopOn(t, loop{
+		srv:     srv,
+		clock:   newMovingClock(time.Now()),
+		recheck: func(context.Context) {},
+	})
+
+	waitFor(t, func() bool { fresh, _ := store.freshness.report(); return fresh }, "the applied pull to be fresh")
+	if _, limit := store.freshness.report(); limit != time.Hour {
+		t.Fatalf("limit = %s, want the reported hour", limit)
+	}
+	polls := handler.hits.Load()
+	waitFor(t, func() bool { return handler.hits.Load() > polls+2 }, "the polls that follow the applied one")
+	if fresh, _ := store.freshness.report(); !fresh {
+		t.Fatal("a 304 naming the applied document left the node behind")
+	}
+	if store.freshness.behind() {
+		t.Fatal("a fresh node is behind its limit")
+	}
+}
+
+// A node fed a document it refuses for good, and 304s for it after, applies
+// another document than the one its replies name: it is not fresh, and past
+// the limit it is behind, with the document it applies still in force.
+func TestPullLoopFallsBehindAfterARefusedDocumentAnd304s(t *testing.T) {
+	applied := canonicalBody(t, anyAllowlist(map[string]string{pushDigestA: "image-1"}))
+	refused := canonicalBody(t, anyAllowlist(map[string]string{pushDigestB: "image-2"}))
+	srv := httptest.NewServer(&flippingHandler{
+		versions: []string{"1", "2"},
+		bodyByV:  map[string][]byte{"1": applied, "2": refused},
+		lifetime: "3600",
+	})
+	defer srv.Close()
+	clock := newMovingClock(time.Now())
+	var rechecks atomic.Int32
+	store := loopOn(t, loop{
+		srv:     srv,
+		clock:   clock,
+		measure: refusing(refused),
+		recheck: func(context.Context) { rechecks.Add(1) },
+	})
+
+	waitFor(t, func() bool { return admitsDigest(store, pushDigestA) }, "the measured document to be applied")
+	waitFor(t, func() bool { fresh, _ := store.freshness.report(); return !fresh }, "the refused document to leave the node behind")
+
+	clock.advance(time.Hour + time.Second)
+	waitFor(t, func() bool { return store.freshness.behind() }, "the node to pass its limit")
+	if !admitsDigest(store, pushDigestA) || !admitsDigest(store, pushDigestC) {
+		t.Fatal("a node past its limit dropped a document it admits from")
+	}
+	if rechecks.Load() != 1 {
+		t.Fatalf("running containers rechecked %d times, want 1 for the applied document alone", rechecks.Load())
+	}
+}
+
+// A node cut off from the Trust Authority keeps the document it applies in
+// force at its version, is behind past the limit, and is fresh again on the
+// first poll that lands after.
+func TestPullLoopFallsBehindWhileCutOffAndRecovers(t *testing.T) {
+	handler := &flippingHandler{
+		versions: []string{"1"},
+		bodyByV:  map[string][]byte{"1": canonicalBody(t, anyAllowlist(map[string]string{pushDigestA: "image-1"}))},
+		lifetime: "3600",
+	}
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+	clock := newMovingClock(time.Now())
+	store := loopOn(t, loop{
+		srv:     srv,
+		clock:   clock,
+		recheck: func(context.Context) {},
+	})
+
+	waitFor(t, func() bool { return admitsDigest(store, pushDigestA) }, "the first document to be applied")
+	handler.down.Store(true)
+	clock.advance(time.Hour + time.Second)
+	waitFor(t, func() bool { return store.freshness.behind() }, "the cut-off node to pass its limit")
+
+	if !admitsDigest(store, pushDigestA) {
+		t.Fatal("a cut-off node dropped the document it applies")
+	}
+	if version := store.current().version; version != 1 {
+		t.Fatalf("version = %d, want the applied 1", version)
+	}
+
+	handler.down.Store(false)
+	waitFor(t, func() bool { return !store.freshness.behind() }, "the poll that lands to put the node within its limit")
+	if fresh, _ := store.freshness.report(); !fresh {
+		t.Fatal("the node within its limit again reports no fresh poll")
+	}
+}
+
+// A 200 the loop ignores as a rollback leaves the node behind, though its
+// ETag names the document admission applies: a reply serving an older version
+// of it does not answer for the document in effect.
+func TestPullLoopARolledBackReplyIsNotFresh(t *testing.T) {
+	applied := canonicalBody(t, anyAllowlist(map[string]string{pushDigestA: "image-1"}))
+	refused := canonicalBody(t, anyAllowlist(map[string]string{pushDigestB: "image-2"}))
+	// The refused document moves the poll ETag ahead of the applied one, so
+	// the rolled-back reply arrives as a 200 rather than a 304.
+	handler := &flippingHandler{
+		versions: []string{"5", "7", "4"},
+		bodyByV:  map[string][]byte{"5": applied, "7": refused, "4": applied},
+		lifetime: "3600",
+	}
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+	store := loopOn(t, loop{
+		srv:     srv,
+		clock:   newMovingClock(time.Now()),
+		measure: refusing(refused),
+		recheck: func(context.Context) {},
+	})
+
+	waitFor(t, func() bool { return admitsDigest(store, pushDigestA) }, "the measured document to be applied")
+	polls := handler.hits.Load()
+	waitFor(t, func() bool { return handler.hits.Load() > polls+3 }, "the rolled-back replies")
+	if fresh, _ := store.freshness.report(); fresh {
+		t.Fatal("a reply the loop ignored as a rollback reports the node fresh")
+	}
+	if version := store.current().version; version != 5 {
+		t.Fatalf("version = %d, want the applied 5", version)
 	}
 }

@@ -17,13 +17,13 @@
 
 {{/* The files the cloud's nginx ConfigMap holds: c8s-lib's, read from one
      mount, with the settings a worker's node stages from its launch file
-     beside them, less front-door-mode (cds-attest takes the mode as pinned
+     beside them, less front-door-mode (ta-attest takes the mode as pinned
      argv). */}}
 {{- define "router.cloudNginxFiles" -}}
 {{- $dir := include "router.configDir" . -}}
 {{- $files := include "c8s.routerNginxFiles" (dict "root" . "dir" $dir) | fromJson -}}
 {{- $_ := set $files "request-body.conf" "client_max_body_size 1048576;\n" -}}
-{{- $_ := set $files "tls.conf" (printf "include %s/tls-cds.conf;\n" $dir) -}}
+{{- $_ := set $files "tls.conf" (printf "include %s/tls-ta.conf;\n" $dir) -}}
 {{- $files | toJson -}}
 {{- end -}}
 
@@ -34,9 +34,9 @@
 {{- end -}}
 
 {{/* The front door's mounts of the Trust Authority pin and, where set, the operator
-     keys; cds-attest reads both. */}}
+     keys; ta-attest reads both. */}}
 {{- define "router.taAttestMounts" -}}
-{{- $ta := include "c8s.trustAuthority" . | fromJson -}}
+{{- $ta := .Values.ta | default dict -}}
 - name: measurements-config
   mountPath: /mnt/c8s-data/measurements
   readOnly: true
@@ -47,22 +47,22 @@
 {{- end }}
 {{- end -}}
 
-{{/* cds-attest pins the front-door mode and reads the Trust Authority pin and operator
+{{/* ta-attest pins the front-door mode and reads the Trust Authority pin and operator
      keys from values. Loopback only: nginx proxies /readyz, the attest routes
      and /tunnel to it. */}}
 {{- define "router.taAttestArgs" -}}
-{{- $ta := include "c8s.trustAuthority" . | fromJson -}}
+{{- $ta := .Values.ta | default dict -}}
 {{- $args := list
-  "cds-attest"
+  "ta-attest"
   "--host=127.0.0.1"
   (printf "--port=%s" (include "router.attestPort" .))
   (printf "--platform=%s" .Values.router.attest.platform)
   (printf "--generation=%s" .Values.router.attest.generation)
   (printf "--attestation-api-url=%s" (include "c8s.attestationApiURL" .))
-  "--front-door-mode=cds"
+  "--front-door-mode=ta"
   (printf "--serving-cert-file=%s" (include "c8s.certFile" .))
   (printf "--measured-policies-file=%s/measured-policies" (include "nri-image-policy.runtimeDir" .))
-  "--image-policy-file=/mnt/c8s-data/measurements/cds.json" -}}
+  "--image-policy-file=/mnt/c8s-data/measurements/ta.json" -}}
 {{- if $ta.operatorKeys -}}
 {{- $args = append $args "--operator-keys-file=/mnt/c8s-data/operator-keys/keys.pem" -}}
 {{- end -}}
@@ -97,7 +97,7 @@
 {{- end -}}
 
 {{/* The attestation-api socket at the inventory path get-cert and the
-     allowlist proxy compile; cds-attest takes the node's own path, beside the
+     allowlist proxy compile; ta-attest takes the node's own path, beside the
      measured-policy journal it reads. */}}
 {{- define "router.attestationApiURL" -}}
 unix://{{ include "router.inventoryDir" . }}/attestation-api.sock
@@ -106,8 +106,8 @@ unix://{{ include "router.inventoryDir" . }}/attestation-api.sock
 {{- define "router.getCertArgs" -}}
 {{- list
   (printf "--discovery-out=%s" (include "router.discoveryFilePath" .))
-  (printf "--discovery-cds-cert-url=%s" (include "router.taCertPath" .))
-  "--discovery-public-tls-mode=cds"
+  (printf "--discovery-ta-cert-url=%s" (include "router.taCertPath" .))
+  "--discovery-public-tls-mode=ta"
   (printf "--discovery-mesh-ca-url=%s" (include "router.meshCAPath" .))
   "--ca-watch-interval=1m"
   | toJson -}}

@@ -151,7 +151,7 @@ func (w *world) podLogs() []godog.Attachment {
 	// relay keeps the router's own log here; a backend that cannot read it
 	// leaves no attachment.
 	if out, err := w.be.call("router_logs"); err == nil {
-		attach("router-cds-attest.log", out, nil)
+		attach("router-ta-attest.log", out, nil)
 	}
 	return logs
 }

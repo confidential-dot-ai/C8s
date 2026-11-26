@@ -80,7 +80,7 @@ func assertNothingWritten(t *testing.T, f flowFixture) {
 // no --mesh-ca — and refused before the build, so nothing is left on disk.
 func TestRunCreateRefusesWithoutMeshCA(t *testing.T) {
 	f := newFlowFixture(t)
-	keys, srv := newAttestedTA(t, testutil.MeshCA(t, "cds-m"))
+	keys, srv := newAttestedTA(t, testutil.MeshCA(t, "ta-m"))
 
 	cmd, _ := captureCmd()
 	err := runCreate(cmd, attestedOptions(t, srv.URL, f.dir), f.config(newFake()))
@@ -95,10 +95,10 @@ func TestRunCreateRefusesWithoutMeshCA(t *testing.T) {
 
 // Every refusal that needs no network lands before the build.
 func TestRunCreateRefusesBeforeBuilding(t *testing.T) {
-	ca := testutil.MeshCA(t, "cds-m")
+	ca := testutil.MeshCA(t, "ta-m")
 	for name, mutate := range map[string]func(o *options){
 		"no operator key":            func(o *options) { o.OperatorKey = "" },
-		"plaintext without insecure": func(o *options) { o.URL = "http://cds.example" },
+		"plaintext without insecure": func(o *options) { o.URL = "http://ta.example" },
 		"unpinned endpoint":          func(o *options) { o.MeasurementsConfig = "" },
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -123,7 +123,7 @@ func TestRunCreateRefusesBeforeBuilding(t *testing.T) {
 // build rather than after the image and escrow exist.
 func TestRunCreateRefusesARouterBeforeBuilding(t *testing.T) {
 	f := newFlowFixture(t)
-	ca := testutil.MeshCA(t, "cds-m")
+	ca := testutil.MeshCA(t, "ta-m")
 	cfg := f.config(newFake())
 	cfg.gate = taconn.MeshCAGate{What: "volume key", Bundle: writeBundle(t, ca)}
 	router := testutil.NewRouterServer(t)
@@ -140,9 +140,9 @@ func TestRunCreateRefusesARouterBeforeBuilding(t *testing.T) {
 // key is withheld, and the error says how to store the escrowed key later.
 func TestRunCreateRefusesAnotherTAsMeshCA(t *testing.T) {
 	f := newFlowFixture(t)
-	keys, srv := newAttestedTA(t, testutil.MeshCA(t, "cds-n"))
+	keys, srv := newAttestedTA(t, testutil.MeshCA(t, "ta-n"))
 	cfg := f.config(newFake())
-	cfg.gate = taconn.MeshCAGate{What: "volume key", Bundle: writeBundle(t, testutil.MeshCA(t, "cds-m"))}
+	cfg.gate = taconn.MeshCAGate{What: "volume key", Bundle: writeBundle(t, testutil.MeshCA(t, "ta-m"))}
 
 	cmd, _ := captureCmd()
 	err := runCreate(cmd, attestedOptions(t, srv.URL, f.dir), cfg)
@@ -166,7 +166,7 @@ func TestRunCreateRefusesAnotherTAsMeshCA(t *testing.T) {
 // A /ca that cannot be read is not a mismatch; the hint says to retry.
 func TestRunCreateUnreadableCAHintsARetry(t *testing.T) {
 	f := newFlowFixture(t)
-	ca := testutil.MeshCA(t, "cds-m")
+	ca := testutil.MeshCA(t, "ta-m")
 	srv := testutil.NewARMTLSServer(t, http.NotFoundHandler())
 	cfg := f.config(newFake())
 	cfg.gate = taconn.MeshCAGate{What: "volume key", Bundle: writeBundle(t, ca)}
@@ -180,7 +180,7 @@ func TestRunCreateUnreadableCAHintsARetry(t *testing.T) {
 
 func TestRunCreateAcceptsThePinnedMeshCA(t *testing.T) {
 	f := newFlowFixture(t)
-	ca := testutil.MeshCA(t, "cds-m")
+	ca := testutil.MeshCA(t, "ta-m")
 	keys, srv := newAttestedTA(t, ca)
 	cfg := f.config(newFake())
 	cfg.gate = taconn.MeshCAGate{What: "volume key", Bundle: writeBundle(t, ca)}
@@ -202,7 +202,7 @@ func TestRunCreateAcceptsThePinnedMeshCA(t *testing.T) {
 // handshake, before the key is sent.
 func TestRunCreateRefusesAWriteThatRedialsToAnotherPeer(t *testing.T) {
 	f := newFlowFixture(t)
-	ca := testutil.MeshCA(t, "cds-m")
+	ca := testutil.MeshCA(t, "ta-m")
 	impostor, impostorSrv := newAttestedTA(t, ca)
 
 	var proxy *testutil.ReroutingProxy
@@ -229,7 +229,7 @@ func TestRunCreateRefusesAWriteThatRedialsToAnotherPeer(t *testing.T) {
 // --force writes, and says on stderr that it skipped the check.
 func TestRunCreateForceSkipsTheCheckLoudly(t *testing.T) {
 	f := newFlowFixture(t)
-	keys, srv := newAttestedTA(t, testutil.MeshCA(t, "cds-n"))
+	keys, srv := newAttestedTA(t, testutil.MeshCA(t, "ta-n"))
 	cfg := f.config(newFake())
 	cfg.gate = taconn.MeshCAGate{What: "volume key", Force: true}
 
@@ -248,7 +248,7 @@ func TestRunCreateForceSkipsTheCheckLoudly(t *testing.T) {
 // A bundle that names no certificate is caught before the build too.
 func TestRunCreateRefusesAnUnusableBundleBeforeBuilding(t *testing.T) {
 	f := newFlowFixture(t)
-	_, srv := newAttestedTA(t, testutil.MeshCA(t, "cds-m"))
+	_, srv := newAttestedTA(t, testutil.MeshCA(t, "ta-m"))
 	cfg := f.config(newFake())
 	cfg.gate = taconn.MeshCAGate{What: "volume key", Bundle: filepath.Join(f.dir, "nope.pem")}
 

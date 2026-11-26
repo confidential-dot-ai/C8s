@@ -71,7 +71,7 @@ func TestRunErrors(t *testing.T) {
 		},
 		{
 			name:    "missing platform",
-			cfg:     config{frontDoorMode: types.FrontDoorModeCDS},
+			cfg:     config{frontDoorMode: types.FrontDoorModeTA},
 			wantSub: "--platform is required",
 		},
 	}
@@ -99,13 +99,13 @@ func TestCmdRequiresRoutingPort(t *testing.T) {
 	cmd := NewCmd()
 	cmd.SetArgs([]string{
 		"--log-level=error",
-		"--cds-url=https://127.0.0.1:9",
+		"--ta-url=https://127.0.0.1:9",
 		"--attestation-api-url=http://127.0.0.1:9",
 	})
 	cmd.SetOut(io.Discard)
 	cmd.SetErr(io.Discard)
 	if err := cmd.ExecuteContext(t.Context()); err == nil || !strings.Contains(err.Error(), "--routing-port must be between") {
-		t.Fatalf("cds-attest without --routing-port = %v, want the --routing-port error", err)
+		t.Fatalf("ta-attest without --routing-port = %v, want the --routing-port error", err)
 	}
 }
 
@@ -155,7 +155,7 @@ func routedRunConfig(t *testing.T, attestPort int) config {
 		host:              "127.0.0.1",
 		port:              attestPort,
 		logLevel:          "error",
-		frontDoorMode:     types.FrontDoorModeCDS,
+		frontDoorMode:     types.FrontDoorModeTA,
 		attestationAPIURL: "http://127.0.0.1:9",
 		platform:          "snp",
 		readHeaderTimeout: time.Second,
@@ -235,7 +235,7 @@ func TestAttestProviderAsksTheAttestationAPI(t *testing.T) {
 	}))
 	defer api.Close()
 	cfg := config{
-		frontDoorMode:     types.FrontDoorModeCDS,
+		frontDoorMode:     types.FrontDoorModeTA,
 		platform:          "snp",
 		generation:        "genoa",
 		attestationAPIURL: api.URL,
@@ -316,15 +316,15 @@ func TestRunServesUntilSignalled(t *testing.T) {
 		t.Fatalf("healthz status %d", resp.StatusCode)
 	}
 
-	// The standalone cds-cert.pem discovery endpoint is gone: the bundle embeds
-	// the exact chain committed by report_data.
-	certResp, err := http.Get(base + "/.well-known/c8s/cds-cert.pem")
+	// The sidecar serves no ta-cert.pem: the bundle embeds the exact chain
+	// committed by report_data.
+	certResp, err := http.Get(base + "/.well-known/c8s/ta-cert.pem")
 	if err != nil {
 		t.Fatal(err)
 	}
 	certResp.Body.Close()
 	if certResp.StatusCode != http.StatusNotFound {
-		t.Fatalf("cds-cert.pem status = %d, want 404", certResp.StatusCode)
+		t.Fatalf("ta-cert.pem status = %d, want 404", certResp.StatusCode)
 	}
 
 	cancel()

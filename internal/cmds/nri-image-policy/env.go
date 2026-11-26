@@ -69,6 +69,9 @@ func (p *plugin) ValidateContainerAdjustment(ctx context.Context, req *api.Valid
 	if verdict == verdictDeny && p.cfg.Policy.Mode != ModeAudit {
 		return p.denyContainerCreation(req.GetPod().GetId(), ctr.GetName(), fmt.Errorf("%s", reason))
 	}
+	if err := p.noteNodeService(ctx, snap, observed); err != nil {
+		return p.denyContainerCreation(req.GetPod().GetId(), ctr.GetName(), err)
+	}
 	p.noteCapabilityGrant(ctx, p.cfg, snap, observed)
 	// No inventory record here: later validators can still reject creation, and
 	// CDI transformations under an any policy have not happened yet.
@@ -119,7 +122,8 @@ func (p *plugin) unpinnedStaticPod(ctx context.Context, cfg *config, observed ob
 // rejects a creation: a create notification can time out and a closed plugin
 // lets the create proceed, while a validator's refusal is the answer.
 func (p *plugin) gateMesh(ctx context.Context, req *api.ValidateContainerAdjustmentRequest, observed observedContainer) error {
-	pod, ctr := observed.pod, observed.ctr
+	pod := observed.pod
+	ctr := observed.ctr
 	if !p.mesh.hosts(pod) {
 		return nil
 	}

@@ -86,16 +86,16 @@ func (n *Node) startCluster(signed tadecree.Signed) {
 	}
 	entry, err := n.genesisEntry(signed)
 	if err != nil {
-		slog.Error("cds-ha: this replica could not write the entry that starts its cluster", "error", err)
+		slog.Error("ta-ha: this replica could not write the entry that starts its cluster", "error", err)
 		return
 	}
-	slog.Info("cds-ha: this replica starts its cluster", "member", n.member, "intent", signed.Decree.IntentID)
+	slog.Info("ta-ha: this replica starts its cluster", "member", n.member, "intent", signed.Decree.IntentID)
 	if err := n.bootstrapSolo(); err != nil {
-		slog.Warn("cds-ha: this replica could not start the one-voter group its cluster begins as", "error", err)
+		slog.Warn("ta-ha: this replica could not start the one-voter group its cluster begins as", "error", err)
 		return
 	}
 	if !await(bootstrapElections*n.cfg.Timing.Election, n.leading) {
-		slog.Warn("cds-ha: this replica started a group of its own and does not lead it")
+		slog.Warn("ta-ha: this replica started a group of its own and does not lead it")
 		return
 	}
 	genesis := Entry{
@@ -104,9 +104,9 @@ func (n *Node) startCluster(signed tadecree.Signed) {
 	}
 	switch res, err := n.propose(genesis); {
 	case err != nil:
-		slog.Error("cds-ha: the Genesis decree did not commit", "error", err)
+		slog.Error("ta-ha: the Genesis decree did not commit", "error", err)
 	case res.Decree != nil && res.Decree.Refused != "":
-		slog.Error("cds-ha: the Genesis decree was refused", "refused", res.Decree.Refused)
+		slog.Error("ta-ha: the Genesis decree was refused", "refused", res.Decree.Refused)
 	}
 }
 

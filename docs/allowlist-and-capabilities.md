@@ -230,6 +230,22 @@ host privilege. A static pod's entry, which the worker's floor marks
 `staticPod: true`, grants no host bind, host port or capability, and a boot
 config whose static-pod entry declares host ports or capabilities is refused.
 
+A component set in force grants one more exemption: an entry marked
+`nodeService` names a pod of one container serving the whole node, such as
+`volumed`, and its container is excused exactly what a static pod the measured
+base pins is excused. The entry pins the launch whole — digest, command, args,
+environment and mounts — and the enforcer grants the exemption only while that
+container is the only one of its pod and no other pod on the node runs that
+entry's container; a launch the entry admits in any other pod is refused,
+naming the rule. Host ports are no part of it: they are declared or refused as
+for every other pod. Both rules read the containers the enforcer has recorded
+for each sandbox, so a restart recovers them with the containers it records
+again, and it records each grant under `/run/nri-image-policy-node-services` for the
+runtime wrapper's floor, removed with the container
+([node-exec-mode.md](node-exec-mode.md#the-privilege-floor)). The operator key
+therefore runs code as root on a worker; that is the cost of fixing a node
+service without a relaunch.
+
 A worker's config also names no mesh-exempt namespace, so the mesh protects
 every API pod with its own network namespace wherever the control plane puts
 it; a static pod is the node's own and is never a member, on any node. It names
@@ -261,12 +277,14 @@ adjustment asks for instead is resolved by the runtime after the plugin has
 answered, so its device nodes, hooks and binds reach the container with nothing
 to attribute them to, and the container is refused.
 
-A measured base can also tag a container with a platform role, the identity
-C8s's own node-side invocations run under. It grants the role only with the
-argv and the exact mount table that invocation is given, so a pod's own
-container running the same invocation with mounts of its choosing holds no role
-([secrets.md](secrets.md)). What this policy cannot see, the runtime wrapper
-reads from the container's bundle ([node-exec-mode.md](node-exec-mode.md)).
+A measured base, or a component set the node holds in force, can also tag a
+container with a platform role, the identity C8s's own node-side invocations
+run under. It grants the role only with the argv and the exact mount table that
+invocation is given, so a pod's own container running the same invocation with
+mounts of its choosing holds no role ([secrets.md](secrets.md)). When the base
+and a set in force bind one launch to different roles, it holds none. What this
+policy cannot see, the runtime wrapper reads from the container's bundle
+([node-exec-mode.md](node-exec-mode.md)).
 A base entry may also list `execs`, the exact commands the wrapper lets
 through into a running container of its bytes, YAML-only for the same reason
 ([node-exec-mode.md](node-exec-mode.md#granted-execs)).
@@ -296,6 +314,51 @@ they re-read, print what the other write changed, and make the change to the
 newer document, for a bounded number of attempts. `upload` instead fails,
 since its file is the whole document: run it again to see the new diff.
 
+## Component sets
+
+The components section of the document lists the component sets the cluster
+admits: one release's entries for the containers c8s itself runs, the injected
+sidecars, the router and the node services
+([allowlist-entries.md](allowlist-entries.md#component-sets)). A set without a
+deadline is current; a set with a deadline is retiring and in force until that
+deadline.
+
+A release publishes its set as a **set file**: an allowlist document holding
+that one set and nothing else, one per CPU TEE
+(`component-set-{tdx,sev-snp}.json`, [releases.md](releases.md)), since the
+router's entry pins the CPU TEE it attests on. A cluster needs one such write
+before its first pod: a worker image admits its own components from the set in
+force, not from its measured base. `c8s allowlist components add FILE` puts the
+set in as a current set and says what happens to the sets already there:
+
+```
+# add the new set and leave the old one in force
+c8s allowlist components add component-set-sev-snp.json
+
+# add the new set and give the old one a deadline
+c8s allowlist components add component-set-sev-snp.json \
+    --retire 0.42.1=2026-12-01T00:00:00Z
+
+# add the new set and take the old one out of the document
+c8s allowlist components add component-set-sev-snp.json \
+    --remove 0.42.1
+```
+
+`--retire` and `--remove` repeat, and name sets the live document holds. A
+deadline is RFC 3339 UTC with second precision and lies ahead. `retire
+VERSION DEADLINE` sets or moves one deadline, `unretire VERSION` takes it off,
+and `remove VERSION` drops one set; each is one write of its own.
+
+`components list` prints every set of the live document in version order: its
+version, whether it is current, retiring until its deadline or ended at a
+deadline past, how many entries it holds, and the digest of those entries.
+
+Each of these commands writes the whole document conditionally, as `apply`
+does, and prints the sets the write left. A set file carrying a deadline,
+workload entries or a second set is refused. `retire` and `remove` refuse a
+result with no current set, which would leave new pods without their c8s
+components, unless `--force`.
+
 ## Refresh and anti-rollback
 
 Every node polls `GET /allowlist` every 5s, the `allowlist.pull.interval` the
@@ -306,6 +369,11 @@ response carries `Cache-Control: no-store`. The document swaps wholesale, gated
 by that monotone version: a consumer applies a pull only if its version is not
 below the last applied, and a 304 raises the last applied version to the one
 it names.
+
+Every reply, including a 304, carries `X-C8s-Certificate-Lifetime`, the seconds
+of the longest leaf the Trust Authority issues (`--cert-ttl`, capped at 24h), so
+a poller knows how long a certificate issued under a document it has not yet
+seen can live.
 
 Nodes ask for the allowlist in effect (`?requester=node`). The node plugin
 sends it over attested TLS to the TA; anything else sending it just gets the
@@ -335,13 +403,65 @@ same boot config carries for them (Corner 8 of
 narrowing an entry stops its containers on every node within
 `--allowlist-node-delay` plus one refresh interval.
 
+A node judges a component set's deadline by the Trust Authority's time: every
+poll reply, a 304 included, carries the `Date` the node reads it from, and that
+time never goes backwards. On each poll a node whose deadline has passed rebuilds its
+index from the document it already holds — the set ends within one refresh
+interval of its deadline, under the same bytes at the same version — and
+rechecks its running containers as an applied document does.
+
+A pod is on the component sets that admit every C8s component container it has
+run — the containers a role is bound to. A node computes that from the
+containers it has recorded for the sandbox, each judged at the Trust Authority's
+time, and keeps nothing beside those records, so a restart recovers the
+membership with the containers. One set must admit them all: a component
+container the pod's sets do not admit is refused, and the refusal names the
+sets, so a pod cannot mix two releases' components. A pod whose component
+containers the measured base alone admits is on no set, and is judged as a pod
+without them.
+
+Once no set a pod is on is in force — its deadline has passed, or a write
+removed it — the node refuses the pod every further start, the tenant's own
+containers included, and ends the whole pod: it stops every container of it and
+asks the API server to delete the Pod, so its controller replaces it on a set
+in force. A main container left without its sidecars would be cut off from the
+mesh and would still hold its secrets, and a dropped delete would otherwise
+leave the kubelet starting it again. A pod a newer set also admits runs on when
+the older set ends.
+
+A node must also keep up with the Trust Authority. A poll is **fresh** when its reply, a
+304 included, names by ETag the document the node applies, so a document the
+node refuses, and 304s for it after, leave the node behind. The **freshness
+limit** is the certificate lifetime the reply reports, at most 24h, and 24h
+when the reply reports none. It is counted on the node's own clock.
+
+Past the limit without a fresh poll the node starts no further container of a
+pod the served document admits — a new pod and a restart of a running pod's
+container alike — until a poll is fresh again. What already runs keeps running
+until its certificates run out, and the node keeps the served document in
+force, so the poll that lands measures nothing again. The pods the base
+allowlist admits, a node's static pods, are unaffected. So a host gains nothing
+by cutting a node off, holding a write back, or feeding a node a document it
+refuses. The cost is that a node unanswered for longer than one certificate
+lifetime takes no new pod, tenant pods included, until the Trust Authority
+answers it again.
+
+A node is not fresh until its first poll of this process lands. The startup
+fetch gives up after five failed attempts, at least 30s in all. The node then
+holds its base allowlist alone: the startup recheck stops each container it
+recovered that the base does not admit, and the node refuses new ones the same
+way until a poll lands. A restart while Trust Authority answers changes
+nothing. `GET /healthz` reports `fresh` and `freshness_limit_seconds`, so an
+operator sees a node falling behind before it stops taking pods.
+
 ## Bootstrap
 
 Two documents start the platform before the TA serves anything. The base allowlist
 is the set of entries each plugin holds in its own boot config, checked ahead of
 every pulled snapshot and never changed by a pull, so a node admits the platform
 before the TA is reachable and a failed pull never drops it. The chart renders it
-from `nriImagePolicy.bootstrapAllowlist`; a measured node image carries it in
+from `nriImagePolicy.bootstrapAllowlist`; a measured worker image carries the
+entries of its own static pods, and nothing else, in
 the floor its own build rendered, which it bakes at
 `/usr/lib/c8s/image-policy.yaml` and staging fills in and writes to
 `/etc/nri/conf.d/image-policy.yaml`, where the plugin reads it
@@ -371,7 +491,7 @@ A cluster of workers runs no chart install, so it has no `--allowlist-seed-out` 
 take the seed from. The worker image's release publishes the seed instead, as
 `allowlist-seed-tdx.json` and `allowlist-seed-sev-snp.json`, listed by SHA-256
 in its signed statement
-([releases.md](releases.md#verify-an-allowlist-seed)):
+([releases.md](releases.md#verify-an-allowlist-seed-and-component-set)):
 
 ```sh
 c8s ta config new --allowlist-seed allowlist-seed-sev-snp.json ...
@@ -382,10 +502,13 @@ render` of that commit writes the same document, given the digests the image
 was built with:
 
 ```sh
-c8s node-image render --output-dir seed \
-    --hardware-platform sev-snp --kube-version v1.36.6 \
+c8s node-image render \
+    --output-dir seed \
+    --hardware-platform sev-snp \
+    --kube-version v1.36.6 \
     --image-digest sha256:<operator/get-cert digest> \
-    --armtls-mesh-image-digest sha256:<armTLS mesh digest>
+    --armtls-mesh-image-digest sha256:<armTLS mesh digest> \
+    --volumed-image-digest sha256:<volumed digest>
 c8s ta config new --allowlist-seed seed/allowlist-seed.json ...
 ```
 
@@ -421,8 +544,9 @@ declares it with `hostPorts`, a container `capabilities`, or a `host` mount
 rule — a `nodeRootFile` rule names a measured node-image file and an
 `fsVerityFile` rule pins a file's bytes, so neither declares any. `declaredBySeed` is whether the measured seed this TA booted on
 declares any. `firstOperatorGrant` names, as `{"digest"}`, the document of the
-first operator write that served a declaration the document it replaced did
-not serve, and is `null` until one does; a write that moves a declaration to
+first operator write that served a declaration — in the `workloads` section or
+in a component set — the document it replaced did not serve, and is `null`
+until one does; a write that moves a declaration to
 another entry name grants nothing, and no later write clears the record. Both
 last as long as the store: a TA restart that starts from an empty database
 reports its seed again and no grant.

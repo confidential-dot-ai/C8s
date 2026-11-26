@@ -83,14 +83,14 @@ diagnostics() {
     kubectl get events -A --sort-by=.lastTimestamp 2>&1 | tail -40 || true
     kubectl -n "$ROUTER_NS" describe pods 2>&1 | tail -60 || true
     kubectl -n "$ROUTER_NS" get pods -o json 2>&1 || true
-    kubectl -n "$ROUTER_NS" logs deploy/c8s-router -c cds-attest --tail=40 2>&1 || true
+    kubectl -n "$ROUTER_NS" logs deploy/c8s-router -c ta-attest --tail=40 2>&1 || true
     docker logs "$TA_CONTAINER" --tail 40 2>&1 || true
     kubectl -n "$NS" logs deploy/c8s-operator --tail=40 2>&1 || true
     kubectl -n "$NS" logs ds/c8s-nri-image-policy-worker -c install --tail=80 2>&1 || true
     if [ -n "$NODE" ]; then
         node_exec journalctl -u containerd --no-pager -n 100 2>&1 || true
         node_exec cat /etc/nri/conf.d/image-policy.yaml 2>&1 || true
-        node_exec sh -c 'for id in $(crictl ps --name cds-attest -q); do crictl inspect "$id"; done' 2>&1 || true
+        node_exec sh -c 'for id in $(crictl ps --name ta-attest -q); do crictl inspect "$id"; done' 2>&1 || true
         node_exec sh -c 'for p in /var/lib/kubelet/pods/*/volumes/*/*; do stat -f -c "%T %n" "$p"; done' 2>&1 || true
     fi
 }
@@ -130,7 +130,7 @@ ta_start() {
     docker run -d \
         --name "$TA_ATTESTATION_CONTAINER" \
         --network "$KIND_NETWORK" \
-        -e "HOST_DATA=$(sha256sum "$WORKDIR/ta/cds-config.yaml" | cut -d' ' -f1)" \
+        -e "HOST_DATA=$(sha256sum "$WORKDIR/ta/ta-config.yaml" | cut -d' ' -f1)" \
         "ghcr.io/confidential-dot-ai/mock-attestation:$IMAGE_TAG" >/dev/null \
         || fail "could not start the TA attestation-api"
     ip=$(docker inspect "$TA_ATTESTATION_CONTAINER" \
@@ -152,7 +152,7 @@ ta_serve() {
         --network "container:$TA_ATTESTATION_CONTAINER" \
         -v "$WORKDIR/ta:/etc/confai:ro" \
         "ghcr.io/confidential-dot-ai/ta:$IMAGE_TAG" \
-        --config=/etc/confai/cds-config.yaml \
+        --config=/etc/confai/ta-config.yaml \
         --attestation-api-url=http://127.0.0.1:8400 \
         --allowlist-db=/tmp/allowlist.db \
         --allowlist-persistent=false \
@@ -235,8 +235,8 @@ pod_cvm_secret() {
     mkdir -p "$dir"
     openssl ecparam -genkey -name prime256v1 -noout -out "$dir/pod.key" 2>/dev/null
     echo c8s-it-cloud-token > "$dir/cloud-token"
-    jq --arg cluster "$CLUSTER" '.measurements[].launch_file = "schemaVersion: c8s-cds/v1\nclusterID: \($cluster)\n"' \
-        "$WORKDIR/ta/cds-pin.json" > "$dir/ta.json"
+    jq --arg cluster "$CLUSTER" '.measurements[].launch_file = "schemaVersion: c8s-ta/v1\nclusterID: \($cluster)\n"' \
+        "$WORKDIR/ta/ta-pin.json" > "$dir/ta.json"
     register="$(printf '%096d' 0)"
     jq -n --arg r "$register" \
         '{version: 1, build: {platform: "tdx"}, tdx: {mrtd: $r, rtmr1: $r, rtmr2: $r}}' > "$dir/manifest.json"
@@ -249,7 +249,7 @@ pod_cvm_secret() {
         --argjson memory "$POD_CVM_MEMORY_MIB" \
         '{providerID: $provider, nodeName: $node, namespace: $ns, cloudURL: $cloud,
           cloudTokenFile: "cloud-token", image: "c8s-pod@it", imageManifestFile: "manifest.json",
-          launchKeyFile: "pod.key", cdsAddress: $ta, cdsImagePolicyFile: "ta.json",
+          launchKeyFile: "pod.key", taAddress: $ta, taImagePolicyFile: "ta.json",
           workloadsFile: "workloads.json", clusterID: $cluster, size: "it", location: "it",
           vCPUs: 4, memoryMiB: $memory, maxPods: $pods, verificationTimeoutSeconds: $deadline}' \
         > "$dir/config.json"

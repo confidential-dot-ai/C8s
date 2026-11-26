@@ -125,15 +125,15 @@ nri_settings_outside_a_table() {
 
 # The paths the boot config names its inputs by, which the plugin opens at
 # start.
-boot_cds_address={{ include "nri-image-policy.hostTAAddressPath" $root | squote }}
-boot_cds_pin={{ include "nri-image-policy.hostTAPinPath" $root | squote }}
+boot_ta_address={{ include "nri-image-policy.hostTAAddressPath" $root | squote }}
+boot_ta_pin={{ include "nri-image-policy.hostTAPinPath" $root | squote }}
 boot_syslog={{ include "nri-image-policy.syslogSocket" $root | squote }}
 
 # Stages what the boot config names in this pod's root, at the paths it names
-# them: the CDS address and pin, and the host's syslog socket.
+# them: the Trust Authority address and pin, and the host's syslog socket.
 stage_boot_config_inputs() {
-  install -D -m 0644 {{ include "nri-image-policy.taPolicyMount" $root }}/cds-address "$boot_cds_address"
-  install -D -m 0644 {{ include "nri-image-policy.taPolicyMount" $root }}/cds.json "$boot_cds_pin"
+  install -D -m 0644 {{ include "nri-image-policy.taPolicyMount" $root }}/ta-address "$boot_ta_address"
+  install -D -m 0644 {{ include "nri-image-policy.taPolicyMount" $root }}/ta.json "$boot_ta_pin"
   host_syslog=$(nsenter -t 1 -m -- readlink -e {{ include "nri-image-policy.syslogSocket" $root | squote }}) ||
     refuse "the host has no syslog socket at {{ include "nri-image-policy.syslogSocket" $root }}, which the plugin logs to"
   ln -sfn "/proc/1/root$host_syslog" "$boot_syslog"
@@ -193,22 +193,23 @@ mkdir -p "/host{{ include "nri-image-policy.runtimeDir" $root }}"
 # world-writable, so an untrusted pod can't swap the socket.
 chmod 0711 "/host{{ include "nri-image-policy.runtimeDir" $root }}"
 
-# The CDS this cluster trusts, beside the boot config. The NRI required_plugins
-# this script writes hold from the moment it has run on this boot.
-cds_changed=0
+# The Trust Authority this cluster trusts, beside the boot config. The NRI
+# required_plugins this script writes hold from the moment it has run on this
+# boot.
+ta_changed=0
 if install_file \
-  {{ include "nri-image-policy.taPolicyMount" $root }}/cds-address \
+  {{ include "nri-image-policy.taPolicyMount" $root }}/ta-address \
   "/host{{ include "nri-image-policy.hostTAAddressPath" $root }}" \
   0644; then
-  cds_changed=1
-  echo "CDS address updated"
+  ta_changed=1
+  echo "Trust Authority address updated"
 fi
 if install_file \
-  {{ include "nri-image-policy.taPolicyMount" $root }}/cds.json \
+  {{ include "nri-image-policy.taPolicyMount" $root }}/ta.json \
   "/host{{ include "nri-image-policy.hostTAPinPath" $root }}" \
   0644; then
-  cds_changed=1
-  echo "CDS pin updated"
+  ta_changed=1
+  echo "Trust Authority pin updated"
 fi
 
 config_changed=0
@@ -233,7 +234,7 @@ restart_needed=0
 if [ "$containerd_config_staged" = "1" ] ||
   [ "$binary_changed" = "1" ] ||
   [ "$config_changed" = "1" ] ||
-  [ "$cds_changed" = "1" ]; then
+  [ "$ta_changed" = "1" ]; then
   restart_needed=1
 fi
 {{ include "nri-image-policy.restartAndWait" (dict "root" $root) }}
@@ -285,10 +286,10 @@ if [ "$restart_needed" = "1" ]; then
   restart_containerd
 fi
 
-# The plugin goes ready once its initial CDS pull settles: 4 backoff sleeps
-# (2+4+8+16s) plus per-attempt fetch timeouts (allowlistApi* consts in
-# internal/cmds/nri-image-policy/main.go). A containerd restart adds the
-# runtime's own recovery, and on a sole control-plane node that takes the
+# The plugin goes ready once its initial Trust Authority pull settles: 4
+# backoff sleeps (2+4+8+16s) plus per-attempt fetch timeouts (allowlistApi*
+# consts in internal/cmds/nri-image-policy/main.go). A containerd restart adds
+# the runtime's own recovery, and on a sole control-plane node that takes the
 # apiserver down with it, so the budget is wider when we restarted it.
 budget=120
 if [ "$restarted_containerd" = "1" ]; then
@@ -344,12 +345,13 @@ allowlist:
     timeout: "30s"
     # Node-local socket served by the DaemonSet's attest-proxy sidecar.
     attestation_api_url: {{ printf "unix://%s" (include "c8s.attestationApiSocket" $root) | quote }}
-    # The CDS this cluster trusts, installed beside this config from the
-    # ConfigMap the installer mounts: the endpoint the plugin pulls from and
-    # hands its injected credential clients, and the pin they hold it to.
-    # Paths, so no argument of a component names the CDS it is served by.
-    cds_address_file: {{ include "nri-image-policy.hostTAAddressPath" $root | quote }}
-    cds_measurements_config: {{ include "nri-image-policy.hostTAPinPath" $root | quote }}
+    # The Trust Authority this cluster trusts, installed beside this config
+    # from the ConfigMap the installer mounts: the endpoint the plugin pulls
+    # from and hands its injected credential clients, and the pin they hold
+    # it to. Paths, so no argument of a component names the Trust Authority
+    # it is served by.
+    ta_address_file: {{ include "nri-image-policy.hostTAAddressPath" $root | quote }}
+    ta_measurements_config: {{ include "nri-image-policy.hostTAPinPath" $root | quote }}
   base:
     {{- /* Also the installer's argv pin: JSON key order is defined, toYaml's is not. */ -}}
     {{- $base := include "c8s.baseWorkloads" (dict "root" $root "templates" (include "c8s.componentPodTemplates" $root)) | fromJson -}}

@@ -5,6 +5,8 @@ import (
 	"fmt"
 
 	"github.com/containerd/nri/pkg/api"
+
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
 // admitWhileInitializing decides a container seen after NRI registration but
@@ -95,6 +97,12 @@ func (p *plugin) admitStart(ctx context.Context, pod *api.PodSandbox, ctr *api.C
 	if err := p.admitContainer(ctx, cfg, pod, ctr, imageRef); err != nil {
 		return err
 	}
+	if err := p.refuseBehindTheTA(ctx, pod, ctr, imageRef); err != nil {
+		return err
+	}
+	if err := p.admitOnComponentSets(ctx, pod, ctr, imageRef); err != nil {
+		return p.denyContainer(pod.GetId(), err)
+	}
 	if err := p.measureStarted(ctx, imageRef); err != nil {
 		p.cvm().endIdentityForRefusal(pod, err)
 		return err
@@ -140,7 +148,7 @@ func (p *plugin) noteMeshStarted(ctx context.Context, pod *api.PodSandbox, ctr *
 		return
 	}
 	launch := p.observedLaunch(ctx, p.observeContainer(ctx, pod, ctr, imageRef))
-	if p.roleOf(launch) == meshRole {
+	if p.roleOf(launch) == allowlist.RoleMesh {
 		p.mesh.noteMeshStarted(pod.GetId())
 	}
 }

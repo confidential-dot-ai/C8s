@@ -68,8 +68,9 @@ func routerServer(t *testing.T, measurementChallenge []byte) (*httptest.Server, 
 	}
 
 	doc, err := json.Marshal(types.DiscoveryDocument{
-		Version: "1",
-		CDSTLS: types.CDSTLSDiscovery{
+		Version:   "1",
+		PublicTLS: types.PublicTLSDiscovery{Mode: types.FrontDoorModeTA},
+		TATLS: types.TATLSDiscovery{
 			CertificatePEM: string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})),
 		},
 		Attestation: types.AttestationDiscovery{
@@ -136,7 +137,7 @@ func seededAllowlist(t *testing.T) *pkgallowlist.Allowlist {
 	t.Helper()
 	al := pkgallowlist.Allowlist{
 		Schema:    pkgallowlist.Schema,
-		Workloads: anyWorkloads(t, map[string]string{digA: "registry/c8s/cds@" + digA}),
+		Workloads: anyWorkloads(t, map[string]string{digA: "registry/c8s/ta@" + digA}),
 	}
 	body, err := al.Canonical()
 	if err != nil {
@@ -197,7 +198,7 @@ func boundTAVerify(measurement []byte) localverify.VerifyFunc {
 // to the exact launch file that Trust Authority runs on.
 func writeTAPin(t *testing.T, measurement []byte) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "cds-pin.json")
+	path := filepath.Join(t.TempDir(), "ta-pin.json")
 	document := testutil.TAPinDocument(hex.EncodeToString(measurement), testutil.TALaunchFile)
 	if err := os.WriteFile(path, []byte(document), 0o600); err != nil {
 		t.Fatal(err)

@@ -12,6 +12,7 @@ import (
 	"github.com/containerd/nri/pkg/api"
 
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/getcert"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
@@ -50,7 +51,7 @@ func TestPreparePodBrokerRefusals(t *testing.T) {
 	}{
 		{name: "no client", want: "no authenticated Trust Authority client"},
 		{name: "conflicting Trust Authority source", client: http.DefaultClient,
-			pull: pullConfig{URL: "https://cds.example", TAAddressFile: "/run/cds-address"}, want: "pod broker Trust Authority pins"},
+			pull: pullConfig{URL: "https://ta.example", TAAddressFile: "/run/ta-address"}, want: "pod broker Trust Authority pins"},
 		{name: "missing state", client: http.DefaultClient, state: "missing", want: "open Pod broker state"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -272,7 +273,7 @@ func TestCommitPodCredentialsRefusesADisconnectedRuntime(t *testing.T) {
 func TestPodCredentialSourceIsUnusedOutsideThePodRole(t *testing.T) {
 	p := &plugin{cfg: &config{}}
 	ctr := &api.Container{Mounts: []*api.Mount{readOnlyBind("/var/lib/kubelet/pods/x", "/certs")}}
-	if source, err := p.podCredentialSource(sandboxedPod(), ctr, meshRole, nil); source != "" || err != nil {
+	if source, err := p.podCredentialSource(sandboxedPod(), ctr, allowlist.RoleMesh, nil); source != "" || err != nil {
 		t.Fatalf("node role: %q, %v", source, err)
 	}
 }

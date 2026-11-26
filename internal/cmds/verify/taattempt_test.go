@@ -132,7 +132,7 @@ func TestTAAttemptCrosscheckVerdict(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var connections atomic.Pointer[atomic.Int32]
 			srv, count := alternatingTA(t, func(w http.ResponseWriter, r *http.Request) {
-				if r.TLS.Version != tls.VersionTLS13 || r.ProtoMajor != 1 || r.TLS.ServerName != "cds.example" {
+				if r.TLS.Version != tls.VersionTLS13 || r.ProtoMajor != 1 || r.TLS.ServerName != "ta.example" {
 					t.Errorf("unexpected transport: %s %+v", r.Proto, r.TLS)
 				}
 				if r.URL.Path == "/operator-keys" {
@@ -160,7 +160,7 @@ func TestTAAttemptCrosscheckVerdict(t *testing.T) {
 				}
 			})
 			connections.Store(count)
-			cfg := config{kind: "ta", url: srv.URL, server: "cds.example", timeout: time.Second, measurementsConfig: testutil.TAPinFile(t)}
+			cfg := config{kind: "ta", url: srv.URL, server: "ta.example", timeout: time.Second, measurementsConfig: testutil.TAPinFile(t)}
 			if tc.keys {
 				cfg.operatorKeys = keyPath
 			}

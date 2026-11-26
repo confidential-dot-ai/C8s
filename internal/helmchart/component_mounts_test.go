@@ -208,7 +208,7 @@ func componentPins(t *testing.T, out string, args []string) map[string]component
 	for key, entrypoint := range entrypoints {
 		values[key] = componentPin{entrypoint: entrypoint, imageEnv: envs[key]}
 	}
-	pins := map[string]componentPin{"sha256:0000000000000000000000000000000000000000000000000000000000000001": values["cds.image"]}
+	pins := map[string]componentPin{}
 	for _, arg := range args {
 		key, digest, ok := strings.Cut(arg, ".digest=")
 		if !ok {

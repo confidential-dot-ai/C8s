@@ -155,15 +155,15 @@ type allowlistConfig struct {
 
 // pullConfig configures the Trust Authority polling source.
 type pullConfig struct {
-	URL                  string        `yaml:"url"`                     // a measured config names the Trust Authority here; excludes cds_address_file
-	TAAddressFile        string        `yaml:"cds_address_file"`        // the Trust Authority endpoint an install mounts, as host:port
-	Interval             time.Duration `yaml:"interval"`                // ticker cadence; > 0 required when a Trust Authority is named
-	Timeout              time.Duration `yaml:"timeout"`                 // per-request timeout; > 0 required when a Trust Authority is named
-	AttestationApiURL    string        `yaml:"attestation_api_url"`     // required for https pull
-	TAMeasurementsConfig string        `yaml:"cds_measurements_config"` // the Trust Authority pin document, every entry bound to the launch file Trust Authority runs on
+	URL                  string        `yaml:"url"`                    // a measured config names the Trust Authority here; excludes ta_address_file
+	TAAddressFile        string        `yaml:"ta_address_file"`        // the Trust Authority endpoint an install mounts, as host:port
+	Interval             time.Duration `yaml:"interval"`               // ticker cadence; > 0 required when a Trust Authority is named
+	Timeout              time.Duration `yaml:"timeout"`                // per-request timeout; > 0 required when a Trust Authority is named
+	AttestationApiURL    string        `yaml:"attestation_api_url"`    // required for https pull
+	TAMeasurementsConfig string        `yaml:"ta_measurements_config"` // the Trust Authority pin document, every entry bound to the launch file Trust Authority runs on
 	// TAPinFloor is the lowest cluster version this node takes a Trust Authority pin
 	// decree at, from the launch document it booted.
-	TAPinFloor uint64 `yaml:"cds_pin_floor"`
+	TAPinFloor uint64 `yaml:"ta_pin_floor"`
 	// MeasurePolicies extends RTMR[3] (TDX) with each pulled policy before
 	// applying it. Off by default: verifiers on attestation-go predating
 	// runtime extensions, and flat RTMR[3] pins, still require the bare
@@ -195,7 +195,7 @@ func (c pullConfig) taSource() (taSource, error) {
 		PinFile:     c.TAMeasurementsConfig,
 	}
 	if source.URL != "" && source.AddressFile != "" {
-		return taSource{}, fmt.Errorf("allowlist.pull.url cannot be combined with cds_address_file: a node reaches one Trust Authority")
+		return taSource{}, fmt.Errorf("allowlist.pull.url cannot be combined with ta_address_file: a node reaches one Trust Authority")
 	}
 	return source, nil
 }
@@ -214,7 +214,7 @@ func (c pullConfig) policySet() (refvalues.ReferenceValues, error) {
 		return refvalues.ReferenceValues{}, fmt.Errorf("allowlist.pull: %w", err)
 	}
 	if _, err := cmdsutil.TALaunchFile(set); err != nil {
-		return refvalues.ReferenceValues{}, fmt.Errorf("allowlist.pull.cds_measurements_config %w", err)
+		return refvalues.ReferenceValues{}, fmt.Errorf("allowlist.pull.ta_measurements_config %w", err)
 	}
 	return set, nil
 }
@@ -328,7 +328,7 @@ func completeConfig(data []byte) (*config, error) {
 	}
 	cfg.taAddress = address
 	if err := bindCredentialRole(cfg); err != nil {
-		return nil, fmt.Errorf("bind the %s role to the Trust Authority this node reaches: %w", CredentialRole, err)
+		return nil, fmt.Errorf("bind the %s role to the Trust Authority this node reaches: %w", allowlist.RoleCredentials, err)
 	}
 	if err := cfg.validateMeshRoleBindings(); err != nil {
 		return nil, fmt.Errorf("validate mesh role bindings: %w", err)
@@ -681,7 +681,7 @@ func (c *config) validatePod() error {
 	if len(c.Policy.ExemptNamespaces) != 0 || len(c.Mesh.ExemptNamespaces) != 0 || c.Pod.Namespace == routerNamespace {
 		return fmt.Errorf("the Pod broker permits no namespace exemptions or router namespace")
 	}
-	if len(c.Mesh.Roles) != 1 || c.Mesh.Roles[0].Name != meshRole || c.Mesh.Roles[0].UID != workloadclaims.MeshUID || c.Mesh.Roles[0].Port != 0 || c.Mesh.CredentialAttestationPort != 0 {
+	if len(c.Mesh.Roles) != 1 || c.Mesh.Roles[0].Name != allowlist.RoleMesh || c.Mesh.Roles[0].UID != workloadclaims.MeshUID || c.Mesh.Roles[0].Port != 0 || c.Mesh.CredentialAttestationPort != 0 {
 		return fmt.Errorf("the Pod broker requires only the mesh role and no Pod credential-client bypass")
 	}
 	if c.Pod.UID == "" || c.Pod.Namespace == "" || c.Pod.Name == "" {

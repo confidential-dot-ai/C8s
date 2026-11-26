@@ -247,7 +247,7 @@ func TestParseRouteCheckV2(t *testing.T) {
 		{name: "keys and pin", cfg: config{mode: "attest-pq", operatorKeys: op.keyFile, routeDigests: []string{pin}}, wantErr: "pass one of"},
 		{name: "floor without keys", cfg: config{mode: "attest-pq", routeDigests: []string{pin}, routesFloor: "7:" + pin}, wantErr: "only with --operator-keys"},
 		{name: "floor outside attested modes", cfg: config{mode: "discovery", routesFloor: "7:" + pin}, wantErr: "applies only to"},
-		{name: "keys with kind cds", cfg: config{kind: "ta", mode: "attest-pq", operatorKeys: op.keyFile}, wantErr: "drop --kind ta"},
+		{name: "keys with kind ta", cfg: config{kind: "ta", mode: "attest-pq", operatorKeys: op.keyFile}, wantErr: "drop --kind ta"},
 		{name: "keys with a saved file", cfg: config{mode: "attest-lb", fromFile: "receipt.json", operatorKeys: op.keyFile}, wantErr: "pass --route-digest"},
 		{name: "floor without a colon", cfg: config{mode: "attest-pq", operatorKeys: op.keyFile, routesFloor: pin}, wantErr: "want <revision>"},
 		{name: "floor revision zero", cfg: config{mode: "attest-pq", operatorKeys: op.keyFile, routesFloor: "0:" + pin}, wantErr: "positive integer"},
@@ -441,7 +441,7 @@ func TestSavedBundleRouteFlags(t *testing.T) {
 		{name: "expected report data in attest-pq mode", cfg: config{mode: "attest-pq", fromFile: bundle, routeDigests: []string{pin}, expectedRDHex: "00"}, want: "does not apply to --mode attest-pq"},
 		{name: "expected report data in attest-pq mode without a route check", cfg: config{mode: "attest-pq", fromFile: bundle, expectedRDHex: "00"}, want: "does not apply to --mode attest-pq"},
 		{name: "expected report data against a live router", cfg: config{url: "https://router.invalid", mode: "attest-lb", routeDigests: []string{pin}, expectedRDHex: "00"}, want: "does not apply to --mode attest-lb"},
-		{name: "operator keys with kind cds", cfg: config{url: "https://router.invalid", kind: "ta", mode: "attest-pq", measurementsConfig: testutil.TAPinFile(t), operatorKeys: newOperatorSigner(t).keyFile}, want: "drop --kind ta"},
+		{name: "operator keys with kind ta", cfg: config{url: "https://router.invalid", kind: "ta", mode: "attest-pq", measurementsConfig: testutil.TAPinFile(t), operatorKeys: newOperatorSigner(t).keyFile}, want: "drop --kind ta"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var out, errOut bytes.Buffer
@@ -483,7 +483,7 @@ func TestTranscriptWithoutRouteDigestRejected(t *testing.T) {
 		if err := json.Unmarshal(buildEndpointJSON(t, id, nonce, bytes.Repeat([]byte{0x01}, 64), []byte("vcek"), sess), &obj); err != nil {
 			t.Fatal(err)
 		}
-		short := transcriptOf([]byte(types.ProtocolVersion), []byte("cds"), sum256(id.ca.Raw), sum256(id.leaf.Raw), sess.ek, sess.ct, sess.sid, nonce)
+		short := transcriptOf([]byte(types.ProtocolVersion), []byte("ta"), sum256(id.ca.Raw), sum256(id.leaf.Raw), sess.ek, sess.ct, sess.sid, nonce)
 		obj["identity_proof"] = id.proofJSON(t, short)
 		data, err := json.Marshal(obj)
 		if err != nil {
@@ -495,14 +495,14 @@ func TestTranscriptWithoutRouteDigestRejected(t *testing.T) {
 	})
 	t.Run("attest-lb", func(t *testing.T) {
 		serving := []byte("serving-der")
-		short := transcriptOf([]byte(types.BindingAttestLB), []byte("cds"), nonce, sum256(serving), sum256(id.leaf.Raw), sum256(id.ca.Raw))
+		short := transcriptOf([]byte(types.BindingAttestLB), []byte("ta"), nonce, sum256(serving), sum256(id.leaf.Raw), sum256(id.ca.Raw))
 		data, err := json.Marshal(map[string]any{
 			"version":         types.BindingAttestLB,
 			"platform":        "snp",
 			"nonce":           base64.RawURLEncoding.EncodeToString(nonce),
 			"evidence":        map[string]any{"attestation_report": "AAAA"},
-			"front_door_mode": "cds",
-			"cds_cert_pem":    id.chainPEM,
+			"front_door_mode": "ta",
+			"ta_cert_pem":     id.chainPEM,
 			"identity_proof":  id.proofJSON(t, short),
 			"route_digest":    hex.EncodeToString(testRouteDigest),
 		})

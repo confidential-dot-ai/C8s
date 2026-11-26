@@ -43,8 +43,8 @@ containers:
     "attestationApiMounts" (include "router.attestationApiMount" .)
     "attestationApiURL" $inventoryURL
     "certificateMounts" (include "router.acmeCertificateMounts" . | fromYamlArray)
-    "cdsAttestArgs" (include "router.taAttestArgs" . | fromJsonArray)
-    "cdsAttestMounts" (include "router.taAttestMounts" . | fromYamlArray)
+    "taAttestArgs" (include "router.taAttestArgs" . | fromJsonArray)
+    "taAttestMounts" (include "router.taAttestMounts" . | fromYamlArray)
     "config" (include "router.configDir" .)
     "ports" (include "router.publicPorts" . | fromJsonArray)
     "settingsMounts" (include "router.nodeConfigMount" . | fromYamlArray)
@@ -91,7 +91,7 @@ volumes:
       type: Directory
   {{- /* The inventory and the attestation-api serve their sockets in one
          host directory, which get-cert and the allowlist proxy read at the
-         path they compile and cds-attest at the node's own. */}}
+         path they compile and ta-attest at the node's own. */}}
   - name: workload-claims
     hostPath:
       path: {{ include "worker.runtimeDir" . }}
@@ -148,7 +148,7 @@ securityContext:
 {{- $settings := include "c8s.routerWorkerSettingsDir" . -}}
 {{- list
   (printf "--discovery-out=%s" (include "router.discoveryFilePath" .))
-  (printf "--discovery-cds-cert-url=%s" (include "router.taCertPath" .))
+  (printf "--discovery-ta-cert-url=%s" (include "router.taCertPath" .))
   (printf "--discovery-public-tls-mode-file=%s/front-door-mode" $settings)
   (printf "--discovery-public-tls-hostnames-file=%s/hostnames" $settings)
   (printf "--discovery-mesh-ca-url=%s" (include "router.meshCAPath" .))
@@ -157,13 +157,13 @@ securityContext:
   | toJson -}}
 {{- end -}}
 
-{{/* cds-attest takes the front-door mode, the Trust Authority pin and the operator keys
+{{/* ta-attest takes the front-door mode, the Trust Authority pin and the operator keys
      from the launch staging, naming each so a missing file is fatal. */}}
 {{- define "router.taAttestArgs" -}}
 {{- $node := include "c8s.nodeConfigDir" . -}}
 {{- $runtimeDir := include "worker.runtimeDir" . -}}
 {{- list
-  "cds-attest"
+  "ta-attest"
   "--host=127.0.0.1"
   (printf "--port=%s" (include "router.attestPort" .))
   (printf "--platform=%s" .Values.router.attest.platform)
@@ -173,7 +173,7 @@ securityContext:
   (printf "--serving-cert-file=%s" (include "c8s.certFile" .))
   (printf "--acme-serving-cert-file=%s/cert.pem" (include "router.acmeCertDir" .))
   (printf "--measured-policies-file=%s/measured-policies" $runtimeDir)
-  (printf "--image-policy-file=%s/cds.json" $node)
+  (printf "--image-policy-file=%s/ta.json" $node)
   (printf "--operator-keys-file=%s/operator-pubkey" $node)
   "--routes-poll-interval=30s"
   "--routing-host=127.0.0.1"

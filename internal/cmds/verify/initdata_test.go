@@ -144,7 +144,7 @@ func TestVerifyEvidence_InitDataNoteAbsentOnFailedVerdict(t *testing.T) {
 			// where the served set was never fetched.
 			opKeys := operatorKeysReport{}
 			if tc.cfg.operatorKeys != "" {
-				opKeys.note = "kind is not cds"
+				opKeys.note = "kind is not ta"
 			}
 
 			jsonCfg := tc.cfg

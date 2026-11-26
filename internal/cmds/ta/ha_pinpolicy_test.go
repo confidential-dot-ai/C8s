@@ -52,7 +52,7 @@ func TestPinPolicyWritesThePinDocumentTheDecreeMakes(t *testing.T) {
 		BaseVersion: 3,
 		TAPins:      c.rollPins(t),
 	})
-	out := filepath.Join(t.TempDir(), "cds-pin.json")
+	out := filepath.Join(t.TempDir(), "ta-pin.json")
 	decreeOut := filepath.Join(t.TempDir(), "pin-decree.json")
 	o := pinPolicyOptions{
 		out:       out,

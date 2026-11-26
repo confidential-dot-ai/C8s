@@ -41,12 +41,12 @@ type config struct {
 // What the enforcer mounts for a credentials-role container, each at the one
 // compiled path its client reads. Tests point them elsewhere.
 var (
-	nodeAddressPath = workloadclaims.CDSAddressPath
-	nodePinsPath    = workloadclaims.CDSPinsPath
+	nodeAddressPath = workloadclaims.TAAddressPath
+	nodePinsPath    = workloadclaims.TAPinsPath
 	nodeVerifier    = workloadclaims.AttestationAPISocket
 )
 
-// cds is the Trust Authority this proxy dials and the pins it holds it to.
+// ta is the Trust Authority this proxy dials and the pins it holds it to.
 type ta struct {
 	url  string
 	pins armtls.PinSource
@@ -69,7 +69,6 @@ func NewCmd() *cobra.Command {
 	f.StringVar(&cfg.host, "host", "127.0.0.1", "listen host (loopback; nginx is the public listener)")
 	f.IntVarP(&cfg.port, "port", "p", 8801, "listen port")
 	f.StringVar(&cfg.taURL, "ta-url", "", "Trust Authority base URL (must use https/armTLS)")
-	cmdsutil.AliasFlag(f, "ta-url", "cds-url")
 	cmdsutil.BindTAImagePolicyFlags(f, &cfg.measurementsConfig, nil, "pins the Trust Authority endpoint, every entry bound to the launch file that Trust Authority runs on; required unless the node pins Trust Authority")
 	f.StringVar(&cfg.attestationAPIURL, "attestation-api-url", "", "attestation-api URL used to verify Trust Authority evidence"+cmdsutil.NodeAddressHelp)
 	f.DurationVar(&cfg.requestTimeout, "request-timeout", defaultRequestTimeout, "timeout for one request to the Trust Authority")
@@ -114,7 +113,7 @@ func runContext(ctx context.Context, cfg config, listen listenFunc) error {
 	defer listener.Close()
 	go cmdsutil.ShutdownOnDone(ctx, srv, 5*time.Second)
 
-	slog.Info("router allowlist proxy listening", "addr", addr, "cds_url", cfg.taURL)
+	slog.Info("router allowlist proxy listening", "addr", addr, "ta_url", cfg.taURL)
 	if err := srv.Serve(listener); err != nil && err != http.ErrServerClosed {
 		return cmdsutil.NodeIPChanged(ctx, err)
 	}
@@ -151,7 +150,7 @@ func newHandler(ctx context.Context, cfg config, logger *slog.Logger) (http.Hand
 	if err != nil {
 		return nil, fmt.Errorf("the Trust Authority armTLS client: %w", err)
 	}
-	logger.Info("router allowlist proxy verifying Trust Authority", "cds_url", resolved.url)
+	logger.Info("router allowlist proxy verifying Trust Authority", "ta_url", resolved.url)
 	proxy := newReverseProxy(target, httpClient.Transport, cfg.requestTimeout, logger)
 	return newRouter(proxy), nil
 }
@@ -160,7 +159,7 @@ func newHandler(ctx context.Context, cfg config, logger *slog.Logger) (http.Hand
 // verifier that decides them. All three come from one source: while the
 // enforcer mounts the node's endpoint, policy and attestation-api for a
 // credentials-role container, they are the only source and a flag naming
-// another is refused (cmdsutil.ResolveCDSURL, cmdsutil.ResolveTAPins,
+// another is refused (cmdsutil.ResolveTAURL, cmdsutil.ResolveTAPins,
 // cmdsutil.RequireNodeVerifier).
 func (cfg config) resolveTA(ctx context.Context) (ta, error) {
 	taURL, endpointFromNode, err := cmdsutil.ResolveTAURL(nodeAddressPath, cfg.taURL)

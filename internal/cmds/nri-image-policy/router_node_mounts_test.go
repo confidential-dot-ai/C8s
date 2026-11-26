@@ -24,11 +24,11 @@ func TestChartRouterNodeMountAdmission(t *testing.T) {
 	}{
 		{
 			name: workloadclaims.AttestContainerName,
-			role: upstreamRole,
+			role: allowlist.RoleUpstream,
 		},
 		{
 			name: "allowlist-proxy",
-			role: CredentialRole,
+			role: allowlist.RoleCredentials,
 		},
 	} {
 		t.Run(client.name, func(t *testing.T) {
@@ -67,7 +67,7 @@ func TestChartRouterNodeMountAdmission(t *testing.T) {
 			if err != nil || len(containers) != 1 || containers[0].Role != client.role {
 				t.Fatalf("inventory = %v, %v; want role %s", containers, err, client.role)
 			}
-			if client.role == CredentialRole {
+			if client.role == allowlist.RoleCredentials {
 				socket := onlyMountAt(t, containers[0].Mounts, workloadclaims.SidecarSocketDir)
 				if socket.Class != allowlist.MountHost {
 					t.Fatalf("router socket bypassed its exact host mount rule: %+v", socket)
@@ -78,7 +78,7 @@ func TestChartRouterNodeMountAdmission(t *testing.T) {
 }
 
 func TestRouterNodePolicyMountsRefuseForeignAndWritableSources(t *testing.T) {
-	for _, destination := range []string{workloadclaims.CDSPinsPath, workloadclaims.CDSAddressPath} {
+	for _, destination := range []string{workloadclaims.TAPinsPath, workloadclaims.TAAddressPath} {
 		for _, change := range []string{"foreign source", "writable", "wrong identity"} {
 			t.Run(destination+"/"+change, func(t *testing.T) {
 				p := routerNodeMountPlugin(t)
@@ -151,7 +151,7 @@ func TestRouterNodeMountEligibilityDoesNotAuthorizeLaunch(t *testing.T) {
 					t.Fatal("node mount eligibility admitted unapproved launch at creation")
 				}
 				mounts := routerNodeMountObserver(p).Observe(pod, ctr)
-				address := onlyMountAt(t, mounts, workloadclaims.CDSAddressPath)
+				address := onlyMountAt(t, mounts, workloadclaims.TAAddressPath)
 				if address.Class != allowlist.MountPlatform {
 					t.Fatalf("matching node client did not retain platform address classification: %+v", address)
 				}
@@ -188,9 +188,9 @@ func routerNodeMountPlugin(t *testing.T) *plugin {
 	cfg.WorkloadClaims.AdvertiseHost = "10.0.0.1"
 	// Launch staging writes both halves into the measured config: where this
 	// cluster's Trust Authority serves, and the role its clients hold (nodeservices).
-	cfg.taAddress = "cds.example.org:8443"
+	cfg.taAddress = "ta.example.org:8443"
 	cfg.Mesh.Roles = append(cfg.Mesh.Roles, roleBinding{
-		Name: CredentialRole,
+		Name: allowlist.RoleCredentials,
 		UID:  workloadclaims.CredentialsUID,
 		Port: 8443,
 	})
@@ -203,8 +203,8 @@ func routerNodeMountPlugin(t *testing.T) *plugin {
 	}
 	p := newTestPlugin(cfg)
 	p.SetReady()
-	p.taPins = "/run/node-cds-policy.json"
-	p.taAddress = "/run/node-cds-address"
+	p.taPins = "/run/node-ta-policy.json"
+	p.taAddress = "/run/node-ta-address"
 	p.inventory = newAdmissionInventory(t.TempDir())
 	return p
 }
@@ -253,6 +253,7 @@ func renderWorkerRouterDeployment(t *testing.T) appsv1.Deployment {
 		"-f", testutil.RepoPath("charts", "worker", "values-sev-snp.yaml"),
 		"--set-string", "image.digest="+operatorImageDigest,
 		"--set-string", "armtlsMesh.image.digest="+meshImageDigest,
+		"--set-string", "volumed.image.digest="+volumedImageDigest,
 	)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr

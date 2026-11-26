@@ -30,7 +30,7 @@ func TestNewCmdFlagDefaultsAndRequired(t *testing.T) {
 		{"san", ""},
 		{"san-file", ""},
 		{"no-san", "false"},
-		{"discovery-public-tls-mode", "cds"},
+		{"discovery-public-tls-mode", "ta"},
 		{"ca-watch-interval", "1m0s"},
 		{"initial-retry-timeout", "2m0s"},
 		{"initial-retry-interval", "2s"},

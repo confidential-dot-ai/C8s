@@ -46,9 +46,9 @@ func TestTAPinPreflight(t *testing.T) {
 		}
 		return path
 	}
-	named := file("named.yaml", "cds:\n  address: 10.9.9.9:8443\n  measurementsConfig: '{}'\n")
-	addressOnly := file("address.yaml", "cds:\n  address: 10.9.9.9:8443\n")
-	emptied := file("emptied.yaml", "cds:\n  address: \"\"\n")
+	named := file("named.yaml", "ta:\n  address: 10.9.9.9:8443\n  measurementsConfig: '{}'\n")
+	addressOnly := file("address.yaml", "ta:\n  address: 10.9.9.9:8443\n")
+	emptied := file("emptied.yaml", "ta:\n  address: \"\"\n")
 	for _, tc := range []struct {
 		name         string
 		address, pin string
@@ -56,20 +56,20 @@ func TestTAPinPreflight(t *testing.T) {
 		wantErr      bool
 	}{
 		{name: "nothing named", wantErr: true},
-		{name: "address and pin", address: "10.9.9.9:8443", pin: "cds-pin.json"},
+		{name: "address and pin", address: "10.9.9.9:8443", pin: "ta-pin.json"},
 		{name: "address alone", address: "10.9.9.9:8443", wantErr: true},
-		{name: "pin alone", pin: "cds-pin.json", wantErr: true},
-		{name: "cds.address and cds.measurementsConfig", values: []string{named}},
-		{name: "cds.address alone", values: []string{addressOnly}, wantErr: true},
+		{name: "pin alone", pin: "ta-pin.json", wantErr: true},
+		{name: "ta.address and ta.measurementsConfig", values: []string{named}},
+		{name: "ta.address alone", values: []string{addressOnly}, wantErr: true},
 		{name: "later file keeps the Trust Authority", values: []string{addressOnly, named}},
 		{name: "later file drops the address", values: []string{named, emptied}, wantErr: true},
-		{name: "cds.operatorKeys names no Trust Authority", values: []string{file("k.yaml", "cds:\n  operatorKeys: pem\n")}, wantErr: true},
+		{name: "ta.operatorKeys names no Trust Authority", values: []string{file("k.yaml", "ta:\n  operatorKeys: pem\n")}, wantErr: true},
 		{name: "router disabled still needs a Trust Authority", values: []string{file("r.yaml", "router:\n  enabled: false\n")}, wantErr: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := taPreflight(tc.address, tc.pin, tc.values)
 			if (err != nil) != tc.wantErr {
-				t.Fatalf("cdsPreflight() = %v, want error %v", err, tc.wantErr)
+				t.Fatalf("taPreflight() = %v, want error %v", err, tc.wantErr)
 			}
 		})
 	}
@@ -857,7 +857,7 @@ func TestCheckAdoptedEntries(t *testing.T) {
 		{"two adoptions, one image set", map[string]corev1.PodTemplateSpec{"web": pod(dA, dB), "api": pod(dA, dB)}, values(nil, nil), "entries web also admit"},
 		{"init image does not make a pod ambiguous", map[string]corev1.PodTemplateSpec{"web": withInit(pod(dA), dB), "api": pod(dB)}, values(nil, nil), ""},
 		{"same image, different mounts", map[string]corev1.PodTemplateSpec{"web": pod(dA), "api": withScratch(pod(dA))}, values(nil, nil), ""},
-		{"component image", map[string]corev1.PodTemplateSpec{"web": pod(dA)}, values(nil, map[string]any{"cds": map[string]any{"image": image(dA)}}), ""},
+		{"component image", map[string]corev1.PodTemplateSpec{"web": pod(dA)}, values(nil, map[string]any{"ta": map[string]any{"image": image(dA)}}), ""},
 		{"router nginx image", map[string]corev1.PodTemplateSpec{"web": pod(dN)}, values(nil, nil), ""},
 	}
 	for _, tc := range tests {
@@ -1351,7 +1351,7 @@ func TestAvailableImageDigests(t *testing.T) {
 		initDigest      = "sha256:4444444444444444444444444444444444444444444444444444444444444444"
 	)
 	values := map[string]any{
-		"cds": map[string]any{"image": map[string]any{"digest": componentDigest}},
+		"ta": map[string]any{"image": map[string]any{"digest": componentDigest}},
 		"nriImagePolicy": map[string]any{"bootstrapAllowlist": map[string]any{
 			"workloads": map[string]any{
 				"etcd": map[string]any{"containers": []any{map[string]any{"digest": bootDigest}}},
@@ -1362,7 +1362,7 @@ func TestAvailableImageDigests(t *testing.T) {
 			},
 		}},
 	}
-	got := availableImageDigests(values, []c8sComponent{{valuesPath: "cds.image"}, {valuesPath: "volumed.image"}}, nil)
+	got := availableImageDigests(values, []c8sComponent{{valuesPath: "ta.image"}, {valuesPath: "volumed.image"}}, nil)
 	want := map[string]bool{componentDigest: true, bootDigest: true, workloadDigest: true, initDigest: true}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("availableImageDigests = %v, want %v", got, want)
@@ -1654,8 +1654,8 @@ func TestExemptNamespaceImages(t *testing.T) {
 // digest.
 func TestVerifyHintPrintsRunnableCommands(t *testing.T) {
 	const (
-		taURL = "https://cds.example:8443"
-		taPin = "/run/c8s/cds-pin.json"
+		taURL = "https://ta.example:8443"
+		taPin = "/run/c8s/ta-pin.json"
 	)
 	var buf bytes.Buffer
 	printVerifyHint(&buf, taURL, taPin, "<operator-pub.pem>", "")
@@ -1699,7 +1699,7 @@ func TestVerifyHintPrintsRunnableCommands(t *testing.T) {
 func TestVerifyHintNamesTheStoredRouteDigest(t *testing.T) {
 	const digest = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
 	var buf bytes.Buffer
-	printVerifyHint(&buf, "https://cds.example:8443", "/run/c8s/cds-pin.json", "operator-pub.pem", digest)
+	printVerifyHint(&buf, "https://ta.example:8443", "/run/c8s/ta-pin.json", "operator-pub.pem", digest)
 
 	verifyArgs := hintCommandArgs(t, buf.String(), "c8s verify")
 	i := slices.Index(verifyArgs, "--route-digest")

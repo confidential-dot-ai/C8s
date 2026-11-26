@@ -178,7 +178,7 @@ func taCredentialSelected(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if mode != "cds" {
+	if mode != "ta" {
 		return skipf("the router presents its %s credential here, not the Trust Authority-issued one", mode)
 	}
 	return nil
@@ -266,7 +266,7 @@ func clientReceivesRelayFailure(ctx context.Context, quantifier string) error {
 		return err
 	}
 	body := strings.TrimSpace(string(a.body))
-	failure := a.status == http.StatusBadGateway && (body == relayFailureBody || body == "CDS unavailable")
+	failure := a.status == http.StatusBadGateway && body == relayFailureBody
 	switch {
 	case quantifier == "receives" && !failure:
 		return fmt.Errorf("the router answered %d %q, not the relay failure (502 %q)", a.status, tail(string(a.body), 3), relayFailureBody)

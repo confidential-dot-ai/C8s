@@ -298,7 +298,8 @@ func (p *plugin) KillRevoked(ctx context.Context) {
 		// The same image admission matched: on a Pod guest the staged pin,
 		// not an alias the CRI annotation may have moved since.
 		imageRef, err := p.cvm().imageOf(c.pod, c.ctr)
-		verdict, denial := verdictDeny, ""
+		verdict := verdictDeny
+		denial := ""
 		if err == nil {
 			verdict, denial = p.checkContainer(ctx, cfg, c.pod, c.ctr, imageRef)
 		} else {
@@ -316,6 +317,111 @@ func (p *plugin) KillRevoked(ctx context.Context) {
 	}
 	p.logger.Info("rechecked running containers against the applied allowlist",
 		"version", p.AppliedAllowlistVersion(), "killed", killed, "failed", failed, "checked", len(running))
+}
+
+// recheckRunning applies the policy just put in force to what already runs:
+// the whole of every pod whose component sets have ended, then every single
+// container the policy no longer admits.
+func (p *plugin) recheckRunning(ctx context.Context) {
+	p.endPodsOnEndedSets(ctx)
+	p.KillRevoked(ctx)
+}
+
+// endPodsOnEndedSets stops every container of each pod whose component sets
+// have all ended and has the Pod deleted, so its controller replaces it on a
+// set in force. KillRevoked stops a single container the policy no longer
+// admits; a pod off its sets goes whole, because a main container left without
+// its sidecars is cut off from the mesh and still holds its secrets.
+func (p *plugin) endPodsOnEndedSets(ctx context.Context) {
+	if !p.cfg.allowlistRevokesRunning() {
+		return
+	}
+	for _, ended := range p.podsOffTheirSets() {
+		p.endPod(ctx, ended)
+	}
+}
+
+// endedPod is a pod whose component sets have ended, with the containers of it
+// that still run and why they may not.
+type endedPod struct {
+	pod   *api.PodSandbox
+	ctrs  []*api.Container
+	cause error
+}
+
+// podsOffTheirSets are the pods running here whose recorded containers the
+// component sets in force no longer admit.
+func (p *plugin) podsOffTheirSets() []endedPod {
+	var ended []endedPod
+	for sandboxID, running := range p.runningPods() {
+		recorded, err := p.recordedContainers(sandboxID)
+		if err != nil {
+			// A sandbox the inventory cannot answer for holds no identity;
+			// KillRevoked judges its containers one by one.
+			p.logger.Warn("cannot read a running pod's containers to judge its component sets",
+				"sandbox", sandboxID, "error", err)
+			continue
+		}
+		cause := p.componentSetRefusal(recorded)
+		if cause == nil {
+			continue
+		}
+		pod := endedPod{pod: running[0].pod, cause: cause}
+		for _, c := range running {
+			pod.ctrs = append(pod.ctrs, c.ctr)
+		}
+		ended = append(ended, pod)
+	}
+	return ended
+}
+
+// runningPods groups what runs on this node by the sandbox it runs in.
+func (p *plugin) runningPods() map[string][]runningContainer {
+	byPod := map[string][]runningContainer{}
+	for _, c := range p.running.list() {
+		byPod[c.pod.GetId()] = append(byPod[c.pod.GetId()], c)
+	}
+	return byPod
+}
+
+// endPod stops the pod's containers and has the Pod deleted. A container
+// leaves the running set once its kill is delivered; one whose kill failed
+// stays on it, for the next recheck.
+func (p *plugin) endPod(ctx context.Context, ended endedPod) {
+	p.logger.Warn("ending a pod whose component sets have ended",
+		"namespace", ended.pod.GetNamespace(),
+		"pod", ended.pod.GetName(),
+		"containers", len(ended.ctrs),
+		"error", ended.cause)
+	p.cvm().endIdentityForRefusal(ended.pod, ended.cause)
+	for _, ctr := range ended.ctrs {
+		if p.killRunning(ctx, ended.pod, ctr, ended.cause.Error()) {
+			p.running.remove(ctr.GetId())
+		}
+	}
+	p.deleteEndedPod(ended.pod, ended.cause)
+}
+
+// The delete runs off the pull loop, which keeps polling while the API server
+// answers.
+func (p *plugin) deleteEndedPod(pod *api.PodSandbox, cause error) {
+	if !p.holdsNodeIdentity() {
+		p.logger.Warn("a pod whose component sets have ended keeps its Pod object; delete the pod to let a replacement run on a set in force",
+			"namespace", pod.GetNamespace(),
+			"pod", pod.GetName(),
+			"pod_uid", pod.GetUid(),
+			"error", cause)
+		return
+	}
+	go func() {
+		if err := p.deletePod(context.Background(), pod); !refusedPodGone(err) {
+			p.logger.Error("cannot delete a pod whose component sets have ended; delete the pod to let a replacement run on a set in force",
+				"namespace", pod.GetNamespace(),
+				"pod", pod.GetName(),
+				"pod_uid", pod.GetUid(),
+				"error", err)
+		}
+	}()
 }
 
 // killRunning kills the task of a running container the checks denied for

@@ -51,7 +51,6 @@ controlPlane:
 ## serves attestation, the allowlist and mesh-CA leaf signing.
 ## `c8s ta config new` writes its launch file and pin. The mesh CA key stays
 ## in the VM's memory.
-## Set the address, pin and optional operator keys together under ta.
 ta:
   ## Its endpoint, as <host>:<port>, the host a DNS name or an IPv4 address.
   ## Required. An injected credential client's packet rules admit that port
@@ -208,8 +207,8 @@ router:
   san: []
 
   # -- Application routing. nginx proxies every request that no protocol
-  # endpoint or built-in route claims to the cds-attest routing listener on
-  # pod loopback. cds-attest polls the operator-signed route manifest from the
+  # endpoint or built-in route claims to the ta-attest routing listener on
+  # pod loopback. ta-attest polls the operator-signed route manifest from the
   # verified Trust Authority and routes by it alone. `c8s routes put|add` writes
   # the manifest. Until the router applies one, application requests get 503. A
   # request whose Host is not a manifest host, or whose path matches no route,
@@ -218,12 +217,12 @@ router:
   # name. See
   # docs/operator.md, "Route manifest".
   routing:
-    # -- How often cds-attest polls the Trust Authority for the route manifest,
+    # -- How often ta-attest polls the Trust Authority for the route manifest,
     # as a positive whole number of ms, s, m or h, such as 30s. Keep it under half the
     # manifest's maxAgeSeconds.
     pollInterval: 30s
 
-  # -- Route publication. When enabled, cds-attest serves the applied signed
+  # -- Route publication. When enabled, ta-attest serves the applied signed
   # route manifest at /.well-known/c8s/routes using the Trust Authority's
   # GET /routes envelope and Cache-Control: no-store. A client verifies the manifest under pinned
   # operator keys and checks that the attest-pq or attest-lb evidence binds its
@@ -234,7 +233,7 @@ router:
     enabled: false
 
   # -- Attestation + over-encryption endpoints (the c8s-verify protocol),
-  # served by the in-pod `cds-attest` container, which also carries
+  # served by the in-pod `ta-attest` container, which also carries
   # application routing (see `routing`): the *dynamic* client-facing endpoints
   # (the attest-pq attestation + X-Wing key exchange, the attest-lb
   # per-session challenge, and the over-encrypted tunnel), which nginx

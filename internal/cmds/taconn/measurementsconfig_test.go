@@ -16,7 +16,7 @@ import (
 const nodePolicyPath = "../../../internal/testdata/node-identities.json"
 
 func TestOperatorCLIConfigRejectsDowngrades(t *testing.T) {
-	o := Options{URL: "https://cds.example", MeasurementsConfig: nodePolicyPath, OperatorKey: writeTestKey(t)}
+	o := Options{URL: "https://ta.example", MeasurementsConfig: nodePolicyPath, OperatorKey: writeTestKey(t)}
 	pins, err := o.loadPins()
 	if err != nil || len(pins.Images) != 2 || len(pins.Images[0].Anchor) == 0 {
 		t.Fatalf("full policy lost: %v", err)
@@ -33,7 +33,7 @@ func TestOperatorCLIConfigRejectsDowngrades(t *testing.T) {
 			t.Fatal("invalid or mixed config fell back to flat policy")
 		}
 	}
-	o.URL, o.Insecure = "http://cds.example", true
+	o.URL, o.Insecure = "http://ta.example", true
 	if _, err := o.HTTPClient(context.Background()); err == nil {
 		t.Fatal("plaintext silently ignored the operator identity policy")
 	}

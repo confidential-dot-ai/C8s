@@ -16,13 +16,15 @@ import (
 )
 
 // The worker chart's router pins its launch and reads only files worker stage
-// publishes, so a worker image's floor builds from the render and its static
-// pod templates, and the router's entry declares the HTTPS and HTTP host ports
-// its Deployment maps.
+// publishes, so a worker image's floor builds from the render, and the
+// release's component set carries the router entry declaring the HTTPS and
+// HTTP host ports its Deployment maps. The floor itself holds the image's
+// static pods and nothing that publishes a host port.
 func TestWorkerFloorBuildsFromTheRenderedChart(t *testing.T) {
 	if _, err := exec.LookPath("helm"); err != nil {
 		t.Fatal("helm CLI not found")
 	}
+	setCLIVersion(t, "v"+nodeImageTestSetVersion)
 	out := t.TempDir()
 	cmd := newNodeImageCmd()
 	cmd.SetArgs([]string{
@@ -30,12 +32,13 @@ func TestWorkerFloorBuildsFromTheRenderedChart(t *testing.T) {
 		"--chart-dir", workerChartDir,
 		"--image-digest", testDigest, "--image-repository", "registry.example.com/c8s-operator",
 		"--armtls-mesh-image-digest", nodeImageTestMeshDigest, "--armtls-mesh-image-repository", "registry.example.com/armtls-mesh",
+		"--volumed-image-digest", nodeImageTestVolumedDigest, "--volumed-image-repository", "registry.example.com/volumed",
 		"--output-dir", out,
 	})
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	template, err := os.ReadFile(filepath.Join("..", "..", "images", "node-guest", "worker", "image-policy.yaml.in"))
+	template, err := os.ReadFile(floorTemplateFile)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +69,7 @@ func TestWorkerFloorBuildsFromTheRenderedChart(t *testing.T) {
 		}
 		templates[entry.Name()] = data
 	}
-	floor, err := worker.Floor([]byte(nodeFloor), read("allowlist-seed.json"), templates)
+	floor, err := worker.Floor([]byte(nodeFloor), templates)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,19 +86,25 @@ func TestWorkerFloorBuildsFromTheRenderedChart(t *testing.T) {
 			t.Errorf("the floor holds no static-pod entry for the image's %s", pod)
 		}
 	}
-	publishing := map[string]allowlist.HostPortList{}
 	for name, w := range doc.Allowlist.Base.Workloads {
 		if len(w.HostPorts) > 0 {
-			publishing[name] = w.HostPorts
+			t.Errorf("the floor's %s entry declares the host ports %+v; a release's components declare theirs in its component set", name, w.HostPorts)
 		}
+	}
+	set, err := allowlist.ParseJSON(read("component-set.json"))
+	if err != nil {
+		t.Fatal(err)
 	}
 	mapped := map[int]int{}
 	var router allowlist.HostPortList
-	for name, ports := range publishing {
-		router = ports
-		if !strings.HasPrefix(name, "c8s-router-") || len(publishing) != 1 {
-			t.Fatalf("entries declaring host ports = %v, want the router's alone", publishing)
+	for name, entry := range set.Components[nodeImageTestSetVersion].Entries {
+		if !strings.HasPrefix(name, "c8s-router-") || len(entry.HostPorts) == 0 {
+			continue
 		}
+		if router != nil {
+			t.Fatalf("two entries of the set declare host ports, %+v and %+v", router, entry.HostPorts)
+		}
+		router = entry.HostPorts
 	}
 	for _, p := range router {
 		if p.Protocol == "TCP" {
@@ -103,6 +112,6 @@ func TestWorkerFloorBuildsFromTheRenderedChart(t *testing.T) {
 		}
 	}
 	if len(router) != 2 || mapped[443] != 8443 || mapped[80] != 8080 {
-		t.Fatalf("router entry host ports = %+v, want TCP 443 from 8443 and 80 from 8080", router)
+		t.Fatalf("the set's router entry declares the host ports %+v, want TCP 443 from 8443 and 80 from 8080", router)
 	}
 }

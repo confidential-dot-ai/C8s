@@ -64,28 +64,26 @@ func enforcePodImages(resp remote.VerifyResponse, pins []remote.ImagePin, platfo
 }
 
 // resolvePodWorkload admits a pod CVM's complete image journal against one
-// atomic policy snapshot: every measured digest must be in the current
-// workload policy. When the pod's whole observation set (images, argv,
-// environment and mounts, as the quote-bound claims carry them) matches
-// exactly one entry of that snapshot, the leaf names it; otherwise the pod
-// gets the unnamed membership leaf.
-func (h AttestHandler) resolvePodWorkload(ctx context.Context, pod workloadclaims.PodClaims) (*armtls.MatchedWorkload, error) {
+// atomic policy snapshot, and judges its claims as a node sandbox's inventory
+// answer is judged: every measured digest must be admitted by an entry in
+// force, the containers the guest's measured base bound a c8s role to decide
+// which component sets the pod is on, and the leaf names the single entry the
+// whole observation set (images, argv, environment and mounts, as the
+// quote-bound claims carry them) matches, or it is the unnamed membership leaf.
+func (h AttestHandler) resolvePodWorkload(ctx context.Context, pod workloadclaims.PodClaims) (workloadDecision, error) {
 	if h.AllowlistStore == nil {
-		return nil, fmt.Errorf("pod issuance requires an allowlist")
+		return workloadDecision{}, fmt.Errorf("pod issuance requires an allowlist")
 	}
 	snapshot, err := h.policySnapshot()
 	if err != nil {
-		return nil, err
+		return workloadDecision{}, err
 	}
-	membership := make(map[string]struct{}, len(pod.RuntimeExtensions))
-	for _, d := range pod.RuntimeExtensions {
-		if !snapshot.Contains(d) {
-			return nil, fmt.Errorf("pod image membership not authorized")
-		}
-		membership[d] = struct{}{}
-	}
-	resp := workloadclaims.SandboxDigestsResponse{Digests: pod.RuntimeExtensions, Containers: pod.Containers}
-	return h.matchWorkload(ctx, snapshot, resp, membership, workloadclaims.VerifiedSandbox{SandboxID: pod.InstanceID()}), nil
+	return h.decideWorkload(ctx, reportedSandbox{
+		snapshot: snapshot,
+		answer:   workloadclaims.SandboxDigestsResponse{Digests: pod.RuntimeExtensions, Containers: pod.Containers},
+		sandbox:  workloadclaims.VerifiedSandbox{SandboxID: pod.InstanceID()},
+		now:      h.now(),
+	})
 }
 
 // podIssuance is the Pod CVM profile: the quote binds the pod claims, and the
@@ -126,11 +124,8 @@ func (p podIssuance) admitImage(w http.ResponseWriter, verified remote.VerifyRes
 	return true
 }
 
-// resolveWorkload reports no router: the router role comes from the inventory
-// containers view, which a Pod CVM is not served by.
-func (p podIssuance) resolveWorkload(ctx context.Context, _ workloadclaims.VerifiedSandbox) (*armtls.MatchedWorkload, bool, error) {
-	matched, err := p.h.resolvePodWorkload(ctx, p.claims)
-	return matched, false, err
+func (p podIssuance) resolveWorkload(ctx context.Context, _ workloadclaims.VerifiedSandbox) (workloadDecision, error) {
+	return p.h.resolvePodWorkload(ctx, p.claims)
 }
 
 // clientDocument states what the claims carry: a digest that is not hex stamps

@@ -21,6 +21,8 @@ containers:
     args:
       - --socket-dir
       - {{ include "nri-image-policy.runtimeDir" . | quote }}
+      - --state-dir
+      - "/var/lib/c8s/volumed"
       - --kubelet-root
       - "/var/lib/kubelet"
       - --cgroup-root
@@ -37,6 +39,10 @@ containers:
       - name: kubelet-root
         mountPath: /var/lib/kubelet
         mountPropagation: Bidirectional
+      # The mount records outlive the pod, so a replacement keeps the volumes
+      # this one opened.
+      - name: state
+        mountPath: /var/lib/c8s/volumed
       - name: dev
         mountPath: /dev
       # /sys whole, not /sys/block: the block entries are symlinks into
@@ -59,6 +65,10 @@ volumes:
     hostPath:
       path: /var/lib/kubelet
       type: Directory
+  - name: state
+    hostPath:
+      path: /var/lib/c8s/volumed
+      type: DirectoryOrCreate
   - name: dev
     hostPath:
       path: /dev

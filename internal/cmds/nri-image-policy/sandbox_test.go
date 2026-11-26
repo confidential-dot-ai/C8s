@@ -77,9 +77,9 @@ func injectedPod(p *api.PodSandbox) {
 func injectedPinsMount(c *api.Container) {
 	c.Name = workloadclaims.CertContainerName
 	c.Mounts = append(c.Mounts, &api.Mount{
-		Destination: workloadclaims.CDSPinsPath,
+		Destination: workloadclaims.TAPinsPath,
 		Type:        "bind",
-		Source:      "/run/c8s-node/cds.json",
+		Source:      "/run/c8s-node/ta.json",
 		Options:     []string{"rbind", "ro", "rprivate", "nosuid", "nodev", "noexec"},
 	})
 }
@@ -89,9 +89,9 @@ func injectedPinsMount(c *api.Container) {
 func injectedAddressMount(c *api.Container) {
 	c.Name = workloadclaims.CertContainerName
 	c.Mounts = append(c.Mounts, &api.Mount{
-		Destination: workloadclaims.CDSAddressPath,
+		Destination: workloadclaims.TAAddressPath,
 		Type:        "bind",
-		Source:      "/var/run/nri-image-policy/cds-address",
+		Source:      "/var/run/nri-image-policy/ta-address",
 		Options:     []string{"rbind", "ro", "rprivate", "nosuid", "nodev", "noexec"},
 	})
 }
@@ -132,24 +132,24 @@ func TestSandboxViolations(t *testing.T) {
 			pod:       injectedPod,
 			ctr:       injectedPinsMount,
 			ownSocket: "/var/run/nri-image-policy",
-			ownPins:   "/run/c8s-node/cds.json",
+			ownPins:   "/run/c8s-node/ta.json",
 		},
 		{
 			name:       "the node's own Trust Authority address mount",
 			pod:        injectedPod,
 			ctr:        injectedAddressMount,
 			ownSocket:  "/var/run/nri-image-policy",
-			ownAddress: "/var/run/nri-image-policy/cds-address",
+			ownAddress: "/var/run/nri-image-policy/ta-address",
 		},
 		{
 			name: "a Trust Authority address mount from a source the plugin does not own",
 			pod:  injectedPod,
 			ctr: func(c *api.Container) {
 				injectedAddressMount(c)
-				c.Mounts[len(c.Mounts)-1].Source = "/tmp/attacker-cds-address"
+				c.Mounts[len(c.Mounts)-1].Source = "/tmp/attacker-ta-address"
 			},
 			ownSocket:  "/var/run/nri-image-policy",
-			ownAddress: "/var/run/nri-image-policy/cds-address",
+			ownAddress: "/var/run/nri-image-policy/ta-address",
 			want:       "host path bind mount",
 		},
 		{
@@ -160,7 +160,7 @@ func TestSandboxViolations(t *testing.T) {
 				c.Mounts[len(c.Mounts)-1].Source = "/tmp/attacker-pins.json"
 			},
 			ownSocket: "/var/run/nri-image-policy",
-			ownPins:   "/run/c8s-node/cds.json",
+			ownPins:   "/run/c8s-node/ta.json",
 			want:      "host path bind mount",
 		},
 		{
@@ -171,7 +171,7 @@ func TestSandboxViolations(t *testing.T) {
 				c.Mounts[len(c.Mounts)-1].Options = []string{"rbind", "rw"}
 			},
 			ownSocket: "/var/run/nri-image-policy",
-			ownPins:   "/run/c8s-node/cds.json",
+			ownPins:   "/run/c8s-node/ta.json",
 			want:      "host path bind mount",
 		},
 		{
@@ -182,7 +182,7 @@ func TestSandboxViolations(t *testing.T) {
 				c.Name = "app"
 			},
 			ownSocket: "/var/run/nri-image-policy",
-			ownPins:   "/run/c8s-node/cds.json",
+			ownPins:   "/run/c8s-node/ta.json",
 			want:      "host path bind mount",
 		},
 		{
@@ -381,7 +381,8 @@ func TestSandboxViolations(t *testing.T) {
 		{
 			name: "unidentifiable pod",
 			pod: func(p *api.PodSandbox) {
-				p.Uid, p.Id = "", ""
+				p.Uid = ""
+				p.Id = ""
 			},
 			want: "host path bind mount",
 		},
@@ -418,7 +419,8 @@ func TestSandboxViolations(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			pod, ctr := sandboxedPod(), sandboxedContainer()
+			pod := sandboxedPod()
+			ctr := sandboxedContainer()
 			if tt.pod != nil {
 				tt.pod(pod)
 			}
@@ -520,9 +522,10 @@ func TestCheckSandboxModes(t *testing.T) {
 				Policy:    policyConfig{Mode: ModeFailClosed, Sandbox: tt.sandbox},
 			}
 			p := newTestPlugin(cfg)
-			p.policy = newPolicyStore(floor)
+			p.policy = newPolicyStore(floor, localClock())
 
-			pod, ctr := sandboxedPod(), privilegedContainer()
+			pod := sandboxedPod()
+			ctr := privilegedContainer()
 			ctr.Args = tt.argv
 			verdict := verdictAllow
 			reason := ""
@@ -604,9 +607,10 @@ func TestNodeTCBExemptsOnlyPinnedStaticLaunches(t *testing.T) {
 				Policy:    policyConfig{Mode: ModeFailClosed, Sandbox: SandboxEnforce},
 			}
 			p := newTestPlugin(cfg)
-			p.policy = newPolicyStore(base)
+			p.policy = newPolicyStore(base, localClock())
 
-			pod, ctr := sandboxedPod(), sandboxedContainer()
+			pod := sandboxedPod()
+			ctr := sandboxedContainer()
 			// Without kubelet state the mount observer cannot place the pod's
 			// own binds, so keep only the kernel filesystems.
 			ctr.Mounts = slices.DeleteFunc(ctr.Mounts, func(m *api.Mount) bool { return m.Type == "bind" })
@@ -735,7 +739,8 @@ func (nodeRootGrant) grants(m allowlist.ObservedMount) bool {
 }
 
 func TestVerifiedFileBindIsNotHostBind(t *testing.T) {
-	const source, destination = "/usr/bin/nvidia-smi", "/usr/bin/nvidia-smi"
+	const source = "/usr/bin/nvidia-smi"
+	const destination = "/usr/bin/nvidia-smi"
 	verified := allowlist.ObservedMount{Source: source, Destination: destination, ReadOnly: true, Provenance: allowlist.ProvenanceNodeRoot}
 	for _, tc := range []struct {
 		name      string
@@ -750,7 +755,8 @@ func TestVerifiedFileBindIsNotHostBind(t *testing.T) {
 		{"writable duplicate", nil, &api.Mount{Type: "bind", Source: source, Destination: destination, Options: []string{"rbind", "rw"}}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pod, ctr := sandboxedPod(), sandboxedContainer()
+			pod := sandboxedPod()
+			ctr := sandboxedContainer()
 			bind := &api.Mount{Type: "bind", Source: source, Destination: destination, Options: []string{"rbind", "ro"}}
 			ctr.Mounts = append(ctr.Mounts, bind)
 			if tc.duplicate != nil {
@@ -802,8 +808,10 @@ func TestHostBindNeedsAPinnedDeclarationNamingIt(t *testing.T) {
 		}
 		return []string{"rbind", "ro"}
 	}
-	pinnedArgs, openArgs := allowlist.ArgvPolicy{Policy: allowlist.PolicyDeny}, allowlist.ArgvPolicy{Policy: allowlist.PolicyAny}
-	pinnedEnv, openEnv := allowlist.EnvPolicy{Policy: allowlist.PolicyDeny}, allowlist.EnvPolicy{Policy: allowlist.PolicyAny}
+	pinnedArgs := allowlist.ArgvPolicy{Policy: allowlist.PolicyDeny}
+	openArgs := allowlist.ArgvPolicy{Policy: allowlist.PolicyAny}
+	pinnedEnv := allowlist.EnvPolicy{Policy: allowlist.PolicyDeny}
+	openEnv := allowlist.EnvPolicy{Policy: allowlist.PolicyAny}
 	for _, tc := range []struct {
 		name       string
 		mounts     allowlist.MountPolicy
@@ -823,7 +831,9 @@ func TestHostBindNeedsAPinnedDeclarationNamingIt(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			al := workloadAllowlist(t, pushDigestA, pushDigestB, []string{"/bin/app"})
 			declared := al.Workloads["w"].Containers[0]
-			declared.Mounts, declared.Args, declared.Env = tc.mounts, tc.args, tc.env
+			declared.Mounts = tc.mounts
+			declared.Args = tc.args
+			declared.Env = tc.env
 			al.Workloads["w"] = allowlist.Workload{Containers: []allowlist.Container{declared}}
 			if err := al.Normalize(); err != nil {
 				t.Fatal(err)
@@ -831,13 +841,15 @@ func TestHostBindNeedsAPinnedDeclarationNamingIt(t *testing.T) {
 			cfg := &config{Policy: policyConfig{Mode: ModeFailClosed, Sandbox: SandboxEnforce}}
 			served := al
 			if tc.pull {
-				cfg.Allowlist.Pull.URL = "https://cds"
+				cfg.Allowlist.Pull.URL = "https://ta"
 			}
 			if tc.base {
-				cfg.Allowlist.Base, served = al, &allowlist.Allowlist{}
+				cfg.Allowlist.Base = al
+				served = &allowlist.Allowlist{}
 			}
 			p, _ := newCachedPlugin(cfg, served)
-			pod, ctr := sandboxedPod(), sandboxedContainer()
+			pod := sandboxedPod()
+			ctr := sandboxedContainer()
 			ctr.Annotations = map[string]string{annotationImageName: "registry/repo@" + pushDigestB}
 			ctr.Args = []string{"/bin/app"}
 			// The declaration's one rule is the whole mount set: nothing else here carries host bytes.
@@ -857,7 +869,8 @@ func TestHostBindNeedsAPinnedDeclarationNamingIt(t *testing.T) {
 func TestHostBindWithoutAnAllowlistSkipsDigestLookup(t *testing.T) {
 	cfg := &config{Policy: policyConfig{Mode: ModeFailClosed, Sandbox: SandboxEnforce}}
 	p, _ := newCachedPlugin(cfg, workloadAllowlist(t, pushDigestA, pushDigestB, []string{"/bin/app"}))
-	pod, ctr := sandboxedPod(), sandboxedContainer()
+	pod := sandboxedPod()
+	ctr := sandboxedContainer()
 	ctr.Mounts = append(ctr.Mounts, &api.Mount{Type: "bind", Source: "/etc/passwd", Destination: "/etc/passwd", Options: []string{"rbind", "ro"}})
 	mounts := []allowlist.ObservedMount{{Source: "/etc/passwd", Destination: "/etc/passwd", Class: allowlist.MountHost, ReadOnly: true}}
 	// fakeContainerd panics on Resolve.
@@ -870,7 +883,8 @@ func TestHostBindWithoutAnAllowlistSkipsDigestLookup(t *testing.T) {
 func TestValidationWithoutAnAllowlistSkipsDigestLookup(t *testing.T) {
 	cfg := &config{Policy: policyConfig{Mode: ModeFailClosed, Sandbox: SandboxEnforce}}
 	p, _ := newCachedPlugin(cfg, workloadAllowlist(t, pushDigestA, pushDigestB, []string{"/bin/app"}))
-	pod, ctr := sandboxedPod(), sandboxedContainer()
+	pod := sandboxedPod()
+	ctr := sandboxedContainer()
 	// On the node's network, which the mesh gate leaves alone.
 	pod.Linux.Namespaces = slices.DeleteFunc(pod.Linux.Namespaces, func(ns *api.LinuxNamespace) bool { return ns.Type == "network" })
 	ctr.Annotations = map[string]string{annotationImageName: "registry/repo:tag"}
@@ -903,7 +917,8 @@ func TestPrivilegeChecksShareOneLookup(t *testing.T) {
 		},
 	}
 	const imageRef = "registry/repo:tag"
-	pod, ctr := sandboxedPod(), sandboxedContainer()
+	pod := sandboxedPod()
+	ctr := sandboxedContainer()
 	ctr.Mounts = mountsADenyPolicyAdmits(ctr)
 	ctr.Annotations = map[string]string{annotationImageName: imageRef}
 	if verdict, reason := p.checkContainer(context.Background(), cfg, pod, ctr, imageRef); verdict == verdictDeny {
@@ -918,7 +933,8 @@ func TestPrivilegeChecksShareOneLookup(t *testing.T) {
 // resolves the tag, after the check took its snapshot: every grant must judge
 // the digest and snapshot admission judged.
 func TestSandboxJudgesAdmissionSnapshot(t *testing.T) {
-	const source, imageRef = "/usr/bin/nvidia-smi", "registry/repo:tag"
+	const source = "/usr/bin/nvidia-smi"
+	const imageRef = "registry/repo:tag"
 	base := anyAllowlist(map[string]string{pushDigestB: "tool"})
 	open := base.Workloads["w-"+pushDigestB[len("sha256:"):][:12]]
 	open.Containers[0].Mounts = allowlist.MountPolicy{Policy: allowlist.PolicyAny}
@@ -968,7 +984,7 @@ func TestSandboxJudgesAdmissionSnapshot(t *testing.T) {
 				t.Fatal(err)
 			}
 			cfg := &config{
-				Allowlist: allowlistConfig{Base: base, Pull: pullConfig{URL: "https://cds"}},
+				Allowlist: allowlistConfig{Base: base, Pull: pullConfig{URL: "https://ta"}},
 				Policy:    policyConfig{Mode: ModeFailClosed, Sandbox: SandboxEnforce},
 			}
 			p, store := newCachedPlugin(cfg, served)
@@ -990,7 +1006,8 @@ func TestSandboxJudgesAdmissionSnapshot(t *testing.T) {
 					return s, nil
 				},
 			}
-			pod, ctr := sandboxedPod(), sandboxedContainer()
+			pod := sandboxedPod()
+			ctr := sandboxedContainer()
 			ctr.Annotations = map[string]string{annotationImageName: imageRef}
 			ctr.Args = []string{"/bin/app"}
 			ctr.Mounts = mountsADenyPolicyAdmits(ctr)
@@ -1009,7 +1026,8 @@ func TestSandboxJudgesAdmissionSnapshot(t *testing.T) {
 
 func TestGrantsBindMatchesEvidenceBySourceAndDestination(t *testing.T) {
 	const source = "/usr/bin/nvidia-smi"
-	pod, ctr := sandboxedPod(), sandboxedContainer()
+	pod := sandboxedPod()
+	ctr := sandboxedContainer()
 	ctr.Mounts = append(ctr.Mounts, &api.Mount{Type: "bind", Source: source, Destination: source, Options: []string{"rbind", "ro"}})
 	verified := allowlist.ObservedMount{Source: source, Destination: source, ReadOnly: true, Provenance: allowlist.ProvenanceNodeRoot}
 	// Evidence order differs from the container's mount order.

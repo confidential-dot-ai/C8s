@@ -21,7 +21,7 @@ type Policy struct {
 }
 
 // ErrPolicy is a cluster whose policy this replica's stores do not hold.
-var ErrPolicy = errors.New("cds-ha: the cluster's policy is not this replica's")
+var ErrPolicy = errors.New("ta-ha: the cluster's policy is not this replica's")
 
 // LocalPolicy is the limits this replica's own stores hold.
 func (f *FSM) LocalPolicy() Policy {
@@ -56,7 +56,7 @@ func (f *FSM) checkEstablishedPolicy(e Entry) error {
 	case fixesPolicy(e):
 		return nil
 	case !core.Joined():
-		return errors.New("cds-ha: this replica holds no cluster to apply the entry to")
+		return errors.New("ta-ha: this replica holds no cluster to apply the entry to")
 	}
 	return f.checkPolicy(core.Policy)
 }

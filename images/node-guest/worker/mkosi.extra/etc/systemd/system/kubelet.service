@@ -10,7 +10,8 @@ ExecStart=/usr/lib/c8s/worker/bin/kubelet \
     --bootstrap-kubeconfig=/run/kubernetes/bootstrap-kubelet.conf \
     --kubeconfig=/var/lib/kubelet/kubeconfig \
     --hostname-override=${NODE_NAME} \
-    --node-ip=${NODE_IP}
+    --node-ip=${NODE_IP} \
+    --node-labels=confidential.ai/worker=true
 Restart=always
 RestartSec=5
 

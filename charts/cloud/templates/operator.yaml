@@ -84,7 +84,7 @@ containers:
       # readOnlyRootFilesystem: true forces any transient files
       # (controller-runtime cache tempfiles, etc.) to land in
       # this emptyDir rather than the immutable image. Memory-backed, like
-      # every component volume (see cds.yaml).
+      # every component volume.
       - name: tmp
         mountPath: /tmp
       {{- if .Values.operator.podCVMProvider.enabled }}

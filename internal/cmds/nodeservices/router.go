@@ -119,7 +119,7 @@ func BindRouterFlags(f *pflag.FlagSet, router *Router) {
 	f.Uint64Var(&router.MaxRequestBodyBytes, "router-max-request-body-bytes", 0, "largest application request body the router accepts, in bytes (default 1048576)")
 }
 
-// RouterTLSSnippetDir is where the node image installs tls-cds.conf and
+// RouterTLSSnippetDir is where the node image installs tls-ta.conf and
 // tls-acme.conf and the baked router mounts them. c8s-lib's
 // c8s.routerWorkerConfigDir must equal it.
 const RouterTLSSnippetDir = "/usr/lib/c8s/router-nginx"
@@ -168,7 +168,7 @@ func RouterOutputs(router Router) (map[string][]byte, error) {
 // outputs are the files the router reads, from a block that passed Validate.
 func (v ValidRouter) outputs() map[string][]byte {
 	router := v.router
-	mode := types.FrontDoorModeCDS
+	mode := types.FrontDoorModeTA
 	if len(router.Hostnames) > 0 {
 		mode = types.FrontDoorModeACME
 	}

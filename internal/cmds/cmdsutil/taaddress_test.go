@@ -20,7 +20,7 @@ func TestResolveTAAddress(t *testing.T) {
 	}{
 		{
 			name:     "no mount, the caller's own argument",
-			supplied: "https://cds.c8s-system.svc:8443",
+			supplied: "https://ta.c8s-system.svc:8443",
 		},
 		{
 			name:    "the node's endpoint",
@@ -29,8 +29,8 @@ func TestResolveTAAddress(t *testing.T) {
 		},
 		{
 			name:    "the node's endpoint as a name",
-			mounted: string(FormatTAAddress("cds.example.org:8443")),
-			want:    "https://cds.example.org:8443",
+			mounted: string(FormatTAAddress("ta.example.org:8443")),
+			want:    "https://ta.example.org:8443",
 		},
 		{
 			name:     "an argument beside the node's endpoint",
@@ -40,7 +40,7 @@ func TestResolveTAAddress(t *testing.T) {
 		},
 		{
 			name:    "an endpoint with no port",
-			mounted: "cds.c8s-system.svc\n",
+			mounted: "ta.c8s-system.svc\n",
 			wants:   "must be <host>:<port>",
 		},
 		{
@@ -50,7 +50,7 @@ func TestResolveTAAddress(t *testing.T) {
 		},
 		{
 			name:    "an endpoint that is a URL",
-			mounted: "https://cds.example.org:8443\n",
+			mounted: "https://ta.example.org:8443\n",
 			wants:   "must be <host>:<port>",
 		},
 		{
@@ -60,7 +60,7 @@ func TestResolveTAAddress(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "cds-address")
+			path := filepath.Join(t.TempDir(), "ta-address")
 			if tc.mounted != "" {
 				if err := os.WriteFile(path, []byte(tc.mounted), 0o644); err != nil {
 					t.Fatal(err)
@@ -106,8 +106,8 @@ func TestResolveTAURLPrefersTheNodesEndpoint(t *testing.T) {
 		},
 		{
 			name:     "no mount, the argument as it was given",
-			supplied: "https://cds.c8s-system.svc:8443/",
-			want:     "https://cds.c8s-system.svc:8443/",
+			supplied: "https://ta.c8s-system.svc:8443/",
+			want:     "https://ta.c8s-system.svc:8443/",
 		},
 		{
 			name: "no mount, no argument",
@@ -120,7 +120,7 @@ func TestResolveTAURLPrefersTheNodesEndpoint(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "cds-address")
+			path := filepath.Join(t.TempDir(), "ta-address")
 			if tc.mounted != "" {
 				if err := os.WriteFile(path, []byte(tc.mounted), 0o644); err != nil {
 					t.Fatal(err)
@@ -134,7 +134,7 @@ func TestResolveTAURLPrefersTheNodesEndpoint(t *testing.T) {
 				return
 			}
 			if err != nil {
-				t.Fatalf("ResolveCDSURL: %v", err)
+				t.Fatalf("ResolveTAURL: %v", err)
 			}
 			if url != tc.want {
 				t.Fatalf("url = %q, want %q", url, tc.want)
@@ -157,17 +157,17 @@ func TestSplitTAAddress(t *testing.T) {
 		wants   string
 	}{
 		{address: "10.9.9.9:8443", host: "10.9.9.9", port: 8443},
-		{address: "cds.example.org:8443", host: "cds.example.org", port: 8443},
-		{address: "cds:8443", host: "cds", port: 8443},
+		{address: "ta.example.org:8443", host: "ta.example.org", port: 8443},
+		{address: "ta:8443", host: "ta", port: 8443},
 		{address: "10.9.9.9", wants: "must be <host>:<port>"},
-		{address: "cds.example.org", wants: "must be <host>:<port>"},
+		{address: "ta.example.org", wants: "must be <host>:<port>"},
 		{address: "10.9.9.9:0", wants: "no Trust Authority serves on"},
 		{address: "10.9.9.9:https", wants: "no Trust Authority serves on"},
 		{address: "10.9.9.9:70000", wants: "no Trust Authority serves on"},
 		{address: "127.0.0.1:8443", host: "127.0.0.1", port: 8443},
 		{address: "[2001:db8::1]:8443", wants: "must be an IPv4 address"},
 		{address: "TA.example.org:8443", wants: "lowercase DNS name"},
-		{address: "cds_one.example.org:8443", wants: "lowercase DNS name"},
+		{address: "ta_one.example.org:8443", wants: "lowercase DNS name"},
 		{address: ":8443", wants: "lowercase DNS name"},
 	} {
 		t.Run(tc.address, func(t *testing.T) {
@@ -193,7 +193,7 @@ func TestTAURLAddress(t *testing.T) {
 		want  string
 		wants string
 	}{
-		{url: "https://cds.example.org:8443", want: "cds.example.org:8443"},
+		{url: "https://ta.example.org:8443", want: "ta.example.org:8443"},
 		{url: "https://10.9.9.9:8443", want: "10.9.9.9:8443"},
 		{url: "http://10.9.9.9:8443", wants: "must use https"},
 		{url: "https://10.9.9.9", wants: "must be <host>:<port>"},

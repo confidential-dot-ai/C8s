@@ -107,16 +107,16 @@ func run(t *testing.T, args ...string) error {
 // The pin is only an identity for this Trust Authority if it binds the configuration the
 // VM boots on byte for byte.
 func TestNewWritesAConfigurationItsPinBinds(t *testing.T) {
-	out := filepath.Join(t.TempDir(), "cds")
+	out := filepath.Join(t.TempDir(), "ta")
 	args := append(inputs(t, out), "--workloads", writeInput(t, "workloads.json", tenantWorkloads))
 	if err := run(t, args...); err != nil {
 		t.Fatal(err)
 	}
-	config, err := os.ReadFile(filepath.Join(out, "cds-config.yaml"))
+	config, err := os.ReadFile(filepath.Join(out, "ta-config.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	document, err := os.ReadFile(filepath.Join(out, "cds-pin.json"))
+	document, err := os.ReadFile(filepath.Join(out, "ta-pin.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +148,7 @@ func TestNewWritesAConfigurationItsPinBinds(t *testing.T) {
 }
 
 func TestNewRefusesANodeSubnetHoldingClusterAddresses(t *testing.T) {
-	out := filepath.Join(t.TempDir(), "cds")
+	out := filepath.Join(t.TempDir(), "ta")
 	args := append(inputs(t, out), "--pod-cidr", "10.0.0.0/16")
 	if err := run(t, args...); err == nil {
 		t.Fatal("a node subnet overlapping the pod range was accepted")
@@ -159,7 +159,7 @@ func TestNewRefusesANodeSubnetHoldingClusterAddresses(t *testing.T) {
 }
 
 func TestNewRefusesATenantEntryTakingAComponentName(t *testing.T) {
-	out := filepath.Join(t.TempDir(), "cds")
+	out := filepath.Join(t.TempDir(), "ta")
 	args := append(inputs(t, out), "--workloads", writeInput(t, "workloads.json", componentSeed))
 	if err := run(t, args...); err == nil {
 		t.Fatal("a tenant workload replaced a component entry")
@@ -169,12 +169,12 @@ func TestNewRefusesATenantEntryTakingAComponentName(t *testing.T) {
 // A given pattern replaces the default rather than joining it, so the written
 // rules are the ones named.
 func TestNewLeafDNSPatternReplacesTheDefault(t *testing.T) {
-	out := filepath.Join(t.TempDir(), "cds")
-	args := append(inputs(t, out), "--leaf-dns-pattern", `^cds[.]acme[.]example$`)
+	out := filepath.Join(t.TempDir(), "ta")
+	args := append(inputs(t, out), "--leaf-dns-pattern", `^ta[.]acme[.]example$`)
 	if err := run(t, args...); err != nil {
 		t.Fatal(err)
 	}
-	config, err := os.ReadFile(filepath.Join(out, "cds-config.yaml"))
+	config, err := os.ReadFile(filepath.Join(out, "ta-config.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +206,7 @@ func TestNewEmbedsPodAuthorityInTheBoundConfiguration(t *testing.T) {
 		{"valid", string(policy), true}, {"empty", "", false}, {"malformed", "null", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			out := filepath.Join(t.TempDir(), "cds")
+			out := filepath.Join(t.TempDir(), "ta")
 			args := append(inputs(t, out), "--pod-image-policy-file", writeInput(t, "pods.json", tc.policy))
 			err := run(t, args...)
 			if !tc.allowed {
@@ -250,11 +250,11 @@ func TestNewEmbedsPodAuthorityInTheBoundConfiguration(t *testing.T) {
 // Every replica of a cluster boots one configuration, so the generator takes
 // the replica set and writes no replica's own name into the document.
 func TestNewWritesTheReplicaSetOfACluster(t *testing.T) {
-	out := filepath.Join(t.TempDir(), "cds")
+	out := filepath.Join(t.TempDir(), "ta")
 	args := append(inputs(t, out),
-		"--replica", "cds-1.acme.example",
-		"--replica", "cds-2.acme.example",
-		"--replica", "cds-3.acme.example",
+		"--replica", "ta-1.acme.example",
+		"--replica", "ta-2.acme.example",
+		"--replica", "ta-3.acme.example",
 		"--voters", "3")
 	if err := run(t, args...); err != nil {
 		t.Fatal(err)
@@ -271,7 +271,7 @@ func TestNewWritesTheReplicaSetOfACluster(t *testing.T) {
 // A cluster named with no replica runs one Trust Authority, and its configuration says so
 // by carrying no replica set at all.
 func TestNewWritesNoReplicaSetByDefault(t *testing.T) {
-	out := filepath.Join(t.TempDir(), "cds")
+	out := filepath.Join(t.TempDir(), "ta")
 	if err := run(t, inputs(t, out)...); err != nil {
 		t.Fatal(err)
 	}
@@ -283,16 +283,16 @@ func TestNewWritesNoReplicaSetByDefault(t *testing.T) {
 // A replica set's Genesis may name its first node set; a single Trust Authority has no
 // Genesis.
 func TestNewNeedsNodePinsOnlyForASingleTA(t *testing.T) {
-	single := filepath.Join(t.TempDir(), "cds")
+	single := filepath.Join(t.TempDir(), "ta")
 	if err := run(t, withoutNodePins(inputs(t, single))...); err == nil {
 		t.Fatal("a single Trust Authority naming no nodes was written")
 	}
 	if _, err := os.Stat(single); !os.IsNotExist(err) {
 		t.Fatal("the refused run still wrote its outputs")
 	}
-	replicated := filepath.Join(t.TempDir(), "cds")
+	replicated := filepath.Join(t.TempDir(), "ta")
 	args := append(withoutNodePins(inputs(t, replicated)),
-		"--replica", "cds-1.acme.example",
+		"--replica", "ta-1.acme.example",
 		"--voters", "1")
 	if err := run(t, args...); err != nil {
 		t.Fatal(err)
@@ -306,14 +306,14 @@ func TestNewNeedsNodePinsOnlyForASingleTA(t *testing.T) {
 // refused before anything is written.
 func TestNewRefusesAReplicaSetItCannotRun(t *testing.T) {
 	for name, flags := range map[string][]string{
-		"an even voter count": {"--replica", "cds-1.acme.example", "--voters", "2"},
-		"no voter seat":       {"--replica", "cds-1.acme.example"},
+		"an even voter count": {"--replica", "ta-1.acme.example", "--voters", "2"},
+		"no voter seat":       {"--replica", "ta-1.acme.example"},
 		"no replica":          {"--voters", "3"},
-		"a replica twice":     {"--replica", "cds-1.acme.example", "--replica", "cds-1.acme.example", "--voters", "1"},
-		"a replica's port":    {"--replica", "cds-1.acme.example:8443", "--voters", "1"},
+		"a replica twice":     {"--replica", "ta-1.acme.example", "--replica", "ta-1.acme.example", "--voters", "1"},
+		"a replica's port":    {"--replica", "ta-1.acme.example:8443", "--voters", "1"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			out := filepath.Join(t.TempDir(), "cds")
+			out := filepath.Join(t.TempDir(), "ta")
 			if err := run(t, append(inputs(t, out), flags...)...); err == nil {
 				t.Fatalf("%s was accepted", name)
 			}
@@ -339,7 +339,7 @@ func parseWritten(t *testing.T, out string) *taconfig.Config {
 }
 
 func TestNewRefusesAKMSWithoutItsPinnedKey(t *testing.T) {
-	out := filepath.Join(t.TempDir(), "cds")
+	out := filepath.Join(t.TempDir(), "ta")
 	args := append(inputs(t, out), "--kms-url", "https://kms.example.org/release")
 	err := run(t, args...)
 	if err == nil || !strings.Contains(err.Error(), "--kms-url/--kms-tls-key-sha256") {

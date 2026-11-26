@@ -59,7 +59,7 @@ func TestChartDefaultRendersReplacementStack(t *testing.T) {
 		t.Fatalf("default chart missing MutatingWebhookConfiguration\n%s", out)
 	}
 	for _, label := range [][2]string{
-		{"app.kubernetes.io/component", "cds"},
+		{"app.kubernetes.io/component", "ta"},
 		{"app.kubernetes.io/name", "nri-image-policy"},
 		{"app.kubernetes.io/name", "router"},
 	} {
@@ -218,17 +218,12 @@ func nodeAffinityHasKey(ds appsv1.DaemonSet, key string) bool {
 }
 
 // The chart renders exactly one pull-mode installer DaemonSet, `-worker`, that
-// targets every node — there is no Trust Authority/worker partition. The old push archetype
-// (a role=cds-pinned `-cds` installer) is gone; this guards against it coming
-// back.
+// targets every node.
 func TestChartNriInstallerRendersSinglePullDaemonSet(t *testing.T) {
 	t.Parallel()
 	out, err := helmTemplate(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	if renderedManifestHasNamedKind(t, out, "DaemonSet", "c8s-nri-image-policy-cds") {
-		t.Error("no cds/push installer must render; only the pull-mode -worker DaemonSet exists")
 	}
 	worker := renderedDaemonSet(t, out, "c8s-nri-image-policy-worker")
 	if nodeAffinityHasKey(worker, "role") {
@@ -435,17 +430,17 @@ func assertContainerArgs(t *testing.T, c corev1.Container, want ...string) {
 }
 
 // TestChartRejectsOperatorKeysPath pins the path-vs-content guard: a
-// cds.operatorKeys value that is a filesystem path (or any non-PEM string)
+// ta.operatorKeys value that is a filesystem path (or any non-PEM string)
 // must fail the render with an instructive message, not ship a ConfigMap Trust Authority
 // will refuse at startup.
 func TestChartRejectsOperatorKeysPath(t *testing.T) {
 	t.Parallel()
-	out, err := helmTemplate(t, "--set", "cds.operatorKeys=/home/user/public.pem")
+	out, err := helmTemplate(t, "--set", "ta.operatorKeys=/home/user/public.pem")
 	if err == nil {
 		t.Fatalf("helm template succeeded, want operatorKeys content-guard failure\n%s", out)
 	}
-	if kind := parseValidationErrorKind(out); kind != "cds_operator_keys_content" {
-		t.Fatalf("validation kind = %q, want cds_operator_keys_content\n%s", kind, out)
+	if kind := parseValidationErrorKind(out); kind != "ta_operator_keys_content" {
+		t.Fatalf("validation kind = %q, want ta_operator_keys_content\n%s", kind, out)
 	}
 }
 
@@ -456,7 +451,7 @@ func TestChartRendersOperatorKeysPEM(t *testing.T) {
 	if err := os.WriteFile(path, []byte(pemText), 0o600); err != nil {
 		t.Fatalf("write key file: %v", err)
 	}
-	out, err := helmTemplate(t, "--set-file", "cds.operatorKeys="+path)
+	out, err := helmTemplate(t, "--set-file", "ta.operatorKeys="+path)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
@@ -592,18 +587,18 @@ func TestChartLeavesTheInjectedTAEndpointToTheNode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	assertContainerNoArgPrefix(t, "operator", renderedOperatorArgs(t, out), "--cds-url=")
+	assertContainerNoArgPrefix(t, "operator", renderedOperatorArgs(t, out), "--ta-url=")
 	// The node reads the endpoint from the file the installer puts beside its
 	// config and hands it to every injected client; no component names it.
-	if got := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker").Allowlist.Pull.TAAddressFile; got != "/etc/nri/conf.d/cds-address" {
-		t.Fatalf("allowlist.pull.cds_address_file = %q, want the file beside the boot config", got)
+	if got := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker").Allowlist.Pull.TAAddressFile; got != "/etc/nri/conf.d/ta-address" {
+		t.Fatalf("allowlist.pull.ta_address_file = %q, want the file beside the boot config", got)
 	}
 	iterateManifests(t, out, func(doc []byte) bool {
 		var meta docMeta
 		if err := sigsyaml.Unmarshal(doc, &meta); err != nil {
 			t.Fatalf("decode rendered document: %v", err)
 		}
-		if strings.Contains(string(doc), baseCDSAddress) && meta.Metadata.Name != "c8s-measurements" {
+		if strings.Contains(string(doc), baseTAAddress) && meta.Metadata.Name != "c8s-measurements" {
 			t.Fatalf("%s %q names the Trust Authority address; only the ConfigMap the installer mounts may\n%s", meta.Kind, meta.Metadata.Name, doc)
 		}
 		return false
@@ -620,10 +615,10 @@ func TestChartNRIImagePolicyUsesPullMode(t *testing.T) {
 	workerCfg := renderedNRIBootConfig(t, out, "c8s-nri-image-policy-worker")
 	// The Trust Authority reaches the plugin as two paths beside its config: no argument
 	// of the installer names the address or the pin it is served by.
-	if got, want := workerCfg.Allowlist.Pull.TAAddressFile, "/etc/nri/conf.d/cds-address"; got != want {
+	if got, want := workerCfg.Allowlist.Pull.TAAddressFile, "/etc/nri/conf.d/ta-address"; got != want {
 		t.Fatalf("worker Trust Authority address file = %q, want %q", got, want)
 	}
-	if got, want := workerCfg.Allowlist.Pull.TAMeasurementsConfig, "/etc/nri/conf.d/cds.json"; got != want {
+	if got, want := workerCfg.Allowlist.Pull.TAMeasurementsConfig, "/etc/nri/conf.d/ta.json"; got != want {
 		t.Fatalf("worker Trust Authority pin = %q, want %q", got, want)
 	}
 	if workerCfg.Allowlist.Pull.URL != "" {
@@ -1060,7 +1055,7 @@ func TestChartUsesTheAttestationSocket(t *testing.T) {
 				}
 				t.Errorf("container %s carries the socket URL but no attestation-api-socket mount; mounts %+v", c.Name, c.VolumeMounts)
 			}
-			attest := renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")
+			attest := renderedDeploymentContainer(t, out, "c8s-router", "ta-attest")
 			assertContainerArgs(t, attest, socketURL)
 			assertHasSocketMount(attest)
 			// The router's credentials-role containers reach the same socket
@@ -1151,18 +1146,18 @@ func TestChartRendersRouterTLSAndDiscovery(t *testing.T) {
 	}
 	cfg := renderedRouterNginxConfig(t, out)
 	server := cfg.server(t)
-	// The cloud's tls.conf names the mesh leaf, which cds-attest's pinned
-	// --front-door-mode=cds attests.
+	// The cloud's tls.conf names the mesh leaf, which ta-attest's pinned
+	// --front-door-mode=ta attests.
 	server.assertDirective(t, "include", "/mnt/c8s-data/nginx/tls.conf")
 	files := renderedConfigMap(t, out, "c8s-router-nginx").Data
-	if got := files["tls.conf"]; got != "include /mnt/c8s-data/nginx/tls-cds.conf;\n" {
+	if got := files["tls.conf"]; got != "include /mnt/c8s-data/nginx/tls-ta.conf;\n" {
 		t.Errorf("tls.conf = %q, want the mesh leaf's snippet", got)
 	}
-	tls := parseNginxConfig(t, "server {\n"+files["tls-cds.conf"]+"\n}").servers[0]
+	tls := parseNginxConfig(t, "server {\n"+files["tls-ta.conf"]+"\n}").servers[0]
 	tls.assertDirective(t, "ssl_certificate", "/etc/c8s/certs/tls.crt$per_handshake")
 	tls.assertDirective(t, "ssl_certificate_key", "/etc/c8s/certs/tls.key$per_handshake")
 	if _, ok := files["front-door-mode"]; ok {
-		t.Error("the cloud ConfigMap carries front-door-mode, which cds-attest takes as pinned argv")
+		t.Error("the cloud ConfigMap carries front-door-mode, which ta-attest takes as pinned argv")
 	}
 	ciphers := server.directives["ssl_ciphers"]
 	if len(ciphers) != 1 || len(ciphers[0]) != 1 ||
@@ -1170,13 +1165,13 @@ func TestChartRendersRouterTLSAndDiscovery(t *testing.T) {
 		t.Fatalf("ssl_ciphers missing ECDHE-RSA-AES128-GCM-SHA256; got %v", ciphers)
 	}
 	cfg.location(t, "exact", "/v1/discovery").assertDirective(t, "alias", "/discovery/discovery.json")
-	cfg.location(t, "exact", "/.well-known/cds-cert.pem").assertDirective(t, "alias", "/etc/c8s/certs/tls.crt")
+	cfg.location(t, "exact", "/.well-known/ta-cert.pem").assertDirective(t, "alias", "/etc/c8s/certs/tls.crt")
 	cfg.location(t, "exact", "/.well-known/mesh-ca.pem").assertDirective(t, "alias", "/etc/c8s/certs/ca.crt")
 	// Locations that hold no attest-lb binding close the connection after the
 	// response, so a binding cannot lapse under a connection they keep open.
 	// Discovery and the allowlist keep a young connection open, so a client can
 	// read the allowlist on the connection whose leaf it attested.
-	for _, path := range []string{"/.well-known/cds-cert.pem", "/.well-known/mesh-ca.pem", "/readyz", "/healthz"} {
+	for _, path := range []string{"/.well-known/ta-cert.pem", "/.well-known/mesh-ca.pem", "/readyz", "/healthz"} {
 		cfg.location(t, "exact", path).assertDirective(t, "keepalive_timeout", "0")
 	}
 	for _, path := range []string{"/v1/discovery", "/allowlist"} {
@@ -1203,12 +1198,12 @@ func TestChartRendersRouterTLSAndDiscovery(t *testing.T) {
 	cert := routerGetCertContainer(t, out, "c8s-cert")
 	assertContainerArgs(t, cert,
 		"--discovery-out=/discovery/discovery.json",
-		"--discovery-cds-cert-url=/.well-known/cds-cert.pem",
-		"--discovery-public-tls-mode=cds",
+		"--discovery-ta-cert-url=/.well-known/ta-cert.pem",
+		"--discovery-public-tls-mode=ta",
 		"--discovery-mesh-ca-url=/.well-known/mesh-ca.pem",
 	)
-	attest := renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")
-	assertContainerArgs(t, attest, "--front-door-mode=cds")
+	attest := renderedDeploymentContainer(t, out, "c8s-router", "ta-attest")
+	assertContainerArgs(t, attest, "--front-door-mode=ta")
 	// nginx is its own entrypoint's child, so the pod shares no process
 	// namespace (router_serve_test.go).
 	deployment := renderedDeployment(t, out, "c8s-router")
@@ -1312,7 +1307,7 @@ func findExecHooks(node any) []string {
 
 // TestWorkerChartRouterACMESidecar pins the worker router's acme front door: the
 // `c8s acme` native sidecar issues the leaf into a Memory emptyDir it alone
-// writes, nginx and cds-attest read it, and the :80 server proxies HTTP-01 to
+// writes, nginx and ta-attest read it, and the :80 server proxies HTTP-01 to
 // the sidecar's loopback challenge port and 301s everything else.
 func TestWorkerChartRouterACMESidecar(t *testing.T) {
 	t.Parallel()
@@ -1382,15 +1377,15 @@ func TestWorkerChartRouterACMESidecar(t *testing.T) {
 		t.Fatalf("nginx http port = (%+v, %v), want containerPort 8080 hostPort 80", httpPort, ok)
 	}
 
-	attest := renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")
+	attest := renderedDeploymentContainer(t, out, "c8s-router", "ta-attest")
 	assertContainerArgs(t, attest, "--acme-serving-cert-file=/etc/c8s-acme-tls/cert.pem")
 	if m, ok := containerVolumeMount(attest, "acme-tls"); !ok || !m.ReadOnly {
-		t.Fatalf("cds-attest must mount acme-tls read-only, got (%+v, %v)", m, ok)
+		t.Fatalf("ta-attest must mount acme-tls read-only, got (%+v, %v)", m, ok)
 	}
 	// It binds the leaf the front door presents; the key is not its to read,
 	// and it runs as the same identity, so only the mount keeps it out.
 	if m, ok := containerVolumeMount(attest, "acme-key"); ok {
-		t.Fatalf("cds-attest mounts the front door's serving key at %s", m.MountPath)
+		t.Fatalf("ta-attest mounts the front door's serving key at %s", m.MountPath)
 	}
 
 	cfg := parseNginxConfig(t, libRouterNginxFiles(t)["nginx.conf"])
@@ -1474,7 +1469,7 @@ func findContainerPort(c corev1.Container, name string) (corev1.ContainerPort, b
 }
 
 // TestChartRouterAttestFrontDoorMode pins the endpoint-split wiring: the
-// front door (mesh-issued serving leaf) runs cds-attest in cds front-door mode
+// front door (mesh-issued serving leaf) runs ta-attest in ta front-door mode
 // on loopback with no readiness probe.
 func TestChartRouterAttestFrontDoorMode(t *testing.T) {
 	t.Parallel()
@@ -1482,10 +1477,10 @@ func TestChartRouterAttestFrontDoorMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	attest := renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")
-	assertContainerArgs(t, attest, "--front-door-mode=cds", "--host=127.0.0.1")
+	attest := renderedDeploymentContainer(t, out, "c8s-router", "ta-attest")
+	assertContainerArgs(t, attest, "--front-door-mode=ta", "--host=127.0.0.1")
 	if attest.ReadinessProbe != nil {
-		t.Fatalf("cds-attest must stay probe-less, got %+v", attest.ReadinessProbe)
+		t.Fatalf("ta-attest must stay probe-less, got %+v", attest.ReadinessProbe)
 	}
 }
 
@@ -1544,14 +1539,14 @@ func TestChartRouterServiceIsClusterIP(t *testing.T) {
 	}
 }
 
-// routerRoutingArgs are the manifest-routing arguments cds-attest carries in
+// routerRoutingArgs are the manifest-routing arguments ta-attest carries in
 // every shape at the chart defaults.
 var routerRoutingArgs = []string{
 	"--routing-host=127.0.0.1",
 	"--routing-port=8802",
 	"--routes-poll-interval=30s",
 	"--backend-timeout=1h",
-	"--reserved-paths=/allowlist,/.well-known/c8s/,/.well-known/acme-challenge/,/v1/discovery,/.well-known/cds-cert.pem,/.well-known/mesh-ca.pem,/readyz,/healthz",
+	"--reserved-paths=/allowlist,/.well-known/c8s/,/.well-known/acme-challenge/,/v1/discovery,/.well-known/ta-cert.pem,/.well-known/mesh-ca.pem,/readyz,/healthz",
 }
 
 func TestChartRendersRouterAttestSidecar(t *testing.T) {
@@ -1561,27 +1556,27 @@ func TestChartRendersRouterAttestSidecar(t *testing.T) {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
 
-	// The cds-attest sidecar runs the operator multi-mode image with the
-	// cds-attest subcommand, bound to loopback for nginx to proxy to.
+	// The ta-attest sidecar runs the operator multi-mode image with the
+	// ta-attest subcommand, bound to loopback for nginx to proxy to.
 	deployment := renderedDeployment(t, out, "c8s-router")
-	sidecar := renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")
-	if len(sidecar.Args) == 0 || sidecar.Args[0] != "cds-attest" {
-		t.Fatalf("cds-attest args = %v, want first arg 'cds-attest'", sidecar.Args)
+	sidecar := renderedDeploymentContainer(t, out, "c8s-router", "ta-attest")
+	if len(sidecar.Args) == 0 || sidecar.Args[0] != "ta-attest" {
+		t.Fatalf("ta-attest args = %v, want first arg 'ta-attest'", sidecar.Args)
 	}
 	assertContainerArgs(t, sidecar, append([]string{
 		"--host=127.0.0.1",
 		"--port=8800",
 		"--generation=milan",
 	}, routerRoutingArgs...)...)
-	assertContainerHasArgPrefix(t, "cds-attest", sidecar.Args, "--attestation-api-url=unix:///run/nri-image-policy/attestation-api.sock")
-	// --cds-url among them: the enforcer mounts the one Trust Authority endpoint this
-	// node admits for the router role, and cds-attest reads it there.
-	for _, banned := range []string{"--upstream", "--attest-endpoints", "--operator-keys-file", "--cds-measurements", "--cds-rtmrs", "--publish-routes", "--cds-url", "--mesh-identity-"} {
-		assertContainerNoArgPrefix(t, "cds-attest", sidecar.Args, banned)
+	assertContainerHasArgPrefix(t, "ta-attest", sidecar.Args, "--attestation-api-url=unix:///run/nri-image-policy/attestation-api.sock")
+	// --ta-url among them: the enforcer mounts the one Trust Authority endpoint this
+	// node admits for the router role, and ta-attest reads it there.
+	for _, banned := range []string{"--upstream", "--attest-endpoints", "--operator-keys-file", "--publish-routes", "--ta-url", "--mesh-identity-"} {
+		assertContainerNoArgPrefix(t, "ta-attest", sidecar.Args, banned)
 	}
-	assertContainerHasArg(t, "cds-attest", sidecar.Args, "--image-policy-file=/mnt/c8s-data/measurements/cds.json")
+	assertContainerHasArg(t, "ta-attest", sidecar.Args, "--image-policy-file=/mnt/c8s-data/measurements/ta.json")
 	if got := len(deployment.Spec.Template.Spec.Containers); got != 3 {
-		t.Fatalf("router should have nginx + cds-attest + allowlist-proxy, got %d containers", got)
+		t.Fatalf("router should have nginx + ta-attest + allowlist-proxy, got %d containers", got)
 	}
 
 	// The protocol endpoints take 16k bodies. Tunnel records up to 8 MiB
@@ -1630,20 +1625,20 @@ func TestChartRendersRouterAttestSidecar(t *testing.T) {
 	}
 	cfg.location(t, "exact", "/readyz").assertDirective(t, "proxy_set_header", "X-Real-IP", "$remote_addr")
 
-	assertContainerNoArgPrefix(t, "cds-attest", sidecar.Args, "--tunnel-budget")
+	assertContainerNoArgPrefix(t, "ta-attest", sidecar.Args, "--tunnel-budget")
 
 	// The sidecar's own establish-rate defaults stand.
-	assertContainerNoArgPrefix(t, "cds-attest", sidecar.Args, "--establish-")
+	assertContainerNoArgPrefix(t, "ta-attest", sidecar.Args, "--establish-")
 }
 
 // TestChartRouterRoutePublication pins router.routePublication.enabled to
-// cds-attest --publish-routes.
+// ta-attest --publish-routes.
 func TestChartRouterRoutePublication(t *testing.T) {
 	out, err := helmTemplate(t, "--set", "router.routePublication.enabled=true")
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	assertContainerArgs(t, renderedDeploymentContainer(t, out, "c8s-router", "cds-attest"), "--publish-routes")
+	assertContainerArgs(t, renderedDeploymentContainer(t, out, "c8s-router", "ta-attest"), "--publish-routes")
 
 	// A string "false" is truthy in a template; the schema refuses it.
 	out, err = helmTemplate(t, "--set-string", "router.routePublication.enabled=false")
@@ -1652,8 +1647,8 @@ func TestChartRouterRoutePublication(t *testing.T) {
 	}
 }
 
-// TestChartRouterTAPins pins that cds-attest and allowlist-proxy verify the
-// same Trust Authority: both take their pins from router.cdsPinArgs.
+// TestChartRouterTAPins pins the pin file ta-attest holds its Trust Authority
+// to.
 func TestChartRouterTAPins(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -1661,8 +1656,8 @@ func TestChartRouterTAPins(t *testing.T) {
 		want    string
 		mounted bool
 	}{
-		{name: "an external Trust Authority", chart: chartRender{render: helmTemplate}, want: "--image-policy-file=/mnt/c8s-data/measurements/cds.json", mounted: true},
-		{name: "a worker", chart: chartRender{render: helmTemplateWorker}, want: "--image-policy-file=/run/c8s-node/cds.json"},
+		{name: "an external Trust Authority", chart: chartRender{render: helmTemplate}, want: "--image-policy-file=/mnt/c8s-data/measurements/ta.json", mounted: true},
+		{name: "a worker", chart: chartRender{render: helmTemplateWorker}, want: "--image-policy-file=/run/c8s-node/ta.json"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out, err := tc.chart.render(t, tc.chart.args...)
@@ -1672,21 +1667,21 @@ func TestChartRouterTAPins(t *testing.T) {
 			// The allowlist proxy holds the credentials role, so the node
 			// hands it the pin instead
 			// (TestRouterAllowlistProxyTakesItsTAPinsFromTheNode).
-			c := renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")
+			c := renderedDeploymentContainer(t, out, "c8s-router", "ta-attest")
 			assertContainerArgs(t, c, tc.want)
 			m, ok := containerVolumeMount(c, "measurements-config")
 			if ok != tc.mounted || (ok && (m.MountPath != "/mnt/c8s-data/measurements" || !m.ReadOnly)) {
-				t.Errorf("cds-attest measurements-config mount = (%+v, %v), want present=%v at /mnt/c8s-data/measurements read-only", m, ok, tc.mounted)
+				t.Errorf("ta-attest measurements-config mount = (%+v, %v), want present=%v at /mnt/c8s-data/measurements read-only", m, ok, tc.mounted)
 			}
 		})
 	}
 }
 
 // TestChartRouterOperatorKeySource pins the router's operator-key source:
-// cds.operatorKeys when set, else Trust Authority itself.
+// ta.operatorKeys when set, else Trust Authority itself.
 func TestChartRouterOperatorKeySource(t *testing.T) {
 	t.Parallel()
-	keys := []string{"--set-string", "cds.operatorKeys=-----BEGIN PUBLIC KEY-----\nMFkw\n-----END PUBLIC KEY-----\n"}
+	keys := []string{"--set-string", "ta.operatorKeys=-----BEGIN PUBLIC KEY-----\nMFkw\n-----END PUBLIC KEY-----\n"}
 	const keysArg = "--operator-keys-file=/mnt/c8s-data/operator-keys/keys.pem"
 	for _, tc := range []struct {
 		name     string
@@ -1701,9 +1696,9 @@ func TestChartRouterOperatorKeySource(t *testing.T) {
 			if err != nil {
 				t.Fatalf("helm template: %v\n%s", err, out)
 			}
-			c := renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")
+			c := renderedDeploymentContainer(t, out, "c8s-router", "ta-attest")
 			if got := slices.Contains(c.Args, keysArg); got != tc.wantKeys {
-				t.Errorf("cds-attest has %s = %v, want %v", keysArg, got, tc.wantKeys)
+				t.Errorf("ta-attest has %s = %v, want %v", keysArg, got, tc.wantKeys)
 			}
 			if tc.wantKeys {
 				assertContainerMount(t, c, "operator-keys", "/mnt/c8s-data/operator-keys")
@@ -1720,10 +1715,10 @@ func TestChartRefusesUnpinnedTA(t *testing.T) {
 		name string
 		args []string
 	}{
-		{name: "cds.address and cds.measurementsConfig", args: baseTAPolicy(t)},
+		{name: "ta.address and ta.measurementsConfig", args: baseTAPolicy(t)},
 		{
 			name: "a Trust Authority named by a DNS name",
-			args: []string{"--set-string", "cds.address=cds.example.com:8443", "--set-file", "cds.measurementsConfig=" + baseTAPin(t)},
+			args: []string{"--set-string", "ta.address=ta.example.com:8443", "--set-file", "ta.measurementsConfig=" + baseTAPin(t)},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1733,18 +1728,18 @@ func TestChartRefusesUnpinnedTA(t *testing.T) {
 			}
 		})
 	}
-	pin := []string{"--set-file", "cds.measurementsConfig=" + baseTAPin(t)}
+	pin := []string{"--set-file", "ta.measurementsConfig=" + baseTAPin(t)}
 	for _, tc := range []struct {
 		name string
 		args []string
 		want string
 	}{
-		{name: "neither", want: "cds_pins_required"},
-		{name: "no pin", args: []string{"--set-string", "cds.address=" + baseCDSAddress}, want: "cds_pins_required"},
-		{name: "no address", args: pin, want: "cds_address_required"},
-		{name: "no port", args: append(pin, "--set-string", "cds.address=10.9.9.9"), want: "cds_address_required"},
-		{name: "an uppercase name", args: append(pin, "--set-string", "cds.address=TA.example.com:8443"), want: "cds_address_required"},
-		{name: "a URL, not an endpoint", args: append(pin, "--set-string", "cds.address=https://cds.example.com:8443"), want: "cds_address_required"},
+		{name: "neither", want: "ta_pins_required"},
+		{name: "no pin", args: []string{"--set-string", "ta.address=" + baseTAAddress}, want: "ta_pins_required"},
+		{name: "no address", args: pin, want: "ta_address_required"},
+		{name: "no port", args: append(pin, "--set-string", "ta.address=10.9.9.9"), want: "ta_address_required"},
+		{name: "an uppercase name", args: append(pin, "--set-string", "ta.address=TA.example.com:8443"), want: "ta_address_required"},
+		{name: "a URL, not an endpoint", args: append(pin, "--set-string", "ta.address=https://ta.example.com:8443"), want: "ta_address_required"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out, err := helmTemplateUnpinned(t, cloudChartDir, tc.args...)
@@ -1781,7 +1776,7 @@ var protocolCORSLocations = []struct{ match, path string }{
 	{"exact", "/allowlist"},
 	{"prefix", "/allowlist/"},
 	{"exact", "/v1/discovery"},
-	{"exact", "/.well-known/cds-cert.pem"},
+	{"exact", "/.well-known/ta-cert.pem"},
 	{"exact", "/.well-known/mesh-ca.pem"},
 	{"prefix", "/.well-known/c8s/"},
 	{"exact", "/.well-known/c8s/tunnel"},
@@ -1923,7 +1918,7 @@ func TestRouterAllowlistProxyTakesItsTAPinsFromTheNode(t *testing.T) {
 	proxy := renderedDeploymentContainer(t, out, "c8s-router", "allowlist-proxy")
 	// It holds the credentials role, so its node hands it the pins and
 	// refuses an argument naming any.
-	assertNoArgWithPrefix(t, "allowlist-proxy", proxy.Args, "--cds-measurements", "--image-policy-file")
+	assertNoArgWithPrefix(t, "allowlist-proxy", proxy.Args, "--image-policy-file")
 }
 
 func renderedRouterNginxConf(t *testing.T, manifest string) string {
@@ -2235,9 +2230,9 @@ func TestRouterDiscoveryRequiresAdvertisedMeshCA(t *testing.T) {
 		"--discovery-mesh-ca-url=/.well-known/mesh-ca.pem")
 }
 
-// TestRouterGetCertWritesMeshCABundle pins the mechanism that replaced the
-// c8s-cds-mesh-ca ConfigMap mount: the c8s-cert sidecar writes the mesh CA
-// bundle to /etc/c8s/certs/ca.crt (the c8s-certs volume that already holds the leaf).
+// TestRouterGetCertWritesMeshCABundle pins that the c8s-cert sidecar writes
+// the mesh CA bundle to /etc/c8s/certs/ca.crt (the c8s-certs volume that
+// already holds the leaf).
 func TestRouterGetCertWritesMeshCABundle(t *testing.T) {
 	t.Parallel()
 	out, err := helmTemplateRouter(t)
@@ -2255,7 +2250,7 @@ func TestRouterDiscoveryReportsTAModeWithoutPublicTLSSecret(t *testing.T) {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
 	assertContainerArgs(t, routerGetCertContainer(t, out, "c8s-cert"),
-		"--discovery-public-tls-mode=cds")
+		"--discovery-public-tls-mode=ta")
 }
 
 func TestChartOperatorRBACIsScoped(t *testing.T) {
@@ -2476,17 +2471,17 @@ func hostPathVolume(t *testing.T, ds appsv1.DaemonSet, name string) string {
 // the seed admits it argv-pinned, so the default fail-closed render is valid.
 const baseNRIDigest = "sha256:aaaa000000000000000000000000000000000000000000000000000000000000"
 
-// baseTADigest is the Trust Authority launch digest testdata/cds-pin.json carries, and
-// baseCDSAddress the endpoint the shared harness points a release at: the
-// chart refuses a release naming no Trust Authority (kind=cds_pins_required,
-// kind=cds_address_required).
+// baseTADigest is the Trust Authority launch digest testdata/ta-pin.json carries, and
+// baseTAAddress the endpoint the shared harness points a release at: the
+// chart refuses a release naming no Trust Authority (kind=ta_pins_required,
+// kind=ta_address_required).
 var baseTADigest = strings.Repeat("ab", armtls.SNPMeasurementSize)
 
 const (
-	baseCDSAddress = "10.9.9.9:8443"
+	baseTAAddress = "10.9.9.9:8443"
 	// baseTAPinPath is that Trust Authority as the pin document an operator passes: the
 	// image and the launch file its VM proves, schema 2 as every Trust Authority pin is.
-	baseTAPinPath = "../testdata/cds-pin.json"
+	baseTAPinPath = "../testdata/ta-pin.json"
 )
 
 // baseTAPin is that document where a render running in any directory reads
@@ -2515,7 +2510,7 @@ func baseTAPinDocument(t *testing.T) string {
 // document, which is how every non-baked release names its Trust Authority.
 func baseTAPolicy(t *testing.T) []string {
 	t.Helper()
-	return []string{"--set-string", "cds.address=" + baseCDSAddress, "--set-file", "cds.measurementsConfig=" + baseTAPin(t)}
+	return []string{"--set-string", "ta.address=" + baseTAAddress, "--set-file", "ta.measurementsConfig=" + baseTAPin(t)}
 }
 
 // helmOutput keeps warnings outside the YAML. Failed commands keep diagnostics.
@@ -2556,11 +2551,11 @@ func helmTemplate(t *testing.T, args ...string) (string, error) {
 
 // helmTemplateIn is helmTemplate on the chart at chartDir, under a
 // placeholder Trust Authority unless the caller names its own: the chart refuses a release
-// naming no Trust Authority (kind=cds_pins_required, kind=cds_address_required).
+// naming no Trust Authority (kind=ta_pins_required, kind=ta_address_required).
 func helmTemplateIn(t *testing.T, chartDir string, args ...string) (string, error) {
 	t.Helper()
 	pinned := slices.ContainsFunc(args, func(arg string) bool {
-		return strings.HasPrefix(arg, "cds.measurementsConfig") || strings.HasPrefix(arg, "cds.address")
+		return strings.HasPrefix(arg, "ta.measurementsConfig") || strings.HasPrefix(arg, "ta.address")
 	})
 	if !pinned {
 		args = append(baseTAPolicy(t), args...)
@@ -2569,7 +2564,7 @@ func helmTemplateIn(t *testing.T, chartDir string, args ...string) (string, erro
 }
 
 // helmTemplateUnpinned is helmTemplateIn without the harness Trust Authority pin, for the
-// tests that drive the chart's cds_pins_required refusal and the pin sources
+// tests that drive the chart's ta_pins_required refusal and the pin sources
 // that satisfy it.
 func helmTemplateUnpinned(t *testing.T, chartDir string, args ...string) (string, error) {
 	t.Helper()
@@ -2640,7 +2635,7 @@ var basePlatformArgs = []string{
 }
 
 // assertRouterRoutingLocation checks location / proxies to the routing
-// listener with no URI (so cds-attest sees the request target as sent), with
+// listener with no URI (so ta-attest sees the request target as sent), with
 // the forwarding headers, streaming settings and timeouts the catch-all
 // carried: non-streaming LLM responses send nothing until done, and a dead
 // listener must fail fast.
@@ -2681,7 +2676,7 @@ func TestChartRouterRoutingLocation(t *testing.T) {
 	cfg.assertNoDirectivePrefix(t, "proxy_ssl_")
 	cfg.http.assertNoDirective(t, "resolver")
 	if len(cfg.upstreams) != 0 {
-		t.Fatalf("nginx renders upstream blocks %v, want none: cds-attest dials every backend", cfg.upstreams)
+		t.Fatalf("nginx renders upstream blocks %v, want none: ta-attest dials every backend", cfg.upstreams)
 	}
 	if got := renderedConfigMap(t, out, "c8s-router-nginx").Data["request-body.conf"]; got != "client_max_body_size 1048576;\n" {
 		t.Errorf("request-body.conf = %q, want the default body limit", got)
@@ -2691,7 +2686,7 @@ func TestChartRouterRoutingLocation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	assertContainerArgs(t, renderedDeploymentContainer(t, out, "c8s-router", "cds-attest"), "--routes-poll-interval=5s")
+	assertContainerArgs(t, renderedDeploymentContainer(t, out, "c8s-router", "ta-attest"), "--routes-poll-interval=5s")
 }
 
 // Both lanes' nginx files name the ports and paths their containers' argv and
@@ -2717,7 +2712,7 @@ func TestRouterNginxMatchesItsContainers(t *testing.T) {
 			cfg := parseNginxConfig(t, files["nginx.conf"])
 			pod := renderedDeployment(t, out, "c8s-router").Spec.Template.Spec
 			nginx, _ := findContainer(pod.Containers, "nginx")
-			attest, _ := findContainer(pod.Containers, "cds-attest")
+			attest, _ := findContainer(pod.Containers, "ta-attest")
 			proxy, _ := findContainer(pod.Containers, "allowlist-proxy")
 			cert, _ := findContainer(pod.InitContainers, "c8s-cert")
 
@@ -2741,7 +2736,7 @@ func TestRouterNginxMatchesItsContainers(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			// nginx outwaits cds-attest's own timeout reply by 30s.
+			// nginx outwaits ta-attest's own timeout reply by 30s.
 			cfg.location(t, "exact", "/.well-known/c8s/tunnel").assertDirective(t, "proxy_read_timeout", fmt.Sprintf("%ds", int((backend+30*time.Second).Seconds())))
 			for _, key := range []nginxLocationKey{
 				{match: "exact", path: "/allowlist"},
@@ -2751,7 +2746,7 @@ func TestRouterNginxMatchesItsContainers(t *testing.T) {
 			}
 
 			cfg.location(t, "exact", "/v1/discovery").assertDirective(t, "alias", argValue(t, cert.Args, "--discovery-out="))
-			cfg.location(t, "exact", argValue(t, cert.Args, "--discovery-cds-cert-url=")).assertDirective(t, "alias", argValue(t, cert.Args, "--cert-path="))
+			cfg.location(t, "exact", argValue(t, cert.Args, "--discovery-ta-cert-url=")).assertDirective(t, "alias", argValue(t, cert.Args, "--cert-path="))
 			cfg.location(t, "exact", argValue(t, cert.Args, "--discovery-mesh-ca-url=")).assertDirective(t, "alias", argValue(t, cert.Args, "--ca-path="))
 			spool, ok := containerVolumeMount(nginx, "nginx-tunnel-body")
 			if !ok {
@@ -3114,8 +3109,8 @@ type nriRuntimeConfig struct {
 	Allowlist struct {
 		Pull struct {
 			URL                  string `yaml:"url"`
-			TAAddressFile        string `yaml:"cds_address_file"`
-			TAMeasurementsConfig string `yaml:"cds_measurements_config"`
+			TAAddressFile        string `yaml:"ta_address_file"`
+			TAMeasurementsConfig string `yaml:"ta_measurements_config"`
 			Interval             string `yaml:"interval"`
 			Timeout              string `yaml:"timeout"`
 			AttestationApiURL    string `yaml:"attestation_api_url"`
@@ -3715,8 +3710,8 @@ type installerBootConfig struct {
 		Base pkgallowlist.Allowlist `yaml:"base"`
 		Pull struct {
 			URL                  string `yaml:"url"`
-			TAAddressFile        string `yaml:"cds_address_file"`
-			TAMeasurementsConfig string `yaml:"cds_measurements_config"`
+			TAAddressFile        string `yaml:"ta_address_file"`
+			TAMeasurementsConfig string `yaml:"ta_measurements_config"`
 		} `yaml:"pull"`
 		Push struct {
 			PersistPath string `yaml:"persist_path"`
@@ -3798,7 +3793,7 @@ func TestChartBootConfigParsesAsPluginYAML(t *testing.T) {
 	// never a push block. Asserting both confirms the typed decode landed on
 	// the boot config document, not just that some YAML parsed.
 	if wl := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker").Allowlist; wl.Pull.TAAddressFile == "" || wl.Push.PersistPath != "" {
-		t.Errorf("worker boot config should configure pull, not push: pull.cds_address_file=%q push.persist_path=%q", wl.Pull.TAAddressFile, wl.Push.PersistPath)
+		t.Errorf("worker boot config should configure pull, not push: pull.ta_address_file=%q push.persist_path=%q", wl.Pull.TAAddressFile, wl.Push.PersistPath)
 	}
 }
 
@@ -3974,8 +3969,8 @@ func bootConfigAsStagedOnANode(t *testing.T, body []byte) []byte {
 	if named == "" {
 		t.Fatalf("boot config names no Trust Authority address file\n%s", body)
 	}
-	path := filepath.Join(t.TempDir(), "cds-address")
-	if err := os.WriteFile(path, []byte(baseCDSAddress), 0o600); err != nil {
+	path := filepath.Join(t.TempDir(), "ta-address")
+	if err := os.WriteFile(path, []byte(baseTAAddress), 0o600); err != nil {
 		t.Fatalf("stage the Trust Authority address file: %v", err)
 	}
 	staged := strings.Replace(string(body), named, path, 1)
@@ -4302,7 +4297,7 @@ func TestChartOperatorPassesNoTAPins(t *testing.T) {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
 	args := strings.Join(renderedDeploymentContainer(t, out, "c8s-operator", "operator").Args, " ")
-	for _, unwanted := range []string{"--cds-measurements", "--cds-rtmrs", "--image-policy-file", "--image-policy-json"} {
+	for _, unwanted := range []string{"--image-policy-file", "--image-policy-json"} {
 		if strings.Contains(args, unwanted) {
 			t.Errorf("operator carries %s; the injected clients read the node policy instead: %s", unwanted, args)
 		}
@@ -4519,7 +4514,7 @@ func TestChartVolumedAndWebhookAgreeOnTheSocketDir(t *testing.T) {
 
 // schemaCoveredPaths are the values subtrees values.schema.json seals: the
 // component blocks the docs tell operators to write by hand.
-var schemaCoveredPaths = []string{"cds", "nriImagePolicy", "router", "volumed"}
+var schemaCoveredPaths = []string{"ta", "nriImagePolicy", "router", "volumed"}
 
 // readChartFile decodes a file of a chart directory. JSON is a subset of
 // YAML, so one decoder serves values.yaml and values.schema.json alike.
@@ -4550,7 +4545,7 @@ func TestChartValuesSchemaRejectsUnknownKeys(t *testing.T) {
 		// A values file from a release that still had these keys.
 		{"router.hostPort", "router.hostPort=true"},
 		{"router.routing", "router.routing.prot=9900"},
-		{"cds", "cds.addresss=10.9.9.9:8443"},
+		{"ta", "ta.addresss=10.9.9.9:8443"},
 		{"volumed", "volumed.enable=true"},
 		// The control-plane chart's own schema, through the cloud chart.
 		{"controlPlane.webhook", "controlPlane.webhook.extraExclude=tenant-a"},
@@ -4642,9 +4637,9 @@ func TestChartRouterRunsTheRouteAuthorityAsTheRoutingIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	attest := renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")
+	attest := renderedDeploymentContainer(t, out, "c8s-router", "ta-attest")
 	if got := attest.SecurityContext.RunAsUser; got == nil || *got != int64(workloadclaims.UpstreamUID) {
-		t.Errorf("cds-attest runAsUser = %v, want the upstream role's uid %d", got, workloadclaims.UpstreamUID)
+		t.Errorf("ta-attest runAsUser = %v, want the upstream role's uid %d", got, workloadclaims.UpstreamUID)
 	}
 	nginx := renderedDeploymentContainer(t, out, "c8s-router", "nginx")
 	if got := nginx.SecurityContext.RunAsUser; got == nil || *got != int64(workloadclaims.RouterUID) {
@@ -4673,7 +4668,7 @@ func TestChartRouterPodTakesTheMeasuredRoles(t *testing.T) {
 		"c8s-cert-wait":   "credentials",
 		"allowlist-proxy": "credentials",
 		"nginx":           "router",
-		"cds-attest":      "upstream",
+		"ta-attest":       "upstream",
 		"acme":            "acme",
 	}
 	// The measured base is the worker's, whose launch file carries the
@@ -4714,7 +4709,7 @@ func TestChartRouterPodTakesTheMeasuredRoles(t *testing.T) {
 // container back.
 func TestChartRouterPodStartsTheMeshEndpointFirst(t *testing.T) {
 	for name, render := range map[string]func(t *testing.T, args ...string) (string, error){
-		"cds front door":    helmTemplate,
+		"ta front door":     helmTemplate,
 		"worker front door": helmTemplateWorker,
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -5102,13 +5097,13 @@ func TestChartRouterReservedPathsCoverNginxLocations(t *testing.T) {
 				t.Fatalf("helm template: %v\n%s", err, out)
 			}
 			var reserved []string
-			for _, arg := range renderedDeploymentContainer(t, out, "c8s-router", "cds-attest").Args {
+			for _, arg := range renderedDeploymentContainer(t, out, "c8s-router", "ta-attest").Args {
 				if v, ok := strings.CutPrefix(arg, "--reserved-paths="); ok {
 					reserved = strings.Split(v, ",")
 				}
 			}
 			if len(reserved) == 0 {
-				t.Fatal("cds-attest has no --reserved-paths")
+				t.Fatal("ta-attest has no --reserved-paths")
 			}
 			// M3 prefix match, as routes.Table.Select applies a reserved path.
 			covered := func(p string) bool {

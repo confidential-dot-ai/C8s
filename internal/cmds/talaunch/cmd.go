@@ -1,4 +1,4 @@
-// Package cdslaunch implements `c8s ta config`: the operator-side generator
+// Package talaunch implements `c8s ta config`: the operator-side generator
 // for the two files an external Trust Authority VM is launched and verified with.
 package talaunch
 
@@ -52,8 +52,8 @@ func newNewCmd() *cobra.Command {
 		Short: "Write a cluster's Trust Authority configuration and the measurements document pinning its Trust Authority VM",
 		Long: `Write the two files an external Trust Authority VM is launched and verified with:
 
-  <out>/cds-config.yaml   the launch file the Trust Authority VM boots on
-  <out>/cds-pin.json      the measurements document its clients pin it with
+  <out>/ta-config.yaml   the launch file the Trust Authority VM boots on
+  <out>/ta-pin.json      the measurements document its clients pin it with
 
 Each pin entry binds the configuration exactly; on SEV-SNP there is one entry
 per --vcpus count the VM may boot with.

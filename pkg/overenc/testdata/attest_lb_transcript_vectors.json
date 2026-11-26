@@ -1,13 +1,13 @@
 [
   {
     "description": "repeated single-byte fields",
-    "front_door_mode": "cds",
+    "front_door_mode": "ta",
     "nonce_b64": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
     "serving_leaf_der_b64": "oKCgoKCgoKA=",
     "mesh_leaf_der_b64": "sbGxsbGxsbE=",
     "mesh_ca_der_b64": "wsLCwsLCwsI=",
     "route_digest_b64": "1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NQ=",
-    "report_data_b64": "+SlUWAeDrtrXcr3UgB4dv8F0jO2Zo8KxCAqGRRnB2pDeJCQmqn0hKQPcnGRwyKXv"
+    "report_data_b64": "3io052rT3f8bHiU1KxxGm7pnp58fT6KHK6RFk68Klk/aSfzUK2XpcbPHRAuhRJ+n"
   },
   {
     "description": "ascii DER placeholders, distinct lengths, acme mode",
@@ -21,12 +21,12 @@
   },
   {
     "description": "duplicate serving and mesh leaf bytes are hashed twice, not deduplicated",
-    "front_door_mode": "cds",
+    "front_door_mode": "ta",
     "nonce_b64": "//////////////////////////////////////////8=",
     "serving_leaf_der_b64": "c2FtZS1kZXI=",
     "mesh_leaf_der_b64": "c2FtZS1kZXI=",
     "mesh_ca_der_b64": "aXNzdWVyLWRlcg==",
     "route_digest_b64": "//////////////////////////////////////////8=",
-    "report_data_b64": "owS2MWuoNHPxuaCLrAXc12vyJreB/Ux0Lf6D0zw070Cx8AIFnIL/raf39+XPMAWV"
+    "report_data_b64": "C7+hKG+pNwk+HCWvVAh068Z1RbPKL4MFA1pg2s1CpPQgI0y0LmOsgLi+T+hxKoSz"
   }
 ]

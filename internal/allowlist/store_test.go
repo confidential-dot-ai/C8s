@@ -262,7 +262,7 @@ func TestSeedWorkloadsRetiresReplacedOpenComponentEntries(t *testing.T) {
 	component := func(args, mounts string, env pkgallowlist.EnvPolicy) pkgallowlist.Workload {
 		return pkgallowlist.Workload{Containers: []pkgallowlist.Container{{
 			Digest:  digest,
-			Command: pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyExact, Argv: []string{"/c8s", "cds"}},
+			Command: pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyExact, Argv: []string{"/c8s", "ta"}},
 			Args:    pkgallowlist.ArgvPolicy{Policy: args},
 			Mounts:  pkgallowlist.MountPolicy{Policy: mounts},
 			Env:     env,
@@ -270,31 +270,31 @@ func TestSeedWorkloadsRetiresReplacedOpenComponentEntries(t *testing.T) {
 	}
 	open := pkgallowlist.EnvPolicy{Policy: pkgallowlist.PolicyAny}
 	stored := map[string]pkgallowlist.Workload{
-		"cds-" + hex:               component(pkgallowlist.PolicyAny, pkgallowlist.PolicyAny, open),
-		"cds-" + hex + "-0000000a": component(pkgallowlist.PolicyExact, pkgallowlist.PolicyAny, matched),
-		"cds-" + hex + "-0000000b": component(pkgallowlist.PolicyExact, pkgallowlist.PolicyExact, matched),
-		"cds-" + hex + "-0000000d": component(pkgallowlist.PolicyExact, pkgallowlist.PolicyExact, open),
-		"cds-" + hex + "-dead":     component(pkgallowlist.PolicyAny, pkgallowlist.PolicyAny, open),
-		"mine":                     component(pkgallowlist.PolicyAny, pkgallowlist.PolicyAny, open),
-		"other-" + hex:             pkgallowlist.DigestEntry(digest, "other"),
+		"ta-" + hex:               component(pkgallowlist.PolicyAny, pkgallowlist.PolicyAny, open),
+		"ta-" + hex + "-0000000a": component(pkgallowlist.PolicyExact, pkgallowlist.PolicyAny, matched),
+		"ta-" + hex + "-0000000b": component(pkgallowlist.PolicyExact, pkgallowlist.PolicyExact, matched),
+		"ta-" + hex + "-0000000d": component(pkgallowlist.PolicyExact, pkgallowlist.PolicyExact, open),
+		"ta-" + hex + "-dead":     component(pkgallowlist.PolicyAny, pkgallowlist.PolicyAny, open),
+		"mine":                    component(pkgallowlist.PolicyAny, pkgallowlist.PolicyAny, open),
+		"other-" + hex:            pkgallowlist.DigestEntry(digest, "other"),
 	}
 	if _, _, err := store.SeedWorkloads(stored); err != nil {
 		t.Fatalf("seed previous release: %v", err)
 	}
 	_, before, _ := store.LoadAll()
 
-	seed := map[string]pkgallowlist.Workload{"cds-" + hex + "-0000000c": component(pkgallowlist.PolicyExact, pkgallowlist.PolicyExact, matched)}
+	seed := map[string]pkgallowlist.Workload{"ta-" + hex + "-0000000c": component(pkgallowlist.PolicyExact, pkgallowlist.PolicyExact, matched)}
 	added, retired, err := store.SeedWorkloads(seed)
 	if err != nil || added != 1 || retired != 3 {
 		t.Fatalf("seed: added=%d retired=%d err=%v; want 1, 3, nil", added, retired, err)
 	}
 	doc, after, _ := store.LoadAll()
-	for _, name := range []string{"cds-" + hex, "cds-" + hex + "-0000000a", "cds-" + hex + "-0000000d"} {
+	for _, name := range []string{"ta-" + hex, "ta-" + hex + "-0000000a", "ta-" + hex + "-0000000d"} {
 		if _, ok := doc.Workloads[name]; ok {
 			t.Errorf("open component entry %q survived the seed", name)
 		}
 	}
-	for _, name := range []string{"cds-" + hex + "-0000000b", "cds-" + hex + "-0000000c", "cds-" + hex + "-dead", "mine", "other-" + hex} {
+	for _, name := range []string{"ta-" + hex + "-0000000b", "ta-" + hex + "-0000000c", "ta-" + hex + "-dead", "mine", "other-" + hex} {
 		if _, ok := doc.Workloads[name]; !ok {
 			t.Errorf("entry %q retired, want it kept", name)
 		}
@@ -518,34 +518,34 @@ func TestSeedWorkloadsOverrideRetiresGeneratedShapes(t *testing.T) {
 	exact := func(args ...string) pkgallowlist.Workload {
 		return pkgallowlist.Workload{Containers: []pkgallowlist.Container{{
 			Digest:  digest,
-			Command: pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyExact, Argv: []string{"/c8s", "cds"}},
+			Command: pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyExact, Argv: []string{"/c8s", "ta"}},
 			Args:    pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyExact, Argv: args},
 			Mounts:  pkgallowlist.MountPolicy{Policy: pkgallowlist.PolicyDeny},
 			Env:     pkgallowlist.EnvPolicy{Policy: pkgallowlist.PolicyMatch, Variables: map[string]pkgallowlist.EnvMatcher{}},
 		}}}
 	}
 	if _, _, err := store.SeedWorkloads(map[string]pkgallowlist.Workload{
-		"cds-" + hex + "-0000000a":   exact("--debug"),
+		"ta-" + hex + "-0000000a":    exact("--debug"),
 		"other-" + hex + "-0000000b": exact("--other"),
 		"mine":                       exact("--mine"),
 	}); err != nil {
 		t.Fatalf("seed previous release: %v", err)
 	}
 
-	added, retired, err := store.SeedWorkloads(map[string]pkgallowlist.Workload{"cds-" + hex: exact()})
+	added, retired, err := store.SeedWorkloads(map[string]pkgallowlist.Workload{"ta-" + hex: exact()})
 	if err != nil || added != 1 || retired != 1 {
 		t.Fatalf("seed: added=%d retired=%d err=%v; want 1, 1, nil", added, retired, err)
 	}
 	doc, _, _ := store.LoadAll()
-	if _, ok := doc.Workloads["cds-"+hex+"-0000000a"]; ok {
+	if _, ok := doc.Workloads["ta-"+hex+"-0000000a"]; ok {
 		t.Errorf("generated shape survived the override that replaces it")
 	}
-	for _, name := range []string{"cds-" + hex, "other-" + hex + "-0000000b", "mine"} {
+	for _, name := range []string{"ta-" + hex, "other-" + hex + "-0000000b", "mine"} {
 		if _, ok := doc.Workloads[name]; !ok {
 			t.Errorf("entry %q retired, want it kept", name)
 		}
 	}
-	if doc.BuildIndex().AdmitsProcess(pkgallowlist.RunningContainer{Digest: digestA, Argv: []string{"/c8s", "cds", "--debug"}}) {
+	if doc.BuildIndex().AdmitsProcess(pkgallowlist.RunningContainer{Digest: digestA, Argv: []string{"/c8s", "ta", "--debug"}}) {
 		t.Error("the overridden launch is still admitted")
 	}
 }
@@ -556,11 +556,11 @@ func TestSeedWorkloadsOverrideReplacesPreShapeEntry(t *testing.T) {
 	store := openInMemory(t)
 
 	digest := mustParseDigest(t, digestA)
-	name := "cds-" + digest.Hex()[:12]
+	name := "ta-" + digest.Hex()[:12]
 	container := func(args pkgallowlist.ArgvPolicy) pkgallowlist.Workload {
 		return pkgallowlist.Workload{Containers: []pkgallowlist.Container{{
 			Digest:  digest,
-			Command: pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyExact, Argv: []string{"/c8s", "cds"}},
+			Command: pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyExact, Argv: []string{"/c8s", "ta"}},
 			Args:    args,
 			Mounts:  pkgallowlist.MountPolicy{Policy: pkgallowlist.PolicyDeny},
 			Env:     pkgallowlist.EnvPolicy{Policy: pkgallowlist.PolicyMatch, Variables: map[string]pkgallowlist.EnvMatcher{}},
@@ -576,7 +576,7 @@ func TestSeedWorkloadsOverrideReplacesPreShapeEntry(t *testing.T) {
 		t.Fatalf("seed: added=%d retired=%d err=%v; want 1, 1, nil", added, retired, err)
 	}
 	doc, _, _ := store.LoadAll()
-	if doc.BuildIndex().AdmitsProcess(pkgallowlist.RunningContainer{Digest: digestA, Argv: []string{"/c8s", "cds", "--debug"}}) {
+	if doc.BuildIndex().AdmitsProcess(pkgallowlist.RunningContainer{Digest: digestA, Argv: []string{"/c8s", "ta", "--debug"}}) {
 		t.Error("the pre-shape entry's open args are still admitted")
 	}
 	if added, retired, err := store.SeedWorkloads(override); err != nil || added != 0 || retired != 0 {

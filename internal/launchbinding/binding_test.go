@@ -27,7 +27,7 @@ var operatorPub = []byte("operator public key bytes")
 
 // launchFile stands in for a whole configuration document a VM is launched
 // with, the anchor shape a Trust Authority VM binds.
-var launchFile = []byte("schemaVersion: c8s-cds/v1\n")
+var launchFile = []byte("schemaVersion: c8s-ta/v1\n")
 
 // TestMain shortens the attestation-api readiness wait so the unreachable-URL
 // cases fail in milliseconds rather than the 90s a real boot allows.

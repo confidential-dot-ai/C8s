@@ -88,7 +88,7 @@ func resolveTAPin(valuesFiles []string) (pin *taPin, remove func(), err error) {
 		}
 		return &taPin{path: path, config: config}, keep, nil
 	}
-	values, _, err := taValuesFromFiles(valuesFiles)
+	values, err := taValuesFromFiles(valuesFiles)
 	if err != nil {
 		return nil, keep, err
 	}
@@ -100,7 +100,7 @@ func resolveTAPin(valuesFiles []string) (pin *taPin, remove func(), err error) {
 	if err != nil {
 		return nil, keep, err
 	}
-	path, err := fileutil.WriteTemp("c8s-cds-pin-*.json", []byte(document))
+	path, err := fileutil.WriteTemp("c8s-ta-pin-*.json", []byte(document))
 	if err != nil {
 		return nil, keep, fmt.Errorf("write the Trust Authority pin a values file carries: %w", err)
 	}

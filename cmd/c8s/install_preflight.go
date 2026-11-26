@@ -20,7 +20,7 @@ import (
 )
 
 func taPreflight(address string, pin string, valuesFiles []string) error {
-	values, _, err := taValuesFromFiles(valuesFiles)
+	values, err := taValuesFromFiles(valuesFiles)
 	if err != nil {
 		return err
 	}

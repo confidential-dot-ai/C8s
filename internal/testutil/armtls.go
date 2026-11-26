@@ -101,7 +101,7 @@ func ARMTLSServingCert(t testing.TB) tls.Certificate {
 	}
 	tmpl := &x509.Certificate{
 		SerialNumber:    big.NewInt(2),
-		Subject:         pkix.Name{CommonName: "cds"},
+		Subject:         pkix.Name{CommonName: "ta"},
 		NotBefore:       time.Now().Add(-time.Hour),
 		NotAfter:        time.Now().Add(time.Hour),
 		KeyUsage:        x509.KeyUsageDigitalSignature,

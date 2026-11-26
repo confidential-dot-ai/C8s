@@ -175,7 +175,7 @@
 #                                    address, PEM
 #   router_nginx_conf                the router's rendered nginx configuration;
 #                                    unsupported where the node image holds it
-#   router_tls_mode                  cds, webpki or acme: the public TLS
+#   router_tls_mode                  ta, webpki or acme: the public TLS
 #                                    credential the router selects
 #   ta_relay_block / ta_relay_unblock
 #                                    make the TA unreachable for the router's
@@ -202,7 +202,9 @@
 #                                    (test/mock-cloud, behaviour; {} is the
 #                                    default), or unsupported where the cloud is
 #                                    not the harness's to script
-#   cloud_calls                      every call that cloud API received, as JSON
+#   cloud_calls                      every call that cloud API received, as JSON,
+#                                    each with the time it was received
+#                                    (receivedAt, RFC 3339)
 #   cloud_instances                  every instance it holds, as JSON
 # node_name, image_ref, image_digest, pull_interval, allowlist_node_delay,
 # ta_pod_url, cert_paths, pod_exec, exempt_namespace, api_service_name,
@@ -292,13 +294,13 @@ pod_manifest() { render_pod --sysctl "$PING_SYSCTL" "$@" | manifest_filter; }
 manifest_filter() { cat; }
 
 # The node's admission plugin binds its socket directory into a container
-# named as a sidecar an application may run itself (cds-attest) in a pod
+# named as a sidecar an application may run itself (ta-attest) in a pod
 # marked injected; the sockets are group-owned by 65532
 # (workloadclaims.AttestContainerName and InventorySocketGID). In a namespace
 # the mesh exempts nothing else about the pod is c8s's, so the webhook leaves
 # it alone; elsewhere the webhook injects the pod's endpoint and credential
 # client beside the container, which keeps the socket mount.
-REQUESTER_CONTAINER=cds-attest
+REQUESTER_CONTAINER=ta-attest
 requester_manifest() {
     local image
     image="$(image_ref requester)" || return
@@ -615,7 +617,7 @@ router_headers() {
     printf '%s\n' "${answer#*$'\n'}" | sed '/^$/d'
 }
 
-# The tail of the routing process's log, for a failed step to attach. cds-attest
+# The tail of the routing process's log, for a failed step to attach. ta-attest
 # is the container that proxies each application request to its workload
 # backend, so the Warn behind a 502 backend-unavailable ("backend request
 # failed") is logged here with the dial target and reason. Every router pod the
@@ -629,7 +631,7 @@ router_logs() {
     pods="$(kubectl --request-timeout=30s -n "$ROUTER_NS" get pods -l "$selector" -o name)" || return
     for p in $pods; do
         echo "# $p"
-        kubectl --request-timeout=30s -n "$ROUTER_NS" logs "$p" -c cds-attest --tail=200 2>&1 || true
+        kubectl --request-timeout=30s -n "$ROUTER_NS" logs "$p" -c ta-attest --tail=200 2>&1 || true
     done
 }
 

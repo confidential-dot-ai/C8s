@@ -66,6 +66,9 @@ type plugin struct {
 	// container admission clears, for the runtime wrapper
 	// (capabilitygrants.go).
 	capGrants *grantRecords
+	// nodeServiceGrants records the containers admission admitted as a node
+	// service, for the runtime wrapper (nodeservicegrants.go).
+	nodeServiceGrants *grantRecords
 
 	// mesh is the mesh gate (meshgate.go), under the mesh policy the measured
 	// config carries.
@@ -97,7 +100,7 @@ type plugin struct {
 
 	// taAddress is the node-side path of the Trust Authority endpoint handed to those
 	// same clients, or "" when no pod of this node is injected.
-	// prepareCDSAddress sets it before any container can be created
+	// prepareTAAddress sets it before any container can be created
 	// (taaddress.go).
 	taAddress string
 
@@ -177,6 +180,7 @@ func newPlugin(
 	// A served allowlist can declare capabilities the base does not, so the
 	// records are kept whatever the base declares.
 	p.capGrants = newCapabilityGrantRecords(CapabilityGrantDir)
+	p.nodeServiceGrants = newNodeServiceGrantRecords(NodeServiceGrantDir)
 
 	// Check if running as pre-installed plugin (containerd sets these env vars)
 	isPreInstalled := os.Getenv("NRI_PLUGIN_NAME") != ""
@@ -289,6 +293,7 @@ func (p *plugin) RemoveContainer(ctx context.Context, pod *api.PodSandbox, ctr *
 	p.running.remove(ctr.GetId())
 	p.execGrants.remove(ctr.GetId())
 	p.capGrants.remove(ctr.GetId())
+	p.nodeServiceGrants.remove(ctr.GetId())
 	if p.inventory != nil {
 		p.inventory.remove(ctr.GetId())
 	}
@@ -411,8 +416,8 @@ func (p *plugin) recordForInventory(ctx context.Context, pod *api.PodSandbox, ct
 
 // recordDigest is the only inventory.record and exec-grant record call site.
 // ctr.Args is the effective OCI process.args, the same value the checks read,
-// and the role and execs are the ones the measured base binds to that whole
-// launch.
+// the role is the one the node's policy binds to that whole launch, and the
+// execs are the ones the measured base binds to it.
 func (p *plugin) recordDigest(pod *api.PodSandbox, ctr *api.Container, digest string, mounts []allowlist.ObservedMount) {
 	env := containerEnv(ctr)
 	launch := allowlist.RunningContainer{
@@ -498,14 +503,11 @@ func (p *plugin) resolve(ctx context.Context, imageRef string) (string, error) {
 	return d, err
 }
 
-// roleOf is the only role lookup: the role the measured base allowlist binds
-// to this finalized launch. The field never travels on the wire, so a role
-// comes from the node's own boot config.
+// roleOf is the only role lookup: the role the measured base allowlist, or a
+// component set the applied document holds in force, binds to this finalized
+// launch.
 func (p *plugin) roleOf(launch allowlist.RunningContainer) string {
-	if p.policy == nil {
-		return ""
-	}
-	return p.policy.base.RoleOf(launch)
+	return p.policy.roleOf(launch)
 }
 
 // execsOf is the commands the measured base lets the runtime wrapper start in
@@ -519,13 +521,10 @@ func (p *plugin) execsOf(pod *api.PodSandbox, launch allowlist.RunningContainer)
 }
 
 // bindsRoleMounts reports whether the declaration granting this launch its
-// role pins the mount set too. Like the role, it comes from the measured base
-// alone.
+// role pins the mount set too. Like the role, it comes from the base or from a
+// component set in force.
 func (p *plugin) bindsRoleMounts(launch allowlist.RunningContainer, role string) bool {
-	if p.policy == nil {
-		return false
-	}
-	return p.policy.base.BindsRoleMounts(launch, role)
+	return p.policy.bindsRoleMounts(launch, role)
 }
 
 // observedLaunch is the container as a role lookup reads it.

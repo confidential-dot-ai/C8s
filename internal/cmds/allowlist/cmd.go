@@ -68,7 +68,7 @@ pins in its measured launch configuration ('c8s ta config new
 
 The default chart publishes /allowlist through router. Point --url at that
 front door only when it uses Trust Authority-issued public TLS (discovery reports
-public_tls.mode=cds), and use the router launch digest with --measurements. A
+public_tls.mode=ta), and use the router launch digest with --measurements. A
 WebPKI front door cannot yet bind its public certificate to the attestation
 evidence, so this CLI refuses it; use a direct Trust Authority armTLS URL instead (for
 example through a port-forward) and pin the Trust Authority launch digest. To generate an
@@ -81,7 +81,9 @@ allowlist").`,
 	taconn.BindFlags(pf, &o.Options)
 	pf.StringVarP(&o.output, "output", "o", "text", "output format: text or json")
 
-	derive, lint, inspectImage := newDeriveCmd(o), newLintCmd(o), newInspectImageCmd(o)
+	derive := newDeriveCmd(o)
+	lint := newLintCmd(o)
+	inspectImage := newInspectImageCmd(o)
 	cmdsutil.HideUnreadFlags(derive, pf)
 	cmdsutil.HideUnreadFlags(lint, pf)
 	cmdsutil.HideUnreadFlags(inspectImage, pf, "output")
@@ -97,6 +99,7 @@ allowlist").`,
 		newEditCmd(o),
 		newDeleteCmd(o),
 		newUploadCmd(o),
+		newComponentsCmd(o),
 		lint,
 		inspectImage,
 	)

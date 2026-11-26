@@ -55,7 +55,7 @@ func TestEvidenceFromDiscovery_Malformed(t *testing.T) {
 	}
 
 	garbageCert := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: []byte("garbage")}))
-	if _, err := evidenceFromDiscovery(discoveryDocWith(t, garbageCert, []byte("c"), `{"attestation_report":"AAAA"}`), "t", leafTrust{}, nil); err == nil || !strings.Contains(err.Error(), "parse cds cert") {
+	if _, err := evidenceFromDiscovery(discoveryDocWith(t, garbageCert, []byte("c"), `{"attestation_report":"AAAA"}`), "t", leafTrust{}, nil); err == nil || !strings.Contains(err.Error(), "parse Trust Authority cert") {
 		t.Errorf("unparseable cert DER should fail, got %v", err)
 	}
 }
@@ -63,7 +63,8 @@ func TestEvidenceFromDiscovery_Malformed(t *testing.T) {
 func TestEvidenceFromDiscovery_DefaultsPlatformToSNP(t *testing.T) {
 	certPEM, _ := selfSignedCertPEM(t)
 	doc := map[string]any{
-		"cds_tls": map[string]any{"certificate_pem": certPEM},
+		"public_tls": map[string]any{"mode": "ta"},
+		"ta_tls":     map[string]any{"certificate_pem": certPEM},
 		"attestation": map[string]any{
 			"challenge": base64.StdEncoding.EncodeToString([]byte("c")),
 			"evidence":  json.RawMessage(`{"attestation_report":"AAAA"}`),
@@ -180,7 +181,7 @@ func discoveryServer(t *testing.T, serverCert tls.Certificate, doc []byte) *http
 // The discovery gather probes the live handshake on https targets: the
 // verdict about the front door's serving key keys on what the handshake
 // presented, not on the document's declared public_tls.mode — the lying-host
-// case (claims cds, serves another key) and the honest webpki case both
+// case (claims ta, serves another key) and the honest webpki case both
 // record an unbound door, and only the attested cert on the wire records a
 // bound one.
 func TestGatherFromDiscoveryProbesFrontDoor(t *testing.T) {
@@ -194,7 +195,7 @@ func TestGatherFromDiscoveryProbesFrontDoor(t *testing.T) {
 	}
 
 	t.Run("handshake presents the attested cert", func(t *testing.T) {
-		srv := discoveryServer(t, attestedCert, docClaims("cds"))
+		srv := discoveryServer(t, attestedCert, docClaims("ta"))
 		ev, err := gatherFromDiscovery(context.Background(), srv.URL, "", "", 5*time.Second, leafTrust{})
 		if err != nil {
 			t.Fatal(err)
@@ -216,8 +217,8 @@ func TestGatherFromDiscoveryProbesFrontDoor(t *testing.T) {
 		}
 	})
 
-	t.Run("lying host: claims cds, serves another cert", func(t *testing.T) {
-		srv := discoveryServer(t, otherCert, docClaims("cds"))
+	t.Run("lying host: claims ta, serves another cert", func(t *testing.T) {
+		srv := discoveryServer(t, otherCert, docClaims("ta"))
 		ev, err := gatherFromDiscovery(context.Background(), srv.URL, "", "", 5*time.Second, leafTrust{})
 		if err != nil {
 			t.Fatal(err)
@@ -259,19 +260,15 @@ func TestGatherFromDiscoveryProbesFrontDoor(t *testing.T) {
 		}
 	})
 
-	t.Run("lying host: no mode declared, serves another cert", func(t *testing.T) {
-		srv := discoveryServer(t, otherCert, docClaims(""))
-		ev, err := gatherFromDiscovery(context.Background(), srv.URL, "", "", 5*time.Second, leafTrust{})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if ev.frontDoor != frontDoorOther {
-			t.Errorf("frontDoor = %v, want other", ev.frontDoor)
+	t.Run("no mode declared: refused even when the host serves the attested cert", func(t *testing.T) {
+		srv := discoveryServer(t, attestedCert, docClaims(""))
+		if _, err := gatherFromDiscovery(context.Background(), srv.URL, "", "", 5*time.Second, leafTrust{}); !isSecurityError(err) {
+			t.Fatalf("err = %v, want a security verdict", err)
 		}
 	})
 
 	t.Run("a re-minted body around the attested key is still another cert", func(t *testing.T) {
-		srv := discoveryServer(t, remintServerCert(t, attestedCert), docClaims("cds"))
+		srv := discoveryServer(t, remintServerCert(t, attestedCert), docClaims("ta"))
 		ev, err := gatherFromDiscovery(context.Background(), srv.URL, "", "", 5*time.Second, leafTrust{})
 		if err != nil {
 			t.Fatal(err)
@@ -286,7 +283,7 @@ func TestGatherFromDiscoveryProbesFrontDoor(t *testing.T) {
 			Certificate: [][]byte{attestedCert.Certificate[0], otherCert.Certificate[0]},
 			PrivateKey:  attestedCert.PrivateKey,
 		}
-		srv := discoveryServer(t, chained, docClaims("cds"))
+		srv := discoveryServer(t, chained, docClaims("ta"))
 		ev, err := gatherFromDiscovery(context.Background(), srv.URL, "", "", 5*time.Second, leafTrust{})
 		if err != nil {
 			t.Fatal(err)
@@ -298,7 +295,7 @@ func TestGatherFromDiscoveryProbesFrontDoor(t *testing.T) {
 
 	t.Run("non-TLS target leaves the door unobserved", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Write(docClaims("cds"))
+			w.Write(docClaims("ta"))
 		}))
 		t.Cleanup(srv.Close)
 		ev, err := gatherFromDiscovery(context.Background(), srv.URL, "", "", 5*time.Second, leafTrust{})
@@ -313,8 +310,8 @@ func TestGatherFromDiscoveryProbesFrontDoor(t *testing.T) {
 	t.Run("redirect on the discovery path is a fetch failure", func(t *testing.T) {
 		// The redirect target answers 200, so only the no-redirect guard
 		// stands between the fetch and a followed redirect.
-		target := discoveryServer(t, attestedCert, docClaims("cds"))
-		srv := discoveryServer(t, attestedCert, docClaims("cds"))
+		target := discoveryServer(t, attestedCert, docClaims("ta"))
+		srv := discoveryServer(t, attestedCert, docClaims("ta"))
 		srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, target.URL+routerdiscovery.DefaultPath, http.StatusFound)
 		})
@@ -414,7 +411,7 @@ func TestGatherFromDiscoverySingleConnection(t *testing.T) {
 	stubEvidence := `{"attestation_report":"AAAA","cert_chain":{"vcek":"BBBB"}}`
 	attestedPEM, attestedCert := selfSignedServerCert(t)
 	_, otherCert := selfSignedServerCert(t) // a WebPKI stand-in
-	doc := discoveryDocWithPublicTLS(t, "cds", attestedPEM, challenge, stubEvidence)
+	doc := discoveryDocWithPublicTLS(t, "ta", attestedPEM, challenge, stubEvidence)
 
 	// Hand-rolled TLS listener: httptest's StartTLS installs its own
 	// certificate when Certificates is empty, which would shadow
@@ -478,7 +475,7 @@ func TestDiscoveryCAVouchedBodyNeedsMeshCA(t *testing.T) {
 	id := mintEndpointIdentity(t) // CA-signed leaf, the Trust Authority-issued serving cert's shape
 	leafPEM := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: id.leaf.Raw}))
 	leafTLSCert := tls.Certificate{Certificate: [][]byte{id.leaf.Raw}, PrivateKey: id.key}
-	doc := discoveryDocWithPublicTLS(t, "cds", leafPEM, challenge, stubEvidence)
+	doc := discoveryDocWithPublicTLS(t, "ta", leafPEM, challenge, stubEvidence)
 
 	t.Run("handshake presenting the attested CA-vouched leaf still needs --mesh-ca", func(t *testing.T) {
 		srv := discoveryServer(t, leafTLSCert, doc)

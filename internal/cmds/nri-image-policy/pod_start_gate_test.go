@@ -40,7 +40,8 @@ func podStartFixture(t *testing.T, ready bool) (*plugin, *api.PodSandbox, *api.C
 	t.Cleanup(cancel)
 	p.podBroker = &podCredentialBroker{ctx: ctx, cancel: cancel, pod: pod}
 	ctr := makeCtrWithImageArgs(pod.Id, "app", "image@"+pushDigestA, []string{"/app"})
-	ctr.Pid, ctr.Env = 1234, []string{}
+	ctr.Pid = 1234
+	ctr.Env = []string{}
 	p.containerd = &fakeContainerd{verify: func(ctx context.Context, containerID, sandboxID, digest string) error {
 		if containerID != ctr.Id || sandboxID != pod.Id || digest != pushDigestA {
 			return errors.New("unexpected selected-image binding in Pod start fixture")
@@ -99,7 +100,7 @@ func TestPodStartFailuresIssueNoPermission(t *testing.T) {
 		{"image mismatch", func(p *plugin, _ *api.Container, _ *fakeRegister) {
 			p.containerd = &fakeContainerd{verify: func(context.Context, string, string, string) error { return errors.New("wrong image") }}
 		}},
-		{"allowlist denial", func(p *plugin, _ *api.Container, _ *fakeRegister) { p.policy = newPolicyStore(nil) }},
+		{"allowlist denial", func(p *plugin, _ *api.Container, _ *fakeRegister) { p.policy = newPolicyStore(nil, localClock()) }},
 		{"failed extend", func(_ *plugin, _ *api.Container, r *fakeRegister) { r.fail = errors.New("extend failed") }},
 		{"missing journal", func(p *plugin, _ *api.Container, _ *fakeRegister) { p.measurer = nil }},
 		{"missing inventory", func(p *plugin, _ *api.Container, _ *fakeRegister) { p.inventory = nil }},
@@ -191,7 +192,8 @@ func TestPodRetryReplacesPreviousPermissionForSameName(t *testing.T) {
 		t.Fatal(err)
 	}
 	previous := podStartRequest(pod, ctr)
-	ctr.Id, ctr.Pid = "replacement", ctr.Pid+1
+	ctr.Id = "replacement"
+	ctr.Pid = ctr.Pid + 1
 	if err := p.StartContainer(t.Context(), pod, ctr); err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +225,8 @@ func TestPodCancelledCallbackCannotGrantLate(t *testing.T) {
 	p, pod, ctr, _ := podStartFixture(t, true)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	entered, release := make(chan struct{}), make(chan struct{})
+	entered := make(chan struct{})
+	release := make(chan struct{})
 	p.containerd = &fakeContainerd{verify: func(context.Context, string, string, string) error {
 		close(entered)
 		<-release
