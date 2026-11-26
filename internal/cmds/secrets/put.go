@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -118,8 +119,15 @@ func putEntry(cmd *cobra.Command, o *options, path, sealed string, overwrite boo
 	if err != nil {
 		return fmt.Errorf("the replica answered no sealed value: %w", err)
 	}
-	if _, err := taha.WriteSecret(cmd.Context(), &o.Options, path, &h, overwrite); err != nil {
+	// The entry goes to the address the value went to, spelled the same way.
+	opts := o.Options
+	opts.URL = strings.TrimRight(opts.URL, "/")
+	handled, err := taha.WriteSecret(cmd.Context(), &opts, path, &h, overwrite)
+	if err != nil {
 		return err
+	}
+	if !handled {
+		return fmt.Errorf("the replica sealed the value but answers no HA status at %s: no secret entry was written, so %s is unchanged", opts.URL, path)
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "wrote %d bytes to %s\n", n, path)
 	return nil

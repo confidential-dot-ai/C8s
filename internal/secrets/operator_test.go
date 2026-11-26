@@ -377,3 +377,21 @@ func TestOperatorPutWithSealAnswersTheSealedHash(t *testing.T) {
 		t.Fatal("the store holds the value")
 	}
 }
+
+// A replica set bounds a value as the store does: one at the limit is sealed,
+// one byte over is refused before it is.
+func TestOperatorPutWithSealHoldsTheValueLimit(t *testing.T) {
+	oh := newOperatorHarness(t)
+	sealed := 0
+	oh.h.Seal = func(context.Context, string, []byte) (string, error) {
+		sealed++
+		return "abc", nil
+	}
+	oh.h.MaxValueBytes = 8
+	if w, _ := doPut(oh.h, putRequest(t, "/tenant-a/db", bytes.Repeat([]byte("x"), 8), false)); w.Code != http.StatusAccepted {
+		t.Fatalf("a value at the limit = %d, want 202: %s", w.Code, w.Body)
+	}
+	if w, _ := doPut(oh.h, putRequest(t, "/tenant-a/db", bytes.Repeat([]byte("x"), 9), false)); w.Code != http.StatusRequestEntityTooLarge || sealed != 1 {
+		t.Fatalf("a value over the limit = %d after %d seals, want 413 and 1", w.Code, sealed)
+	}
+}

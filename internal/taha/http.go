@@ -204,16 +204,21 @@ func (r *Replica) entries(from uint64, head cdschain.Head) []cdschain.Entry {
 	return r.chain[from:end]
 }
 
+// OperatorKeys are the keys an operator request is checked under: the held
+// chain's, the launch file's while the replica holds none.
+func (r *Replica) OperatorKeys() []*ecdsa.PublicKey {
+	if state := r.State(); state != nil {
+		return state.OperatorKeys
+	}
+	return r.cfg.OperatorKeys
+}
+
 func (r *Replica) operator(w http.ResponseWriter, req *http.Request, authorize Authorizer, limit int64) ([]byte, bool) {
 	body, ok := httputil.ReadCappedBody(w, req, limit)
 	if !ok {
 		return nil, false
 	}
-	keys := r.cfg.OperatorKeys
-	if state := r.State(); state != nil {
-		keys = state.OperatorKeys
-	}
-	if err := authorize(req, body, keys); err != nil {
+	if err := authorize(req, body, r.OperatorKeys()); err != nil {
 		slog.Warn("HA operator request refused", "path", req.URL.Path, "remote", req.RemoteAddr, "reason", err)
 		// A token minted within the clock skew of this replica's start is
 		// refused for now, not for good: a fresh one is taken later.

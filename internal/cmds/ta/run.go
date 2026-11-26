@@ -217,7 +217,11 @@ func run(ctx context.Context, cfg config) error {
 			// keeps no sandbox ledger: release asks the inventory the sandbox
 			// token names, as issuance does.
 			secretsHandler.Store, secretsHandler.Bindings, secretsExplain.Bindings = replica.Secrets(), nil, nil
-			secretsOperator.Seal = replica.Seal
+			secretsOperator.Seal, secretsOperator.MaxValueBytes = replica.Seal, cfg.secretsMaxValueBytes
+			// The chain's operator keys, as its entries are checked under: an
+			// operator-keys entry replaces the launch file's.
+			secretsOperator.Authorize = chainKeysAuthorizer(replica, haAuthorizer(&allowlistStore, started, time.Duration(cfg.jwtClockSkew)*time.Second))
+			secretsExplain.Authorize = secretsOperator.Authorize
 		}
 		slog.Info("serving /secrets; release is gated on an allowlist entry carrying a secrets grant")
 	} else {

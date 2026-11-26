@@ -320,3 +320,33 @@ func TestRateKeyFallsBackWithoutASandbox(t *testing.T) {
 		t.Fatalf("RateKey = %q, want the address fallback with no sandbox ID", got)
 	}
 }
+
+// changingPolicy answers each allowlist in turn, then the last one.
+type changingPolicy struct {
+	als  []*pkgallowlist.Allowlist
+	asks int
+}
+
+func (p *changingPolicy) Allowlist() (*pkgallowlist.Allowlist, error) {
+	al := p.als[min(p.asks, len(p.als)-1)]
+	p.asks++
+	return al, nil
+}
+
+// A grant read from one allowlist releases nothing once another is in force:
+// the value read may be newer than the grant.
+func TestReleaseRefusedWhenTheAllowlistChangesDuringTheRequest(t *testing.T) {
+	hn := newHarness(t)
+	hn.seed(t, "/api/db", []byte("s3cret"))
+	al, err := hn.h.Policy.Allowlist()
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := *al
+	hn.h.Policy = &changingPolicy{als: []*pkgallowlist.Allowlist{al, &next}}
+	w := do(hn.h, hn.request(t, http.MethodGet, "/api/db"))
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("release across an allowlist change = %d, want 503: %s", w.Code, w.Body)
+	}
+	assertNoRelease(t, w, []byte("s3cret"))
+}

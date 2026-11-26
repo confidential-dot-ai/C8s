@@ -67,10 +67,11 @@ for blobs sharing a name.
 ### Keep the escrow file
 
 `--escrow-out` is required, written `0600`, and refuses to overwrite. It is the
-only copy of the key outside the TA. A TA replica set keeps it in its store
-([ta-ha.md](ta-ha.md#secrets)): there, store it with `c8s secrets put` after
-`volume create`, and only the loss of every replica loses it. A single TA holds
-secrets in process memory, so a
+only copy of the key outside the TA. A TA replica set keeps it sealed in its
+store ([ta-ha.md](ta-ha.md#secrets)): there, store it with `c8s secrets put`
+after `volume create`. The set loses it with the store's copy or with every
+replica, and the escrow file writes it back. A single TA holds secrets in
+process memory, so a
 TA restart makes every volume unopenable until its key is written back with
 `c8s secrets put <PATH> --from-file <ESCROW>` and that command's write flags —
 `--url`, a measurement pin, `--operator-key`, and the `--mesh-ca` bundle the TA

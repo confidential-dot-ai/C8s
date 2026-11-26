@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 
@@ -54,6 +55,9 @@ type OperatorHandler struct {
 	MaxBodyBytes int64
 	// Seal, set on a replica set, seals the value instead of storing it.
 	Seal func(ctx context.Context, path string, value []byte) (string, error)
+	// MaxValueBytes bounds a value Seal takes, as the store bounds the ones it
+	// keeps; zero or less is no bound.
+	MaxValueBytes int
 
 	Logger *slog.Logger
 }
@@ -97,6 +101,10 @@ func (h OperatorHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.Seal != nil {
+		if h.MaxValueBytes > 0 && len(value) > h.MaxValueBytes {
+			http.Error(w, fmt.Sprintf("value is %d bytes, limit is %d", len(value), h.MaxValueBytes), http.StatusRequestEntityTooLarge)
+			return
+		}
 		sealed, err := h.Seal(r.Context(), path, value)
 		if h.writeFailed(w, path, err) {
 			return

@@ -359,6 +359,14 @@ func haAuthorizer(store *allowlist.Store, started time.Time, skew time.Duration)
 	}
 }
 
+// chainKeysAuthorizer checks a request of a Trust Authority route under the
+// keys the replica checks its own operator requests under.
+func chainKeysAuthorizer(replica *taha.Replica, authorize taha.Authorizer) allowlist.WriteAuthorizer {
+	return func(r *http.Request, body []byte) error {
+		return authorize(r, body, replica.OperatorKeys())
+	}
+}
+
 // haGate serves a replica's Trust Authority routes only while it serves. A
 // replica set takes allowlist and routes writes as chain entries, never
 // through the old PUT routes; a single replica's PUT /secrets stays. An

@@ -19,6 +19,7 @@ import (
 	"testing"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdschain"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/localverify"
 	intsecrets "github.com/confidential-dot-ai/confidential-kubernetes/internal/secrets"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
@@ -505,5 +506,42 @@ func TestAnAnswerOverTheCapIsRefused(t *testing.T) {
 				t.Fatalf("err = %v", err)
 			}
 		})
+	}
+}
+
+// A replica that seals the value and then answers no HA status took no entry:
+// the put fails and says so. The status is asked at the address the value
+// went to, a trailing slash on --url or not.
+func TestPutFailsWhenASealedValueGetsNoEntry(t *testing.T) {
+	var (
+		mu     sync.Mutex
+		asked  []string
+		sealed = cdschain.Hash{1}.String()
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusAccepted)
+			_ = json.NewEncoder(w).Encode(intsecrets.PutResponse{Path: "/tenant-a/db", Sealed: sealed})
+			return
+		}
+		mu.Lock()
+		asked = append(asked, r.URL.Path)
+		mu.Unlock()
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(srv.Close)
+
+	out, _, err := run(t, "hunter2", "put", "/tenant-a/db", "--url", srv.URL+"/", "--insecure", "--operator-key", writeOperatorKey(t))
+	if err == nil || !strings.Contains(err.Error(), "no secret entry was written") {
+		t.Fatalf("put = %v, want a failure naming the missing entry", err)
+	}
+	if strings.Contains(out, "wrote") {
+		t.Fatalf("output claims a write: %q", out)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(asked) != 1 || asked[0] != "/ha/status" {
+		t.Fatalf("asked %q, want /ha/status once", asked)
 	}
 }

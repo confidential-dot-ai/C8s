@@ -606,3 +606,32 @@ func TestReadyzFailsDuringAStoreOutage(t *testing.T) {
 	st.down.Store(false)
 	waitFor("the replica to be ready again", func() bool { return readyz() == http.StatusOK })
 }
+
+// A Trust Authority route of a replica is checked under the keys the replica
+// names: the launch file's until it holds a chain.
+func TestChainKeysAuthorizerUsesTheReplicasKeys(t *testing.T) {
+	mesh, err := issuer.NewMeshCA("keys", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := taha.New(taha.Config{Cluster: "lane", Endpoints: []string{"a:1"}, Mesh: mesh, OperatorKeys: []*ecdsa.PublicKey{&key.PublicKey}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []*ecdsa.PublicKey
+	refused := errors.New("no")
+	authorize := chainKeysAuthorizer(pending, func(_ *http.Request, _ []byte, keys []*ecdsa.PublicKey) error {
+		got = keys
+		return refused
+	})
+	if err := authorize(httptest.NewRequest(http.MethodPut, "/secrets/app/key", nil), nil); !errors.Is(err, refused) {
+		t.Fatalf("authorize = %v, want the checker's refusal", err)
+	}
+	if len(got) != 1 || !got[0].Equal(&key.PublicKey) {
+		t.Fatalf("checked under %d keys, not the replica's", len(got))
+	}
+}

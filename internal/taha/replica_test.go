@@ -613,6 +613,9 @@ func TestOperatorRequestsUseTheChainsKeys(t *testing.T) {
 	if len(got) != 1 || !got[0].Equal(&rotated.PublicKey) {
 		t.Fatalf("the request was checked under %d keys, not the rotated one", len(got))
 	}
+	if keys := s.node(0).OperatorKeys(); len(keys) != 1 || !keys[0].Equal(&rotated.PublicKey) {
+		t.Fatalf("the replica names %d operator keys, not the rotated one", len(keys))
+	}
 	// A token minted right after the replica started is refused for now
 	// (503, retry), any other refusal for good (401).
 	for err, want := range map[error]int{fmt.Errorf("%w: now", operatorauth.ErrTokenBeforeStart): http.StatusServiceUnavailable, errors.New("no"): http.StatusUnauthorized} {

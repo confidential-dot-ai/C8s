@@ -97,7 +97,8 @@ type bindingSource interface {
 	Lookup(sandboxID string) (host string, ok bool)
 }
 
-// policySource supplies the current allowlist.
+// policySource supplies the current allowlist: the same pointer for as long as
+// the allowlist is unchanged.
 type policySource interface {
 	Allowlist() (*pkgallowlist.Allowlist, error)
 }
@@ -139,6 +140,8 @@ func nowOrWallClock(clock func() time.Time) time.Time {
 type grant struct {
 	workload string
 	secrets  *pkgallowlist.SecretsPolicy
+	// policy is the allowlist the grant was read from.
+	policy *pkgallowlist.Allowlist
 }
 
 // denial is a refusal to release. The reason reaches the Trust Authority log; the client is
@@ -218,6 +221,13 @@ func (h Handler) serveGet(ctx context.Context, w http.ResponseWriter, g grant, p
 		}
 		h.logger().Error("secret read failed", "path", path, "error", err)
 		http.Error(w, "secret unavailable", http.StatusInternalServerError)
+		return
+	}
+	// A store may read a value newer than the grant (a replica set's chain
+	// carries both): release only under the allowlist still in force.
+	if cur, err := h.Policy.Allowlist(); err != nil || cur != g.policy {
+		h.logger().Warn("secret read refused: the allowlist changed during the request", "path", path, "error", err)
+		http.Error(w, "the allowlist changed during the request; ask again", http.StatusServiceUnavailable)
 		return
 	}
 	writeValue(w, value, http.StatusOK)
@@ -383,7 +393,7 @@ func (h Handler) authorize(ctx context.Context, r *http.Request, nonce []byte) (
 	if err := workload.PinnedForGrant(); err != nil {
 		return grant{}, deny("workload %q holds a secret grant but leaves a container's launch to the host: %v", name, err)
 	}
-	return grant{workload: name, secrets: workload.Secrets}, nil
+	return grant{workload: name, secrets: workload.Secrets, policy: al}, nil
 }
 
 // verifiedLeaf returns the client certificate, requiring that crypto/tls

@@ -215,5 +215,7 @@ A set of more than one replica holds only operator-written secrets; a workload t
 - `c8s secrets put` sends the value to a replica, which seals it (AES-256-GCM, under a key derived from the mesh CA key every replica holds) and keeps it in the store under the SHA-256 of the sealed bytes. The CLI then writes a `secret` entry naming the path and that hash. `c8s secrets delete` writes one with no hash.
 - A replica releases a value only if the store's bytes hash to what the newest `secret` entry of the path names and open under the key. A store that rolls a value back or withholds it is refused, never served; the chain's own rules cover rolling back the entries.
 - Release keeps no sandbox ledger: the replica asks the inventory the sandbox token names, bounded by the node addresses, as issuance does. `c8s secrets explain` needs the ledger, so a set answers it with a refusal.
-- Secrets are bound to the set's CA key: losing every replica, or a re-root, loses them as it loses everything else.
+- Secrets are bound to the set's CA key: losing every replica, or a re-root, loses them as it loses everything else. The sealed values are in the store alone, which no replica writes forward: a store that loses one loses that secret until `c8s secrets put --overwrite` writes it again.
+- A value is bounded by `--secrets-max-value-bytes`, and `PUT /secrets` is checked under the chain's operator keys.
+- A replica or a worker built before `secret` entries refuses a chain that holds one. Write the first only once every replica and worker runs a build that reads them.
 - `c8s volume create` against a set builds the volume and escrows its key, then asks you to store the key with `c8s secrets put`.
