@@ -102,12 +102,19 @@ func TestRetiredConnectionCarriesNoLaterRequest(t *testing.T) {
 		conn, err := r.conn("/slow")
 		done <- result{conn, err}
 	}()
-	<-r.started
+	// Whatever fails below, a handler that started is let go.
+	release := sync.OnceFunc(func() { close(r.release) })
+	t.Cleanup(release)
+	select {
+	case <-r.started:
+	case early := <-done:
+		t.Fatalf("the slow request ended before its handler ran: %q, %v", early.conn, early.err)
+	}
 	r.set(pinsOf(2), nil)
 	// The change is seen by a request, which leaves the pool, while the slow
 	// one is still on its connection.
 	moved, movedErr := r.conn("/")
-	close(r.release)
+	release()
 	inFlight := <-done
 	if movedErr != nil {
 		t.Fatal(movedErr)
