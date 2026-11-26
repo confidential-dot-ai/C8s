@@ -132,7 +132,7 @@ func (p meshPolicy) guestRuleset() ruleset.GuestPolicy {
 // dials every backend itself and authenticates each peer: a member pod or a
 // pod CVM's endpoint as the mesh client of the workload and agent its route
 // names, its Trust Authority over armTLS, and the verifier that weighs that Trust Authority's
-// evidence only at an address cds-attest admits (checkNodeVerifier).
+// evidence only at an address ta-attest admits (checkNodeVerifier).
 func (p meshPolicy) servedPorts(kubeNamespace string) ruleset.ServerRole {
 	if kubeNamespace != routerNamespace {
 		return ruleset.ServerRole{}

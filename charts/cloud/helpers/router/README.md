@@ -19,5 +19,5 @@ c8s-lib's, with the request-body and TLS settings this lane fixes.
 serves: the kubelet creates the router's sandbox only once that socket exists,
 so the router never starts on a node whose enforcer is absent.
 
-The remaining helpers build the pod's cds-attest and get-cert argv and mounts,
+The remaining helpers build the pod's ta-attest and get-cert argv and mounts,
 which pin this lane's front-door mode `ta`.

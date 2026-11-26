@@ -86,7 +86,7 @@ it brokers to.
 Each TA replica generates its own ECDSA P-256 broker key in memory at start.
 Replicas do not share it. The mesh CA issues the key a certificate:
 
-- subject `CN=c8s CDS broker`;
+- subject `CN=c8s Trust Authority broker`;
 - lifetime 1 hour, reissued after 30 minutes or when the mesh CA certificate
   changes;
 - one extended key usage, `1.3.6.1.4.1.66378.1.10` (TA broker). It has no

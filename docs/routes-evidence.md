@@ -8,7 +8,7 @@ Guarantee:
 [Routes are what the operator signed](guarantees.md#routes-are-what-the-operator-signed),
 [Anyone can verify it](guarantees.md#anyone-can-verify-it).
 
-The router's `cds-attest` sidecar binds the digest of the route manifest it
+The router's `ta-attest` sidecar binds the digest of the route manifest it
 routes by into the evidence of both attested handshakes — attest-pq, which runs
 an X-Wing key exchange so a client can over-encrypt its requests inside ordinary
 TLS, and attest-lb, which binds the exact serving leaf of the connection a
@@ -52,9 +52,9 @@ A handshake binds the route digest it reported and the router's own allowlist
 digest, empty while the router's leaf carries no stamp; the session routes by
 those two and nothing else — attest-pq by its session id, attest-lb by the
 public connection the front door names in `X-C8s-Connection`. A handshake that
-reaches `cds-attest` without that header binds nothing.
+reaches `ta-attest` without that header binds nothing.
 
-`cds-attest` then refuses that session's requests with 503 rather than forward
+`ta-attest` then refuses that session's requests with 503 rather than forward
 them: `route_digest_changed` once another manifest is applied,
 `router_digest_changed` once the router's leaf renewed under another allowlist
 digest, and `binding_expired` once an attest-lb connection has carried no

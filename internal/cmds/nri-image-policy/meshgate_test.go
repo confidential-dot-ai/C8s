@@ -341,7 +341,7 @@ func TestMeshGateKeepsARouterNamespacePodRoleOnly(t *testing.T) {
 	// The upstream identity reaches this cluster's members uncaptured, so the
 	// role holding it runs here under a declaration that pins its mounts and
 	// as that identity alone.
-	attest := gateCtr("cds-attest", workloadclaims.UpstreamUID)
+	attest := gateCtr("ta-attest", workloadclaims.UpstreamUID)
 	routing := gatedContainer{
 		role:         allowlist.RoleUpstream,
 		mountsPinned: true,

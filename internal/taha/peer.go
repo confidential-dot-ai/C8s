@@ -41,9 +41,9 @@ var (
 
 // peerContextDomain separates the peer binding from every other report data a
 // c8s component attests.
-const peerContextDomain = "c8s-cds-ha-peer-v1"
+const peerContextDomain = "c8s-ta-ha-peer-v1"
 
-const peerCommonName = "c8s-cds-ha-peer"
+const peerCommonName = "c8s-ta-ha-peer"
 
 // maxMemberID is what the Raft target frame carries: one length byte.
 const maxMemberID = 255

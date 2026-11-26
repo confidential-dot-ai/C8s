@@ -75,7 +75,7 @@ type Defaults struct {
 	Use string
 	// Short is the one-line help.
 	Short string
-	// Kind preselects the component (cds|lb|workload|auto).
+	// Kind preselects the component (ta|lb|workload|auto).
 	Kind string
 	// Mode preselects the evidence mode (auto|armtls-cert|discovery|attest-pq).
 	Mode string

@@ -105,7 +105,7 @@ func TestCmdRequiresRoutingPort(t *testing.T) {
 	cmd.SetOut(io.Discard)
 	cmd.SetErr(io.Discard)
 	if err := cmd.ExecuteContext(t.Context()); err == nil || !strings.Contains(err.Error(), "--routing-port must be between") {
-		t.Fatalf("cds-attest without --routing-port = %v, want the --routing-port error", err)
+		t.Fatalf("ta-attest without --routing-port = %v, want the --routing-port error", err)
 	}
 }
 

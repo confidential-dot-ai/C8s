@@ -180,7 +180,7 @@ Not an extension: the sole extended key usage of the certificate the mesh CA
 issues each TA replica's broker key. That key signs pod secret release
 statements to a KMS ([pod-secrets.md](pod-secrets.md)). Without server or
 client authentication usage, the certificate authenticates no TLS peer. Its
-subject is `CN=c8s CDS broker`, its lifetime one hour, and it carries none of
+subject is `CN=c8s Trust Authority broker`, its lifetime one hour, and it carries none of
 the extensions above.
 
 ## Subject, key usage and lifetime

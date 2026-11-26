@@ -78,7 +78,7 @@ for i in 1 2 3; do
     .spec.template.metadata.annotations["snp.confidential.ai/host-data"] == $expected and
     .spec.template.metadata.annotations["igvm.confidential.ai/file"] == "guest-smp4.igvm" and
     .spec.template.metadata.labels["kubevirt.io/domain"] == $name and
-    .spec.template.metadata.labels["ci.confidential.ai/cds-cluster"] == "ta-ha" and
+    .spec.template.metadata.labels["ci.confidential.ai/ta-cluster"] == "ta-ha" and
     any(.spec.template.spec.volumes[]; .name == "opkey" and .secret.secretName == ($name + "-opkey") and .secret.volumeLabel == "opkeydata") and
     any(.spec.template.spec.volumes[]; .name == "rootdisk" and .persistentVolumeClaim.claimName == "ta-root")
   ' "$fixture/vm-$name.json" >/dev/null || fail "$name does not bind its own launch configuration"
@@ -90,6 +90,6 @@ for i in 1 2 3; do
 done
 service=$(grep -l '^  name: ta-ha$' "$fixture"/service.*)
 grep -q 'publishNotReadyAddresses: false' "$service" || fail 'aggregate publishes unready guests'
-grep -q 'selector: {ci.confidential.ai/cds-cluster: ta-ha}' "$service" || fail 'aggregate selects another cluster'
+grep -q 'selector: {ci.confidential.ai/ta-cluster: ta-ha}' "$service" || fail 'aggregate selects another cluster'
 grep -q 'ports: \[{port: 8443, targetPort: 8443}\]' "$service" || fail 'aggregate exposes ports besides client HTTPS'
 echo 'PASS: three replica VMs bind their launch configuration and expose client and peer ports'

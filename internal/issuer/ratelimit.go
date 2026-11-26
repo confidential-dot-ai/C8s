@@ -16,17 +16,17 @@ import (
 
 var (
 	rateLimitRejectionsTotal = promauto.NewCounter(prometheus.CounterOpts{
-		Name: "cds_rate_limit_rejections_total",
+		Name: "ta_rate_limit_rejections_total",
 		Help: "Total requests rejected by rate limiter.",
 	})
 
 	rateLimitCapacityEvictionsTotal = promauto.NewCounter(prometheus.CounterOpts{
-		Name: "cds_rate_limit_capacity_evictions_total",
+		Name: "ta_rate_limit_capacity_evictions_total",
 		Help: "Total new keys admitted to a full rate limiter by evicting its least recently seen bucket.",
 	})
 
 	rateLimiterEntries = promauto.NewGauge(prometheus.GaugeOpts{
-		Name: "cds_rate_limiter_entries",
+		Name: "ta_rate_limiter_entries",
 		Help: "Current number of entries in the rate limiter.",
 	})
 )

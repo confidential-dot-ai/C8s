@@ -79,7 +79,7 @@ func (c *Config) ResolveTAEndpoint() error {
 		return err
 	}
 	c.TAURL = taURL
-	slog.Info("Trust Authority endpoint resolved", "cds_url", c.TAURL, "from_node", fromNode)
+	slog.Info("Trust Authority endpoint resolved", "ta_url", c.TAURL, "from_node", fromNode)
 	return nil
 }
 

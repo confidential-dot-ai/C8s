@@ -63,7 +63,7 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end -}}
 
 {{/* Ports and paths the files name; c8s.routerContainers and each chart's
-     cds-attest argv must match them. */}}
+     ta-attest argv must match them. */}}
 {{- define "router.nginxHTTPSPort" -}}8443{{- end -}}
 {{- define "router.attestPort" -}}8800{{- end -}}
 {{- define "router.allowlistProxyPort" -}}8801{{- end -}}
@@ -81,7 +81,7 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 
 {{- define "router.terminationGracePeriodSeconds" -}}10{{- end -}}
 
-{{/* The paths nginx serves itself, for cds-attest --reserved-paths: no
+{{/* The paths nginx serves itself, for ta-attest --reserved-paths: no
      manifest route under them is selected (route policy M6). */}}
 {{- define "router.reservedPaths" -}}
 {{- list
@@ -97,14 +97,14 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end -}}
 
 {{/*
-The router pod's nginx, cds-attest and allowlist-proxy containers. Takes:
+The router pod's nginx, ta-attest and allowlist-proxy containers. Takes:
   root
   allowlistProxyMounts  the proxy's mounts of the attestation-api it verifies the Trust Authority through, as YAML
-  attestationApiMounts  cds-attest's mounts of the attestation-api it attests through, as YAML
+  attestationApiMounts  ta-attest's mounts of the attestation-api it attests through, as YAML
   attestationApiURL     the attestation-api URL a credentials-role container of this pod dials
   certificateMounts     nginx's mounts of the certificates it serves beside the mesh leaf
-  cdsAttestArgs         cds-attest's argv after the entrypoint
-  cdsAttestMounts       the mounts cdsAttestArgs names beside the mesh leaf and attestation-api
+  taAttestArgs          ta-attest's argv after the entrypoint
+  taAttestMounts        the mounts taAttestArgs names beside the mesh leaf and attestation-api
   config                the directory nginx reads the files from
   ports                 nginx's ports: name, containerPort, publicPort
   sandboxGateMounts     the mounts the pod's sandbox waits on, as YAML
@@ -168,18 +168,18 @@ The router pod's nginx, cds-attest and allowlist-proxy containers. Takes:
       mountPath: {{ include "router.tunnelBodyDir" $root }}
 {{- /* It carries every application request nginx's location / sends it
        (route policy A7). */}}
-- name: cds-attest
+- name: ta-attest
   image: {{ include "c8s.image" $root }}
   imagePullPolicy: IfNotPresent
   command: {{ include "c8s.entrypoint" (dict "root" $root "valuePath" "image") }}
   args:
-    {{- toYaml .cdsAttestArgs | nindent 4 }}
+    {{- toYaml .taAttestArgs | nindent 4 }}
   volumeMounts:
     - name: c8s-certs
       mountPath: {{ include "c8s.certDir" $root }}
       readOnly: true
     {{- .attestationApiMounts | nindent 4 }}
-    {{- with .cdsAttestMounts }}
+    {{- with .taAttestMounts }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
   securityContext:

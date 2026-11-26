@@ -16,6 +16,6 @@ func TestSocketConsumers(t *testing.T) {
 		}
 	}
 	if IsInjectedContainerName(AttestContainerName) {
-		t.Error("an application's cds-attest must not count as a webhook-injected container")
+		t.Error("an application's ta-attest must not count as a webhook-injected container")
 	}
 }

@@ -17,7 +17,7 @@
 
 {{/* The files the cloud's nginx ConfigMap holds: c8s-lib's, read from one
      mount, with the settings a worker's node stages from its launch file
-     beside them, less front-door-mode (cds-attest takes the mode as pinned
+     beside them, less front-door-mode (ta-attest takes the mode as pinned
      argv). */}}
 {{- define "router.cloudNginxFiles" -}}
 {{- $dir := include "router.configDir" . -}}
@@ -34,7 +34,7 @@
 {{- end -}}
 
 {{/* The front door's mounts of the Trust Authority pin and, where set, the operator
-     keys; cds-attest reads both. */}}
+     keys; ta-attest reads both. */}}
 {{- define "router.taAttestMounts" -}}
 {{- $ta := .Values.ta | default dict -}}
 - name: measurements-config
@@ -47,7 +47,7 @@
 {{- end }}
 {{- end -}}
 
-{{/* cds-attest pins the front-door mode and reads the Trust Authority pin and operator
+{{/* ta-attest pins the front-door mode and reads the Trust Authority pin and operator
      keys from values. Loopback only: nginx proxies /readyz, the attest routes
      and /tunnel to it. */}}
 {{- define "router.taAttestArgs" -}}
@@ -97,7 +97,7 @@
 {{- end -}}
 
 {{/* The attestation-api socket at the inventory path get-cert and the
-     allowlist proxy compile; cds-attest takes the node's own path, beside the
+     allowlist proxy compile; ta-attest takes the node's own path, beside the
      measured-policy journal it reads. */}}
 {{- define "router.attestationApiURL" -}}
 unix://{{ include "router.inventoryDir" . }}/attestation-api.sock

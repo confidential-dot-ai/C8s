@@ -246,7 +246,7 @@ func run(ctx context.Context, cfg config) error {
 	if cfg.TAURL == "" {
 		return errors.New("--ta-url is required: no node hands this client a Trust Authority endpoint")
 	}
-	slog.Info("starting get-cert", "san", cfg.SAN, "cds_url", cfg.TAURL, "cds_from_node", fromNode)
+	slog.Info("starting get-cert", "san", cfg.SAN, "ta_url", cfg.TAURL, "ta_from_node", fromNode)
 
 	rawAttestationURL := cfg.AttestationApiURL
 	attestationURL, err := cmdsutil.ExpandHostIP(rawAttestationURL)
@@ -474,7 +474,7 @@ func obtainCert(ctx context.Context, cfg config, client attestclient.Client, cre
 		return err
 	}
 
-	slog.Info("requesting certificate from cds", "cds_url", cfg.TAURL, "san", cfg.SAN, "instance_id", creds.instanceID)
+	slog.Info("requesting certificate from cds", "ta_url", cfg.TAURL, "san", cfg.SAN, "instance_id", creds.instanceID)
 	result, err := client.ObtainCertificateWithSandboxContext(ctx, cfg.AttestationApiURL, string(csrPEM), challenge.Challenge, sandboxToken)
 	if err != nil {
 		return fmt.Errorf("attestation failed: %w", err)

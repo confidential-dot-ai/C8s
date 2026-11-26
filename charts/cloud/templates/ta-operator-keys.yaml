@@ -12,7 +12,7 @@ metadata:
   namespace: {{ include "c8s.routerMeshNamespace" . }}
   labels:
 {{ include "c8s.commonLabels" . | indent 4 }}
-    app.kubernetes.io/component: cds
+    app.kubernetes.io/component: ta
 data:
   keys.pem: {{ $ta.operatorKeys | quote }}
 {{- end }}

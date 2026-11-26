@@ -60,7 +60,7 @@ func (c *testClock) Advance(d time.Duration) {
 	c.now = c.now.Add(d)
 }
 
-// routedServer is a cds-attest server whose tunnel routes by a manifest,
+// routedServer is a ta-attest server whose tunnel routes by a manifest,
 // with a workload backend "web" holding a named leaf from the mesh CA. Its
 // /big answers with bigResponseBytes.
 type routedServer struct {
@@ -672,7 +672,7 @@ func TestRoutingFlagDefaults(t *testing.T) {
 	}
 }
 
-// TestRunRoutingListenerBeforeFirstApply runs cds-attest against a Trust Authority that
+// TestRunRoutingListenerBeforeFirstApply runs ta-attest against a Trust Authority that
 // cannot be reached: the routing listener answers 503 (A2) while readiness
 // stays 200.
 func TestRunRoutingListenerBeforeFirstApply(t *testing.T) {

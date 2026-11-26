@@ -41,7 +41,7 @@ func TestResolveTAEndpointTakesTheNodesEndpoint(t *testing.T) {
 	}
 	line := logged.String()
 	if !strings.Contains(line, `msg="Trust Authority endpoint resolved"`) ||
-		!strings.Contains(line, "cds_url=https://cds.example.org:30808") ||
+		!strings.Contains(line, "ta_url=https://cds.example.org:30808") ||
 		!strings.Contains(line, "from_node=true") {
 		t.Fatalf("logged %q, want the resolved endpoint line", line)
 	}

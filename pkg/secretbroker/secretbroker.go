@@ -214,7 +214,7 @@ func (v Verifier) verifyChain(chain [][]byte, now time.Time) (*x509.Certificate,
 	if _, err := broker.Verify(x509.VerifyOptions{Roots: roots, CurrentTime: now, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}}); err != nil {
 		return nil, fmt.Errorf("broker certificate: %w", err)
 	}
-	if !armtls.IsCDSBroker(broker) {
+	if !armtls.IsTABroker(broker) {
 		return nil, errors.New("certificate is not a Trust Authority broker certificate")
 	}
 	return broker, nil

@@ -371,7 +371,7 @@ func (m manifestSpec) bytes(t testing.TB) []byte {
 }
 
 // fixture is a router: a mesh CA, its own mesh leaf published on a credential
-// volume, an operator, and the routing engine wired the way cds-attest wires
+// volume, an operator, and the routing engine wired the way ta-attest wires
 // it.
 type fixture struct {
 	transportLogs bytes.Buffer // what Transports reports, once per leaf

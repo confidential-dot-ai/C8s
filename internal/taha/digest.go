@@ -195,7 +195,7 @@ func (d *digestLog) disagreesWith(p Point) bool {
 }
 
 // Separates the state digest from every other hash of the same bytes.
-const coreDigestDomain = "c8s-cds-ha-state-v1"
+const coreDigestDomain = "c8s-ta-ha-state-v1"
 
 // The state around the stores: ClusterState, which carries the mesh CA certificate,
 // then the mesh CA key and the decree record.

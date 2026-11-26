@@ -175,7 +175,7 @@ func TestWorkerChartRouterEntryPinsItsLaunch(t *testing.T) {
 	// it before matching and the entry declares it no more than the mesh
 	// endpoint or the credential sidecars.
 	if len(entry.Containers) != 2 {
-		t.Errorf("entry mains = %+v, want nginx and cds-attest", entry.Containers)
+		t.Errorf("entry mains = %+v, want nginx and ta-attest", entry.Containers)
 	}
 	var inits []string
 	for _, c := range entry.InitContainers {
@@ -198,7 +198,7 @@ func TestWorkerChartRouterEntryPinsItsLaunch(t *testing.T) {
 		mutate func([]workloadclaims.SandboxContainer) []workloadclaims.SandboxContainer
 	}{
 		{
-			name: "cds-attest with an extra flag",
+			name: "ta-attest with an extra flag",
 			mutate: func(cs []workloadclaims.SandboxContainer) []workloadclaims.SandboxContainer {
 				for i, c := range cs {
 					if len(c.Argv) > 1 && c.Argv[1] == "ta-attest" {
@@ -209,7 +209,7 @@ func TestWorkerChartRouterEntryPinsItsLaunch(t *testing.T) {
 			},
 		},
 		{
-			name: "no cds-attest",
+			name: "no ta-attest",
 			mutate: func(cs []workloadclaims.SandboxContainer) []workloadclaims.SandboxContainer {
 				return slices.DeleteFunc(cs, func(c workloadclaims.SandboxContainer) bool {
 					return len(c.Argv) > 1 && c.Argv[1] == "ta-attest"
@@ -225,7 +225,7 @@ func TestWorkerChartRouterEntryPinsItsLaunch(t *testing.T) {
 			},
 		},
 		{
-			name: "cds-attest with an extra mount",
+			name: "ta-attest with an extra mount",
 			mutate: func(cs []workloadclaims.SandboxContainer) []workloadclaims.SandboxContainer {
 				for i, c := range cs {
 					if len(c.Argv) > 1 && c.Argv[1] == "ta-attest" {
@@ -348,9 +348,9 @@ func TestChartDefaultMeasuredPoliciesFileIsNodeJournal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	attest := renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")
+	attest := renderedDeploymentContainer(t, out, "c8s-router", "ta-attest")
 	if flag := "--measured-policies-file=" + armtls.NodeJournal; !slices.Contains(attest.Args, flag) {
-		t.Fatalf("cds-attest args lack %s: %v", flag, attest.Args)
+		t.Fatalf("ta-attest args lack %s: %v", flag, attest.Args)
 	}
 }
 

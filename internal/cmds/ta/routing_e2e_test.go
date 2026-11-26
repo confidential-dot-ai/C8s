@@ -111,7 +111,7 @@ func (c *e2eTA) put(t *testing.T, signer *operatorauth.Signer, manifest []byte) 
 	}
 }
 
-// e2eRouter is the routing engine wired as cds-attest wires it.
+// e2eRouter is the routing engine wired as ta-attest wires it.
 type e2eRouter struct {
 	state  *routing.State
 	poller *routing.Poller

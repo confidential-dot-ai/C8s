@@ -113,7 +113,7 @@ func runContext(ctx context.Context, cfg config, listen listenFunc) error {
 	defer listener.Close()
 	go cmdsutil.ShutdownOnDone(ctx, srv, 5*time.Second)
 
-	slog.Info("router allowlist proxy listening", "addr", addr, "cds_url", cfg.taURL)
+	slog.Info("router allowlist proxy listening", "addr", addr, "ta_url", cfg.taURL)
 	if err := srv.Serve(listener); err != nil && err != http.ErrServerClosed {
 		return cmdsutil.NodeIPChanged(ctx, err)
 	}
@@ -150,7 +150,7 @@ func newHandler(ctx context.Context, cfg config, logger *slog.Logger) (http.Hand
 	if err != nil {
 		return nil, fmt.Errorf("the Trust Authority armTLS client: %w", err)
 	}
-	logger.Info("router allowlist proxy verifying Trust Authority", "cds_url", resolved.url)
+	logger.Info("router allowlist proxy verifying Trust Authority", "ta_url", resolved.url)
 	proxy := newReverseProxy(target, httpClient.Transport, cfg.requestTimeout, logger)
 	return newRouter(proxy), nil
 }

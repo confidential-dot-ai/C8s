@@ -174,7 +174,7 @@ func evidenceFromAttestLBJSON(data, nonce, servingLeaf []byte, fresh bool, route
 	}, nil
 }
 
-// servingLeafDigest hashes a serving leaf the way cds-attest reports it in
+// servingLeafDigest hashes a serving leaf the way ta-attest reports it in
 // serving_leaf_sha256, so a client can match the verdict to the receipt.
 func servingLeafDigest(der []byte) string {
 	sum := sha256.Sum256(der)

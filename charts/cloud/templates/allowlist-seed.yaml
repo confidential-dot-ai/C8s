@@ -11,6 +11,6 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
 {{ include "c8s.commonLabels" . | indent 4 }}
-    app.kubernetes.io/component: cds
+    app.kubernetes.io/component: ta
 data:
   allowlist-seed.json: {{ include "c8s.allowlistSeedJSON" (dict "root" . "templates" (include "c8s.componentPodTemplates" .)) | trim | quote }}
