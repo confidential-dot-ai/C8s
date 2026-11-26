@@ -207,6 +207,38 @@ func TestEnforceImagesLaunchFilePinsReadOnlyRTMR3OnTDX(t *testing.T) {
 	}
 }
 
+// A pin read from MRCONFIGID matches in both launch-file forms. The digest
+// form takes no extension policy, since nothing replays over that field.
+func TestEnforceImagesReadsBothLaunchFileFormsFromMRCONFIGID(t *testing.T) {
+	mrtd := bytes.Repeat([]byte{0x42}, sha512.Size384)
+	launchFile := []byte("clusterID: test\n")
+	digest, other := sha512.Sum384(launchFile), sha512.Sum384([]byte("clusterID: other\n"))
+	for _, pin := range []remote.ImagePin{
+		{Name: "launch file", Digest: mrtd, LaunchFile: launchFile, LaunchFileInInitData: true},
+		{Name: "launch file digest", Digest: mrtd, LaunchFileDigest: digest[:], LaunchFileInInitData: true},
+	} {
+		for _, tc := range []struct {
+			name     string
+			initData []byte
+			wantErr  bool
+		}{
+			{name: "MRCONFIGID of the file", initData: digest[:]},
+			{name: "MRCONFIGID of another file", initData: other[:], wantErr: true},
+		} {
+			claims := teetypes.Claims{
+				LaunchDigest: hex.EncodeToString(mrtd),
+				InitData:     tc.initData,
+				PlatformData: map[string]any{"rtmr_3": hex.EncodeToString(runtimemeasure.Zero[:])},
+			}
+			resp := remote.VerifyResponse{Result: teetypes.VerificationResult{SignatureValid: true, Platform: teetypes.PlatformTDX, Claims: claims}}
+			err := EnforceImages(resp, []remote.ImagePin{pin}, teetypes.PlatformTDX, nil)
+			if tc.wantErr != (err != nil) {
+				t.Errorf("%s pin, %s: EnforceImages = %v, want refusal %v", pin.Name, tc.name, err, tc.wantErr)
+			}
+		}
+	}
+}
+
 // A peer's certificate carries its list to VerifyCert, which replays it
 // against an anchored pin.
 func TestVerifyCertReplaysRuntimeExtensions(t *testing.T) {
