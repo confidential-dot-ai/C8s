@@ -214,6 +214,14 @@ func (h Handler) serveGet(ctx context.Context, w http.ResponseWriter, g grant, p
 		return
 	}
 	value, err := h.Store.Get(ctx, path)
+	// A store may read a state newer than the grant (a replica set's chain
+	// carries both): answer for it, found or not, only under the allowlist
+	// still in force.
+	if cur, policyErr := h.Policy.Allowlist(); policyErr != nil || cur != g.policy {
+		h.logger().Warn("secret read refused: the allowlist changed during the request", "path", path, "error", policyErr)
+		http.Error(w, "the allowlist changed during the request; ask again", http.StatusServiceUnavailable)
+		return
+	}
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			http.Error(w, "no such secret", http.StatusNotFound)
@@ -221,13 +229,6 @@ func (h Handler) serveGet(ctx context.Context, w http.ResponseWriter, g grant, p
 		}
 		h.logger().Error("secret read failed", "path", path, "error", err)
 		http.Error(w, "secret unavailable", http.StatusInternalServerError)
-		return
-	}
-	// A store may read a value newer than the grant (a replica set's chain
-	// carries both): release only under the allowlist still in force.
-	if cur, err := h.Policy.Allowlist(); err != nil || cur != g.policy {
-		h.logger().Warn("secret read refused: the allowlist changed during the request", "path", path, "error", err)
-		http.Error(w, "the allowlist changed during the request; ask again", http.StatusServiceUnavailable)
 		return
 	}
 	writeValue(w, value, http.StatusOK)

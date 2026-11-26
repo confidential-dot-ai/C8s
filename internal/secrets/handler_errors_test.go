@@ -350,3 +350,18 @@ func TestReleaseRefusedWhenTheAllowlistChangesDuringTheRequest(t *testing.T) {
 	}
 	assertNoRelease(t, w, []byte("s3cret"))
 }
+
+// A path that is gone after the allowlist changed answers the change, not a
+// missing secret: the caller asks again instead of creating one.
+func TestMissingSecretAcrossAnAllowlistChangeAsksAgain(t *testing.T) {
+	hn := newHarness(t)
+	al, err := hn.h.Policy.Allowlist()
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := *al
+	hn.h.Policy = &changingPolicy{als: []*pkgallowlist.Allowlist{al, &next}}
+	if w := do(hn.h, hn.request(t, http.MethodGet, "/api/db")); w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("a missing secret across an allowlist change = %d, want 503: %s", w.Code, w.Body)
+	}
+}
