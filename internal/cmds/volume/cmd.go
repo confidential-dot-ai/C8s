@@ -3,6 +3,7 @@ package volume
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -104,10 +105,16 @@ func putBlob(ctx context.Context, hc *http.Client, baseURL, path string, blob Bl
 	case http.StatusConflict:
 		return fmt.Errorf("%s already holds a value; a volume key is not replaceable — "+
 			"choose another path, or remove the volume that uses this one", path)
+	case http.StatusAccepted:
+		return errReplicaSet
 	default:
 		return fmt.Errorf("the Trust Authority returned %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
 	}
 }
+
+// errReplicaSet is a key a Trust Authority replica set sealed: it is stored once a
+// secret entry names it, which 'c8s secrets put' writes.
+var errReplicaSet = errors.New("the Trust Authority is a replica set, which stores a secret as a chain entry")
 
 // authorizer mints the operator Authorization header for one write, bound to
 // its method, path, and body. Implemented by operatorauth.Signer.

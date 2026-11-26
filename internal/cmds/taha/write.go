@@ -361,6 +361,18 @@ func routeDigest(manifest []byte) string {
 	return hex.EncodeToString(d[:])
 }
 
+// WriteSecret writes a secret entry naming sealed, the hash a replica sealed
+// the value under, for path; nil deletes the secret. Without overwrite, a
+// path the chain holds a secret at is refused. Not handled: a single Trust Authority.
+func WriteSecret(ctx context.Context, opts *taconn.Options, path string, sealed *cdschain.Hash, overwrite bool) (bool, error) {
+	return writeEntry(ctx, opts, cdschain.TypeSecret, func(state *cdschain.State) (any, error) {
+		if _, held := state.Secrets[path]; held && sealed != nil && !overwrite {
+			return nil, fmt.Errorf("%s already holds an operator-supplied value; re-run with --overwrite to replace it", path)
+		}
+		return cdschain.Secret{Path: path, Sealed: sealed}, nil
+	})
+}
+
 // writeEntry appends payload(state) through the replica at opts, unless the
 // Trust Authority there answers no HA status (a single Trust Authority, or a router that does not
 // route /ha: not handled; a replica set refuses the old write). An error

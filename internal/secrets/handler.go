@@ -107,8 +107,10 @@ type Handler struct {
 	Store      Store
 	Challenges challengeSource
 	Inventory  inventorySource
-	Bindings   bindingSource
-	Policy     policySource
+	// Bindings is the sandbox ledger; nil (a replica set) asks the inventory
+	// the sandbox token names.
+	Bindings bindingSource
+	Policy   policySource
 
 	// InventoryHosts bounds the addresses the callback may dial. Empty refuses
 	// every request: without it a workload could name its own pod.
@@ -237,6 +239,10 @@ func (h Handler) servePost(ctx context.Context, w http.ResponseWriter, g grant, 
 	}
 	_, held, err := h.Store.PutIfAbsent(ctx, path, candidate, WorkloadHolder(g.workload))
 	switch {
+	case errors.Is(err, ErrOperatorOnly):
+		h.logger().Warn("secret create refused", "path", path, "workload", g.workload, "error", err)
+		http.Error(w, err.Error(), http.StatusNotImplemented)
+		return
 	case errors.Is(err, ErrHolderQuota):
 		h.logger().Warn("secret create refused", "path", path, "workload", g.workload, "error", err)
 		writeError(w, http.StatusInsufficientStorage, types.ErrorCodeSecretHolderQuota, "secret storage limit reached")
@@ -416,28 +422,32 @@ func (h Handler) parseToken(r *http.Request) (*workloadclaims.SignedSandboxToken
 // verifyToken checks the token against the inventory this process already
 // believes owns the sandbox, and returns that inventory's host.
 func (h Handler) verifyToken(ctx context.Context, token *workloadclaims.SignedSandboxToken, requesterPub crypto.PublicKey, nonce []byte, sandboxID string) (string, error) {
-	if h.Inventory == nil || h.Bindings == nil {
+	if h.Inventory == nil {
 		return "", fmt.Errorf("secrets are not configured to reach an inventory")
 	}
 	if len(h.InventoryHosts) == 0 {
 		return "", fmt.Errorf("the inventory callback has no node addresses to bound it")
 	}
-	// The binding, not the token, decides who is asked. The token names a host
-	// too, but that is the requester's choice; taking it would let anything able
-	// to answer on the inventory port vouch for someone else's sandbox.
-	host, ok := h.Bindings.Lookup(sandboxID)
-	if !ok {
-		return "", fmt.Errorf("no inventory is bound to sandbox %s", sandboxID)
-	}
-	if !h.InventoryHosts.Contains(host) {
-		return "", fmt.Errorf("bound inventory is outside the node bound")
-	}
-	claimed, err := workloadclaims.UnverifiedInventoryHost(token.Token)
+	host, err := workloadclaims.UnverifiedInventoryHost(token.Token)
 	if err != nil {
 		return "", err
 	}
-	if claimed != host {
-		return "", fmt.Errorf("sandbox token names an inventory other than the one bound to this sandbox")
+	// With a binding, it, not the token, decides who is asked: taking the
+	// requester's choice would let anything able to answer on the inventory
+	// port vouch for someone else's sandbox. A replica set keeps no binding
+	// (it would be per replica), so it asks the inventory the token names, as
+	// issuance does: only that node's attested inventory key verifies it.
+	if h.Bindings != nil {
+		bound, ok := h.Bindings.Lookup(sandboxID)
+		if !ok {
+			return "", fmt.Errorf("no inventory is bound to sandbox %s", sandboxID)
+		}
+		if host != bound {
+			return "", fmt.Errorf("sandbox token names an inventory other than the one bound to this sandbox")
+		}
+	}
+	if !h.InventoryHosts.Contains(host) {
+		return "", fmt.Errorf("the inventory is outside the node bound")
 	}
 	key, err := h.Inventory.InventoryKey(ctx, host)
 	if err != nil {

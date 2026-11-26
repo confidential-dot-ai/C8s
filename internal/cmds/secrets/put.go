@@ -7,7 +7,9 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cdschain"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/taconn"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/taha"
 	intsecrets "github.com/confidential-dot-ai/confidential-kubernetes/internal/secrets"
 	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
@@ -77,6 +79,9 @@ reaches a running pod when that pod next restarts.`,
 			if err != nil {
 				return err
 			}
+			if res.Sealed != "" {
+				return putEntry(cmd, o, path, res.Sealed, overwrite, len(value))
+			}
 			if res.Created {
 				fmt.Fprintf(cmd.OutOrStdout(), "+ %s (new)\n", path)
 				fmt.Fprintf(cmd.OutOrStdout(), "wrote %d bytes to %s\n", len(value), path)
@@ -104,6 +109,20 @@ reaches a running pod when that pod next restarts.`,
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print the intended change without calling Trust Authority")
 	gate.BindFlags(cmd.Flags())
 	return cmd
+}
+
+// putEntry names a value a replica set sealed in a secret entry: only then
+// do replicas release it.
+func putEntry(cmd *cobra.Command, o *options, path, sealed string, overwrite bool, n int) error {
+	h, err := cdschain.ParseHash(sealed)
+	if err != nil {
+		return fmt.Errorf("the replica answered no sealed value: %w", err)
+	}
+	if _, err := taha.WriteSecret(cmd.Context(), &o.Options, path, &h, overwrite); err != nil {
+		return err
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "wrote %d bytes to %s\n", n, path)
+	return nil
 }
 
 // describe names a stored value by what put it there, for the line an operator

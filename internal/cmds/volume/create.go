@@ -167,7 +167,9 @@ func runCreate(cmd *cobra.Command, o *options, cfg createConfig) error {
 		}
 		return notStored(err, cfg, path, "retry with")
 	}
-	if err := putBlob(cmd.Context(), hc, strings.TrimRight(o.URL, "/"), path, blob, signer); err != nil {
+	if err := putBlob(cmd.Context(), hc, strings.TrimRight(o.URL, "/"), path, blob, signer); errors.Is(err, errReplicaSet) {
+		return notStored(err, cfg, path, "run")
+	} else if err != nil {
 		return err
 	}
 

@@ -32,6 +32,9 @@ type result struct {
 	// Refused reports that the path already held a value and the write did not
 	// carry overwrite intent, so nothing changed.
 	Refused bool
+	// Sealed is a replica set's answer: the hash of the sealed value, which
+	// a secret entry then names.
+	Sealed string
 }
 
 // put sends one value. overwrite travels in the body rather than the URL so the
@@ -69,6 +72,7 @@ func (c client) put(ctx context.Context, path string, value []byte, overwrite bo
 	switch {
 	case resp.StatusCode == http.StatusCreated,
 		refused,
+		resp.StatusCode == http.StatusAccepted,
 		resp.StatusCode == http.StatusOK && overwrite:
 		var pr intsecrets.PutResponse
 		if err := json.Unmarshal(raw, &pr); err != nil {
@@ -78,6 +82,7 @@ func (c client) put(ctx context.Context, path string, value []byte, overwrite bo
 			Created:  pr.Created,
 			Existing: pr.Existing,
 			Refused:  refused,
+			Sealed:   pr.Sealed,
 		}, nil
 	case resp.StatusCode == http.StatusOK:
 		// 200 answers a replacement. Reading it as anything else would let the

@@ -15,6 +15,10 @@ import (
 // ErrNotFound reports a path the store does not hold.
 var ErrNotFound = errors.New("secrets: no such path")
 
+// ErrOperatorOnly is a workload write to a store that holds only the values
+// an operator writes: a Trust Authority replica set's.
+var ErrOperatorOnly = errors.New("a Trust Authority replica set generates no secret: the operator writes the value (c8s secrets put)")
+
 // The two refusals a write that grows the path map can meet.
 var (
 	ErrHolderQuota = errors.New("secrets: holder path quota")

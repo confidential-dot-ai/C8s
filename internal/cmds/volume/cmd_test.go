@@ -3,6 +3,7 @@ package volume
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -112,6 +113,15 @@ func TestPutBlobRefusesAnOccupiedPath(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "not replaceable") {
 		t.Errorf("error should say a volume key cannot be replaced: %v", err)
+	}
+}
+
+// A replica set's 202 sealed the key but stored nothing: create says so.
+func TestPutBlobOnAReplicaSetIsNotStored(t *testing.T) {
+	p := &putServer{status: http.StatusAccepted}
+	srv := p.start(t)
+	if err := putBlob(t.Context(), srv.Client(), srv.URL, "/a/b", testBlob(t), &fakeSigner{}); !errors.Is(err, errReplicaSet) {
+		t.Fatalf("put to a replica set: %v", err)
 	}
 }
 

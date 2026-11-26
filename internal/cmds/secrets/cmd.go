@@ -46,12 +46,13 @@ Writes are signed with an operator EC private key you supply via --operator-key
 
 Values live in the Trust Authority process and nowhere else, so a Trust Authority restart clears the
 store and every workload holding a secret has to be rolled (see
-docs/secrets.md).`,
+docs/secrets.md). A Trust Authority replica set keeps them sealed in its store, each named
+by a secret entry this command writes (see docs/ta-ha.md).`,
 		SilenceUsage: true,
 	}
 
 	taconn.BindFlags(cmd.PersistentFlags(), &o.Options)
-	cmd.AddCommand(newPutCmd(o), newExplainCmd(o))
+	cmd.AddCommand(newPutCmd(o), newDeleteCmd(o), newExplainCmd(o))
 	return cmd
 }
 

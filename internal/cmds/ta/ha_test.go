@@ -32,7 +32,6 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
 	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/secretbroker"
-	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 // A replica of a set signs a leaf only while it serves, checked right
@@ -104,20 +103,9 @@ func TestRuntimeDiskSelectsTheEtcdStore(t *testing.T) {
 	}
 }
 
-// A replica set of more than one replica serves no secrets; a single
+// A replica set of more than one replica keeps no sandbox ledger; a single
 // replica keeps the existing rule.
-func TestReplicaSetRefusesSecrets(t *testing.T) {
-	images := []remote.ImagePin{{Name: "node"}}
-	hosts, err := workloadclaims.ParseInventoryHosts([]string{"10.0.0.0/24"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ok, _ := haSecrets(&taconfig.HA{Endpoints: []string{"a:1", "b:1", "c:1"}}, images, hosts); ok {
-		t.Fatal("a set of three serves secrets")
-	}
-	if ok, why := haSecrets(&taconfig.HA{Endpoints: []string{"a:1"}}, images, hosts); !ok {
-		t.Fatalf("a single replica refuses secrets: %s", why)
-	}
+func TestReplicaSetKeepsNoSandboxLedger(t *testing.T) {
 	ledger := sandboxledger.New(time.Hour, 10)
 	if haLedger(&taconfig.HA{Endpoints: []string{"a:1", "b:1", "c:1"}}, ledger) != nil {
 		t.Fatal("a set of three keeps a sandbox ledger")
