@@ -24,8 +24,10 @@ of their own in three places:
   --launch-file-field init_data` and no `--vcpus`. `genesis` refuses pins that
   read another field than `ta-pin.json`.
 - A release that does not know the field refuses a decree that carries it,
-  and a replica stops if it meets one in its log. Upgrade every replica and
-  every node that follows the cluster's decrees before signing the first one.
+  and a replica stops if it meets one in its log. Before signing the
+  first one, upgrade every replica, every node that follows the cluster's
+  decrees, and every operator's `c8s`, whose `ha pin-policy` and `ha decrees`
+  read them too.
 
 Every decree is posted to a replica over the attested channel: `--to` names
 any replica of the cluster, and `--target` the one replica a `genesis`,

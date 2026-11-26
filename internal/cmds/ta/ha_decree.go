@@ -294,14 +294,17 @@ func (p pinFlags) readTheFieldOf(taPinPath string) error {
 	if err != nil {
 		return fmt.Errorf("--ta-pin: %w", err)
 	}
-	if verified.Family != teetypes.FamilyTDX || len(verified.Images) == 0 {
+	if verified.Family != teetypes.FamilyTDX {
 		return nil
 	}
-	switch inInitData := verified.Images[0].LaunchFileInInitData; {
-	case inInitData && p.launchFileField == "":
-		return fmt.Errorf("--ta-pin reads the launch file from MRCONFIGID, and the decree's pins would read RTMR[3]: pass --launch-file-field %s", launchFileFieldInitData)
-	case !inInitData && p.launchFileField == launchFileFieldInitData:
-		return fmt.Errorf("--ta-pin reads the launch file from RTMR[3], and --launch-file-field %s pins guests that read MRCONFIGID: omit the flag", launchFileFieldInitData)
+	// Any entry may be the one the replicas match, so every entry must agree.
+	for _, image := range verified.Images {
+		switch {
+		case image.LaunchFileInInitData && p.launchFileField == "":
+			return fmt.Errorf("--ta-pin entry %q reads the launch file from MRCONFIGID, and the decree's pins would read RTMR[3]: pass --launch-file-field %s", image.Name, launchFileFieldInitData)
+		case !image.LaunchFileInInitData && p.launchFileField == launchFileFieldInitData:
+			return fmt.Errorf("--ta-pin entry %q reads the launch file from RTMR[3], and --launch-file-field %s pins guests that read MRCONFIGID: omit the flag, or drop the entry", image.Name, launchFileFieldInitData)
+		}
 	}
 	return nil
 }
