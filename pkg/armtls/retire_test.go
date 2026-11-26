@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 )
 
 // retiring is a RetiringTransport over a TLS server that answers each request
@@ -51,7 +52,7 @@ func newRetiring(t *testing.T, pins Pins) *retiring {
 			return nil
 		}
 	}
-	r.client, r.url = &http.Client{Transport: rt}, srv.URL
+	r.client, r.url = &http.Client{Transport: rt, Timeout: 10 * time.Second}, srv.URL
 	t.Cleanup(r.client.CloseIdleConnections)
 	return r
 }
@@ -105,9 +106,12 @@ func TestRetiredConnectionCarriesNoLaterRequest(t *testing.T) {
 	r.set(pinsOf(2), nil)
 	// The change is seen by a request, which leaves the pool, while the slow
 	// one is still on its connection.
-	moved := r.mustConn(t)
+	moved, movedErr := r.conn("/")
 	close(r.release)
 	inFlight := <-done
+	if movedErr != nil {
+		t.Fatal(movedErr)
+	}
 	if inFlight.err != nil || inFlight.conn != first {
 		t.Fatalf("the request in flight ran on %q (%v), want the pooled connection %s", inFlight.conn, inFlight.err, first)
 	}
