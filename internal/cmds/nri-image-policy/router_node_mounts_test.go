@@ -188,7 +188,7 @@ func routerNodeMountPlugin(t *testing.T) *plugin {
 	cfg.WorkloadClaims.AdvertiseHost = "10.0.0.1"
 	// Launch staging writes both halves into the measured config: where this
 	// cluster's Trust Authority serves, and the role its clients hold (nodeservices).
-	cfg.taAddress = "cds.example.org:8443"
+	cfg.taAddress = "ta.example.org:8443"
 	cfg.Mesh.Roles = append(cfg.Mesh.Roles, roleBinding{
 		Name: allowlist.RoleCredentials,
 		UID:  workloadclaims.CredentialsUID,
@@ -203,8 +203,8 @@ func routerNodeMountPlugin(t *testing.T) *plugin {
 	}
 	p := newTestPlugin(cfg)
 	p.SetReady()
-	p.taPins = "/run/node-cds-policy.json"
-	p.taAddress = "/run/node-cds-address"
+	p.taPins = "/run/node-ta-policy.json"
+	p.taAddress = "/run/node-ta-address"
 	p.inventory = newAdmissionInventory(t.TempDir())
 	return p
 }

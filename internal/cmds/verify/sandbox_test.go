@@ -374,7 +374,7 @@ func TestApplySandboxPolicyOperatorKeys(t *testing.T) {
 		{"served set matches", operatorKeysReport{digest: expected}, true, "matched: the set served over the attested cert equals --operator-keys"},
 		{"served set differs", operatorKeysReport{digest: []byte("different")}, false, ""},
 		{"fetch failed", operatorKeysReport{fetchErr: errSandboxTest}, false, ""},
-		{"never fetched", operatorKeysReport{note: "kind is not cds"}, false, ""},
+		{"never fetched", operatorKeysReport{note: "kind is not ta"}, false, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			oc := Outcome{Verified: true}

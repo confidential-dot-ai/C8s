@@ -371,7 +371,7 @@ func TestRequestPodSecretFailures(t *testing.T) {
 		client    *http.Client
 		want      string
 	}{
-		{"malformed URL", "https://cds\x7f", garbled.Client(), "invalid control character"},
+		{"malformed URL", "https://ta\x7f", garbled.Client(), "invalid control character"},
 		{"unreachable", "https://ta.example", unreachable, "connect"},
 		{"undecodable answer", garbled.URL, garbled.Client(), "decode Pod secret response"},
 		{"answer past the cap", oversized.URL, oversized.Client(), "read Pod secret response"},

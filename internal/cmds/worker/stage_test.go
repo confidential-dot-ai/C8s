@@ -256,7 +256,7 @@ func TestStagePublishesTheDocumentsFloor(t *testing.T) {
 		t.Errorf("node-ip = %q, %v; want this host's primary address", got, err)
 	}
 	pull := floor.Allowlist.Pull
-	if pull.URL != "https://cds.acme.example:8443" || pull.PinFloor != doc.TA.PinFloor {
+	if pull.URL != "https://ta.acme.example:8443" || pull.PinFloor != doc.TA.PinFloor {
 		t.Errorf("pull = %+v, want the document's Trust Authority and pin floor %d", pull, doc.TA.PinFloor)
 	}
 	roles := floor.Mesh.Roles

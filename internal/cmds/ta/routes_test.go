@@ -408,7 +408,7 @@ func TestNewHTTPServerSetsTimeouts(t *testing.T) {
 
 func TestValidateConfigRejectsUnsafeValues(t *testing.T) {
 	valid := config{
-		measured:                   measuredConfig(t, cluster{operatorPEM: operatorKeysPEM(t), workloads: map[string]string{"cds": digestA}}),
+		measured:                   measuredConfig(t, cluster{operatorPEM: operatorKeysPEM(t), workloads: map[string]string{"ta": digestA}}),
 		maxHeaderBytes:             1,
 		namedCertTTL:               issuer.MaxNamedLeafTTL,
 		routerCertTTL:              20 * time.Second,

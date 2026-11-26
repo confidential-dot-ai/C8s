@@ -16,10 +16,10 @@ var undialableDNS = netip.MustParseAddrPort("[fe80::1]:53")
 func TestClusterFirstDialerResolvesThroughTheClusterDNS(t *testing.T) {
 	ta := acceptOn(t, "127.0.0.1")
 	service := startClusterDNS(t, map[string][]netip.Addr{
-		"cds.private.": {netip.MustParseAddr("127.0.0.1")},
+		"ta.private.": {netip.MustParseAddr("127.0.0.1")},
 	})
 
-	conn, err := clusterFirstDialer(service).DialContext(t.Context(), "tcp", net.JoinHostPort("cds.private", ta.port))
+	conn, err := clusterFirstDialer(service).DialContext(t.Context(), "tcp", net.JoinHostPort("ta.private", ta.port))
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
@@ -32,13 +32,13 @@ func TestClusterFirstDialerResolvesThroughTheClusterDNS(t *testing.T) {
 func TestClusterFirstDialerTriesEveryAddressTheNameAnswers(t *testing.T) {
 	ta := acceptOn(t, "127.0.0.9")
 	service := startClusterDNS(t, map[string][]netip.Addr{
-		"cds.replicas.": {
+		"ta.replicas.": {
 			netip.MustParseAddr("127.0.0.2"), // no replica answers here
 			netip.MustParseAddr("127.0.0.9"),
 		},
 	})
 
-	conn, err := clusterFirstDialer(service).DialContext(t.Context(), "tcp", net.JoinHostPort("cds.replicas", ta.port))
+	conn, err := clusterFirstDialer(service).DialContext(t.Context(), "tcp", net.JoinHostPort("ta.replicas", ta.port))
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}

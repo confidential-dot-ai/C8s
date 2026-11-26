@@ -263,7 +263,7 @@ func mintCAIssuedLeaf(t *testing.T, usages []x509.ExtKeyUsage) (*x509.Certificat
 	leafKey := testKey(t)
 	leafTmpl := &x509.Certificate{
 		SerialNumber:    big.NewInt(2),
-		Subject:         pkix.Name{CommonName: "cds"},
+		Subject:         pkix.Name{CommonName: "ta"},
 		NotBefore:       time.Now().Add(-time.Hour),
 		NotAfter:        time.Now().Add(time.Hour),
 		ExtKeyUsage:     usages,

@@ -75,7 +75,7 @@ func TestPrepareNamesTheExternalTA(t *testing.T) {
 	if err := yaml.Unmarshal(data, &staged); err != nil {
 		t.Fatal(err)
 	}
-	if got := staged.Allowlist.Pull["url"]; got != "https://cds.example.org:8443" {
+	if got := staged.Allowlist.Pull["url"]; got != "https://ta.example.org:8443" {
 		t.Errorf("pull url = %v, want the Trust Authority the document names", got)
 	}
 	roles := stagedMeshPolicy(t, root).Roles
@@ -121,8 +121,8 @@ func externalTAPin(t *testing.T) []byte {
 	data, err := refvalues.Format(refvalues.ReferenceValues{
 		Family: teetypes.FamilySNP,
 		Images: []remote.ImagePin{
-			{Name: "cds-smp4", Digest: bytes.Repeat([]byte{0x50}, 48), LaunchFile: launchFile},
-			{Name: "cds-smp8", Digest: bytes.Repeat([]byte{0x51}, 48), LaunchFile: launchFile},
+			{Name: "ta-smp4", Digest: bytes.Repeat([]byte{0x50}, 48), LaunchFile: launchFile},
+			{Name: "ta-smp8", Digest: bytes.Repeat([]byte{0x51}, 48), LaunchFile: launchFile},
 		},
 	})
 	if err != nil {

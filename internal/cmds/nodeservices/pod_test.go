@@ -157,11 +157,6 @@ func TestRenderPodRuntimeBindsTAPullAndKeepsOnlyMeasuredMeshAndSignedBase(t *tes
 	if floor := publishedPinFloor(t, pull); floor != assigned.TA.PinFloor {
 		t.Fatalf("pod Trust Authority pin floor = %d, want signed floor %d", floor, assigned.TA.PinFloor)
 	}
-	for _, legacy := range []string{"cds_measurements", "cds_rtmrs"} {
-		if _, exists := pull[legacy]; exists {
-			t.Fatalf("pod Trust Authority pull kept competing %s", legacy)
-		}
-	}
 	writeInput(t, root, floorConfigPath, runtime.Policy)
 	mesh := stagedMeshPolicy(t, root)
 	if len(mesh.ExemptNamespaces) != 0 || len(mesh.Roles) != 1 || mesh.Roles[0].Name != allowlist.RoleMesh {

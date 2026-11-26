@@ -135,10 +135,10 @@ func TestFetchOperatorKeys404MeansDisabled(t *testing.T) {
 func TestGatherOperatorKeys(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("skipped for non-cds kinds and file targets", func(t *testing.T) {
+	t.Run("skipped for non-ta kinds and file targets", func(t *testing.T) {
 		got := gatherOperatorKeys(ctx, config{kind: "lb", url: "x"}, &evidence{}, fetchAttested)
 		if !strings.Contains(got.note, "skipped") || got.fingerprints != nil || got.fetchErr != nil {
-			t.Errorf("non-cds kind must skip the cross-check without fetching, got %+v", got)
+			t.Errorf("non-ta kind must skip the cross-check without fetching, got %+v", got)
 		}
 		if got := gatherOperatorKeys(ctx, config{kind: "ta"}, &evidence{}, fetchAttested); got.note != "" {
 			t.Errorf("no url should be a no-op, got %+v", got)
@@ -157,7 +157,7 @@ func TestGatherOperatorKeys(t *testing.T) {
 	})
 
 	t.Run("no serving cert to bind to", func(t *testing.T) {
-		got := gatherOperatorKeys(ctx, config{kind: "ta", url: "cds.example.com"}, &evidence{}, fetchAttested)
+		got := gatherOperatorKeys(ctx, config{kind: "ta", url: "ta.example.com"}, &evidence{}, fetchAttested)
 		if got.note == "" || got.fingerprints != nil {
 			t.Errorf("no attested cert must skip the fetch with a note, got %+v", got)
 		}

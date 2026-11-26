@@ -43,6 +43,6 @@ func TestNewCmdDurationFlagDefaults(t *testing.T) {
 // plugin, so a path in the pinned arguments' place would load pod-chosen code.
 func TestNewCmdTakesNoKubeconfig(t *testing.T) {
 	if f := NewCmd().Flags().Lookup("kubeconfig"); f != nil {
-		t.Fatal("cds defines --kubeconfig")
+		t.Fatal("ta defines --kubeconfig")
 	}
 }

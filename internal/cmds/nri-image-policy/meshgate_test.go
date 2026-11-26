@@ -1065,7 +1065,7 @@ func TestMeshEndpointStartOpensTheGateWhileInitializing(t *testing.T) {
 		Policy: policyConfig{Mode: ModeFailClosed},
 		Allowlist: allowlistConfig{
 			Base: roleBase(t, pushDigestB, allowlist.RoleMesh, []string{"/app/c8s", "armtls-mesh"}),
-			Pull: pullConfig{URL: "https://cds"},
+			Pull: pullConfig{URL: "https://ta"},
 		},
 	}, anyAllowlist(map[string]string{pushDigestA: "served"}))
 	pod := meshPod("default", "pod", testNetNS)

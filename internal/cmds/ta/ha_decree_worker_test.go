@@ -153,7 +153,7 @@ func workerDocument(t *testing.T, taPin []byte) []byte {
 	data, err := yaml.Marshal(worker.Document{
 		SchemaVersion: worker.SchemaVersion,
 		TA: cmdsutil.TA{
-			Address:      "cds.acme.example:8443",
+			Address:      "ta.acme.example:8443",
 			Measurements: string(taPin),
 			PinFloor:     1,
 		},

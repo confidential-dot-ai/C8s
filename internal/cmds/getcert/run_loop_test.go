@@ -359,7 +359,7 @@ func TestServedCAStale(t *testing.T) {
 		{name: "same CA", ta: caA, served: caA, want: false},
 		{name: "regenerated CA", ta: caB, served: caA, want: false},
 		{name: "served file holds two certificates", ta: caA, served: caB + caA, wantErr: true},
-		{name: "unparseable cds response", ta: "not pem", served: caA, wantErr: true},
+		{name: "unparseable Trust Authority response", ta: "not pem", served: caA, wantErr: true},
 		{name: "unparseable served file", ta: caA, served: "not pem", wantErr: true},
 	}
 	for _, tt := range tests {
@@ -382,7 +382,7 @@ func TestServedCAStale(t *testing.T) {
 		}
 	})
 
-	t.Run("cds unreachable", func(t *testing.T) {
+	t.Run("Trust Authority unreachable", func(t *testing.T) {
 		if _, err := servedCAStale(context.Background(), plaintextTAClient("http://127.0.0.1:1"), bound, writeServed(t, caA)); err == nil {
 			t.Fatal("servedCAStale succeeded, want transport error")
 		}

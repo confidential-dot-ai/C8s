@@ -17,7 +17,7 @@ import (
 )
 
 // rateLimitedTA is the fake Trust Authority behind the limiter Trust Authority meters allowlist
-// writes with, at its defaults (cds --rate-limit 10 --rate-burst 20). Reads
+// writes with, at its defaults (ta --rate-limit 10 --rate-burst 20). Reads
 // are not metered, as in Trust Authority.
 func rateLimitedTA(t *testing.T, pinned []*ecdsa.PublicKey) (*httptest.Server, *fakeTA) {
 	t.Helper()

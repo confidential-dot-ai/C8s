@@ -137,7 +137,7 @@ func seededAllowlist(t *testing.T) *pkgallowlist.Allowlist {
 	t.Helper()
 	al := pkgallowlist.Allowlist{
 		Schema:    pkgallowlist.Schema,
-		Workloads: anyWorkloads(t, map[string]string{digA: "registry/c8s/cds@" + digA}),
+		Workloads: anyWorkloads(t, map[string]string{digA: "registry/c8s/ta@" + digA}),
 	}
 	body, err := al.Canonical()
 	if err != nil {

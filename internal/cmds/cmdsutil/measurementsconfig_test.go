@@ -205,7 +205,7 @@ func TestResolveTAPinsPrefersTheNodePolicy(t *testing.T) {
 
 	pins, fromNode, err := ResolveTAPins(t.Context(), path, ImagePolicySource{})
 	if err != nil {
-		t.Fatalf("ResolveCDSPins: %v", err)
+		t.Fatalf("ResolveTAPins: %v", err)
 	}
 	if images := pins.Current().Images; len(images) != 1 || len(images[0].LaunchFile) == 0 {
 		t.Fatalf("node policy = %+v, want the launch-bound image", images)
@@ -230,7 +230,7 @@ func TestResolveTAPinsPrefersTheNodePolicy(t *testing.T) {
 // A Trust Authority is pinned to the configuration it runs on, so a document naming only
 // its image admits any Trust Authority VM, whichever cluster it was launched for.
 func TestResolveTAPinsRequiresALaunchBinding(t *testing.T) {
-	unbound := `{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"cds","measurement":"` + testutil.TestMeasurement + `"}]}`
+	unbound := `{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"ta","measurement":"` + testutil.TestMeasurement + `"}]}`
 	for name, path := range map[string]string{
 		"node policy":         writeTAPins(t, unbound),
 		"no policy at all":    filepath.Join(t.TempDir(), "absent.json"),
@@ -249,7 +249,7 @@ func TestResolveTAPinsRequiresALaunchBinding(t *testing.T) {
 func TestResolveTAPinsFallsBackToTheArgument(t *testing.T) {
 	pins, fromNode, err := ResolveTAPins(t.Context(), filepath.Join(t.TempDir(), "absent.json"), ImagePolicySource{JSON: testutil.TAPinDocument(testutil.TestMeasurement, testutil.TALaunchFile)})
 	if err != nil {
-		t.Fatalf("ResolveCDSPins: %v", err)
+		t.Fatalf("ResolveTAPins: %v", err)
 	}
 	if images := pins.Current().Images; len(images) != 1 {
 		t.Fatalf("policy images = %+v, want the supplied document's", images)
@@ -292,7 +292,7 @@ func TestClientTAPinsLogsWhatItResolved(t *testing.T) {
 			t.Cleanup(func() { slog.SetDefault(previous) })
 			pins, err := ClientTAPins(t.Context(), tc.nodePolicy, tc.source)
 			if err != nil {
-				t.Fatalf("ClientCDSPins: %v", err)
+				t.Fatalf("ClientTAPins: %v", err)
 			}
 			if images := pins.Current().Images; len(images) != 1 {
 				t.Fatalf("policy images = %+v, want the one pinned image", images)
@@ -372,7 +372,7 @@ func TestResolveTAPinsFailsOnAnUnreadablePolicy(t *testing.T) {
 
 	_, _, err := ResolveTAPins(t.Context(), filepath.Join(dir, "ta-pins.json"), ImagePolicySource{})
 	if err == nil {
-		t.Fatal("ResolveCDSPins accepted an unreadable policy path")
+		t.Fatal("ResolveTAPins accepted an unreadable policy path")
 	}
 	if !strings.Contains(err.Error(), "node policy") {
 		t.Fatalf("error = %v, want it to name the node policy", err)

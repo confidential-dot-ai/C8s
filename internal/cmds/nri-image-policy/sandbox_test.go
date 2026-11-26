@@ -146,7 +146,7 @@ func TestSandboxViolations(t *testing.T) {
 			pod:  injectedPod,
 			ctr: func(c *api.Container) {
 				injectedAddressMount(c)
-				c.Mounts[len(c.Mounts)-1].Source = "/tmp/attacker-cds-address"
+				c.Mounts[len(c.Mounts)-1].Source = "/tmp/attacker-ta-address"
 			},
 			ownSocket:  "/var/run/nri-image-policy",
 			ownAddress: "/var/run/nri-image-policy/ta-address",
@@ -841,7 +841,7 @@ func TestHostBindNeedsAPinnedDeclarationNamingIt(t *testing.T) {
 			cfg := &config{Policy: policyConfig{Mode: ModeFailClosed, Sandbox: SandboxEnforce}}
 			served := al
 			if tc.pull {
-				cfg.Allowlist.Pull.URL = "https://cds"
+				cfg.Allowlist.Pull.URL = "https://ta"
 			}
 			if tc.base {
 				cfg.Allowlist.Base = al
@@ -984,7 +984,7 @@ func TestSandboxJudgesAdmissionSnapshot(t *testing.T) {
 				t.Fatal(err)
 			}
 			cfg := &config{
-				Allowlist: allowlistConfig{Base: base, Pull: pullConfig{URL: "https://cds"}},
+				Allowlist: allowlistConfig{Base: base, Pull: pullConfig{URL: "https://ta"}},
 				Policy:    policyConfig{Mode: ModeFailClosed, Sandbox: SandboxEnforce},
 			}
 			p, store := newCachedPlugin(cfg, served)

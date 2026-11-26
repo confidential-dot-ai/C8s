@@ -16,7 +16,7 @@ func boundPin() string {
 
 // digestOnlyPin names the Trust Authority image and binds no launch file.
 var digestOnlyPin = fmt.Sprintf(
-	`{"schema_version":"2","tee":"sev-snp","measurements":[{"name":"cds","measurement":%q}]}`,
+	`{"schema_version":"2","tee":"sev-snp","measurements":[{"name":"ta","measurement":%q}]}`,
 	testutil.TestMeasurement,
 )
 
@@ -25,7 +25,7 @@ var digestOnlyPin = fmt.Sprintf(
 // RTMR[2] are in it.
 func tdxPin(rtmr string) string {
 	return fmt.Sprintf(
-		`{"schema_version":"2","tee":"tdx","measurements":[{"name":"cds","mrtd":%q,"rtmr":%s,"launch_file":%q}]}`,
+		`{"schema_version":"2","tee":"tdx","measurements":[{"name":"ta","mrtd":%q,"rtmr":%s,"launch_file":%q}]}`,
 		testutil.TestMeasurement, rtmr, testutil.TALaunchFile,
 	)
 }
@@ -38,7 +38,7 @@ func TestTAParseRefusesWhatAClientCannotUse(t *testing.T) {
 		want    error
 	}{
 		{name: "no address", want: ErrNoTAAddress},
-		{name: "address without port", address: "cds.example.com", want: ErrNotHostPort},
+		{name: "address without port", address: "ta.example.com", want: ErrNotHostPort},
 		{name: "ipv6 address", address: "[2001:db8::1]:8443", want: ErrNotIPv4},
 		{name: "port zero", address: "192.0.2.50:0", want: ErrPortUnserved},
 		{name: "loopback address", address: "127.0.0.1:8443", want: ErrNotRoutableIPv4},
@@ -91,12 +91,12 @@ func TestTAParseAcceptsATDXPinWithItsGuestRegisters(t *testing.T) {
 // An accepted block carries the endpoint, the policy its clients verify Trust Authority
 // with, and the launch file its pin binds.
 func TestTACarriesTheEndpointPolicyAndLaunchFile(t *testing.T) {
-	ta := TA{Address: "cds.example.org:8443", Measurements: boundPin()}
+	ta := TA{Address: "ta.example.org:8443", Measurements: boundPin()}
 	endpoint, err := ta.Parse()
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	if endpoint.Host != "cds.example.org" || endpoint.Port != 8443 {
+	if endpoint.Host != "ta.example.org" || endpoint.Port != 8443 {
 		t.Fatalf("endpoint = %s:%d", endpoint.Host, endpoint.Port)
 	}
 	policy, err := endpoint.Policy()

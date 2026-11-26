@@ -21,7 +21,7 @@ import (
 func testTA(t *testing.T) cmdsutil.TA {
 	t.Helper()
 	return cmdsutil.TA{
-		Address:      "cds.example.org:8443",
+		Address:      "ta.example.org:8443",
 		Measurements: string(externalTAPin(t)),
 		PinFloor:     9,
 	}

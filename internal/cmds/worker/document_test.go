@@ -77,7 +77,7 @@ func testTAPin(t *testing.T, launchFiles ...string) string {
 	pins := refvalues.ReferenceValues{Family: teetypes.FamilySNP}
 	for i, launchFile := range launchFiles {
 		pins.Images = append(pins.Images, remote.ImagePin{
-			Name:       fmt.Sprintf("cds-%d", i),
+			Name:       fmt.Sprintf("ta-%d", i),
 			Digest:     bytes.Repeat([]byte{0x50}, refvalues.DigestSize),
 			LaunchFile: []byte(launchFile),
 		})
@@ -93,7 +93,7 @@ func testDigestOnlyPin(t *testing.T) string {
 	t.Helper()
 	data, err := refvalues.Format(refvalues.ReferenceValues{
 		Family: teetypes.FamilySNP,
-		Images: []remote.ImagePin{{Name: "cds", Digest: bytes.Repeat([]byte{0x50}, refvalues.DigestSize)}},
+		Images: []remote.ImagePin{{Name: "ta", Digest: bytes.Repeat([]byte{0x50}, refvalues.DigestSize)}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -132,7 +132,7 @@ func testDocument(t *testing.T) Document {
 	return Document{
 		SchemaVersion: SchemaVersion,
 		TA: cmdsutil.TA{
-			Address:      "cds.acme.example:8443",
+			Address:      "ta.acme.example:8443",
 			Measurements: testTAPin(t, taConfig(t, "192.168.0.0/16")),
 			PinFloor:     1,
 		},
@@ -230,12 +230,12 @@ func TestParseRefusesEachMalformedField(t *testing.T) {
 		want   string
 	}{
 		{"schema", func(d *Document) { d.SchemaVersion = "c8s-worker/v2" }, "schemaVersion must be c8s-worker/v1"},
-		{"cds address without port", func(d *Document) { d.TA.Address = "cds.acme.example" }, "must be <host>:<port>"},
-		{"cds pin binding no configuration", func(d *Document) { d.TA.Measurements = testDigestOnlyPin(t) }, "binds no launch file"},
-		{"cds pin entries disagreeing on node subnets", func(d *Document) {
+		{"Trust Authority address without port", func(d *Document) { d.TA.Address = "ta.acme.example" }, "must be <host>:<port>"},
+		{"Trust Authority pin binding no configuration", func(d *Document) { d.TA.Measurements = testDigestOnlyPin(t) }, "binds no launch file"},
+		{"Trust Authority pin entries disagreeing on node subnets", func(d *Document) {
 			d.TA.Measurements = testTAPin(t, taConfig(t, "192.168.0.0/16"), taConfig(t, "172.16.0.0/12"))
 		}, "binds another configuration"},
-		{"cds pin binding something else", func(d *Document) { d.TA.Measurements = testTAPin(t, "kind: Pod\n") }, "the pinned Trust Authority configuration"},
+		{"Trust Authority pin binding something else", func(d *Document) { d.TA.Measurements = testTAPin(t, "kind: Pod\n") }, "the pinned Trust Authority configuration"},
 		{"router", func(d *Document) { d.Router = &nodeservices.Router{ACMEEmail: "ops@acme.example"} }, "require router.hostnames"},
 
 		{"api server with a scheme", func(d *Document) { d.Kubernetes.APIServer = "https://acme.k8s.example:443" }, "must not carry a scheme"},

@@ -357,7 +357,7 @@ func TestShowRejectsUntrustedSignature(t *testing.T) {
 
 func TestRefusesURLWithPath(t *testing.T) {
 	h := newHarness(t)
-	h.url += "/cds"
+	h.url += "/ta"
 	if _, err := h.run(t, "show"); err == nil || !strings.Contains(err.Error(), "no path") {
 		t.Fatalf("show with a URL path: error = %v", err)
 	}

@@ -152,7 +152,7 @@ func TestRunCreateStoresBlobAndPrintsGuidance(t *testing.T) {
 	}
 
 	if gotPath != "/secrets/tenant-a/volumes/weights" {
-		t.Errorf("cds path = %q", gotPath)
+		t.Errorf("Trust Authority path = %q", gotPath)
 	}
 	if gotReq.Overwrite {
 		t.Error("create asked to overwrite")

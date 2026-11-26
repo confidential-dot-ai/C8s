@@ -174,10 +174,10 @@ func TestParseTAURL(t *testing.T) {
 		raw     string
 		wantErr string
 	}{
-		{raw: "https://c8s-cds.c8s-system.svc:8443"},
-		{raw: "http://c8s-cds:8443", wantErr: `--ta-url must use https (armTLS), got scheme "http"`},
-		{raw: "https://c8s-cds:8443/base", wantErr: "--ta-url must be an origin without credentials, path, query, or fragment"},
-		{raw: "https://user@c8s-cds:8443", wantErr: "--ta-url must be an origin without credentials, path, query, or fragment"},
+		{raw: "https://c8s-ta.c8s-system.svc:8443"},
+		{raw: "http://c8s-ta:8443", wantErr: `--ta-url must use https (armTLS), got scheme "http"`},
+		{raw: "https://c8s-ta:8443/base", wantErr: "--ta-url must be an origin without credentials, path, query, or fragment"},
+		{raw: "https://user@c8s-ta:8443", wantErr: "--ta-url must be an origin without credentials, path, query, or fragment"},
 		{raw: "not a URL", wantErr: `invalid --ta-url "not a URL"`},
 	} {
 		t.Run(tc.raw, func(t *testing.T) {
@@ -245,7 +245,7 @@ func nodeTAFiles(t *testing.T) (address, pins, verifier string) {
 	t.Helper()
 	dir := t.TempDir()
 	address = filepath.Join(dir, "ta-address")
-	if err := os.WriteFile(address, cmdsutil.FormatTAAddress("cds.example.org:30808"), 0o600); err != nil {
+	if err := os.WriteFile(address, cmdsutil.FormatTAAddress("ta.example.org:30808"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	pins = filepath.Join(dir, "ta-pins.json")
@@ -310,7 +310,7 @@ func TestNewHandlerRefusesMixedTASources(t *testing.T) {
 			cfg: config{
 				attestationAPIURL: node.attestationAPIURL,
 				requestTimeout:    time.Second,
-				taURL:             "https://cds.example:8443",
+				taURL:             "https://ta.example:8443",
 			},
 			want: "remove --ta-url",
 		},
@@ -364,12 +364,12 @@ func TestNewHandlerRefusesANamedVerifier(t *testing.T) {
 // only its image admits any Trust Authority VM.
 func TestNewHandlerRejectsAPinWithoutALaunchBinding(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "ta-pin.json")
-	unbound := `{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"cds","measurement":"` + testutil.TestMeasurement + `"}]}`
+	unbound := `{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"ta","measurement":"` + testutil.TestMeasurement + `"}]}`
 	if err := os.WriteFile(path, []byte(unbound), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := newHandler(t.Context(), config{
-		taURL:              "https://c8s-cds:8443",
+		taURL:              "https://c8s-ta:8443",
 		measurementsConfig: path,
 		attestationAPIURL:  "http://attestation-api:8400",
 		requestTimeout:     time.Second,
@@ -382,7 +382,7 @@ func TestNewHandlerRejectsAPinWithoutALaunchBinding(t *testing.T) {
 func TestNewHandlerServesHealthWithoutDialingTA(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	handler, err := newHandler(t.Context(), config{
-		taURL:              "https://c8s-cds.c8s-system.svc:8443",
+		taURL:              "https://c8s-ta.c8s-system.svc:8443",
 		measurementsConfig: testutil.TAPinFile(t),
 		attestationAPIURL:  "http://attestation-api.c8s-system.svc:8400",
 		requestTimeout:     time.Second,
@@ -493,7 +493,7 @@ func TestCommandRejectsPublicListenerBeforeStarting(t *testing.T) {
 	cmd.SetErr(io.Discard)
 	cmd.SetArgs([]string{
 		"--host=0.0.0.0",
-		"--ta-url=https://c8s-cds.c8s-system.svc:8443",
+		"--ta-url=https://c8s-ta.c8s-system.svc:8443",
 		"--attestation-api-url=http://attestation-api.c8s-system.svc:8400",
 	})
 	err := cmd.Execute()
@@ -516,7 +516,7 @@ func validConfig(t *testing.T) config {
 	return config{
 		host:               "127.0.0.1",
 		port:               8801,
-		taURL:              "https://c8s-cds.c8s-system.svc:8443",
+		taURL:              "https://c8s-ta.c8s-system.svc:8443",
 		measurementsConfig: testutil.TAPinFile(t),
 		attestationAPIURL:  "http://attestation-api.c8s-system.svc:8400",
 		requestTimeout:     time.Second,

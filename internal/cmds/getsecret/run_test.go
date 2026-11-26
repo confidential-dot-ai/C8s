@@ -80,7 +80,7 @@ func TestParseSecretSpec(t *testing.T) {
 func validConfig(t *testing.T) config {
 	t.Helper()
 	return config{
-		TAURL:                  "https://cds.example",
+		TAURL:                  "https://ta.example",
 		AttestationApiURL:      "http://127.0.0.1:8080",
 		MeasurementsConfigJSON: testutil.TAPinDocument(testutil.TestMeasurement, testutil.TALaunchFile),
 		Attempts:               3,
@@ -103,7 +103,7 @@ func TestValidate(t *testing.T) {
 		want   string
 	}{
 		{"no Trust Authority URL", func(c *config) { c.TAURL = "" }, "--ta-url"},
-		{"plaintext cds url", func(c *config) { c.TAURL = "http://cds.example" }, "https"},
+		{"plaintext Trust Authority URL", func(c *config) { c.TAURL = "http://ta.example" }, "https"},
 		{"no attestation api", func(c *config) { c.AttestationApiURL = "" }, "--attestation-api-url"},
 		{"no secrets", func(c *config) { c.Secrets = nil }, "--secret"},
 		{"negative attempts", func(c *config) { c.Attempts = -1 }, "--attempts"},
@@ -136,12 +136,12 @@ func TestValidate(t *testing.T) {
 // path, which the server would reject as non-canonical.
 func TestValidateTrimsURL(t *testing.T) {
 	cfg := validConfig(t)
-	cfg.TAURL = "https://cds.example/"
+	cfg.TAURL = "https://ta.example/"
 	if err := validate(&cfg); err != nil {
 		t.Fatal(err)
 	}
-	if cfg.TAURL != "https://cds.example" {
-		t.Fatalf("CDSURL = %q, want the trailing slash trimmed", cfg.TAURL)
+	if cfg.TAURL != "https://ta.example" {
+		t.Fatalf("TAURL = %q, want the trailing slash trimmed", cfg.TAURL)
 	}
 }
 
@@ -339,7 +339,7 @@ func openOutRoot(t *testing.T, dir string) *os.Root {
 // pinning nothing is not an acceptable fallback for it.
 func TestRunRejectsAPinWithoutALaunchBinding(t *testing.T) {
 	cfg := validConfig(t)
-	cfg.MeasurementsConfigJSON = `{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"cds","measurement":"` + testutil.TestMeasurement + `"}]}`
+	cfg.MeasurementsConfigJSON = `{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"ta","measurement":"` + testutil.TestMeasurement + `"}]}`
 	if err := run(t.Context(), cfg); err == nil || !strings.Contains(err.Error(), "launch file") {
 		t.Fatalf("err = %v, want a launch-binding refusal", err)
 	}

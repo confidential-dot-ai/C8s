@@ -88,7 +88,7 @@ func TestStartupSourceMode(t *testing.T) {
 		{
 			name: "pull",
 			cfg: &config{Allowlist: allowlistConfig{
-				Pull: pullConfig{URL: "https://cds.example"},
+				Pull: pullConfig{URL: "https://ta.example"},
 			}},
 			want: "pull",
 		},
@@ -710,7 +710,7 @@ func TestPullLoop304CountsAsReachingTA(t *testing.T) {
 
 	pull, advance := testPull(discardLogger())
 	advance(pullStallAfter)
-	pull.failed(errors.New("lookup cds.private: no such host"))
+	pull.failed(errors.New("lookup ta.private: no such host"))
 	if pull.stall() == "" {
 		t.Fatal("no stall reported for a Trust Authority the node reached nothing from")
 	}

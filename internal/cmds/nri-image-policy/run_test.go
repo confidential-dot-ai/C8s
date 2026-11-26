@@ -592,7 +592,7 @@ func TestTheNodePinSourceRefusesWithoutPins(t *testing.T) {
 		Timeout:           time.Second,
 	}.taPinSource(discardLogger())
 	if !errors.Is(err, cmdsutil.ErrTAPinUnbound) {
-		t.Fatalf("err = %v, want errors.Is cmdsutil.ErrCDSPinUnbound", err)
+		t.Fatalf("err = %v, want errors.Is cmdsutil.ErrTAPinUnbound", err)
 	}
 }
 
@@ -972,7 +972,7 @@ func TestStartHealthServer_HealthzReportsFreshness(t *testing.T) {
 	if err := startHealthServer(t.Context(), healthServerConfig{
 		logger:       discardLogger(),
 		plugin:       p,
-		pull:         newAllowlistPull("cds.example", time.Now, discardLogger()),
+		pull:         newAllowlistPull("ta.example", time.Now, discardLogger()),
 		addr:         "unix://" + sock,
 		readTimeout:  time.Second,
 		writeTimeout: time.Second,

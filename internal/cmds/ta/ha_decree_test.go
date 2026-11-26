@@ -302,7 +302,7 @@ func TestPinDecreeNeedsTheVersionItAppliesOn(t *testing.T) {
 		"--config", c.configPath,
 		"--operator-key", c.keyPath,
 		"--out", filepath.Join(t.TempDir(), "pins.json"),
-		"--to", "cds-1.acme.example",
+		"--to", "ta-1.acme.example",
 		"--ta-pin", c.taPinPath,
 		"--platform", "sev-snp",
 		"--vcpus", "2",
@@ -680,7 +680,7 @@ func TestAReplicaAddressNamesAHostAndAPort(t *testing.T) {
 		port    uint16
 	}{
 		{"10.0.0.5", "10.0.0.5", replicaPort},
-		{"cds-1.example.org", "cds-1.example.org", replicaPort},
+		{"ta-1.example.org", "ta-1.example.org", replicaPort},
 		{"127.0.0.1:8441", "127.0.0.1", 8441},
 	} {
 		t.Run(tc.address, func(t *testing.T) {

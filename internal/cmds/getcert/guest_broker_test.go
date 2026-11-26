@@ -52,7 +52,7 @@ func TestRunGuestRejectsIncompleteConfig(t *testing.T) {
 	claims := guestTestClaims(t)
 	valid := func(t *testing.T) GuestConfig {
 		return GuestConfig{
-			TAURL: "https://cds.example", HTTPClient: &http.Client{}, VolumeRoot: guestTempRoot(t), InstanceID: claims.InstanceID(),
+			TAURL: "https://ta.example", HTTPClient: &http.Client{}, VolumeRoot: guestTempRoot(t), InstanceID: claims.InstanceID(),
 			Snapshot: func(context.Context) (workloadclaims.PodClaims, error) { return claims, nil },
 			Commit:   func(_ workloadclaims.PodClaims, publish func() error) error { return publish() },
 		}
@@ -61,8 +61,8 @@ func TestRunGuestRejectsIncompleteConfig(t *testing.T) {
 		mutate func(*GuestConfig)
 		want   string
 	}{
-		"unparseable Trust Authority URL":  {func(g *GuestConfig) { g.TAURL = "://cds" }, "TAURL: "},
-		"plaintext Trust Authority URL":    {func(g *GuestConfig) { g.TAURL = "http://cds.example" }, "https URL with a host"},
+		"unparseable Trust Authority URL":  {func(g *GuestConfig) { g.TAURL = "://ta" }, "TAURL: "},
+		"plaintext Trust Authority URL":    {func(g *GuestConfig) { g.TAURL = "http://ta.example" }, "https URL with a host"},
 		"Trust Authority URL without host": {func(g *GuestConfig) { g.TAURL = "https:///attest" }, "https URL with a host"},
 		"no HTTP client":                   {func(g *GuestConfig) { g.HTTPClient = nil }, "HTTPClient is required"},
 		"no volume root":                   {func(g *GuestConfig) { g.VolumeRoot = nil }, "volume root is required"},
@@ -198,7 +198,7 @@ func TestRunGuestRetriesWithoutEvidenceUntilCancelled(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		done <- RunGuest(ctx, GuestConfig{
-			TAURL: "https://cds.invalid", HTTPClient: &http.Client{}, VolumeRoot: root, InstanceID: claims.InstanceID(),
+			TAURL: "https://ta.invalid", HTTPClient: &http.Client{}, VolumeRoot: root, InstanceID: claims.InstanceID(),
 			Snapshot: func(context.Context) (workloadclaims.PodClaims, error) {
 				select {
 				case asked <- struct{}{}:

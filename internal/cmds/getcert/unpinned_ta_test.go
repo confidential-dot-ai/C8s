@@ -15,24 +15,24 @@ var testTAPin = testutil.TAPinDocument(testutil.TestMeasurement, testutil.TALaun
 // Without a pin armTLS accepts any attested Trust Authority, so the client is not built.
 func TestUnpinnedTARefused(t *testing.T) {
 	cfg := config{
-		TAURL:             "https://cds:8443",
+		TAURL:             "https://ta:8443",
 		AttestationApiURL: "http://attestation-api:8400",
 		SAN:               "host.example.com",
 	}
 	if _, err := taHTTPClient(t.Context(), cfg); !errors.Is(err, cmdsutil.ErrTAPinUnbound) {
-		t.Fatalf("err = %v, want errors.Is cmdsutil.ErrCDSPinUnbound", err)
+		t.Fatalf("err = %v, want errors.Is cmdsutil.ErrTAPinUnbound", err)
 	}
 }
 
 // A pin document is what --image-policy-file is for; it must still work.
 func TestPinnedTAAccepted(t *testing.T) {
 	cfg := config{
-		TAURL:                  "https://cds:8443",
+		TAURL:                  "https://ta:8443",
 		AttestationApiURL:      "http://attestation-api:8400",
 		SAN:                    "host.example.com",
 		MeasurementsConfigJSON: testTAPin,
 	}
 	if _, err := taHTTPClient(t.Context(), cfg); err != nil {
-		t.Fatalf("cdsHTTPClient: %v", err)
+		t.Fatalf("taHTTPClient: %v", err)
 	}
 }

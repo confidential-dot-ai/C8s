@@ -12,7 +12,7 @@ import (
 
 func TestRetryRecoversOnceReleased(t *testing.T) {
 	var calls int
-	err := Retry(context.Background(), testConfig("https://cds.example"), "volume", func(context.Context) error {
+	err := Retry(context.Background(), testConfig("https://ta.example"), "volume", func(context.Context) error {
 		calls++
 		if calls < 3 {
 			return errNotYet
@@ -28,7 +28,7 @@ func TestRetryRecoversOnceReleased(t *testing.T) {
 }
 
 func TestRetryGivesUp(t *testing.T) {
-	cfg := testConfig("https://cds.example")
+	cfg := testConfig("https://ta.example")
 	var calls int
 	err := Retry(context.Background(), cfg, "volume", func(context.Context) error {
 		calls++
@@ -45,7 +45,7 @@ func TestRetryGivesUp(t *testing.T) {
 // With no attempt bound the loop outlasts any fixed count: the main image may
 // still be pulling long after a bounded window would have expired (C8s #977).
 func TestRetryWithoutABoundWaitsUntilReleased(t *testing.T) {
-	cfg := testConfig("https://cds.example")
+	cfg := testConfig("https://ta.example")
 	cfg.Attempts = 0
 	var calls int
 	err := Retry(context.Background(), cfg, "volume", func(context.Context) error {
@@ -99,7 +99,7 @@ func TestNextWait(t *testing.T) {
 // A Terminal error stops the loop on its first attempt, and reaches the caller
 // intact through the wrapping an attempt does on the way out.
 func TestRetryStopsOnATerminalError(t *testing.T) {
-	cfg := testConfig("https://cds.example")
+	cfg := testConfig("https://ta.example")
 	var calls int
 	err := Retry(context.Background(), cfg, "secret", func(context.Context) error {
 		calls++
@@ -119,7 +119,7 @@ func TestRetryStopsOnATerminalError(t *testing.T) {
 func TestRetryStopsWhenTheContextIsDone(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	err := Retry(ctx, testConfig("https://cds.example"), "volume", func(context.Context) error {
+	err := Retry(ctx, testConfig("https://ta.example"), "volume", func(context.Context) error {
 		return errNotYet
 	})
 	if err == nil {

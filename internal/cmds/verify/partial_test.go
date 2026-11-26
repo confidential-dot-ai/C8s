@@ -458,7 +458,7 @@ func TestEndpointEvidenceMarksChainDerived(t *testing.T) {
 }
 
 // run() over a lying HTTPS server, end to end — the production shape: TLS
-// dial, same-connection fetch, evidence, verdict. The document claims cds
+// dial, same-connection fetch, evidence, verdict. The document claims ta
 // while the door serves another cert; the (stub) evidence then fails
 // verification, so the verdict is a failure — and the door lie's digests
 // ride it rather than being buried. A refused dial is exit 3.
@@ -587,7 +587,7 @@ func TestVerifyEvidenceRefusalDropsSuccessNotes(t *testing.T) {
 			name:    "sandbox ID pin, later check in the same policy",
 			cfg:     config{meshCA: sandboxCA, sandboxID: id},
 			ev:      func(ev *evidence) { ev.leaf, ev.sandboxID = sandboxLeaf, id },
-			opKeys:  operatorKeysReport{note: "kind is not cds"},
+			opKeys:  operatorKeysReport{note: "kind is not ta"},
 			refuse:  func(cfg *config) { cfg.operatorKeys = keysPath },
 			field:   "sandbox_id_note",
 			success: "matches --sandbox-id",

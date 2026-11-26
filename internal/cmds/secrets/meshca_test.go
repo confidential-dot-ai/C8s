@@ -73,7 +73,7 @@ func runAttested(t *testing.T, stdin string, args ...string) (stdout, stderr str
 // same build, so the write is refused until the operator names the mesh CA that
 // distinguishes their Trust Authority from another one at the same measurement.
 func TestPutRefusesWithoutMeshCA(t *testing.T) {
-	f, url := newAttestedTA(t, testutil.MeshCA(t, "cds-m"))
+	f, url := newAttestedTA(t, testutil.MeshCA(t, "ta-m"))
 	key := writeOperatorKey(t)
 
 	_, _, err := runAttested(t, "hunter2", "put", "/tenant-a/db", "--url", url,
@@ -90,11 +90,11 @@ func TestPutRefusesWithoutMeshCA(t *testing.T) {
 }
 
 // The gate is an identity check on the CA key, so a Trust Authority serving a CA the
-// operator never pinned is refused even though its attestation is valid — the
-// CDS_N case, where a genuine TEE at the same measurement is not your Trust Authority.
+// operator never pinned is refused even though its attestation is valid: a
+// genuine TEE at the same measurement is not your Trust Authority.
 func TestPutRefusesAnotherTAsMeshCA(t *testing.T) {
-	f, url := newAttestedTA(t, testutil.MeshCA(t, "cds-n"))
-	bundle := writePEM(t, "mesh-ca.pem", testutil.MeshCA(t, "cds-m"))
+	f, url := newAttestedTA(t, testutil.MeshCA(t, "ta-n"))
+	bundle := writePEM(t, "mesh-ca.pem", testutil.MeshCA(t, "ta-m"))
 	key := writeOperatorKey(t)
 
 	_, _, err := runAttested(t, "hunter2", "put", "/tenant-a/db", "--url", url,
@@ -112,7 +112,7 @@ func TestPutRefusesAnotherTAsMeshCA(t *testing.T) {
 
 // The matching CA is the whole point: the write proceeds and the secret lands.
 func TestPutAcceptsThePinnedMeshCA(t *testing.T) {
-	ca := testutil.MeshCA(t, "cds-m")
+	ca := testutil.MeshCA(t, "ta-m")
 	f, url := newAttestedTA(t, ca)
 	bundle := writePEM(t, "mesh-ca.pem", ca)
 	key := writeOperatorKey(t)
@@ -133,7 +133,7 @@ func TestPutAcceptsThePinnedMeshCA(t *testing.T) {
 // A bundle carrying several CAs (rotation) admits a Trust Authority serving any one of
 // them, and still refuses one serving a CA outside the bundle.
 func TestPutAcceptsAnyCAInTheBundle(t *testing.T) {
-	old, current := testutil.MeshCA(t, "cds-old"), testutil.MeshCA(t, "cds-current")
+	old, current := testutil.MeshCA(t, "ta-old"), testutil.MeshCA(t, "ta-current")
 	bundle := writePEM(t, "mesh-ca.pem", old, current)
 	key := writeOperatorKey(t)
 
@@ -144,7 +144,7 @@ func TestPutAcceptsAnyCAInTheBundle(t *testing.T) {
 			t.Fatalf("a CA in the bundle was refused: %v", err)
 		}
 	}
-	_, url := newAttestedTA(t, testutil.MeshCA(t, "cds-n"))
+	_, url := newAttestedTA(t, testutil.MeshCA(t, "ta-n"))
 	if _, _, err := runAttested(t, "hunter2", "put", "/tenant-a/db", "--url", url,
 		"--image-policy-file", testutil.TAPinFile(t), "--operator-key", key, "--mesh-ca", bundle); err == nil {
 		t.Fatal("a CA outside the bundle was accepted")
@@ -154,7 +154,7 @@ func TestPutAcceptsAnyCAInTheBundle(t *testing.T) {
 // --force is the documented escape hatch. It writes, and it says on stderr that
 // it skipped the check, so the bypass is visible in an operator's transcript.
 func TestPutForceSkipsTheCheckLoudly(t *testing.T) {
-	f, url := newAttestedTA(t, testutil.MeshCA(t, "cds-n"))
+	f, url := newAttestedTA(t, testutil.MeshCA(t, "ta-n"))
 	key := writeOperatorKey(t)
 
 	_, errOut, err := runAttested(t, "hunter2", "put", "/tenant-a/db", "--url", url,
@@ -174,7 +174,7 @@ func TestPutForceSkipsTheCheckLoudly(t *testing.T) {
 // would vacuously satisfy a subset check.
 func TestPutRefusesEmptyServedCA(t *testing.T) {
 	_, url := newAttestedTA(t, nil)
-	bundle := writePEM(t, "mesh-ca.pem", testutil.MeshCA(t, "cds-m"))
+	bundle := writePEM(t, "mesh-ca.pem", testutil.MeshCA(t, "ta-m"))
 	key := writeOperatorKey(t)
 
 	_, _, err := runAttested(t, "hunter2", "put", "/tenant-a/db", "--url", url,
@@ -190,7 +190,7 @@ func TestPutRefusesEmptyServedCA(t *testing.T) {
 // An unreadable or certificate-free bundle fails the write rather than
 // degrading to no check.
 func TestPutRefusesUnusableBundle(t *testing.T) {
-	_, url := newAttestedTA(t, testutil.MeshCA(t, "cds-m"))
+	_, url := newAttestedTA(t, testutil.MeshCA(t, "ta-m"))
 	key := writeOperatorKey(t)
 	empty := filepath.Join(t.TempDir(), "empty.pem")
 	if err := os.WriteFile(empty, []byte("not pem\n"), 0o600); err != nil {
@@ -227,7 +227,7 @@ func TestPutPlaintextInsecureSkipsTheGate(t *testing.T) {
 // one. Each of these is a distinct refusal, and none of them may fall through
 // to a comparison against a set the CLI never actually received.
 func TestPutRefusesAnUnusableCAResponse(t *testing.T) {
-	good := testutil.MeshCA(t, "cds-m")
+	good := testutil.MeshCA(t, "ta-m")
 	bundle := writePEM(t, "mesh-ca.pem", good)
 	key := writeOperatorKey(t)
 
@@ -290,8 +290,8 @@ func TestPutRefusesAnUnusableCAResponse(t *testing.T) {
 // check, so proceed" branch: an unanswered /ca is the same refusal as a wrong
 // one.
 func TestPutRefusesWhenTheCAIsUnreachable(t *testing.T) {
-	_, url := newAttestedTA(t, testutil.MeshCA(t, "cds-m"))
-	bundle := writePEM(t, "mesh-ca.pem", testutil.MeshCA(t, "cds-m"))
+	_, url := newAttestedTA(t, testutil.MeshCA(t, "ta-m"))
+	bundle := writePEM(t, "mesh-ca.pem", testutil.MeshCA(t, "ta-m"))
 	key := writeOperatorKey(t)
 
 	// A port with nothing behind it: the URL parses and the scheme is https,
@@ -308,7 +308,7 @@ func TestPutRefusesWhenTheCAIsUnreachable(t *testing.T) {
 // usable bundle: the extra block is skipped, and the CA in it still matches.
 // Operators paste these out of files that hold more than one kind of object.
 func TestPutIgnoresNonCertificateBlocksInTheBundle(t *testing.T) {
-	ca := testutil.MeshCA(t, "cds-m")
+	ca := testutil.MeshCA(t, "ta-m")
 	f, url := newAttestedTA(t, ca)
 	var buf bytes.Buffer
 	if err := pem.Encode(&buf, &pem.Block{Type: "PRIVATE KEY", Bytes: []byte("ignored")}); err != nil {
@@ -335,7 +335,7 @@ func TestPutIgnoresNonCertificateBlocksInTheBundle(t *testing.T) {
 // A bundle whose certificate does not parse fails the write. Pinning against a
 // set the CLI could not fully read is not pinning.
 func TestPutRefusesABundleWithAnUnparseableCertificate(t *testing.T) {
-	ca := testutil.MeshCA(t, "cds-m")
+	ca := testutil.MeshCA(t, "ta-m")
 	_, url := newAttestedTA(t, ca)
 	path := filepath.Join(t.TempDir(), "truncated.pem")
 	if err := os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ca[:len(ca)/2]}), 0o600); err != nil {
@@ -359,7 +359,7 @@ func TestPutRefusesABundleWithAnUnparseableCertificate(t *testing.T) {
 // bytes. Its handshake passes attestation, so only the serving-certificate pin
 // stands between it and the secret.
 func TestPutRefusesAWriteThatRedialsToAnotherPeer(t *testing.T) {
-	ca := testutil.MeshCA(t, "cds-m")
+	ca := testutil.MeshCA(t, "ta-m")
 	impostor := &fakeTA{values: map[string]intsecrets.Origin{}}
 	impostorMux := http.NewServeMux()
 	impostorMux.HandleFunc("/ca", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write(testutil.PEMCerts(ca)) })

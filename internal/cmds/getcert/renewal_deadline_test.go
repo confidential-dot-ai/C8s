@@ -258,7 +258,7 @@ func TestRenewLoopRenewsOnBoundCAWhileBackingOff(t *testing.T) {
 
 	at := waitForAttempts(t, attempts, 2)
 	if gap := at[1].Sub(changed); gap < 0 || gap > time.Second {
-		t.Fatalf("renewed %v after cds served the renewed CA, want within a second of it", gap)
+		t.Fatalf("renewed %v after the Trust Authority served the renewed CA, want within a second of it", gap)
 	}
 }
 
