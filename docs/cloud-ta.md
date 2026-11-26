@@ -46,6 +46,8 @@ pins still bind RTMR[3], so they cannot authenticate an MRCONFIGID-only TA.
 
 For an MRCONFIGID-only TDX deployment with one replica filling one voter seat,
 follow the [runbook's `--alone` warning](ta-ha-runbooks.md#1-start-a-cluster-genesis).
+Use `--platform tdx --image-manifest <manifest.json>` and omit `--vcpus`;
+the manifest must contain your Kata guest's MRTD, RTMR[1] and RTMR[2].
 `genesis --alone` still authenticates the target: pass a separate schema 3
 `--ta-pin` with MRTD, RTMR[1], RTMR[2], the full `launch_file`, and
 `"launch_file_field": "init_data"`. Also pin RTMR[3] to all zero (`""` in the
@@ -115,8 +117,8 @@ a TDX pin using the file's RTMR[3] seed does not match an MRCONFIGID-only TA.
 ```
 
 For HA commands taking `--image-manifest`, supply a manifest with your Kata
-guest's launch digest. These pin builders check the initdata algorithm against
-`--platform`; TA startup checks it against the attested family.
+guest's image measurements. The pin builders check the initdata algorithm
+against `--platform`; TA startup checks it against the attested family.
 
 ## The flows it needs
 
