@@ -1,6 +1,7 @@
 package ta
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/sha512"
@@ -731,6 +732,50 @@ func TestVotersDecreeNamesTheSeatsOfTheCluster(t *testing.T) {
 		})
 		if err == nil {
 			t.Fatalf("a decree naming %d voter seats was signed", seats)
+		}
+	}
+}
+
+// --launch-file-field init_data pins guests whose launcher bound the launch
+// file in MRCONFIGID: the decree names the field, and the pins a reader gets
+// back read it there beside an RTMR[3] pinned untouched.
+func TestPinFlagsPinGuestsThatReadMRCONFIGID(t *testing.T) {
+	register := func(b string) string { return strings.Repeat(b, 48) }
+	manifest := filepath.Join(t.TempDir(), "manifest.json")
+	writeTestFile(t, manifest, []byte(fmt.Sprintf(`{"version":3,"build":{"platform":"tdx"},"tdx":{"mrtd":%q,"rtmr1":%q,"rtmr2":%q}}`,
+		register("aa"), register("bb"), register("cc"))))
+	launchFile := []byte("schemaVersion: c8s-ta/v1\nclusterID: lane\n")
+
+	pins, err := pinFlags{platform: "tdx", manifests: []string{manifest}, launchFileField: "init_data"}.document(launchFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pins.LaunchFileField != "init_data" {
+		t.Fatalf("launch_file_field = %q", pins.LaunchFileField)
+	}
+	bound, err := pins.WithLaunchFile(launchFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, image := range bound.Images {
+		if !image.LaunchFileInInitData || !bytes.Equal(image.Registers[3], make([]byte, 48)) {
+			t.Errorf("entry %q: reads MRCONFIGID %v, RTMR[3] pin %x", image.Name, image.LaunchFileInInitData, image.Registers[3])
+		}
+	}
+
+	plain, err := pinFlags{platform: "tdx", manifests: []string{manifest}}.document(launchFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plain.LaunchFileField != "" {
+		t.Errorf("without the flag launch_file_field = %q", plain.LaunchFileField)
+	}
+	for _, refused := range []pinFlags{
+		{platform: "sev-snp", vcpus: []int{2}, manifests: []string{snpManifest(t, strings.Repeat("ab", 48))}, launchFileField: "init_data"},
+		{platform: "tdx", manifests: []string{manifest}, launchFileField: "host_data"},
+	} {
+		if _, err := refused.document(launchFile); err == nil || !strings.Contains(err.Error(), "--launch-file-field") {
+			t.Errorf("%s with field %q: %v, want a refusal naming --launch-file-field", refused.platform, refused.launchFileField, err)
 		}
 	}
 }

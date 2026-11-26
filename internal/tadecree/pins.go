@@ -87,10 +87,18 @@ func EntryBindsLaunch(image remote.ImagePin) bool {
 // SHA-256 of the file they all bind. Every Trust Authority of a cluster boots the same
 // launch file, so the digest names it and a decree stays small enough to keep
 // in the cluster's state.
+//
+// LaunchFileField is where the entries read that file on TDX: empty for
+// RTMR[3], or "init_data" for MRCONFIGID. An entry cannot say so itself once
+// its launch file is gone, so the document says it for all of them.
 type PinDocument struct {
 	Images           ElidedImages `json:"document"`
 	LaunchFileSHA256 string       `json:"launch_file_sha256"`
+	LaunchFileField  string       `json:"launch_file_field,omitempty"`
 }
+
+// launchFileFieldInitData is the one value launch_file_field takes.
+const launchFileFieldInitData = "init_data"
 
 // NewPinDocument elides the launch file from a Trust Authority pin document. Every entry
 // must bind the one file, which the digest then names.
@@ -103,8 +111,13 @@ func NewPinDocument(measurements []byte) (*PinDocument, error) {
 	if err != nil {
 		return nil, fmt.Errorf("a Trust Authority pin document %w", err)
 	}
+	field, err := launchFileField(images)
+	if err != nil {
+		return nil, err
+	}
 	for i := range images.Images {
 		images.Images[i].LaunchFile = nil
+		images.Images[i].LaunchFileInInitData = false
 	}
 	elided, err := refvalues.Format(images)
 	if err != nil {
@@ -114,7 +127,24 @@ func NewPinDocument(measurements []byte) (*PinDocument, error) {
 	return &PinDocument{
 		Images:           ElidedImages{document{json: elided}},
 		LaunchFileSHA256: hex.EncodeToString(digest[:]),
+		LaunchFileField:  field,
 	}, nil
+}
+
+// launchFileField is the one field every entry reads its launch file from.
+// One Trust Authority boots one way, so entries naming different fields name
+// no one VM.
+func launchFileField(images refvalues.ReferenceValues) (string, error) {
+	inInitData := images.Images[0].LaunchFileInInitData
+	for _, image := range images.Images {
+		if image.LaunchFileInInitData != inInitData {
+			return "", fmt.Errorf("entry %q reads its launch file from another field than entry %q, and one pin names one Trust Authority", image.Name, images.Images[0].Name)
+		}
+	}
+	if inInitData {
+		return launchFileFieldInitData, nil
+	}
+	return "", nil
 }
 
 // WithLaunchFile is the pin set a reader holds its Trust Authority to: the decree's
@@ -132,10 +162,16 @@ func (p PinDocument) WithLaunchFile(file []byte) (refvalues.ReferenceValues, err
 	if err != nil {
 		return refvalues.ReferenceValues{}, err
 	}
+	return p.bound(images, file), nil
+}
+
+// bound puts file back in every entry, read from the field the decree names.
+func (p PinDocument) bound(images refvalues.ReferenceValues, file []byte) refvalues.ReferenceValues {
 	for i := range images.Images {
 		images.Images[i].LaunchFile = file
+		images.Images[i].LaunchFileInInitData = p.LaunchFileField == launchFileFieldInitData
 	}
-	return images, nil
+	return images
 }
 
 // check is what a decree's pins must be before any reader binds them to a
@@ -144,8 +180,23 @@ func (p PinDocument) check() error {
 	if _, err := p.launchDigest(); err != nil {
 		return err
 	}
-	_, err := p.elided()
-	return err
+	images, err := p.elided()
+	if err != nil {
+		return err
+	}
+	switch p.LaunchFileField {
+	case "":
+		return nil
+	case launchFileFieldInitData:
+		// Any launch file stands in: the checks are on the entries, which must
+		// name one Trust Authority VM however they are later bound.
+		if _, err := cmdsutil.TALaunchFile(p.bound(images, []byte{0})); err != nil {
+			return fmt.Errorf("launch_file_field %q: the entries %w", p.LaunchFileField, err)
+		}
+		return nil
+	default:
+		return fmt.Errorf("launch_file_field %q, want %q or none", p.LaunchFileField, launchFileFieldInitData)
+	}
 }
 
 // elided are the decree's entries as they are signed, with no launch binding

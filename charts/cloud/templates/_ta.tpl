@@ -7,8 +7,8 @@
 {{- fail "VALIDATION_ERROR kind=ta_pin_content: ta.measurementsConfig must be the JSON content of the Trust Authority pin, not a file path — use `c8s install --ta-pin <file>` or helm --set-file ta.measurementsConfig=<file>" -}}
 {{- end -}}
 {{- $schema := dig "schema_version" "" (mustFromJson $document) -}}
-{{- if ne $schema "2" -}}
-{{- fail (printf "VALIDATION_ERROR kind=ta_pin_schema: ta.measurementsConfig is schema_version %q, want \"2\": a Trust Authority is pinned to the launch file it serves, which only schema 2 carries" $schema) -}}
+{{- if not (has $schema (list "2" "3")) -}}
+{{- fail (printf "VALIDATION_ERROR kind=ta_pin_schema: ta.measurementsConfig is schema_version %q, want \"2\" or \"3\": a Trust Authority is pinned to the launch file it serves, which no earlier schema carries" $schema) -}}
 {{- end -}}
 {{- end -}}
 

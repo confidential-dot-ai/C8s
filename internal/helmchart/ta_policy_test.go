@@ -1,6 +1,9 @@
 package helmchart
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // The chart's platform clients hold no pin of their own: the node hands each
 // of them the one it was installed with, so nothing renders a policy flag
@@ -50,5 +53,21 @@ func TestChartRefusesATAPinThatBindsNoLaunchFile(t *testing.T) {
 	}
 	if kind := parseValidationErrorKind(out); kind != "ta_pin_schema" {
 		t.Fatalf("validation kind = %q, want ta_pin_schema\n%s", kind, out)
+	}
+}
+
+// A schema 3 pin carries the launch file too, read from MRCONFIGID on TDX, so
+// the chart hands it to the nodes as it does a schema 2 pin.
+func TestChartAcceptsATAPinThatReadsMRCONFIGID(t *testing.T) {
+	t.Parallel()
+	register := func(b string) string { return strings.Repeat(b, 48) }
+	pin := writeMeasurementsConfig(t, `{"schema_version":"3","tee":"tdx","measurements":[{"name":"ta","mrtd":"`+register("aa")+
+		`","rtmr":[null,"`+register("bb")+`","`+register("cc")+`",""],"launch_file":"schemaVersion: c8s-ta/v1\n","launch_file_field":"init_data"}]}`)
+	out, err := helmTemplateUnpinned(t, cloudChartDir, "--set-string", "ta.address="+baseTAAddress, "--set-file", "ta.measurementsConfig="+pin)
+	if err != nil {
+		t.Fatalf("helm template refused a schema 3 pin: %v\n%s", err, out)
+	}
+	if !strings.Contains(renderedConfigMap(t, out, "c8s-measurements").Data["ta.json"], `"launch_file_field":"init_data"`) {
+		t.Fatal("the pin the nodes receive lost launch_file_field")
 	}
 }

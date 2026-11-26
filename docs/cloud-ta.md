@@ -45,8 +45,9 @@ another, so identify the TDX image with pins on MRTD, RTMR[1] and RTMR[2].
 The operator keys sit in the document's `ta-config.yaml` entry, so the
 whole-document digest binds them too. What the `MRCONFIGID` case does not
 show is which code read them: the image pins establish the image.
-`c8s verify` can also display `MRCONFIGID`. HA peer and generated Genesis
-pins still bind RTMR[3], so they cannot authenticate an MRCONFIGID-only TA.
+`c8s verify` can also display `MRCONFIGID`. The pins a decree command
+generates read RTMR[3] unless you pass `--launch-file-field init_data`, which
+pins guests that read `MRCONFIGID` beside an all-zero RTMR[3].
 
 For an MRCONFIGID-only TDX deployment with one replica filling one voter seat,
 follow the [runbook's `--alone` warning](ta-ha-runbooks.md#1-start-a-cluster-genesis).
@@ -58,12 +59,13 @@ the manifest must contain your Kata guest's MRTD, RTMR[1] and RTMR[2].
 `rtmr` array): every Trust Authority pin that reads `MRCONFIGID` must, and is
 refused otherwise, so the target cannot use a different RTMR[3]-bound launch
 file.
-`--alone` allows a one-voter Genesis without a peer response; the decree's
-generated RTMR[3] pins still do not match that target.
+`--alone` allows a one-voter Genesis without a peer response. Pass
+`--launch-file-field init_data` as well, so the pins the decree carries match
+that target; without it they read RTMR[3] and no replica or client holding
+them authenticates it.
 
-The cloud chart rejects schema 3 pins. A schema 2 TDX pin can pass rendering
-but fail TA authentication; install may warn and apply a release whose
-clients cannot authenticate their TA.
+`c8s install --ta-pin` takes that same schema 3 pin. A schema 2 TDX pin for
+such a guest passes rendering and fails TA authentication.
 
 Supply the TA container and an attestation API on guest loopback
 (`--attestation-api-url`). The guest launch digest does not cover containers

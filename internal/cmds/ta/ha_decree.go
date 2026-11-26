@@ -15,6 +15,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
+	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/worker"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/fileutil"
@@ -218,13 +219,21 @@ type pinFlags struct {
 	platform  string
 	vcpus     []int
 	manifests []string
+	// launchFileField is where the Trust Authority guests read their launch file on
+	// TDX: empty for RTMR[3], or launchFileFieldInitData.
+	launchFileField string
 }
+
+// launchFileFieldInitData pins guests whose launcher bound the launch file in
+// MRCONFIGID and whose RTMR[3] nothing extended.
+const launchFileFieldInitData = "init_data"
 
 func bindPinFlags(cmd *cobra.Command, p *pinFlags) {
 	f := cmd.Flags()
 	f.StringVar(&p.platform, "platform", "", "TEE platform the Trust Authority VMs run on: sev-snp or tdx (REQUIRED)")
 	f.IntSliceVar(&p.vcpus, "vcpus", nil, "SEV-SNP only: a vCPU count a Trust Authority VM may boot with, one pin entry each; repeatable")
 	f.StringArrayVar(&p.manifests, "image-manifest", nil, "manifest.json of a Trust Authority guest image the cluster accepts; repeatable (REQUIRED)")
+	f.StringVar(&p.launchFileField, "launch-file-field", "", "TDX only: \"init_data\" pins Trust Authority guests whose launcher bound the launch file in MRCONFIGID, with RTMR[3] all zero; omit for guests whose initrd extends RTMR[3]")
 	cmdsutil.RequireFlags(cmd, "platform", "image-manifest")
 }
 
@@ -243,11 +252,37 @@ func (p pinFlags) document(launchFile []byte) (*tadecree.PinDocument, error) {
 		}
 		set.Images = append(set.Images, images...)
 	}
+	if err := p.readInitData(set); err != nil {
+		return nil, err
+	}
 	document, err := refvalues.Format(set)
 	if err != nil {
 		return nil, err
 	}
 	return tadecree.NewPinDocument(document)
+}
+
+// readInitData turns every entry into one that reads its launch file from
+// MRCONFIGID beside an untouched RTMR[3], when the flag asks for it.
+func (p pinFlags) readInitData(set refvalues.ReferenceValues) error {
+	switch p.launchFileField {
+	case "":
+		return nil
+	case launchFileFieldInitData:
+	default:
+		return fmt.Errorf("--launch-file-field %q, want %q or omit the flag", p.launchFileField, launchFileFieldInitData)
+	}
+	if set.Family != teetypes.FamilyTDX {
+		return fmt.Errorf("--launch-file-field is a TDX choice of field, and --platform is %s, where a launch file is always bound in HOST_DATA", p.platform)
+	}
+	for i := range set.Images {
+		set.Images[i].LaunchFileInInitData = true
+		if set.Images[i].Registers == nil {
+			set.Images[i].Registers = map[int][]byte{}
+		}
+		set.Images[i].Registers[3] = make([]byte, runtimemeasure.Size)
+	}
+	return nil
 }
 
 // imagePins names one image's entries after its launch digest, so the entries
