@@ -79,7 +79,7 @@ func TestRetiredConnectionCarriesNoLaterRequest(t *testing.T) {
 }
 
 // A retiring client keeps its connections while its pins hold, leaves them
-// when the pins change, and keeps them through a pins read that fails.
+// when the pins change, and sends nothing while they cannot be read.
 func TestPinChangeRetiresTheConnections(t *testing.T) {
 	url, _, _ := connServer(t)
 	pins := Pins{Measurements: [][]byte{{1}}}
@@ -101,8 +101,12 @@ func TestPinChangeRetiresTheConnections(t *testing.T) {
 		t.Fatalf("a request under new pins ran on the old connection %s", first)
 	}
 	pinsErr = errors.New("unreadable")
+	if conn, err := connOf(client, url); !errors.Is(err, pinsErr) {
+		t.Fatalf("a request under unreadable pins ran on %q (%v), want the read error", conn, err)
+	}
+	pinsErr = nil
 	if kept := mustConn(t, client, url); kept != moved {
-		t.Fatalf("an unreadable pins file left the connection: %s then %s", moved, kept)
+		t.Fatalf("readable pins again left the connection: %s then %s", moved, kept)
 	}
 }
 

@@ -46,8 +46,7 @@ func (t *RetiringTransport) CloseIdleConnections() { t.transport().CloseIdleConn
 
 // NewRetiringHTTPClient is [NewFollowingHTTPClient] for a client that keeps
 // running: it leaves its connections when pins answers another set, which
-// every request reads first. A read that fails keeps the connections; the
-// next handshake fails on the same read.
+// every request reads first. A request whose read fails is not sent.
 func NewRetiringHTTPClient(pins func() (Pins, error), attestationApiURL string) (*http.Client, error) {
 	client, err := NewFollowingHTTPClient(pins, attestationApiURL)
 	if err != nil {
@@ -73,15 +72,25 @@ type pinRetiringTransport struct {
 	held   Pins
 }
 
+// RoundTrip reads the pins, leaves the pool on a change and selects the pool
+// in one step, so no request that starts after a change runs on the pool left
+// behind. Pins that cannot be read send nothing: a pooled connection would
+// carry the request with no handshake to check them.
 func (t *pinRetiringTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	if now, err := t.pins(); err == nil {
-		t.pinsMu.Lock()
-		changed := !reflect.DeepEqual(now, t.held)
-		t.held = now
+	t.pinsMu.Lock()
+	now, err := t.pins()
+	if err != nil {
 		t.pinsMu.Unlock()
-		if changed {
-			t.Retire()
+		if req.Body != nil {
+			_ = req.Body.Close()
 		}
+		return nil, fmt.Errorf("armtls: read the pins in force: %w", err)
 	}
-	return t.RetiringTransport.RoundTrip(req)
+	if !reflect.DeepEqual(now, t.held) {
+		t.held = now
+		t.Retire()
+	}
+	transport := t.transport()
+	t.pinsMu.Unlock()
+	return transport.RoundTrip(req)
 }
