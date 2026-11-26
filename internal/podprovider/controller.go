@@ -164,23 +164,32 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err != nil {
 		return r.unverified(ctx, pod, rec, secret, "CloudUnavailable", err)
 	}
-	if in == nil {
-		return r.stop(ctx, pod, rec, secret, "InstanceGone")
+	if reason := endedReason(&rec.instanceIntent, in); reason != "" {
+		return r.stop(ctx, pod, rec, secret, reason)
 	}
-	if err := validateInstance(&rec.instanceIntent, in); err != nil {
-		return r.stop(ctx, pod, rec, secret, "InstanceIdentityMismatch")
-	}
-	if in.Boot.Count > 1 {
-		return r.stop(ctx, pod, rec, secret, "GuestRebooted")
-	}
-	switch in.Status {
-	case "failed", "terminated", "terminating", "stopped":
-		return r.stop(ctx, pod, rec, secret, "InstanceEnded")
-	case "running":
-	default:
+	if in.Status != "running" {
 		return r.unverified(ctx, pod, rec, secret, "InstanceStarting", nil)
 	}
 	return r.running(ctx, callCtx, pod, rec, secret, in)
+}
+
+// endedReason names why the instance Cloud answered with can no longer run
+// the intent's pod, or "" while it still can. A nil instance is one Cloud no
+// longer knows.
+func endedReason(intent *instanceIntent, in *instance) string {
+	switch {
+	case in == nil:
+		return "InstanceGone"
+	case validateInstance(intent, in) != nil:
+		return "InstanceIdentityMismatch"
+	case in.Boot.Count > 1:
+		return "GuestRebooted"
+	}
+	switch in.Status {
+	case "failed", "terminated", "terminating", "stopped":
+		return "InstanceEnded"
+	}
+	return ""
 }
 
 func matchesPod(rec *record, pod *corev1.Pod) error {
@@ -312,21 +321,32 @@ func (r *Reconciler) deletePod(ctx context.Context, pod *corev1.Pod) (ctrl.Resul
 		// One reading of the clock decides both, so that time passing between
 		// two readings cannot hide which came first.
 		now := r.now()
-		deadline := rec.VerificationDeadline
-		timedOut := deadline != nil && !now.Before(*deadline) && deadline.Before(end)
-		if wait := end.Sub(now); wait > 0 && !timedOut {
-			if deadline != nil {
-				wait = min(wait, deadline.Sub(now))
+		wait, timedOut := heldFor(end, rec.VerificationDeadline, now)
+		var last *corev1.PodStatus
+		verified := false
+		if wait > 0 {
+			// The wait is for the Pod's containers to stop: a Pod that has
+			// ended is not held for the rest of it.
+			var retry time.Duration
+			last, verified, retry = r.endedWhileHeld(ctx, pod, rec, now, wait)
+			// The look took time: one new reading decides again.
+			now = r.now()
+			if wait, timedOut = heldFor(end, rec.VerificationDeadline, now); wait > 0 && last == nil {
+				return ctrl.Result{RequeueAfter: min(wait, max(retry, pollInterval))}, nil
 			}
-			return ctrl.Result{RequeueAfter: wait}, nil
 		}
+		// A deadline that passed first is the Pod's end, whatever a look
+		// that outlasted it then showed.
 		if timedOut {
 			status := failedStatus(pod, verificationTimeoutReason, now)
-			rec.TerminalStatus = &status
+			last, verified = &status, false
+		}
+		if last != nil {
+			rec.TerminalStatus = last
 			if err := r.save(ctx, rec, secret); err != nil {
 				return ctrl.Result{}, err
 			}
-			publicationErr = errors.Join(r.publishStatus(ctx, pod, status), r.publishEndpoints(ctx, pod, nil))
+			publicationErr = errors.Join(r.publish(ctx, pod, *last, verified), r.publishEndpoints(ctx, pod, nil))
 		}
 	}
 	done, err := r.removeInstance(ctx, rec, secret)
@@ -339,6 +359,73 @@ func (r *Reconciler) deletePod(ctx context.Context, pod *corev1.Pod) (ctrl.Resul
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{}, r.discard(ctx, secret)
+}
+
+// heldFor is how much longer at now a deleted Pod's instance is left running:
+// until end or the verification deadline, whichever is first. It is zero once
+// either has passed, and timedOut when the deadline is what ended the wait.
+func heldFor(end time.Time, deadline *time.Time, now time.Time) (wait time.Duration, timedOut bool) {
+	if deadline != nil && deadline.Before(end) {
+		end, timedOut = *deadline, true
+	}
+	if wait = end.Sub(now); wait > 0 {
+		return wait, false
+	}
+	return 0, timedOut
+}
+
+// endedWhileHeld looks at a deleted Pod whose instance is left running and
+// returns the Pod's last status once it has ended: the guest's own, read as
+// verified, or a failure when the instance can no longer run the Pod. It only
+// reads, for no longer than the wait that is left. A read that fails or shows
+// a Pod still running returns nil, and the wait Cloud asked for when it
+// throttled the read.
+func (r *Reconciler) endedWhileHeld(ctx context.Context, pod *corev1.Pod, rec *record, now time.Time, wait time.Duration) (last *corev1.PodStatus, verified bool, retry time.Duration) {
+	if rec.InstanceID == "" {
+		return nil, false, 0
+	}
+	ctx, cancel := context.WithTimeout(ctx, wait)
+	defer cancel()
+	in, err := r.cloud.Get(ctx, rec.InstanceID)
+	if errors.Is(err, errCloudNotFound) {
+		in, err = nil, nil
+	}
+	// An answer that names no instance shows nothing; one that names another
+	// instance ends the Pod, as it does while the Pod runs.
+	if err == nil && in != nil {
+		if err = rec.owns(in); errors.Is(err, errForeignInstance) {
+			err = nil
+		}
+	}
+	if err != nil {
+		log.FromContext(ctx).Info("held Pod CVM not read from Cloud", "pod", client.ObjectKeyFromObject(pod), "cause", err.Error())
+		retry, _ = rateLimited(err)
+		return nil, false, retry
+	}
+	if reason := endedReason(&rec.instanceIntent, in); reason != "" {
+		status := failedStatus(pod, reason, now)
+		return &status, false, 0
+	}
+	if in.Status != "running" {
+		return nil, false, 0
+	}
+	address, _, podIP, err := endpoints(rec.Request.Network, in)
+	if err != nil {
+		return nil, false, 0
+	}
+	projection, err := r.guestStatus(ctx, rec, address)
+	var status corev1.PodStatus
+	if err == nil {
+		status, err = projectedStatus(rec, projection, pod, podIP, rec.Key)
+	}
+	if err != nil {
+		log.FromContext(ctx).Info("held Pod CVM gave no verified status", "pod", client.ObjectKeyFromObject(pod), "cause", err.Error())
+		return nil, false, 0
+	}
+	if status.Phase != corev1.PodSucceeded && status.Phase != corev1.PodFailed {
+		return nil, false, 0
+	}
+	return &status, true, 0
 }
 
 // defaultMaxDeletionGraceSeconds bounds the deletion grace when the
@@ -393,6 +480,11 @@ func (r *Reconciler) releaseFinalizer(ctx context.Context, pod *corev1.Pod, rec 
 		return nil
 	}
 	if err := ignoreNotFound(r.publishStatus(ctx, pod, terminalStatus(pod, rec, r.now()))); err != nil {
+		return err
+	}
+	// The endpoints named the instance that is gone. An earlier withdrawal
+	// may have been refused, so it is made before the Pod is let go.
+	if err := ignoreNotFound(r.publishEndpoints(ctx, pod, nil)); err != nil {
 		return err
 	}
 	before := pod.DeepCopy()
@@ -500,7 +592,13 @@ func (r *Reconciler) publishEndpoints(ctx context.Context, pod *corev1.Pod, apps
 	} else {
 		pod.Annotations[endpointsAnnotation] = value
 	}
-	return r.client.Patch(ctx, pod, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{}))
+	if err := r.client.Patch(ctx, pod, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
+		// The caller's Pod keeps the annotation the API server holds, so
+		// that a later publish of the same endpoints is sent.
+		pod.Annotations = before.Annotations
+		return err
+	}
+	return nil
 }
 
 func (r *Reconciler) sweep(ctx context.Context) error {
