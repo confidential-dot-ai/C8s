@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
+	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 )
 
@@ -104,8 +105,20 @@ func TALaunchFile(values refvalues.ReferenceValues) ([]byte, error) {
 		if !bytes.Equal(image.LaunchFile, file) {
 			return nil, fmt.Errorf("%w: entry %q binds another configuration, and one pin names one Trust Authority", ErrTAPinUnbound, image.Name)
 		}
+		if image.LaunchFileInInitData && !pinsUntouchedRTMR3(image) {
+			return nil, fmt.Errorf("%w: entry %q reads its launch file from MRCONFIGID without pinning RTMR[3] to all zero, and a Trust Authority starts from MRCONFIGID only beside an untouched RTMR[3]", ErrTAPinUnbound, image.Name)
+		}
 	}
 	return file, nil
+}
+
+// pinsUntouchedRTMR3 reports whether image pins RTMR[3] to all zero. A pin
+// that reads the launch file from MRCONFIGID leaves the register unread
+// otherwise, and a guest whose RTMR[3] holds another file's seed runs that
+// file whatever MRCONFIGID holds.
+func pinsUntouchedRTMR3(image remote.ImagePin) bool {
+	register, pinned := image.Registers[3]
+	return pinned && len(register) > 0 && bytes.Equal(register, make([]byte, len(register)))
 }
 
 // ResolveTAPins returns the pins a client holds its Trust Authority to, and whether the

@@ -27,8 +27,9 @@ ta-pin.json` carries into the release, and nothing else of it.
 ### Under a Kata Containers runtime
 
 Kata SEV-SNP binds the SHA-256 of its whole initdata document to `HOST_DATA`.
-Kata TDX binds its SHA-384 to `MRCONFIGID`, and the document then declares
-`algorithm = "sha384"`. On TDX the TA starts in one of two cases:
+Kata TDX binds the SHA-384 of the same whole document to `MRCONFIGID`, and the
+document must then declare `algorithm = "sha384"` (`"sha256"` is the SEV-SNP
+form). On TDX the TA starts in one of two cases:
 
 - RTMR[3] holds the file's seed, as the `ta-guest` initrd extends it.
   `MRCONFIGID` is then not read.
@@ -41,6 +42,9 @@ operator key. The TA accepts the field because the check asks only what its
 own verified report proves about the file, and either field proves it byte
 for byte. One check serves every guest: it cannot tell a `ta-guest` VM from
 another, so identify the TDX image with pins on MRTD, RTMR[1] and RTMR[2].
+The operator keys are part of the launch file and are bound with it; what the
+`MRCONFIGID` case does not show is which code read them, and those image pins
+are what establish it.
 `c8s verify` can also display `MRCONFIGID`. HA peer and generated Genesis
 pins still bind RTMR[3], so they cannot authenticate an MRCONFIGID-only TA.
 
@@ -51,7 +55,9 @@ the manifest must contain your Kata guest's MRTD, RTMR[1] and RTMR[2].
 `genesis --alone` still authenticates the target: pass a separate schema 3
 `--ta-pin` with MRTD, RTMR[1], RTMR[2], the full `launch_file`, and
 `"launch_file_field": "init_data"`. Also pin RTMR[3] to all zero (`""` in the
-`rtmr` array), so the target cannot use a different RTMR[3]-bound launch file.
+`rtmr` array): every Trust Authority pin that reads `MRCONFIGID` must, and is
+refused otherwise, so the target cannot use a different RTMR[3]-bound launch
+file.
 `--alone` allows a one-voter Genesis without a peer response; the decree's
 generated RTMR[3] pins still do not match that target.
 
@@ -65,7 +71,8 @@ loaded after launch: you must establish how the deployment enforces the TA's
 code, storage and attester. C8s provides no measured Kata TA image or
 integration tests for this deployment, including replicated TAs.
 
-Put the TA configuration in the initdata document as follows (schematic):
+Put the TA configuration in the initdata document as follows (schematic, the
+SEV-SNP form; on TDX write `algorithm = "sha384"`):
 
 ```toml
 version = "0.1.0"
@@ -87,7 +94,7 @@ Pass the whole document to the runtime and mount identical bytes for
 `c8s ta --config`; even changes to comments or whitespace break the binding.
 Use it for every command's `--config` and every TA pin's `launch_file`.
 Kata does not use the [`ta-guest` image's staging](../images/ta-guest/README.md#launch-requirements).
-The document must be at most 1 MiB; keep it well below that so its JSON-encoded
+On either platform the document must be at most 1 MiB; keep it well below that so its JSON-encoded
 pin also fits the release ConfigMap's 1 MiB limit.
 
 `c8s ta config new` produces bare YAML and a pin for it. For Kata, write a

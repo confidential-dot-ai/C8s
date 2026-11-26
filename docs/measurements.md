@@ -163,7 +163,8 @@ By default, launch-file pins require `HOST_DATA` on SEV-SNP or the file's
 RTMR[3] seed on TDX. A worker's `launch_file_digest` pin can verify subsequent
 RTMR[3] extensions by replaying its measured-policy journal. Selecting
 `"init_data"` binds `MRCONFIGID` instead and leaves RTMR[3] unconstrained
-unless separately pinned.
+unless separately pinned. A Trust Authority pin must pin it: an entry with
+`"init_data"` is refused unless `rtmr[3]` is `""`, the all-zero register.
 
 Direct TA clients require the same full `launch_file` in every entry;
 digest-only pins are for consumers such as worker authorization.
