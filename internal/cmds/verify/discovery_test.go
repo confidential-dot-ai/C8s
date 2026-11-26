@@ -63,7 +63,8 @@ func TestEvidenceFromDiscovery_Malformed(t *testing.T) {
 func TestEvidenceFromDiscovery_DefaultsPlatformToSNP(t *testing.T) {
 	certPEM, _ := selfSignedCertPEM(t)
 	doc := map[string]any{
-		"ta_tls": map[string]any{"certificate_pem": certPEM},
+		"public_tls": map[string]any{"mode": "ta"},
+		"ta_tls":     map[string]any{"certificate_pem": certPEM},
 		"attestation": map[string]any{
 			"challenge": base64.StdEncoding.EncodeToString([]byte("c")),
 			"evidence":  json.RawMessage(`{"attestation_report":"AAAA"}`),
@@ -259,14 +260,10 @@ func TestGatherFromDiscoveryProbesFrontDoor(t *testing.T) {
 		}
 	})
 
-	t.Run("lying host: no mode declared, serves another cert", func(t *testing.T) {
-		srv := discoveryServer(t, otherCert, docClaims(""))
-		ev, err := gatherFromDiscovery(context.Background(), srv.URL, "", "", 5*time.Second, leafTrust{})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if ev.frontDoor != frontDoorOther {
-			t.Errorf("frontDoor = %v, want other", ev.frontDoor)
+	t.Run("no mode declared: refused even when the host serves the attested cert", func(t *testing.T) {
+		srv := discoveryServer(t, attestedCert, docClaims(""))
+		if _, err := gatherFromDiscovery(context.Background(), srv.URL, "", "", 5*time.Second, leafTrust{}); !isSecurityError(err) {
+			t.Fatalf("err = %v, want a security verdict", err)
 		}
 	})
 

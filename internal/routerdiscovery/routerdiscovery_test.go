@@ -65,7 +65,7 @@ func plainServingCert(t *testing.T) (tls.Certificate, *x509.Certificate) {
 }
 
 // discoveryDoc builds a router discovery document embedding cert + challenge.
-// mode is the public_tls.mode field; "" mimics a pre-mode-field document.
+// mode is the public_tls.mode field.
 func discoveryDoc(t *testing.T, cert *x509.Certificate, challenge []byte, mode, platform string, evidence string) []byte {
 	t.Helper()
 	doc, err := json.Marshal(types.DiscoveryDocument{
@@ -235,7 +235,7 @@ func TestNewVerifiedHTTPClient_NoDiscovery(t *testing.T) {
 // would let the caller fall back and mask an attack.
 func TestNewVerifiedHTTPClient_FailsClosed(t *testing.T) {
 	servingCert, leaf := plainServingCert(t)
-	doc := discoveryDoc(t, leaf, []byte("challenge"), "", string(teetypes.PlatformAzSNP), `{"hcl_report":"fake"}`)
+	doc := discoveryDoc(t, leaf, []byte("challenge"), "ta", string(teetypes.PlatformAzSNP), `{"hcl_report":"fake"}`)
 	lb := fakeLB(t, servingCert, doc)
 
 	errSignature := errors.New("signature verification failed")
@@ -286,9 +286,9 @@ func TestNewVerifiedHTTPClient_BindsDocCertToConnection(t *testing.T) {
 }
 
 // TestNewVerifiedHTTPClient_PublicTLSModes proves the client accepts only the
-// modes whose serving cert the evidence binds: ta (and empty, a pre-mode-field
-// document), rejecting webpki, acme, and unknown modes with clear errors
-// instead of returning a client whose handshakes can never match.
+// mode whose serving cert the evidence binds, ta, rejecting webpki, acme, an
+// empty mode and unknown modes with clear errors instead of returning a
+// client whose handshakes can never match.
 func TestNewVerifiedHTTPClient_PublicTLSModes(t *testing.T) {
 	measurement := bytes.Repeat([]byte{0x42}, armtls.SNPMeasurementSize)
 	cases := []struct {
@@ -296,7 +296,7 @@ func TestNewVerifiedHTTPClient_PublicTLSModes(t *testing.T) {
 		wantErr string // empty = success
 	}{
 		{"ta", ""},
-		{"", ""},
+		{"", `unknown public_tls.mode ""`},
 		{"webpki", "public_tls.mode=webpki is not supported"},
 		{"acme", "public_tls.mode=acme is not supported"},
 		{"tofu", `unknown public_tls.mode "tofu"`},
@@ -860,7 +860,7 @@ func send(hc *http.Client, method, url, body string) error {
 // verification on a target that does serve a document.
 func TestNewVerifiedHTTPClient_RefusesADocumentOverTheCap(t *testing.T) {
 	servingCert, leaf := plainServingCert(t)
-	complete := discoveryDoc(t, leaf, []byte("challenge"), "", string(teetypes.PlatformAzSNP), `{"hcl_report":"fake"}`)
+	complete := discoveryDoc(t, leaf, []byte("challenge"), "ta", string(teetypes.PlatformAzSNP), `{"hcl_report":"fake"}`)
 	paddedToTheCap := append(complete, bytes.Repeat([]byte(" "), maxDocumentBytes-len(complete))...)
 
 	for _, tc := range []struct {

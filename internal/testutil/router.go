@@ -49,7 +49,8 @@ func NewRouterServer(t testing.TB) *httptest.Server {
 		t.Fatal(err)
 	}
 	doc, err := json.Marshal(types.DiscoveryDocument{
-		Version: "1",
+		Version:   "1",
+		PublicTLS: types.PublicTLSDiscovery{Mode: types.FrontDoorModeTA},
 		TATLS: types.TATLSDiscovery{
 			CertificatePEM: string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})),
 		},

@@ -25,7 +25,8 @@ import (
 func discoveryDocWith(t *testing.T, certPEM string, challenge []byte, evidence string) []byte {
 	t.Helper()
 	doc := map[string]any{
-		"ta_tls": map[string]any{"certificate_pem": certPEM},
+		"public_tls": map[string]any{"mode": "ta"},
+		"ta_tls":     map[string]any{"certificate_pem": certPEM},
 		"attestation": map[string]any{
 			"challenge": base64.StdEncoding.EncodeToString(challenge),
 			"platform":  "snp",
