@@ -28,7 +28,7 @@ import (
 
 func NewCmd() *cobra.Command {
 	root := &cobra.Command{Use: "collateral", Short: "Prepare and check site collateral against an enrolled TDX quote"}
-	root.AddCommand(&cobra.Command{
+	root.AddCommand(selectedTDX(), &cobra.Command{
 		Use:   "prepare-intel RAW-QUOTE TARGET GENERATION NEW-DIRECTORY",
 		Short: "Collect and validate Intel responses on a connected, time-synchronized workstation",
 		Args:  cobra.ExactArgs(4),

@@ -52,6 +52,7 @@ type Manifest struct {
 
 // Snapshot holds the selection and time authenticated for one evidence verification.
 type Snapshot struct {
+	Selection Selection
 	Time      time.Time
 	Manifest  Manifest
 	responses map[string][]byte
@@ -124,7 +125,7 @@ func Open(ctx context.Context, path string) (*Snapshot, error) {
 	if current != selection || at.Before(start) || !at.Before(manifest.ExpiresAt) {
 		return nil, errors.New("site selection or validity changed while reading collateral")
 	}
-	return &Snapshot{Time: at, Manifest: *manifest, responses: responses}, nil
+	return &Snapshot{Selection: current, Time: at, Manifest: *manifest, responses: responses}, nil
 }
 
 func (a *authority) selection(ctx context.Context) (Selection, time.Time, error) {

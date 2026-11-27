@@ -139,3 +139,13 @@ Alias "/snapshots/" "/srv/c8s-collateral/snapshots/"
 The Intel importer rejects additional objects. Activation of a mixed
 Intel/NVIDIA generation requires the qualified NVIDIA verifier to validate
 the exact RIMs and OCSP responses for the enrolled GPUs.
+
+## Measured verifier input
+
+`c8s collateral selected-tdx PROFILE` emits the currently selected Intel
+responses for an attestation service that supports a site source. It reports
+the active generation and manifest digest, site time and manifest expiry in
+UTC, standard base64 bodies keyed by their
+original URLs, and decoded PEM issuer chains. An unavailable authority or clock
+exits with status 3. The receiving service verifies the vendor signatures,
+revocation, validity and TCB status for the quote using these inputs.
