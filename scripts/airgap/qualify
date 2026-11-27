@@ -1,0 +1,159 @@
+#!/usr/bin/env python3
+"""Seal or verify C8s installation media on a workstation using authenticated site time."""
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+import tarfile
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from typing import Any
+
+HEX = r"[a-f0-9]{64}"
+RECORD = "qualification.json"
+
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise ValueError(message)
+
+
+def sha256(path: Path) -> str:
+    with path.open("rb") as f:
+        return hashlib.file_digest(f, "sha256").hexdigest()
+
+
+def archive_json(archive: tarfile.TarFile, name: str) -> dict[str, Any]:
+    member = archive.getmember(f"./{name}")
+    require(member.isfile() and member.size <= 16 * 1024 * 1024, f"invalid archive object {name}")
+    f = archive.extractfile(member)
+    if f is None:
+        raise ValueError(f"cannot read {name}")
+    with f:
+        result = json.load(f)
+    require(isinstance(result, dict), f"expected JSON object in {name}")
+    return dict(result)
+
+
+def check_member_digest(archive: tarfile.TarFile, path: str, expected: str) -> None:
+    require(re.fullmatch(HEX, expected) is not None, f"invalid object digest: {path}")
+    member = archive.getmember(f"./{path}")
+    require(member.isfile(), f"expected regular file: {path}")
+    data = archive.extractfile(member)
+    if data is None:
+        raise ValueError(f"missing archive member: {path}")
+    with data:
+        digest = hashlib.sha256()
+        while chunk := data.read(1024 * 1024):
+            digest.update(chunk)
+        require(digest.hexdigest() == expected,
+                f"archive member digest differs from the snapshot: {path}")
+
+
+def utc(text: str) -> datetime:
+    value = datetime.fromisoformat(text)
+    require(value.utcoffset() == timedelta(0), f"expected UTC timestamp: {text}")
+    return value
+
+
+def gpu_coverage(review: dict[str, Any], target: dict[str, Any], objects: dict[str, Any]) -> None:
+    enrolled = target["gpuUEIDs"]
+    ids = [device["ueid"] for device in review["devices"]]
+    require(len(set(ids)) == len(ids) == 8 and set(ids) == set(enrolled), "GPU inventory differs from the assignment")
+    policy = objects["nvidia/policy"]["sha256"]
+    require(re.fullmatch(HEX, policy) is not None and review["policySha256"] == policy,
+            "cached-status policy digest differs from the qualification")
+    used = {"nvidia/policy"}
+    for device in review["devices"]:
+        for field, selector in (("rims", r"nvidia/rim/[A-Za-z0-9._/-]+"), ("ocsp", "nvidia/ocsp/" + HEX)):
+            mapping = device[field]
+            require(isinstance(mapping, dict) and bool(mapping), f"{device['ueid']} lacks {field}")
+            for key, pin in mapping.items():
+                require(re.fullmatch(selector, key) is not None and re.fullmatch(HEX, pin) is not None
+                        and objects.get(key, {}).get("sha256") == pin, f"unqualified {field} object: {key}")
+                used.add(key)
+    require(used == {key for key in objects if key.startswith("nvidia/")},
+            "NVIDIA snapshot contains objects outside the qualification")
+
+
+def verify_bytes(directory: Path, raw: bytes, expected_tag: str) -> None:
+    review = json.loads(raw)
+    for name, field in (("software.tar", "archiveSha256"), ("inventory.sha256", "inventorySha256")):
+        require(sha256(directory / name) == review[field], f"{name} differs from the qualified bytes")
+    with tarfile.open(directory / "software.tar", "r:") as archive:
+        target = archive_json(archive, "site/target.json")
+        selection = archive_json(archive, "site/collateral/active")
+        pin = selection["sha256"]
+        require(re.fullmatch(HEX, pin) is not None and pin == review["snapshotSha256"],
+                "qualification names a different snapshot")
+        path = f"site/collateral/snapshots/{pin}.json"
+        check_member_digest(archive, path, pin)
+        manifest = archive_json(archive, path)
+        for blob in {obj["sha256"] for obj in manifest["objects"].values()}:
+            check_member_digest(archive, f"site/collateral/objects/{blob}", blob)
+        tag = archive_json(archive, "release/release-statement.json")["tag"]
+    require(tag == expected_tag, "media belongs to a different release")
+    require(review["offlineB200Verified"] is True and review["target"] == target["id"] == manifest["target"]
+            and review["generation"] == selection["generation"] == manifest["generation"],
+            "qualification does not cover this target and generation")
+    gpu_coverage(review, target, manifest["objects"])
+    require(type(review["maximumStatusAgeSeconds"]) is int and review["maximumStatusAgeSeconds"] > 0
+            and review["maximumStatusAgeSeconds"] == target["maximumStatusAgeSeconds"],
+            "qualification does not match the approved maximum status age")
+    measured = review["observedRefreshSeconds"]
+    planned = target["mediaTurnaroundSeconds"]
+    require(type(measured) is int and measured > 0 and type(planned) is int and planned > 0,
+            "measured and planned refresh intervals must be positive whole seconds")
+    deadline = utc(review["earliestExpiryUtc"])
+    limiting = review["limitingObject"]
+    require(limiting in manifest["objects"] and deadline <= utc(manifest["expiresAt"]),
+            "earliest expiry or limiting object falls outside the signed snapshot")
+    require(deadline > datetime.now(UTC) + timedelta(seconds=max(measured, planned)),
+            f"refresh interval exhausted for {limiting} at {deadline.isoformat()}")
+    print(f"Earliest deadline {deadline.isoformat()} ({limiting})")
+
+
+def signed_record(record: Path, signers: Path, identity: str, namespace: str) -> bytes:
+    raw = record.read_bytes()
+    subprocess.run(["ssh-keygen", "-Y", "verify", "-f", signers, "-I", identity, "-n", namespace,
+                    "-s", record.with_suffix(".json.sig")], input=raw, check=True)
+    return raw
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+    for mode in ("seal", "verify"):
+        cmd = commands.add_parser(mode)
+        cmd.add_argument("tag")
+        cmd.add_argument("directory", type=Path)
+        cmd.add_argument("allowed_signers", type=Path)
+        if mode == "seal":
+            cmd.add_argument("qualifier_record", type=Path)
+            cmd.add_argument("media_key", type=Path)
+    args = parser.parse_args()
+    record = args.directory / RECORD
+    if args.command == "verify":
+        raw = signed_record(record, args.allowed_signers, "c8s-release", "c8s-install-media")
+        verify_bytes(args.directory, raw, args.tag)
+        return
+    raw = signed_record(args.qualifier_record, args.allowed_signers, "c8s-qualification", "c8s-b200-qualification")
+    verify_bytes(args.directory, raw, args.tag)
+    with TemporaryDirectory(dir=args.directory) as temp:
+        staged = Path(temp) / RECORD
+        staged.write_bytes(raw)
+        subprocess.run(["ssh-keygen", "-Y", "sign", "-n", "c8s-install-media", "-f", args.media_key, staged], check=True)
+        os.replace(staged, record)
+        os.replace(staged.with_suffix(".json.sig"), record.with_suffix(".json.sig"))
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (OSError, ValueError, KeyError, tarfile.TarError, subprocess.CalledProcessError) as err:
+        sys.exit(str(err))
