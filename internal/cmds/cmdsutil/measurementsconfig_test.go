@@ -435,6 +435,7 @@ func TestTALaunchFileRefusesAnInitdataDocumentNoTrustAuthorityStartsFrom(t *test
 		{name: "a document with no policy", launchFile: initdata("sha384", ""), want: "policy.rego"},
 		{name: "another family's digest", launchFile: initdata("sha256", policy), want: "sha384"},
 		{name: "bytes that are no configuration", launchFile: "x", want: "YAML mapping", taOnly: true},
+		{name: "a schema behind an anchor", launchFile: "schemaVersion: &v c8s-ta/v1\n", want: "configuration", taOnly: true},
 		{name: "another guest's configuration", launchFile: "schemaVersion: c8s-worker/v1\n", want: "c8s-ta/v1", taOnly: true},
 		{name: "a file over the cap", launchFile: "# " + strings.Repeat("x", 1024*1024) + "\n", want: "bytes"},
 		{name: "a document over the cap", launchFile: initdata("sha384", policy) + "# " + strings.Repeat("x", 1024*1024) + "\n", want: "bytes"},

@@ -10,9 +10,9 @@ import (
 	"strings"
 
 	toml "github.com/pelletier/go-toml/v2"
-	"gopkg.in/yaml.v3"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/yamlutil"
 )
 
 // The digests an initdata launch file may declare: the launch binding is the
@@ -136,10 +136,16 @@ func CheckTrustAuthority(launchFile []byte, family teetypes.Family) error {
 	if err != nil {
 		return err
 	}
+	// Decoded as the Trust Authority decodes it, so what it refuses for its
+	// form, an anchor or a repeated key, is refused here too.
+	tree, err := yamlutil.DecodeTree(configuration)
+	if err != nil {
+		return fmt.Errorf("the configuration the launch file carries: %w", err)
+	}
 	var declared struct {
 		SchemaVersion string `yaml:"schemaVersion"`
 	}
-	if err := yaml.Unmarshal(configuration, &declared); err != nil {
+	if err := tree.Decode(&declared); err != nil {
 		return fmt.Errorf("the configuration the launch file carries is not a YAML mapping: %w", err)
 	}
 	if declared.SchemaVersion != ConfigSchema {
