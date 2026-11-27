@@ -1,6 +1,6 @@
 .PHONY: build install build-c8s build-c8s-node build-get-cert build-armtls-mesh \
        build-nri-image-policy \
-       test test-podmesh-netns test-integration test-integration-cluster test-integration-taha test-e2e-ta-ha-vms test-node-guest-image-gpu-cc test-node-guest-image-scratch test-node-guest-image-cloud-init test-e2e-cw-label-policy test-e2e-allowlist-enforcement test-e2e-components-ready test-e2e-cw-workload mutation-check mutation-full vet fmt lint clean \
+       test test-podmesh-netns test-integration test-integration-cluster test-integration-taha test-e2e-ta-ha-vms test-e2e-b200-fixtures test-node-guest-image-gpu-cc test-node-guest-image-scratch test-node-guest-image-cloud-init test-e2e-cw-label-policy test-e2e-allowlist-enforcement test-e2e-components-ready test-e2e-cw-workload mutation-check mutation-full vet fmt lint clean \
        manifests generate check-crd-chart install-controller-gen require-controller-gen
 
 CONTROLLER_GEN         ?= controller-gen
@@ -110,7 +110,7 @@ test-integration-cluster:
 test-integration-taha:
 	./test/integration/taha/run.sh -short
 
-test-node-guest-image-gpu-cc:
+test-node-guest-image-gpu-cc: test-e2e-b200-fixtures
 	./images/node-guest/tests/gpu-cc-enforce-test.sh
 
 test-node-guest-image-scratch:
@@ -188,6 +188,11 @@ test-e2e-allowlist-enforcement:
 # kubectl pointed at a cluster with C8s installed.
 test-e2e-components-ready:
 	./test/e2e/components-ready.sh
+
+test-e2e-b200-fixtures:
+	shellcheck -x -P SCRIPTDIR test/e2e/b200/*.sh
+	test/e2e/b200/claims-test.sh
+	test/e2e/b200/refresh-window-test.sh
 
 # Three TA VMs serving one cluster on real SEV-SNP hardware, cloned from an
 # existing TA VM. Needs kubectl pointed at the launcher cluster; run it last,
