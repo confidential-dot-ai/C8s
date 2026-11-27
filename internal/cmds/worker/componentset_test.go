@@ -108,6 +108,16 @@ func TestComponentSetFileCarriesTheTemplateAndTheRouter(t *testing.T) {
 	}
 }
 
+// A published entry may bind a file the kernel pins by fs-verity: the node
+// proves its bytes, and nothing the control plane writes fills it.
+func TestComponentSetFileAcceptsFSVerityFile(t *testing.T) {
+	rule := `{"destination":"/usr/bin/tool","kind":"fsVerityFile","source":"/opt/tools/tool","readOnly":true,"verityDigest":"` + strings.Repeat("b", 64) + `"},`
+	seed := []byte(strings.Replace(string(routerSeed("/run/c8s-node/ta.json")), `"rules":[`, `"rules":[`+rule, 1))
+	if _, err := ComponentSetFile(renderedTemplate(t), seed, testSetVersion); err != nil {
+		t.Fatalf("ComponentSetFile(router with an fsVerityFile rule) = %v, want accepted", err)
+	}
+}
+
 // normalized is the entry as a parsed document carries it, which is what the
 // set file's bytes are compared against.
 func normalized(t *testing.T, entry allowlist.Workload) allowlist.Workload {

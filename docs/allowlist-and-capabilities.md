@@ -118,9 +118,10 @@ digest its applied policy lists; missing evidence fails closed. To start using
 Mounts are classified by what the node can prove about the source, not by the
 destination alone: a `hostPath`, an `emptyDir`, and a ConfigMap can arrive at
 the same path with very different authority. The classes are `platform` (the
-node's own, admitted without a rule), `emptyDir`, `data`, `host`, and
+node's own, admitted without a rule), `emptyDir`, `data`, `host`,
 `nodeRootFile`, a read-only file the node proves came from the measured
-dm-verity root. The destination still participates: a platform mount is
+dm-verity root, and `fsVerityFile`, a read-only file whose kernel fs-verity
+digest the node measures through the container's root at its start check. The destination still participates: a platform mount is
 recognized by destination and source together, and a `data` rule only under
 `/mnt/c8s-data/`, where operator-supplied content must sit, on storage the node
 proves memory-backed or encrypted — which no persistent volume is
@@ -150,7 +151,8 @@ A host bind is set aside when an allowlist declaration hands it to that launch:
 one that pins the launch (command, args and mounts not `any`, the environment
 constrained), admits that launch whole, and names the bind in its `exact` mount
 policy — a `host` rule by source and access mode, a `nodeRootFile` rule also by
-node-root provenance. The base and a served document both grant, and one
+node-root provenance, an `fsVerityFile` rule also by the fs-verity digest the
+start check measures. The base and a served document both grant, and one
 declaration has to grant the bind on its own; `mounts: any` grants nothing.
 Only that bind is set aside: every other violation still denies the container,
 and a writable `host` rule grants write access to the node path it names.
@@ -539,8 +541,8 @@ before confirming it.
 
 `hostPrivilege` reports the host privilege the allowlist declared: an entry
 declares it with `hostPorts`, a container `capabilities`, or a `host` mount
-rule — a `nodeRootFile` rule names a measured node-image file and declares
-none. `declaredBySeed` is whether the measured seed this TA booted on
+rule — a `nodeRootFile` rule names a measured node-image file and an
+`fsVerityFile` rule pins a file's bytes, so neither declares any. `declaredBySeed` is whether the measured seed this TA booted on
 declares any. `firstOperatorGrant` names, as `{"digest"}`, the document of the
 first operator write that served a declaration — in the `workloads` section or
 in a component set — the document it replaced did not serve, and is `null`

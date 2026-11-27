@@ -72,6 +72,9 @@ type imageCheck struct {
 	// the cause. It names at most a variable, never a value.
 	EnvErr error
 	Mounts []allowlist.ObservedMount
+	// DeferVerity names the destinations whose fsVerityFile rules are judged
+	// without a digest (allowlist.RunningContainer.DeferVerity).
+	DeferVerity []string
 	// Lookup resolves ImageRef once for every check of one container
 	// (plugin.digestLookup); nil has checkImageAt ask containerd.
 	Lookup func() (string, error)
@@ -140,6 +143,7 @@ func (p *plugin) checkImageAt(ctx context.Context, cfg *config, snap *policySnap
 	// The base allowlist admits what its entries admit. Served entries are
 	// matched against the final OCI argv, environment, and classified mounts.
 	rc := allowlist.RunningContainer{Digest: digest, Argv: check.Argv, Env: check.Env, Mounts: check.Mounts}
+	rc = rc.DeferVerity(check.DeferVerity...)
 	baseAdmitted := p.policy.baseAdmits(rc, phase)
 
 	// A tag is resolved here, at hook time, while the runtime builds the
@@ -227,12 +231,15 @@ func launchDenial(
 	return "launch_not_admitted", denial
 }
 
-// The node-root fault is added only for an entry that declares a node-root
-// mount, where it explains the refusal.
+// A verified-file fault is added only for an entry that declares a mount of
+// that kind, where it explains the refusal.
 func (p *plugin) denialAttrs(snap *policySnapshot, check imageCheck, rc allowlist.RunningContainer, reason string) []any {
 	attrs := []any{"digest", rc.Digest, "image", check.ImageRef, "argv_sha256", argvDigest(rc.Argv), "reason", reason}
 	if missing := nodeRootMissing(p.policy.nodeRootBinds(snap, rc.Digest, rc.Mounts)); missing != "" {
 		attrs = append(attrs, "node_root_unavailable", missing)
+	}
+	if slices.ContainsFunc(rc.Mounts, unprovenFileBind) && p.policy.declaresFSVerity(snap, rc.Digest) {
+		attrs = append(attrs, "fs_verity_unavailable", fsVerityUnmeasured)
 	}
 	return attrs
 }
@@ -252,6 +259,11 @@ type observedContainer struct {
 	imageRef string
 	env      *allowlist.EnvObservation
 	mounts   []allowlist.ObservedMount
+	// deferVerity names every bind at the validation check, before the
+	// container has a root to measure, and for a running container the binds
+	// whose file could not be measured (verityCheck.deferred,
+	// allowlist.RunningContainer.DeferVerity).
+	deferVerity []string
 	// lookup resolves imageRef once for every check of one admission
 	// (plugin.digestLookup); nil resolves it on each read.
 	lookup func() (string, error)
@@ -259,13 +271,15 @@ type observedContainer struct {
 
 // observeContainer reads the launch evidence of a container from the spec the
 // runtime reports for it, mounts classified as the final check classifies them.
-func (p *plugin) observeContainer(pod *api.PodSandbox, ctr *api.Container, imageRef string) observedContainer {
+func (p *plugin) observeContainer(ctx context.Context, pod *api.PodSandbox, ctr *api.Container, imageRef string) observedContainer {
+	mounts := p.observedMounts(ctx, pod, ctr)
 	return observedContainer{
-		pod:      pod,
-		ctr:      ctr,
-		imageRef: imageRef,
-		env:      containerEnv(ctr),
-		mounts:   p.observedMounts(pod, ctr),
+		pod:         pod,
+		ctr:         ctr,
+		imageRef:    imageRef,
+		env:         containerEnv(ctr),
+		mounts:      mounts,
+		deferVerity: verityCheckOf(ctx).deferred(ctr.GetId()),
 	}
 }
 
@@ -277,7 +291,7 @@ func (o observedContainer) launch(digest string) allowlist.RunningContainer {
 		Argv:   o.ctr.GetArgs(),
 		Env:    o.env,
 		Mounts: o.mounts,
-	}
+	}.DeferVerity(o.deferVerity...)
 }
 
 // checkContainer runs the label rules and the image allowlist over a
@@ -309,7 +323,8 @@ func (p *plugin) checkContainerPhase(ctx context.Context, cfg *config, pod *api.
 		lookup:   p.digestLookup(ctx, imageRef),
 	}
 	if phase == launchFinal {
-		observed.mounts = p.observedMounts(pod, ctr)
+		observed.mounts = p.observedMounts(ctx, pod, ctr)
+		observed.deferVerity = verityCheckOf(ctx).deferred(ctr.GetId())
 	}
 	snap := p.policy.current()
 	verdict, reason := p.checkContainerObserved(ctx, cfg, snap, observed, phase)
@@ -360,15 +375,16 @@ func (p *plugin) checkContainerObserved(ctx context.Context, cfg *config, snap *
 	verdict, reason := p.checkLabels(cfg, namespace, podName, ctrName, observed.pod.GetLabels())
 	if verdict != verdictDeny && cfg.AllowlistEnabled() {
 		verdict, reason = p.checkImageAt(ctx, cfg, snap, imageCheck{
-			Namespace: namespace,
-			PodName:   podName,
-			Container: ctrName,
-			ImageRef:  observed.imageRef,
-			Argv:      observed.ctr.GetArgs(),
-			Env:       observed.env,
-			EnvErr:    envError(observed.ctr, observed.env),
-			Mounts:    observed.mounts,
-			Lookup:    observed.lookup,
+			Namespace:   namespace,
+			PodName:     podName,
+			Container:   ctrName,
+			ImageRef:    observed.imageRef,
+			Argv:        observed.ctr.GetArgs(),
+			Env:         observed.env,
+			EnvErr:      envError(observed.ctr, observed.env),
+			Mounts:      observed.mounts,
+			DeferVerity: observed.deferVerity,
+			Lookup:      observed.lookup,
 		}, phase)
 	}
 	return p.exemptNamespace(cfg, observed, verdict, reason)

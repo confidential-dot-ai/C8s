@@ -78,6 +78,8 @@ for config in c8s.config config-x86_64-c8s.snapshot; do
     # shellcheck disable=SC2016 # sed's last-line address, not a shell expansion.
     refuses "$config enabling a PCI hotplug driver" pci-hotplug \
         sed -i '$aCONFIG_HOTPLUG_PCI_PCIE=y' "$KERNEL/$config"
+    refuses "$config disabling fs-verity" fs-verity \
+        sed -i 's/^CONFIG_FS_VERITY=y$/# CONFIG_FS_VERITY is not set/' "$KERNEL/$config"
 done
 
 refuses "a latch leaving modules loadable" modules-latch \

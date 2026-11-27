@@ -76,14 +76,15 @@ func (p *plugin) StartContainer(ctx context.Context, pod *api.PodSandbox, ctr *a
 // admitStart runs before task.Start/execve. Its environment is the final
 // persisted OCI spec, unlike CreateContainer (or adjustment validation), which
 // precedes other plugins and runtime CDI injection. Start updates cannot edit
-// argv/env. Failed checks leave no admitted-container evidence.
+// argv/env. Failed checks leave no admitted-container evidence. It is the
+// first check with a container root, so it measures fs-verity digests.
 func (p *plugin) admitStart(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) error {
 	defer p.cvm().lockAdmission()()
 	if err := p.cvm().refuseLapsedRuntime(); err != nil {
 		return err
 	}
 	delete(p.podStarts, ctr.GetId())
-	ctx = withResolved(ctx)
+	ctx = p.withVerityCheck(withResolved(ctx))
 	cfg := p.cfg
 	imageRef, err := p.cvm().imageOf(pod, ctr)
 	if err != nil {
@@ -146,7 +147,7 @@ func (p *plugin) noteMeshStarted(ctx context.Context, pod *api.PodSandbox, ctr *
 	if !p.mesh.hosts(pod) {
 		return
 	}
-	launch := p.observedLaunch(ctx, p.observeContainer(pod, ctr, imageRef))
+	launch := p.observedLaunch(ctx, p.observeContainer(ctx, pod, ctr, imageRef))
 	if p.roleOf(launch) == allowlist.RoleMesh {
 		p.mesh.noteMeshStarted(pod.GetId())
 	}

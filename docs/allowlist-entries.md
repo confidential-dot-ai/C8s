@@ -117,6 +117,7 @@ needs at least one rule.
 | `data` | a destination under `/mnt/c8s-data/` | any other volume of this pod, on memory or encrypted storage |
 | `host` | a clean absolute `source`; `readOnly` matched exactly | a host bind whose source commitment and access mode match |
 | `nodeRootFile` | the same `source`, plus `readOnly: true` | the same, and node-root provenance for the file |
+| `fsVerityFile` | the same, plus `verityDigest` | the same, and fs-verity provenance with that digest |
 
 A `source` naming a pod volume is refused in JSON: only a measured base does
 that.
@@ -126,18 +127,43 @@ the node's read-only dm-verity root, with no symlink or intervening mount. The
 node must mount `/` read-only from one whole-device SHA-256 `verity` target,
 with exactly one matching `roothash=` on its measured kernel command line and
 no overlay above it; a node that does not denies every `nodeRootFile` rule and
-logs `node-root provenance unavailable` at startup. Lint allows a
-`nodeRootFile` rule on a pinned search path, where a `data` or `host` rule is
-an error.
+logs `node-root provenance unavailable` at startup.
 
-Mixed versions: a rule's `verityDigest` field is reserved for fs-verity and
-refused today. An enforcer predating node-root provenance decodes a served
-document leniently and ignores the field, so on such a node an fs-verity rollout
-keyed on `verityDigest` degrades to a plain `host` rule. The same enforcer
-refuses a served document that carries a `nodeRootFile` rule, so roll out such
-a rule only once every node enforces it. An upgraded node keeps working with an
-older TA: the TA decodes the node's inventory leniently and drops the provenance,
-which none of its rules asks for.
+`verityDigest` is the kernel's SHA-256 fs-verity digest of the file, as 64
+lowercase hexadecimal digits: the hex digest `fsverity measure` prints, not the
+file's `sha256sum`. Other kinds refuse it.
+
+The node decides the digest at the start check, the last check before the
+container runs. There it opens the container's root through its init process,
+after confirming that process is still the container's, resolves the
+destination with `openat2` and `RESOLVE_IN_ROOT`, so the path cannot leave that
+root, and measures the file with `FS_IOC_MEASURE_VERITY`. The file must be a
+regular file mounted on its own, on a read-only mount, on ext4, f2fs or btrfs,
+whose drivers verify every read; a file on FUSE, overlayfs, tmpfs or a network
+filesystem gives no evidence. Replacing the host file after the runtime bound
+it changes nothing the container sees. The measurements of one check share a
+one-second budget of measuring time, and a measurement that fails or overruns
+gives no evidence, so the start is refused unless another rule admits the bind. The validation
+check at create time runs before the container has a root: there an
+`fsVerityFile` rule admits a read-only bind of its source without a digest.
+That judgement is never evidence: the inventory, admission history and the TA
+only ever see a measured digest. A node-root file matches no `fsVerityFile`
+rule. Nothing is kept between checks: after an enforcer restart, and at each
+allowlist apply, the check of existing containers measures each running
+container again and, where `enforce_existing` applies, stops one whose file no
+longer qualifies. A file that check cannot measure, because the container has
+no live process, no measurement worker is free, or the budget ran out, is
+judged on its source alone, as at create time: the container is left running,
+but its inventory record carries no fs-verity evidence.
+
+Lint allows a `nodeRootFile` or `fsVerityFile` rule on a pinned search path,
+where a `data` or `host` rule is an error.
+
+Mixed versions: an enforcer that predates a kind refuses the served document
+that carries it, so publish `nodeRootFile` or `fsVerityFile` rules only once
+every node enforcer supports them. An upgraded node keeps working with an older
+TA: the TA decodes the node's inventory leniently and drops the provenance and
+digest, which none of its rules asks for.
 
 ## `capabilities`
 
@@ -159,7 +185,8 @@ platform role to none.
 absolute and clean, and the only wildcard is a trailing `/**`, matching
 strictly beneath its base. A grant requires every container of the entry to pin
 its argv (`command` and `args` `exact` or `deny`) and its mounts (`deny`, or
-`exact` with no `host` rule; read-only `nodeRootFile` is allowed). Release:
+`exact` with no `host` rule; read-only `nodeRootFile` and `fsVerityFile` are
+allowed). Release:
 [secrets.md](secrets.md).
 
 ## `egress`

@@ -12,6 +12,9 @@ import (
 // enforcer with no policy yet can query it without a guard.
 type Index struct {
 	byDigest map[string][]Container
+	// fsVerityFiles are the source and destination pairs that some entry's
+	// fsVerityFile rule names.
+	fsVerityFiles map[[2]string]bool
 	// published are the entries that declare host ports, which belong to the
 	// whole entry rather than to a digest.
 	published []hostPortGrant
@@ -19,7 +22,7 @@ type Index struct {
 
 // BuildIndex projects the workloads section into an admission index.
 func (a *Allowlist) BuildIndex() *Index {
-	idx := &Index{byDigest: map[string][]Container{}}
+	idx := &Index{byDigest: map[string][]Container{}, fsVerityFiles: map[[2]string]bool{}}
 	for _, w := range a.Workloads {
 		idx.add(w)
 	}
@@ -44,6 +47,9 @@ func (a *Allowlist) BuildIndexAt(now time.Time) *Index {
 func (i *Index) add(w Workload) {
 	for _, c := range w.containers() {
 		i.byDigest[c.Digest.String()] = append(i.byDigest[c.Digest.String()], c)
+		for _, rule := range fsVerityMountRules(c) {
+			i.fsVerityFiles[[2]string{rule.Source, rule.Destination}] = true
+		}
 	}
 	if len(w.HostPorts) > 0 {
 		i.published = append(i.published, hostPortGrant{ports: w.HostPorts, containers: w.containers()})
@@ -304,7 +310,7 @@ func (c Container) mismatch(r RunningContainer, final bool) []string {
 	if !final {
 		return fields
 	}
-	if !c.Mounts.admits(r.Mounts) || c.executableShadowed(r) {
+	if !c.Mounts.admitsLaunch(r) || c.executableShadowed(r) {
 		fields = append(fields, "mounts")
 	}
 	if !newEnvConstraint(&c.Env).admits(r) {
@@ -442,6 +448,39 @@ func (i *Index) NodeRootBinds(digest string, mounts []ObservedMount) []ObservedM
 		}
 	}
 	return named
+}
+
+// DeclaresFSVerityFile reports whether an fsVerityFile rule of some entry, for
+// any image, binds source at destination: the binds an enforcer measures,
+// before it resolves an image digest.
+func (i *Index) DeclaresFSVerityFile(source, destination string) bool {
+	return i != nil && i.fsVerityFiles[[2]string{source, destination}]
+}
+
+// FSVerityMountRules returns the fsVerityFile mount rules of every entry for
+// digest.
+func (i *Index) FSVerityMountRules(digest string) []MountRule {
+	if i == nil {
+		return nil
+	}
+	var rules []MountRule
+	for _, c := range i.byDigest[digest] {
+		rules = append(rules, fsVerityMountRules(c)...)
+	}
+	return rules
+}
+
+func fsVerityMountRules(c Container) []MountRule {
+	if c.Mounts.Policy != PolicyExact {
+		return nil
+	}
+	var rules []MountRule
+	for _, rule := range c.Mounts.Rules {
+		if rule.Kind == MountFSVerityFile {
+			rules = append(rules, rule)
+		}
+	}
+	return rules
 }
 
 // LaunchPinned reports whether the container fixes everything the pod could

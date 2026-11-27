@@ -68,6 +68,13 @@ for config in "$FRAGMENT" "$SNAPSHOT"; do
   fi
 done
 
+# fsVerityFile provenance needs FS_IOC_MEASURE_VERITY and read-time
+# verification; without fs-verity every such rule fails closed.
+for config in "$FRAGMENT" "$SNAPSHOT"; do
+  grep -qFx 'CONFIG_FS_VERITY=y' "$config" \
+      || fail fs-verity "${config##*/} must set CONFIG_FS_VERITY=y: fsVerityFile mount rules need it"
+done
+
 # The fragment compiles modules in (confos's gpu fragment needs them), which
 # the base kernel does not, so confos's 99-kspp-hardening.conf omits
 # kernel.modules_disabled and the image latches the key itself.

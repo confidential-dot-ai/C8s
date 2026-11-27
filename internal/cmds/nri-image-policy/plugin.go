@@ -411,7 +411,7 @@ func (p *plugin) recordForInventory(ctx context.Context, pod *api.PodSandbox, ct
 	if err != nil {
 		p.logger.Error("cannot resolve the image digest of a running container; any sandbox inventory refuses to answer for its pod, and it is granted no execs", "image", imageRef, "error", err)
 	}
-	p.recordDigest(pod, ctr, digest, p.observedMounts(pod, ctr))
+	p.recordDigest(pod, ctr, digest, p.observedMounts(ctx, pod, ctr))
 }
 
 // recordDigest is the only inventory.record and exec-grant record call site.
@@ -438,11 +438,15 @@ func (p *plugin) recordDigest(pod *api.PodSandbox, ctr *api.Container, digest st
 	p.inventory.recordObserved(ctr.GetId(), ctr.GetPodSandboxId(), ctr.GetName(), digest, role, ctr.GetArgs(), env, mounts)
 }
 
-func (p *plugin) observedMounts(pod *api.PodSandbox, ctr *api.Container) []allowlist.ObservedMount {
+// observedMounts classifies ctr's mounts, with the fs-verity digests that the
+// check ctx carries measures (withVerityCheck).
+func (p *plugin) observedMounts(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) []allowlist.ObservedMount {
 	if pod == nil {
 		return nil
 	}
-	return newMountObserver(p.mountStorage, p.cvm().enforcerMounts()).Observe(pod, ctr)
+	observer := newMountObserver(p.mountStorage, p.cvm().enforcerMounts())
+	observer.verity = verityCheckOf(ctx)
+	return observer.Observe(pod, ctr)
 }
 
 // imageDigest returns imageRef's digest, resolving a tag through containerd.

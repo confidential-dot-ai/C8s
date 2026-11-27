@@ -175,7 +175,7 @@ func (c podCVM) gateStart(ctx context.Context, pod *api.PodSandbox, ctr *api.Con
 	if err := p.containerd.VerifyContainerImage(ctx, ctr.GetId(), pod.GetId(), imageRef); err != nil {
 		return "", fmt.Errorf("verify selected Pod image: %w", err)
 	}
-	observed := p.observeContainer(pod, ctr, imageRef)
+	observed := p.observeContainer(ctx, pod, ctr, imageRef)
 	launch := p.observedLaunch(ctx, observed)
 	role := p.roleOf(launch)
 	source, err := p.podCredentialSource(pod, ctr, role, observed.mounts)

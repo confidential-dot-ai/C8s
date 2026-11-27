@@ -54,7 +54,7 @@ func TestChartRouterNodeMountAdmission(t *testing.T) {
 				t.Fatalf("validate chart container: %v", err)
 			}
 			final, _ := adjustedLaunchContainer(request)
-			mounts := p.adjustedMounts(request, final)
+			mounts := p.adjustedMounts(t.Context(), request, final)
 			if err := p.StartContainer(t.Context(), pod, final); err != nil {
 				t.Fatalf("start chart container: %v", err)
 			}
@@ -104,7 +104,7 @@ func TestRouterNodePolicyMountsRefuseForeignAndWritableSources(t *testing.T) {
 					t.Fatal("unsafe router credential adjustment admitted")
 				}
 				final, _ := adjustedLaunchContainer(request)
-				mounts := p.adjustedMounts(request, final)
+				mounts := p.adjustedMounts(t.Context(), request, final)
 				selected := onlyMountAt(t, mounts, destination)
 				if selected.Class != allowlist.MountHost {
 					t.Fatalf("unsafe policy mount received platform classification: %+v", selected)

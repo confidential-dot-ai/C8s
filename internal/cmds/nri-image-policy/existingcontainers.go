@@ -69,6 +69,9 @@ func (p *plugin) Synchronize(ctx context.Context, pods []*api.PodSandbox, ctrs [
 	}
 	p.deferredMu.Unlock()
 
+	// One budget for the whole request: containerd's timeout bounds it, not
+	// each container.
+	ctx = p.withExistingVerityCheck(ctx)
 	p.recoverExisting(ctx, pods, ctrs)
 	// Recovery has run: a container create from here finds its pod on record or
 	// is refused for its sandbox's life, no longer transiently.
@@ -118,7 +121,7 @@ func (p *plugin) recoverExisting(ctx context.Context, pods []*api.PodSandbox, ct
 		if pod == nil || !p.mesh.hosts(pod) {
 			continue
 		}
-		launch := p.observedLaunch(ctx, p.observeContainer(pod, ctr, ctr.GetAnnotations()[annotationImageName]))
+		launch := p.observedLaunch(ctx, p.observeContainer(ctx, pod, ctr, ctr.GetAnnotations()[annotationImageName]))
 		role := p.roleOf(launch)
 		// Liveness is the running set, not the registration snapshot: a container
 		// that started in the deferral window is not CONTAINER_RUNNING in the
@@ -287,6 +290,8 @@ func (p *plugin) KillRevoked(ctx context.Context) {
 	}
 	running := p.running.list()
 	var killed, failed int
+	// One budget for the whole recheck, as in Synchronize.
+	ctx = p.withExistingVerityCheck(ctx)
 	for _, c := range running {
 		if cfg.isExemptNamespace(c.pod.GetNamespace()) {
 			continue
@@ -469,6 +474,7 @@ func (p *plugin) RunDeferredCheck(ctx context.Context) {
 
 	// Recovery runs even with the check off: a pod off the gate's record is
 	// refused for its life.
+	ctx = p.withExistingVerityCheck(ctx)
 	p.recoverExisting(ctx, pods, ctrs)
 	// Recovery has run: a container create from here finds its pod on record or
 	// is refused for its sandbox's life, no longer transiently.

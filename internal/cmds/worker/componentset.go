@@ -83,7 +83,7 @@ func seedEntry(seed *allowlist.Allowlist, prefix string) (string, allowlist.Work
 
 // nodeMountKinds are the mounts a published entry may take: none filled from
 // objects the control plane writes.
-var nodeMountKinds = []allowlist.MountClass{allowlist.MountHost, allowlist.MountNodeRootFile, allowlist.MountEmptyDir}
+var nodeMountKinds = []allowlist.MountClass{allowlist.MountHost, allowlist.MountNodeRootFile, allowlist.MountFSVerityFile, allowlist.MountEmptyDir}
 
 // requireNodeInputs refuses an entry that leaves its launch open or takes a
 // mount outside nodeMountKinds: a published component's settings come from

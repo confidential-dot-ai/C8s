@@ -204,7 +204,7 @@ func TestMountCreationValidatorChecksCumulativeEdits(t *testing.T) {
 			}
 			req := &api.ValidateContainerAdjustmentRequest{Pod: pod, Container: ctr, Adjust: adjust}
 			before := proto.Clone(req)
-			if tc.cdi && p.adjustedMounts(req, proto.Clone(ctr).(*api.Container)) != nil {
+			if tc.cdi && p.adjustedMounts(t.Context(), req, proto.Clone(ctr).(*api.Container)) != nil {
 				t.Fatal("deferred CDI produced complete mount evidence")
 			}
 			err := p.ValidateContainerAdjustment(context.Background(), req)
@@ -686,7 +686,7 @@ func TestPodAdjustmentRoleComesFromTheFinalMountSet(t *testing.T) {
 			ctr:      ctr,
 			imageRef: "registry/repo@" + pushDigestB,
 			env:      env,
-			mounts:   p.adjustedMounts(req, ctr),
+			mounts:   p.adjustedMounts(t.Context(), req, ctr),
 		}
 		return p.gateMesh(t.Context(), req, observed)
 	}

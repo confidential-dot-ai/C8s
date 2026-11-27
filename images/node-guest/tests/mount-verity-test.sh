@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Disposable kernel integration test; pass a build-host-compiled NRI test binary.
-# Requires root, loop devices, mkfs.ext4 and veritysetup.
+# Requires root, loop devices, mkfs.ext4, veritysetup, fs-verity support and
+# a cgroup v2 hierarchy at /sys/fs/cgroup.
 set -euo pipefail
 in_namespace=false
 if [[ ${1:-} == --private-mount-namespace ]]; then
@@ -18,10 +19,12 @@ binary=$(realpath "$1")
 if ! $in_namespace; then
   exec unshare --mount bash "$0" --private-mount-namespace "$@"
 fi
+fs_coverage=()
 dm_coverage=()
 if [[ $# == 2 ]]; then
   coverage_dir=$(realpath "$2")
   [[ -d "$coverage_dir" ]] || { echo "coverage directory must exist" >&2; exit 1; }
+  fs_coverage=(-test.coverprofile="$coverage_dir/fs-verity.out")
   dm_coverage=(-test.coverprofile="$coverage_dir/dm-verity.out")
 fi
 work=$(mktemp -d /tmp/c8s-verity-kernel.XXXXXX)
@@ -31,10 +34,20 @@ cleanup() {
  umount "$work/verity" 2>/dev/null || true
  veritysetup close "$mapper" 2>/dev/null || true
  umount "$work/fs" 2>/dev/null || true
+ umount -R "$work/fsv" 2>/dev/null || true
  rm -rf "$work"
 }
 trap cleanup EXIT
 mount --make-rprivate /
+# The fs-verity leg gets its own filesystem, on which the test builds a
+# container root and its cgroup v2 leaf. A bind it leaks fails this leg's
+# unmount, not the dm-verity leg's.
+truncate -s 32M "$work/fsv-image"
+mkfs.ext4 -q -F -O verity "$work/fsv-image"
+mkdir "$work/fsv"
+mount -o loop "$work/fsv-image" "$work/fsv"
+C8S_TEST_FS_VERITY_DIR="$work/fsv" "$binary" -test.run '^TestFSVerityContainerRootIntegration$' -test.v "${fs_coverage[@]}"
+umount "$work/fsv" || { echo "the fs-verity test left mounts on its test filesystem" >&2; exit 1; }
 truncate -s 128M "$work/image"
 mkfs.ext4 -q -F "$work/image"
 mkdir "$work/fs" "$work/verity"

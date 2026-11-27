@@ -82,7 +82,7 @@ func (p *plugin) refuseBehindTheTA(ctx context.Context, pod *api.PodSandbox, ctr
 	if !p.cfg.PullEnabled() || !p.policy.freshness.behind() {
 		return nil
 	}
-	launch := p.observedLaunch(ctx, p.observeContainer(pod, ctr, imageRef))
+	launch := p.observedLaunch(ctx, p.observeContainer(ctx, pod, ctr, imageRef))
 	if p.policy.baseAdmits(launch, launchFinal) || !p.policy.servedAdmits(launch, launchFinal) {
 		return nil
 	}

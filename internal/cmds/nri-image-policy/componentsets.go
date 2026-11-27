@@ -30,7 +30,7 @@ func (p *plugin) admitOnComponentSets(ctx context.Context, pod *api.PodSandbox, 
 			"namespace", pod.GetNamespace(), "pod", pod.GetName(), "container", ctr.GetName(), "error", err)
 		recorded = nil
 	}
-	launch := p.observedLaunch(ctx, p.observeContainer(pod, ctr, imageRef))
+	launch := p.observedLaunch(ctx, p.observeContainer(ctx, pod, ctr, imageRef))
 	return p.componentSetRefusal(append(recorded, p.sandboxContainer(launch)))
 }
 

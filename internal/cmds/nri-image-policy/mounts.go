@@ -49,6 +49,8 @@ type mountObserver struct {
 	handlers []mountHandler
 	storage  mountStorageInspector
 	own      enforcerMounts
+	// verity measures host file binds; nil measures none.
+	verity *verityCheck
 }
 
 func newMountObserver(storage mountStorageInspector, own enforcerMounts) mountObserver {
@@ -115,7 +117,7 @@ func (o mountObserver) observeMount(ctx MountContext, m *api.Mount) allowlist.Ob
 			return mount
 		}
 	}
-	return observeHostMount(m)
+	return o.verity.attach(ctx.Container, m, observeHostMount(m))
 }
 
 func defaultStorage(s mountStorageInspector) mountStorageInspector {
@@ -265,15 +267,22 @@ const nodeRootBindIneligible = "source is not a plain read-only bind of a regula
 // node-root provenance, so a denial of a nodeRootFile rule names its cause. It
 // returns "" when there is no such bind.
 func nodeRootMissing(mounts []allowlist.ObservedMount) string {
-	if !slices.ContainsFunc(mounts, func(m allowlist.ObservedMount) bool {
-		return m.Class == allowlist.MountHost && m.ReadOnly && m.HostSourceDigest != "" && m.Provenance == ""
-	}) {
+	if !slices.ContainsFunc(mounts, unprovenFileBind) {
 		return ""
 	}
 	if reason, _ := nodeRootUnavailableReason(); reason != "" {
 		return reason
 	}
 	return nodeRootBindIneligible
+}
+
+// fsVerityUnmeasured is why a read-only host bind carries no fs-verity evidence.
+const fsVerityUnmeasured = "no fs-verity digest was measured for the file; only the start check measures it, and the container's fs-verity warnings name the cause"
+
+// unprovenFileBind reports whether m is a read-only host bind that carries no
+// provenance, so a denial of a verified-file rule names its cause.
+func unprovenFileBind(m allowlist.ObservedMount) bool {
+	return m.Class == allowlist.MountHost && m.ReadOnly && m.HostSourceDigest != "" && m.Provenance == ""
 }
 
 func observeHostMount(m *api.Mount) allowlist.ObservedMount {

@@ -1,6 +1,8 @@
 package allowlist
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strings"
 )
@@ -11,7 +13,7 @@ type mountRuleBehavior interface {
 	hostIndependent() bool
 	// grantPinned reports whether a secrets grant accepts the rule: the host
 	// chooses neither what the container reads through it nor where it
-	// writes. fsVerityFile (#938) qualifies when readOnly with a verityDigest.
+	// writes.
 	grantPinned() bool
 }
 
@@ -20,6 +22,7 @@ var (
 	_ mountRuleBehavior = dataRule{}
 	_ mountRuleBehavior = hostRule{}
 	_ mountRuleBehavior = nodeRootFileRule{}
+	_ mountRuleBehavior = fsVerityFileRule{}
 )
 
 func (r MountRule) behavior() mountRuleBehavior {
@@ -32,6 +35,8 @@ func (r MountRule) behavior() mountRuleBehavior {
 		return hostRule{r}
 	case MountNodeRootFile:
 		return nodeRootFileRule{hostRule{r}}
+	case MountFSVerityFile:
+		return fsVerityFileRule{hostRule{r}}
 	default:
 		return nil
 	}
@@ -99,7 +104,7 @@ type hostRule struct {
 
 func (r hostRule) validate() error {
 	if r.VerityDigest != "" {
-		return fmt.Errorf("verityDigest is not supported")
+		return fmt.Errorf("mount kind %q does not support verityDigest", r.Kind)
 	}
 	_, err := HostSourceDigest(r.Source)
 	return err
@@ -144,9 +149,50 @@ func (r nodeRootFileRule) grantPinned() bool {
 	return r.ReadOnly
 }
 
+// fsVerityFileRule is a read-only host rule that also requires fs-verity
+// evidence matching its pinned VerityDigest.
+type fsVerityFileRule struct {
+	hostRule
+}
+
+func (r fsVerityFileRule) validate() error {
+	if !r.ReadOnly {
+		return fmt.Errorf("mount kind %q requires readOnly: true", r.Kind)
+	}
+	if !CanonicalVerityDigest(r.VerityDigest) {
+		return fmt.Errorf("verityDigest must be 64 lowercase hexadecimal digits")
+	}
+	_, err := HostSourceDigest(r.Source)
+	return err
+}
+
+func (r fsVerityFileRule) admits(m ObservedMount) bool {
+	return m.Provenance == ProvenanceFSVerity && m.VerityDigest == r.VerityDigest && r.hostRule.admits(m)
+}
+
+// admitsDeferred is admits for a bind whose digest is decided later
+// (RunningContainer.DeferVerity): it also accepts m without provenance,
+// judged on its source and read-only mode alone.
+func (r fsVerityFileRule) admitsDeferred(m ObservedMount) bool {
+	return r.admits(m) || m.Provenance == "" && m.VerityDigest == "" && r.hostRule.admits(m)
+}
+
+// grantPinned is true when read-only: the verityDigest pins the bytes the
+// kernel serves, and read-only removes the write channel.
+func (r fsVerityFileRule) grantPinned() bool {
+	return r.ReadOnly
+}
+
+// CanonicalVerityDigest reports whether value is a SHA-256 digest in the one
+// encoding policy accepts: 64 lowercase hexadecimal digits.
+func CanonicalVerityDigest(value string) bool {
+	decoded, err := hex.DecodeString(value)
+	return err == nil && len(decoded) == sha256.Size && hex.EncodeToString(decoded) == value
+}
+
 // observedClass is the ObservedMount class a rule of r's kind matches.
 func (r MountRule) observedClass() MountClass {
-	if r.Kind == MountNodeRootFile {
+	if r.Kind == MountNodeRootFile || r.Kind == MountFSVerityFile {
 		return MountHost
 	}
 	return r.Kind

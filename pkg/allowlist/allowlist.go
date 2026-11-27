@@ -240,7 +240,8 @@ type MountRule struct {
 	// outside DataMountPrefix. YAML-only: only a measured
 	// boot config sets it, and the JSON ingest rejects it.
 	Node bool `json:"-" yaml:"node,omitempty"`
-	// VerityDigest is reserved for fs-verity and rejected for now.
+	// VerityDigest pins the kernel fs-verity SHA-256 digest, not a SHA-256 of
+	// the file bytes. It is required by, and only valid with, MountFSVerityFile.
 	VerityDigest string `json:"verityDigest,omitempty" yaml:"verityDigest,omitempty"`
 }
 
@@ -257,11 +258,20 @@ const (
 	// field on a host rule so that an enforcer predating it refuses the served
 	// document instead of applying the rule as a plain host rule.
 	MountNodeRootFile MountClass = "nodeRootFile"
+	// MountFSVerityFile is a rule kind only: it admits a read-only host file
+	// bind that carries ProvenanceFSVerity evidence with the rule's
+	// VerityDigest. Like MountNodeRootFile, an older enforcer refuses it.
+	MountFSVerityFile MountClass = "fsVerityFile"
 )
 
-// ProvenanceNodeRoot is mount evidence for a regular file reached through the
-// node's measured, read-only dm-verity root.
-const ProvenanceNodeRoot = "node-root"
+const (
+	// ProvenanceNodeRoot is mount evidence for a regular file reached through
+	// the node's measured, read-only dm-verity root.
+	ProvenanceNodeRoot = "node-root"
+	// ProvenanceFSVerity is mount evidence for a file whose kernel-enforced
+	// fs-verity digest the node measured through the container's root.
+	ProvenanceFSVerity = "fs-verity"
+)
 
 // MountStorage records the storage guarantee established by the node.
 type MountStorage string

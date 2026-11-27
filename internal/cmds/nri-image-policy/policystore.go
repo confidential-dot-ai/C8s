@@ -186,6 +186,25 @@ func (s *policyStore) nodeRootBinds(snap *policySnapshot, digest string, mounts 
 	return binds
 }
 
+// declaresFSVerity reports whether the base or snap's allowlist has an
+// fsVerityFile mount rule for digest.
+func (s *policyStore) declaresFSVerity(snap *policySnapshot, digest string) bool {
+	if s == nil {
+		return false
+	}
+	return len(s.base.FSVerityMountRules(digest)) > 0 || snap != nil && len(snap.index.FSVerityMountRules(digest)) > 0
+}
+
+// declaresFSVerityFile reports whether an fsVerityFile rule of the base or the
+// current snapshot binds source at destination.
+func (s *policyStore) declaresFSVerityFile(source, destination string) bool {
+	if s == nil {
+		return false
+	}
+	snap := s.current()
+	return s.base.DeclaresFSVerityFile(source, destination) || snap != nil && snap.index.DeclaresFSVerityFile(source, destination)
+}
+
 // needsVariableEvidence reports whether the base or applied allowlist has a
 // match env policy for digest.
 func (s *policyStore) needsVariableEvidence(digest string) bool {
