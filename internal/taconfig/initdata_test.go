@@ -8,6 +8,8 @@ import (
 	toml "github.com/pelletier/go-toml/v2"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
+
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/initdata"
 )
 
 // The launch binding proves an initdata document's bytes, not the digest it
@@ -219,7 +221,7 @@ func TestAConfigurationIsNotTOML(t *testing.T) {
 			if err := toml.Unmarshal(configuration, &document); err == nil {
 				t.Fatal("a configuration parsed as TOML")
 			}
-			read, algorithm, err := readInitdata(configuration)
+			read, algorithm, err := initdata.Read(configuration)
 			if err != nil || algorithm != "" || string(read) != string(configuration) {
 				t.Fatalf("read as %q declaring %q, %v; want the file itself", read, algorithm, err)
 			}
@@ -270,6 +272,7 @@ func TestAnInitdataDocumentMustCarryAnAgentPolicy(t *testing.T) {
 		"an empty policy":       {map[string]string{ConfigFile: configuration, PolicyFile: ""}, "package agent_policy"},
 		"another package":       {map[string]string{ConfigFile: configuration, PolicyFile: "package other\n"}, "package agent_policy"},
 		"the package commented": {map[string]string{ConfigFile: configuration, PolicyFile: "# package agent_policy\n"}, "package agent_policy"},
+		"a longer package name": {map[string]string{ConfigFile: configuration, PolicyFile: "package agent_policy.extra\n"}, "package agent_policy"},
 	} {
 		launchFile := bareInitdataDocument(t, InitdataAlgorithmSNP, tc.entries)
 		if _, err := Parse(launchFile); err == nil || !strings.Contains(err.Error(), tc.want) {
@@ -281,7 +284,7 @@ func TestAnInitdataDocumentMustCarryAnAgentPolicy(t *testing.T) {
 	}
 	withPolicy := bareInitdataDocument(t, InitdataAlgorithmSNP, map[string]string{
 		ConfigFile: configuration,
-		PolicyFile: "# generated\n  package agent_policy  \ndefault CreateContainerRequest := false\n",
+		PolicyFile: "# generated\n  package   agent_policy  # the agent's\ndefault CreateContainerRequest := false\n",
 	})
 	if _, err := Parse(withPolicy); err != nil {
 		t.Fatalf("a document with a policy was refused: %v", err)

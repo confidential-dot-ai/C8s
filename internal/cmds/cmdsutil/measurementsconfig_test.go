@@ -1,6 +1,7 @@
 package cmdsutil
 
 import (
+	"encoding/json"
 	"bytes"
 	"errors"
 	"log/slog"
@@ -410,6 +411,42 @@ func TestTALaunchFileRequiresAnUntouchedRTMR3BesideMRCONFIGID(t *testing.T) {
 		}
 		if tc.wantErr && err != nil && !strings.Contains(err.Error(), "RTMR[3]") {
 			t.Errorf("%s: refusal %q does not name RTMR[3]", tc.name, err)
+		}
+	}
+}
+
+// Every reader of a Trust Authority pin comes through TALaunchFile, so a pin
+// embedding an initdata document no Trust Authority starts from is refused
+// here: one with no agent policy, or one declaring another family's digest.
+func TestTALaunchFileRefusesAnInitdataDocumentNoTrustAuthorityStartsFrom(t *testing.T) {
+	hex96 := func(b string) string { return strings.Repeat(b, 48) }
+	const policy = "\"policy.rego\" = \"package agent_policy\"\n"
+	initdata := func(algorithm, entries string) string {
+		return "algorithm = \"" + algorithm + "\"\n[data]\n\"ta-config.yaml\" = \"clusterID: test\"\n" + entries
+	}
+	for _, tc := range []struct {
+		name, launchFile, want string
+	}{
+		{name: "a document with a policy", launchFile: initdata("sha384", policy)},
+		{name: "a bare configuration", launchFile: "clusterID: test\n"},
+		{name: "a document with no policy", launchFile: initdata("sha384", ""), want: "policy.rego"},
+		{name: "another family's digest", launchFile: initdata("sha256", policy), want: "sha384"},
+	} {
+		launchFile, err := json.Marshal(tc.launchFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		values, err := refvalues.Parse([]byte(`{"schema_version":"2","tee":"tdx","measurements":[{"name":"ta","mrtd":"` + hex96("aa") +
+			`","rtmr":[null,"` + hex96("bb") + `","` + hex96("cc") + `"],"launch_file":` + string(launchFile) + `}]}`))
+		if err != nil {
+			t.Fatalf("%s: parse: %v", tc.name, err)
+		}
+		got, err := TALaunchFile(values)
+		switch {
+		case tc.want == "" && (err != nil || string(got) != tc.launchFile):
+			t.Errorf("%s: TALaunchFile = %q, %v, want the launch file", tc.name, got, err)
+		case tc.want != "" && (!errors.Is(err, ErrTAPinUnbound) || !strings.Contains(err.Error(), tc.want)):
+			t.Errorf("%s: TALaunchFile = %v, want a refusal naming %q", tc.name, err, tc.want)
 		}
 	}
 }
