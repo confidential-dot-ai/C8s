@@ -31,7 +31,6 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/cdspin"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/routes"
-	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 // haConfig is a replica's flags: none of it is measured, and a wrong value
@@ -360,6 +359,14 @@ func haAuthorizer(store *allowlist.Store, started time.Time, skew time.Duration)
 	}
 }
 
+// chainKeysAuthorizer checks a request of a Trust Authority route under the
+// keys the replica checks its own operator requests under.
+func chainKeysAuthorizer(replica *taha.Replica, authorize taha.Authorizer) allowlist.WriteAuthorizer {
+	return func(r *http.Request, body []byte) error {
+		return authorize(r, body, replica.OperatorKeys())
+	}
+}
+
 // haGate serves a replica's Trust Authority routes only while it serves. A
 // replica set takes allowlist and routes writes as chain entries, never
 // through the old PUT routes; a single replica's PUT /secrets stays. An
@@ -399,21 +406,14 @@ func haServing(replica *taha.Replica) func(context.Context) error {
 	}
 }
 
+// haSet reports a replica set of more than one replica.
+func haSet(ha *taconfig.HA) bool { return ha != nil && len(ha.Endpoints) > 1 }
+
 // haLedger is the sandbox ledger issuance records into: none for a replica
-// set of more than one replica, whose replicas could not share it.
+// set, whose replicas could not share it.
 func haLedger(ha *taconfig.HA, ledger *sandboxledger.Ledger) sandboxBinder {
-	if ha != nil && len(ha.Endpoints) > 1 {
+	if haSet(ha) {
 		return nil
 	}
 	return ledger
-}
-
-// haSecrets is secretsEnabled, refused for a replica set of more than one
-// replica: secrets and the sandbox ledger wait for a broker a set can
-// share.
-func haSecrets(ha *taconfig.HA, images []remote.ImagePin, hosts workloadclaims.CIDRHosts) (bool, string) {
-	if ha != nil && len(ha.Endpoints) > 1 {
-		return false, "a Trust Authority replica set of more than one replica holds no secrets"
-	}
-	return secretsEnabled(images, hosts)
 }

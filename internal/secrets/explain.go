@@ -135,7 +135,7 @@ func (h ExplainHandler) explain(ctx context.Context, sandboxID string) ExplainRe
 	resp := ExplainResponse{SandboxID: sandboxID}
 
 	if h.Bindings == nil || h.Inventory == nil {
-		resp.Refusal = "secrets are not configured to reach an inventory"
+		resp.Refusal = "secrets are not configured to reach an inventory, or this Trust Authority keeps no sandbox ledger (a replica set)"
 		return resp
 	}
 	host, ok := h.Bindings.Lookup(sandboxID)

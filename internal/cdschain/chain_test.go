@@ -113,6 +113,9 @@ func TestApply(t *testing.T) {
 		{"nodes name no image", f.op, next(TypeNodes, Nodes{Nodes: `{"schema_version":"2","tee":"sev-snp","measurements":[]}`}), nil},
 		{"nodes not a measurements document", f.op, next(TypeNodes, Nodes{Nodes: "{}"}), nil},
 		{"member writes nodes", f.member, next(TypeNodes, Nodes{Nodes: build.Measurements}), nil},
+		{"secret path not canonical", f.op, next(TypeSecret, Secret{Path: "/app//db", Sealed: &Hash{1}}), nil},
+		{"delete of no secret", f.op, next(TypeSecret, Secret{Path: "/app/db"}), nil},
+		{"member writes a secret", f.member, next(TypeSecret, Secret{Path: "/app/db", Sealed: &Hash{1}}), nil},
 		{"policy not canonical", f.op, next(TypePolicy, Policy{Allowlist: json.RawMessage(`{"workloads":{} }`)}), nil},
 		{"unknown type", f.op, next("raise-floor", Accepted{}), nil},
 		{"second genesis", f.op, next(TypeGenesis, Genesis{}), nil},
@@ -145,6 +148,36 @@ func TestApply(t *testing.T) {
 	e, _ = Sign(f.member, next(TypeMember, Member{Slot: 1, Key: stranger}))
 	if _, err := f.state.Apply(e); err != nil {
 		t.Fatalf("a member may name a slot's member: %v", err)
+	}
+}
+
+// A secret entry names the newest sealed value of its path, a delete removes
+// it, and a later entry leaves the states before it as they were.
+func TestSecretEntries(t *testing.T) {
+	f := newFixture(t)
+	s := f.state
+	apply := func(p Secret) *State {
+		t.Helper()
+		e, err := Sign(f.op, Body{Cluster: "lane", Seq: s.Head.Seq + 1, Prev: s.Head.Hash, Type: TypeSecret, Payload: mustJSON(t, p)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		next, err := s.Apply(e)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return next
+	}
+	s = apply(Secret{Path: "/app/db", Sealed: &Hash{1}})
+	first := s
+	s = apply(Secret{Path: "/app/db", Sealed: &Hash{2}})
+	s = apply(Secret{Path: "/app/key", Sealed: &Hash{3}})
+	if s.Secrets["/app/db"] != (Hash{2}) || s.Secrets["/app/key"] != (Hash{3}) || first.Secrets["/app/db"] != (Hash{1}) || len(first.Secrets) != 1 {
+		t.Fatalf("secrets %v, before %v", s.Secrets, first.Secrets)
+	}
+	s = apply(Secret{Path: "/app/db"})
+	if _, ok := s.Secrets["/app/db"]; ok || s.Secrets["/app/key"] != (Hash{3}) {
+		t.Fatalf("after the delete: %v", s.Secrets)
 	}
 }
 

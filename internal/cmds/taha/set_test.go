@@ -548,3 +548,46 @@ func TestAckedAtReadsTheAcknowledgedChain(t *testing.T) {
 		t.Fatal("entries not linked by their prev hashes passed")
 	}
 }
+
+// A secret write lands as a secret entry naming the sealed hash; a path the
+// chain holds a secret at needs overwrite, and a delete names no hash.
+func TestWriteSecretIsASecretEntry(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	entries, key := testChain(t, 1)
+	replica := &racedReplica{entries: entries}
+	srv := httptest.NewServer(replica)
+	defer srv.Close()
+	opts := &taconn.Options{URL: srv.URL, Insecure: true, OperatorKey: writeOperatorKey(t, key), Timeout: 5 * time.Second}
+	ctx := context.Background()
+	secretsAt := func() map[string]cdschain.Hash {
+		replica.mu.Lock()
+		defer replica.mu.Unlock()
+		state, err := cdschain.Verify(replica.entries)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return state.Secrets
+	}
+	if handled, err := WriteSecret(ctx, opts, "/app/db", &cdschain.Hash{1}, false); !handled || err != nil {
+		t.Fatalf("handled=%v %v", handled, err)
+	}
+	if _, err := WriteSecret(ctx, opts, "/app/db", &cdschain.Hash{2}, false); err == nil || !strings.Contains(err.Error(), "--overwrite") {
+		t.Fatalf("a second write without overwrite: %v", err)
+	}
+	if got := secretsAt(); got["/app/db"] != (cdschain.Hash{1}) {
+		t.Fatalf("secrets %v", got)
+	}
+	if _, err := WriteSecret(ctx, opts, "/app/db", &cdschain.Hash{2}, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := secretsAt(); got["/app/db"] != (cdschain.Hash{2}) {
+		t.Fatalf("secrets after the overwrite %v", got)
+	}
+	if _, err := WriteSecret(ctx, opts, "/app/db", nil, false); err != nil {
+		t.Fatal(err)
+	}
+	if got := secretsAt(); len(got) != 0 {
+		t.Fatalf("secrets after the delete %v", got)
+	}
+}

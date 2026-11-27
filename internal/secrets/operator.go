@@ -2,9 +2,11 @@ package secrets
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 
@@ -34,6 +36,9 @@ type PutResponse struct {
 	Path     string `json:"path"`
 	Created  bool   `json:"created"`
 	Existing Origin `json:"existing,omitempty"`
+	// Sealed answers a replica set's 202: the hash of the sealed value, which
+	// is released once a secret entry names it.
+	Sealed string `json:"sealed,omitempty"`
 }
 
 // OperatorHandler serves PUT on Route: an operator supplying a value Trust Authority cannot
@@ -48,6 +53,11 @@ type OperatorHandler struct {
 	Authorize func(r *http.Request, body []byte) error
 	// MaxBodyBytes caps the request body; zero means DefaultMaxOperatorBodyBytes.
 	MaxBodyBytes int64
+	// Seal, set on a replica set, seals the value instead of storing it.
+	Seal func(ctx context.Context, path string, value []byte) (string, error)
+	// MaxValueBytes bounds a value Seal takes, as the store bounds the ones it
+	// keeps; zero or less is no bound.
+	MaxValueBytes int
 
 	Logger *slog.Logger
 }
@@ -90,6 +100,18 @@ func (h OperatorHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if h.Seal != nil {
+		if h.MaxValueBytes > 0 && len(value) > h.MaxValueBytes {
+			http.Error(w, fmt.Sprintf("value is %d bytes, limit is %d", len(value), h.MaxValueBytes), http.StatusRequestEntityTooLarge)
+			return
+		}
+		sealed, err := h.Seal(r.Context(), path, value)
+		if h.writeFailed(w, path, err) {
+			return
+		}
+		writeResult(w, http.StatusAccepted, PutResponse{Path: path, Sealed: sealed})
+		return
+	}
 	if req.Overwrite {
 		h.replace(w, r, path, value)
 		return

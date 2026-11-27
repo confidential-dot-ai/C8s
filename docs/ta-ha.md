@@ -56,6 +56,7 @@ Entry types:
 | `operator-keys` | the new writer keys | a current operator key |
 | `member` | slot → member key | a current member key (written by a giver at handoff) or an operator key |
 | `nodes` | the whole set of node images the Trust Authority certifies (a measurements document); every entry binds a launch | an operator key |
+| `secret` | a secret path and the hash of its sealed value, or none to delete it | an operator key |
 
 Notes on the rules:
 - All accepted builds use the same TEE family and Trust Authority launch file. Each pin
@@ -165,7 +166,7 @@ Notes:
 - Every command takes `--endpoints`; a write goes through the first replica that serves. `--url` names one replica instead.
 - A set that a majority of the members' running builds are not in is refused without `--force` (U2).
 - `accept-image` and `raise-floor` re-read the chain and retry a write another write beat (409) for up to `--retry-for` (default 1m).
-- `c8s allowlist` and `c8s routes` write to a replica set as chain entries. A replica answers the old `PUT /allowlist` and `PUT /routes` with 409; a single replica still takes `PUT /secrets`.
+- `c8s allowlist` and `c8s routes` write to a replica set as chain entries. A replica answers the old `PUT /allowlist` and `PUT /routes` with 409. `c8s secrets put` and `c8s secrets delete` write `secret` entries (see Secrets).
 - The CLI records, per cluster (`--state-dir`, default `c8s/ta-ha` in the user config directory), the genesis and the last head a write was answered done for. It refuses a replica serving a chain without that head, or of another genesis. Without a record, it takes only a genesis signed by `--operator-key`; an operator who did not sign it passes `--genesis <hash>` to a `c8s ta ha` write once, which records it.
 - A write that may have been applied exits 3, as does a `c8s allowlist` write to a single Trust Authority that no answer confirmed. A genesis no answer confirmed exits 3 too and names its hash: once `c8s ta ha status` shows the replicas hold it, pass that hash as `--genesis`.
 
@@ -173,7 +174,7 @@ Notes:
 
 - Replicas must reach the node network: at issuance a replica dials the requesting node's sandbox-digests endpoint on port 1019.
 - Routers and nodes reach the set through one endpoint name. Put the replicas behind DNS with a short TTL (for example 60 s) or a health-checked load balancer, and take a dead replica out of the name.
-- A set of more than one replica serves no secrets and keeps no sandbox ledger (see Secrets).
+- A set of more than one replica keeps no sandbox ledger (see Secrets).
 
 Upgrade the Trust Authority build in this order:
 1. `accept-image` the new build.
@@ -209,4 +210,12 @@ Accepted windows and residuals:
 
 ## Secrets
 
-Secrets and the sandbox ledger are served only by a single replica. A set of more than one replica refuses them.
+A set of more than one replica holds only operator-written secrets; a workload that asks it to generate one is refused (501). A single replica keeps them as a single Trust Authority does.
+
+- `c8s secrets put` sends the value to a replica, which seals it (AES-256-GCM, under a key derived from the mesh CA key every replica holds) and keeps it in the store under the SHA-256 of the sealed bytes. The CLI then writes a `secret` entry naming the path and that hash. `c8s secrets delete` writes one with no hash.
+- A replica releases a value only if the store's bytes hash to what the newest `secret` entry of the path names and open under the key. A store that rolls a value back or withholds it is refused, never served; the chain's own rules cover rolling back the entries.
+- Release keeps no sandbox ledger: the replica asks the inventory the sandbox token names, bounded by the node addresses, as issuance does. `c8s secrets explain` needs the ledger, so a set answers it with a refusal.
+- Secrets are bound to the set's CA key: losing every replica, or a re-root, loses them as it loses everything else. The sealed values are in the store alone, which no replica writes forward: a store that loses one loses that secret until `c8s secrets put --overwrite` writes it again.
+- A value is bounded by `--secrets-max-value-bytes`, and `PUT /secrets` is checked under the chain's operator keys.
+- A replica or a worker built before `secret` entries refuses a chain that holds one. Write the first only once every replica and worker runs a build that reads them.
+- `c8s volume create` against a set builds the volume and escrows its key, then asks you to store the key with `c8s secrets put`.

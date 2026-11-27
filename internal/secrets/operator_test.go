@@ -359,3 +359,39 @@ func TestOperatorPutAgainstRealOperatorAuth(t *testing.T) {
 		t.Fatalf("value = %q, want the one write that was authorized", got)
 	}
 }
+
+// With Seal (a replica set), a put seals the value and answers its hash with
+// 202, storing nothing itself: the value is released once an entry names it.
+func TestOperatorPutWithSealAnswersTheSealedHash(t *testing.T) {
+	oh := newOperatorHarness(t)
+	var sealed []byte
+	oh.h.Seal = func(_ context.Context, path string, value []byte) (string, error) {
+		sealed = append([]byte(path+"="), value...)
+		return "abc", nil
+	}
+	w, resp := doPut(oh.h, putRequest(t, "/tenant-a/db", []byte("hunter2"), false))
+	if w.Code != http.StatusAccepted || resp.Sealed != "abc" || resp.Created || string(sealed) != "/tenant-a/db=hunter2" {
+		t.Fatalf("put = %d %+v, sealed %q", w.Code, resp, sealed)
+	}
+	if _, err := oh.store.Get(context.Background(), "/tenant-a/db"); err == nil {
+		t.Fatal("the store holds the value")
+	}
+}
+
+// A replica set bounds a value as the store does: one at the limit is sealed,
+// one byte over is refused before it is.
+func TestOperatorPutWithSealHoldsTheValueLimit(t *testing.T) {
+	oh := newOperatorHarness(t)
+	sealed := 0
+	oh.h.Seal = func(context.Context, string, []byte) (string, error) {
+		sealed++
+		return "abc", nil
+	}
+	oh.h.MaxValueBytes = 8
+	if w, _ := doPut(oh.h, putRequest(t, "/tenant-a/db", bytes.Repeat([]byte("x"), 8), false)); w.Code != http.StatusAccepted {
+		t.Fatalf("a value at the limit = %d, want 202: %s", w.Code, w.Body)
+	}
+	if w, _ := doPut(oh.h, putRequest(t, "/tenant-a/db", bytes.Repeat([]byte("x"), 9), false)); w.Code != http.StatusRequestEntityTooLarge || sealed != 1 {
+		t.Fatalf("a value over the limit = %d after %d seals, want 413 and 1", w.Code, sealed)
+	}
+}

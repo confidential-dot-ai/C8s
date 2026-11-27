@@ -13,6 +13,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -83,6 +84,7 @@ const (
 	TypeRoutes       Type = "routes"
 	TypeAccepted     Type = "accepted"
 	TypeNodes        Type = "nodes"
+	TypeSecret       Type = "secret"
 )
 
 // Body is what a writer signs. Seq and Prev place it at one position of one
@@ -204,6 +206,13 @@ type Routes struct {
 	Token    string `json:"token"`
 }
 
+// Secret names the value of the operator secret at Path: the hash of the
+// value sealed by a replica (taha), or with none it deletes the secret.
+type Secret struct {
+	Path   string `json:"path"`
+	Sealed *Hash  `json:"sealed,omitempty"`
+}
+
 // State is what a verified chain decides.
 type State struct {
 	Cluster      string
@@ -220,8 +229,10 @@ type State struct {
 	PolicySeq uint64
 	// Nodes is the measurements document of the newest nodes entry: the node
 	// images the Trust Authority certifies. "" before one: the launch file's nodes.
-	Nodes   string
-	Routes  *Routes
+	Nodes  string
+	Routes *Routes
+	// Secrets is the sealed value hash of each operator secret by path.
+	Secrets map[string]Hash
 	Entries int
 	Bytes   int64
 }
@@ -383,6 +394,12 @@ func (s *State) applyPayload(b Body) error {
 		}
 		s.Nodes = p.Nodes
 		return nil
+	case TypeSecret:
+		var p Secret
+		if err := DecodeStrict(b.Payload, &p); err != nil {
+			return err
+		}
+		return s.setSecret(p)
 	}
 	return fmt.Errorf("unknown entry type %q", b.Type)
 }
@@ -405,6 +422,27 @@ func (s *State) setMember(slot int, key string) error {
 		}
 	}
 	s.Members[slot] = key
+	return nil
+}
+
+// setSecret applies a secret entry to a copy of the secrets, which earlier
+// states share.
+func (s *State) setSecret(p Secret) error {
+	if _, err := allowlist.CanonicalSecretPath(p.Path); err != nil {
+		return err
+	}
+	if _, ok := s.Secrets[p.Path]; !ok && p.Sealed == nil {
+		return fmt.Errorf("no secret at %s to delete", p.Path)
+	}
+	s.Secrets = maps.Clone(s.Secrets)
+	if p.Sealed == nil {
+		delete(s.Secrets, p.Path)
+		return nil
+	}
+	if s.Secrets == nil {
+		s.Secrets = map[string]Hash{}
+	}
+	s.Secrets[p.Path] = *p.Sealed
 	return nil
 }
 

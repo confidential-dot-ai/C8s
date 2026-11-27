@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
@@ -114,7 +115,7 @@ func TestInventoryMisconfigurationRefuses(t *testing.T) {
 		mutate func(*Handler)
 	}{
 		{"no inventory client", func(h *Handler) { h.Inventory = nil }},
-		{"no bindings", func(h *Handler) { h.Bindings = nil }},
+		{"no cidrs without bindings", func(h *Handler) { h.Bindings, h.InventoryHosts = nil, nil }},
 		{"no cidrs", func(h *Handler) { h.InventoryHosts = nil }},
 		{"bound host outside cidrs", func(h *Handler) { h.Bindings = fakeBindings{host: "203.0.113.5"} }},
 	} {
@@ -125,6 +126,52 @@ func TestInventoryMisconfigurationRefuses(t *testing.T) {
 				t.Fatalf("%s = %d, want 403", tc.name, w.Code)
 			}
 		})
+	}
+}
+
+// Without a binding (a replica set keeps none), release asks the inventory the
+// token names, bounded by the node addresses, and only that inventory's key
+// verifies the token.
+func TestReleaseWithoutABindingAsksTheTokensInventory(t *testing.T) {
+	hn := newHarness(t)
+	hn.h.Bindings = nil
+	hn.seed(t, "/api/db", []byte("s3cret"))
+	if w := do(hn.h, hn.request(t, http.MethodGet, "/api/db")); w.Code != http.StatusOK || decodeValue(t, w) != base64.StdEncoding.EncodeToString([]byte("s3cret")) {
+		t.Fatalf("granted release without a binding = %d %s", w.Code, w.Body)
+	}
+	other, err := workloadclaims.NewSandboxTokenSigner("10.0.0.9")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, host := range []string{"203.0.113.5", "10.0.0.9"} {
+		signer, err := workloadclaims.NewSandboxTokenSigner(host)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// 203.0.113.5 answers with the token's key but is outside the bound;
+		// 10.0.0.9 is inside it but answers with another key.
+		hn.inv.keys[host] = signer.PublicKey()
+		if host == "10.0.0.9" {
+			hn.inv.keys[host] = other.PublicKey()
+		}
+		nonce := []byte("nonce-" + host)
+		token := mintToken(t, signer, testSandbox, hn.leaf.PublicKey, nonce)
+		w := do(hn.h, hn.requestWithToken(t, http.MethodGet, "/api/db", hn.leaf, token, nonce))
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("a token from the inventory at %s (outside the bound, or not the node's key) = %d, want 403", host, w.Code)
+		}
+		assertNoRelease(t, w, []byte("s3cret"))
+	}
+}
+
+// A store that generates nothing (a replica set's) refuses a workload's create
+// with why, so the pod's log names the fix.
+func TestCreateInAnOperatorOnlyStoreIsRefused(t *testing.T) {
+	hn := newHarness(t)
+	hn.h.Store = failingStore{err: ErrOperatorOnly}
+	w := do(hn.h, hn.request(t, http.MethodPost, "/api/db"))
+	if w.Code != http.StatusNotImplemented || !strings.Contains(w.Body.String(), "c8s secrets put") {
+		t.Fatalf("create = %d %s, want 501 naming c8s secrets put", w.Code, w.Body)
 	}
 }
 
@@ -271,5 +318,50 @@ func TestRateKeyFallsBackWithoutASandbox(t *testing.T) {
 	}
 	if got := RateKey(r); got != "" {
 		t.Fatalf("RateKey = %q, want the address fallback with no sandbox ID", got)
+	}
+}
+
+// changingPolicy answers each allowlist in turn, then the last one.
+type changingPolicy struct {
+	als  []*pkgallowlist.Allowlist
+	asks int
+}
+
+func (p *changingPolicy) Allowlist() (*pkgallowlist.Allowlist, error) {
+	al := p.als[min(p.asks, len(p.als)-1)]
+	p.asks++
+	return al, nil
+}
+
+// A grant read from one allowlist releases nothing once another is in force:
+// the value read may be newer than the grant.
+func TestReleaseRefusedWhenTheAllowlistChangesDuringTheRequest(t *testing.T) {
+	hn := newHarness(t)
+	hn.seed(t, "/api/db", []byte("s3cret"))
+	al, err := hn.h.Policy.Allowlist()
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := *al
+	hn.h.Policy = &changingPolicy{als: []*pkgallowlist.Allowlist{al, &next}}
+	w := do(hn.h, hn.request(t, http.MethodGet, "/api/db"))
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("release across an allowlist change = %d, want 503: %s", w.Code, w.Body)
+	}
+	assertNoRelease(t, w, []byte("s3cret"))
+}
+
+// A path that is gone after the allowlist changed answers the change, not a
+// missing secret: the caller asks again instead of creating one.
+func TestMissingSecretAcrossAnAllowlistChangeAsksAgain(t *testing.T) {
+	hn := newHarness(t)
+	al, err := hn.h.Policy.Allowlist()
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := *al
+	hn.h.Policy = &changingPolicy{als: []*pkgallowlist.Allowlist{al, &next}}
+	if w := do(hn.h, hn.request(t, http.MethodGet, "/api/db")); w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("a missing secret across an allowlist change = %d, want 503: %s", w.Code, w.Body)
 	}
 }

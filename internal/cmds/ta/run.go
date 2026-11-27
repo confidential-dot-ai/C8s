@@ -166,12 +166,23 @@ func run(ctx context.Context, cfg config) error {
 	sandboxBindings := sandboxledger.New(issuer.CapTTL(cfg.certTTL, issuer.MaxLeafTTL), cfg.sandboxLedgerMax)
 	go sandboxBindings.EvictionLoop(ctx.Done(), cfg.rateLimiterEvictInterval)
 
+	tlsCfg, meshPeers, err := armtls.NewServerTLSConfig(servingConfig(cfg, mesh.Current().CA.Cert))
+	if err != nil {
+		return fmt.Errorf("armtls server config: %w", err)
+	}
+	var replica *taha.Replica
+	if cfg.measured.HA != nil {
+		if replica, err = startHA(ctx, cfg, mesh, &allowlistStore, tlsCfg, meshPeers, &chainNodes{set: nodes, launch: cfg.measured.Nodes, pods: cfg.measured.PodImages, retire: sandboxDigests.CloseIdleConnections}); err != nil {
+			return err
+		}
+	}
+
 	var (
 		secretsHandler  *secrets.Handler
 		secretsOperator *secrets.OperatorHandler
 		secretsExplain  *secrets.ExplainHandler
 	)
-	if enabled, why := haSecrets(cfg.measured.HA, pinned.Images, inventoryHosts); enabled {
+	if enabled, why := secretsEnabled(pinned.Images, inventoryHosts); enabled {
 		// One store behind both handlers: an operator write and a workload read
 		// are two doors onto the same paths.
 		store := newSecretsStore(cfg)
@@ -201,20 +212,20 @@ func run(ctx context.Context, cfg config) error {
 			Authorize:      operatorAuthorizer,
 			Logger:         slog.Default(),
 		}
+		if haSet(cfg.measured.HA) {
+			// A replica set releases the operator secrets its chain names and
+			// keeps no sandbox ledger: release asks the inventory the sandbox
+			// token names, as issuance does.
+			secretsHandler.Store, secretsHandler.Bindings, secretsExplain.Bindings = replica.Secrets(), nil, nil
+			secretsOperator.Seal, secretsOperator.MaxValueBytes = replica.Seal, cfg.secretsMaxValueBytes
+			// The chain's operator keys, as its entries are checked under: an
+			// operator-keys entry replaces the launch file's.
+			secretsOperator.Authorize = chainKeysAuthorizer(replica, haAuthorizer(&allowlistStore, started, time.Duration(cfg.jwtClockSkew)*time.Second))
+			secretsExplain.Authorize = secretsOperator.Authorize
+		}
 		slog.Info("serving /secrets; release is gated on an allowlist entry carrying a secrets grant")
 	} else {
 		slog.Warn("NOT serving /secrets: any workload depending on a secret will fail to start", "reason", why)
-	}
-
-	tlsCfg, meshPeers, err := armtls.NewServerTLSConfig(servingConfig(cfg, mesh.Current().CA.Cert))
-	if err != nil {
-		return fmt.Errorf("armtls server config: %w", err)
-	}
-	var replica *taha.Replica
-	if cfg.measured.HA != nil {
-		if replica, err = startHA(ctx, cfg, mesh, &allowlistStore, tlsCfg, meshPeers, &chainNodes{set: nodes, launch: cfg.measured.Nodes, pods: cfg.measured.PodImages, retire: sandboxDigests.CloseIdleConnections}); err != nil {
-			return err
-		}
 	}
 
 	deps := dependencies{
