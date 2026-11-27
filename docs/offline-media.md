@@ -16,6 +16,8 @@ then run `apt-get update`. The resolver uses their package indexes and an empty
 installed-package database. Record the exact target baseline and keep the
 resulting dependency inventory with the build.
 
+Include the additional [host inputs](offline-host.md#build-inputs), including the
+QEMU topology, routes, PCK cache and k3s configuration.
 Prepare a site directory on the workstation. All paths below are relative to it.
 
 | Path | Approved input |
@@ -56,7 +58,10 @@ operator exercise local, fresh verification for all eight B200s with public
 egress blocked. Retain the raw verification and refresh/import observations.
 The qualifier signs `review.json` only when those observations establish every
 field below. A verifier that cannot identify the RIM and certificate-status
-bytes used for each assigned device leaves the archive in staging.
+bytes used for each assigned device leaves the archive in staging. A run-wide
+set of responder hashes cannot fill the per-device fields. Supply a separate
+authenticated per-device trace from the qualified verifier and map the limiting
+certificate or chain member to its signed snapshot selector.
 
 | Qualification field | Evidence |
 | --- | --- |

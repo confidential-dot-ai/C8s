@@ -23,7 +23,8 @@ SITE_FILES = {
     "ta/disk.raw", "ta/manifest.json", "ta.yaml", "ta-pin.json",
     "worker/disk.raw", "worker/manifest.json", "worker.yaml", "worker-image.json",
     "nginx-entry.json", "k3s", "cilium-operator-generic", "helm",
-    "collateral/profile.json", "collateral/active",
+    "collateral/profile.json", "collateral/active", "registry-ca.pem", "k3s-config.yaml",
+    "qemu/ta.json", "qemu/worker.json", "routes.json",
 }
 
 
@@ -57,6 +58,9 @@ def site_inputs(source: Path, dest: Path, approved: str) -> None:
         shutil.copyfile(path, out)
         check(out.stat().st_size > 0 and digest(out) == checksum, f"invalid site input: {name}")
     check(SITE_FILES <= copied, f"missing site files: {sorted(SITE_FILES - copied)}")
+    cache = json.loads((dest / "pck-cache.json").read_bytes())["file"]
+    check(isinstance(cache, str) and re.fullmatch("[0-9A-Fa-f]+_[0-9A-Fa-f]+", cache) is not None
+          and f"pck/{cache}" in copied, "missing approved target PCK cache file")
     collateral(dest / "collateral", json.loads((dest / "target.json").read_bytes()))
     for name in ("install.sh", "helm", "k3s", "cilium-operator-generic"):
         (dest / name).chmod(0o755)
@@ -184,6 +188,14 @@ def platform(payload: Path, checkout: Path, tmp: Path) -> None:
     version = re.search(r'^KUBERNETES_VERSION="(v[0-9.]+)"$', (worker / "mkosi.sync").read_text(), re.MULTILINE)
     if version is None:
         raise ValueError("worker build lacks a kubelet version")
+    check(target["kubeVersion"] == version[1], "target kubeVersion differs from release worker build")
+    registry = target["registry"]
+    check(isinstance(registry, str) and re.fullmatch(r"[a-z0-9.-]+:[0-9]+", registry) is not None
+          and 0 < int(registry.rsplit(":", 1)[1]) < 65536, "expected a site registry host and port")
+    devices = target["gpuPCI"]
+    check(isinstance(devices, list) and all(isinstance(d, str) and re.fullmatch(
+        r"[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}[.][0-7]", d) for d in devices)
+        and len(devices) == len(set(devices)) == 8, "expected eight distinct assigned GPU PCI addresses")
     options = ["--hardware-platform", "tdx", "--kube-version", version[1]]
     images = set()
     for flag, image, field in (("image", "c8s-operator", "operatorImageDigest"),
