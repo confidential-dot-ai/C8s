@@ -344,13 +344,14 @@ func imagePins(manifest string, family teetypes.Family, vcpus []int, launchFile 
 }
 
 // buildSuffix tells apart TDX images of one firmware: their launch digest,
-// MRTD, is the same, and RTMR[1] and RTMR[2] carry the kernel and initrd.
+// MRTD, is the same, and RTMR[1] and RTMR[2] carry the kernel and initrd. It
+// is the whole digest of the two, so two builds never share a name.
 func buildSuffix(image remote.ImagePin) string {
 	if len(image.Registers[1]) == 0 && len(image.Registers[2]) == 0 {
 		return ""
 	}
 	build := sha256.Sum256(append(bytes.Clone(image.Registers[1]), image.Registers[2]...))
-	return fmt.Sprintf("-%.4x", build)
+	return fmt.Sprintf("-%x", build)
 }
 
 // workerFlags name a worker document whose workers a decree also certifies,

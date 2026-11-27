@@ -99,9 +99,10 @@ Kata does not use the [`ta-guest` image's staging](../images/ta-guest/README.md#
 On either platform the document must be at most 1 MiB; keep it well below that so its JSON-encoded
 pin also fits the release ConfigMap's 1 MiB limit.
 
-`c8s ta config new` produces bare YAML and a pin for it. For Kata, write a
-schema 2 SEV-SNP [measurements config](measurements.md#the-measurements-config)
-for `c8s install --ta-pin` instead:
+`c8s ta config new` produces bare YAML and a pin for it. For Kata, write the
+pin for `c8s install --ta-pin` yourself. On TDX it is the schema 3 pin
+described above. On SEV-SNP it is a schema 2
+[measurements config](measurements.md#the-measurements-config):
 
 - Set `measurement` to your Kata guest's launch digest, established from your
   own build at the deployed vCPU count. The `ta-guest` image's digest will not match.
