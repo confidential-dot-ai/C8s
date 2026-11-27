@@ -515,8 +515,6 @@ func checkInstallFlags(seedOnly bool) error {
 		}
 	} else if err := taPreflight(installTAAddress, installTAPin, installValues); err != nil {
 		return err
-	} else if installTA == nil {
-		return fmt.Errorf("the values files name a Trust Authority pin they did not hold when this install read and checked them")
 	}
 	if _, err := exec.LookPath("helm"); err != nil {
 		return fmt.Errorf("helm CLI not found on PATH: %w", err)
