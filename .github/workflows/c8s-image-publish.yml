@@ -104,9 +104,11 @@ jobs:
       MODULE_SIG_KEY_PEM: ${{ secrets.MODULE_SIG_KEY_PEM }}
 
   # Wait for every guest-image build, then preflight every exact alias before
-  # creating any of them. Registry publication is not transactional, so a
-  # network failure may leave a subset; a rerun repairs missing aliases and
-  # rejects any existing alias whose digest differs.
+  # creating any of them, from the digests the build legs recorded. Registry
+  # publication is not transactional, so a network failure may leave a subset;
+  # re-running the failed jobs repairs missing aliases and rejects any existing
+  # alias whose digest differs. Both protected jobs run the scripts of this
+  # workflow's own commit, never the built one.
   promote-release:
     name: Publish exact guest-image release aliases
     needs: [release-context, build-and-push]
@@ -122,6 +124,20 @@ jobs:
       contents: read
       packages: write # Promote aliases only from this protected job.
     steps:
+      - name: Checkout the release scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.workflow_sha }}
+          sparse-checkout: .github/scripts
+
+      - name: Download the pushed digests
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: guest-push-*-${{ github.event.workflow_run.head_sha }}
+          path: ${{ runner.temp }}/guest-push
+          merge-multiple: true
+
       - name: Setup ORAS
         uses: oras-project/setup-oras@ac735097e22fe643015b0d19645f7c9a69942128 # v2.0.4
         with:
@@ -136,61 +152,61 @@ jobs:
 
       - name: Publish or verify exact release aliases
         env:
+          RELEASE_TAG: ${{ needs.release-context.outputs.tag }}
+        run: .github/scripts/release-guests.sh promote "$RELEASE_TAG" "$RUNNER_TEMP/guest-push"
+
+  # The only job of this workflow with an OIDC token. Its identity,
+  # c8s-image-publish.yml on main, signs stable and beta releases alike.
+  sign-guests:
+    name: Sign the guest-image statement
+    needs: [release-context, promote-release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: release
+    permissions:
+      contents: write # Upload the statement to the GitHub release.
+      id-token: write # Sign the statement keyless.
+    steps:
+      - name: Checkout the release scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.workflow_sha }}
+          sparse-checkout: .github/scripts
+
+      - name: Download the pushed digests
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: guest-push-*-${{ github.event.workflow_run.head_sha }}
+          path: ${{ runner.temp }}/guest-push
+          merge-multiple: true
+
+      - name: Setup ORAS
+        uses: oras-project/setup-oras@ac735097e22fe643015b0d19645f7c9a69942128 # v2.0.4
+        with:
+          version: "1.2.3"
+
+      - name: Install pinned cosign
+        env:
+          # Bump together with COSIGN_VERSION and COSIGN_SHA256 in semver-tag.yml.
+          COSIGN_VERSION: "3.1.3"
+          COSIGN_SHA256: 4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/bin"
+          binary="$RUNNER_TEMP/bin/cosign"
+          .github/scripts/fetch-release.sh sigstore/cosign "v$COSIGN_VERSION" cosign-linux-amd64 "$binary"
+          printf '%s  %s\n' "$COSIGN_SHA256" "$binary" | sha256sum --check --status
+          chmod +x "$binary"
+          "$binary" version --json | jq -e --arg v "v$COSIGN_VERSION" '.gitVersion == $v' > /dev/null
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Write, sign and publish the guest statement
+        env:
+          GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-          GUESTS: ghcr.io/confidential-dot-ai/guests
           RELEASE_TAG: ${{ needs.release-context.outputs.tag }}
         run: |
           set -euo pipefail
-
-          if [[ ! "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || \
-             [[ ! "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)(-beta[.][1-9][0-9]*)?$ ]]; then
-            echo "::error::invalid guest-image release context"
-            exit 1
-          fi
-          short="${HEAD_SHA:0:7}"
-          aliases="$RUNNER_TEMP/guest-release-aliases"
-          : > "$aliases"
-
-          # c8s-image.yml publishes one tag per suffix: <ref><suffix>.
-          record_release_aliases() {
-            local image=$1
-            shift
-            local repo_tags source_tag release_alias source_digest exists destination_digest
-            repo_tags="$(oras repo tags "$image")"
-            for suffix in "$@"; do
-              source_tag="sha-$short$suffix"
-              release_alias="$RELEASE_TAG$suffix"
-              source_digest="$(oras resolve "$image:$source_tag")"
-              if [[ ! "$source_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-                echo "::error::$image:$source_tag did not resolve to an OCI digest"
-                return 1
-              fi
-
-              exists=false
-              if grep -Fxq -- "$release_alias" <<< "$repo_tags"; then
-                exists=true
-                destination_digest="$(oras resolve "$image:$release_alias")"
-                if [ "$destination_digest" != "$source_digest" ]; then
-                  echo "::error::$image:$release_alias already names $destination_digest, expected $source_digest"
-                  return 1
-                fi
-              fi
-              printf '%s\t%s\t%s\t%s\n' "$image" "$release_alias" "$source_digest" "$exists" >> "$aliases"
-            done
-          }
-
-          record_release_aliases "$GUESTS/worker" -tdx -tdx-kubevirt -sev-snp -sev-snp-kubevirt
-          # One Trust Authority image serves both TEE families, so its artifact tag names no TEE.
-          record_release_aliases "$GUESTS/ta" "" -kubevirt
-
-          while IFS=$'\t' read -r image release_alias source_digest exists; do
-            if [ "$exists" = false ]; then
-              oras tag "$image@$source_digest" "$release_alias"
-            fi
-            test "$(oras resolve "$image:$release_alias")" = "$source_digest"
-          done < "$aliases"
-
-          {
-            echo "### $RELEASE_TAG guest image aliases"
-            awk -F'\t' '{ printf "- `%s:%s`\n", $1, $2 }' "$aliases"
-          } >> "$GITHUB_STEP_SUMMARY"
+          .github/scripts/release-guests.sh statement "$RELEASE_TAG" "$HEAD_SHA" "$RUNNER_TEMP/guest-push" "$RUNNER_TEMP/guest-statement"
+          .github/scripts/release-guests.sh publish "$RELEASE_TAG" "$RUNNER_TEMP/guest-statement"

@@ -161,6 +161,7 @@ func enforceImagePolicy(
 	if err := enforceEachImage(response, plan.refValues.Images, platform, measured); err != nil {
 		return pinCoverage{}, fmt.Errorf("--image-policy-file: %w", err)
 	}
+	oc.acceptingImages = acceptingImages(response, plan.refValues.Images, platform, measured)
 	oc.MeasuredPolicies, coverage.historyBound = replayedHistory(response, plan.refValues.Images, platform, measured)
 	if matchesFullImageEntry(response, plan.refValues.Images, platform, measured) {
 		coverage.fullImage = true
@@ -570,4 +571,21 @@ func formatTCB(tcb teetypes.TcbInfo) string {
 		}
 	}
 	return ""
+}
+
+// acceptingImages is the image-policy entries that accept the evidence, each
+// held to all enforceEachImage holds it to: an anchored one to its anchor and
+// the measured list it replays.
+func acceptingImages(response remote.VerifyResponse, images []remote.ImagePin, platform teetypes.PlatformType, measured []string) []remote.ImagePin {
+	var accepting []remote.ImagePin
+	for _, img := range images {
+		var replayed []string
+		if anchored(img) {
+			replayed = replayedBy(img, &response.Result, measured)
+		}
+		if armtls.EnforceImages(response, []remote.ImagePin{img}, platform, replayed) == nil {
+			accepting = append(accepting, img)
+		}
+	}
+	return accepting
 }

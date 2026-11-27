@@ -1,6 +1,7 @@
 package taha
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -345,6 +346,32 @@ func TestSelfPinOnTDXCoversTheGuestRegisters(t *testing.T) {
 	_, err := admitting.verifier().admit(otherGuest.identity.certificate.Leaf.Raw)
 	if !errors.Is(err, armtls.ErrPolicyViolation) {
 		t.Fatalf("admitted a guest under the same MRTD: %v", err)
+	}
+}
+
+// Replicas a launcher started from MRCONFIGID admit each other before any
+// decree names their pins, and admit neither a replica of another launch file
+// nor one whose guest measured the file into RTMR[3].
+func TestSelfPinOnTDXReadsMRCONFIGIDWhereTheLauncherBoundIt(t *testing.T) {
+	admitting := newTDXReplica(t, "member-a", tdxLauncherVerdict(testImage, testRTMR1, testRTMR2, testLaunchFile))
+	same := newTDXReplica(t, "member-b", tdxLauncherVerdict(testImage, testRTMR1, testRTMR2, testLaunchFile))
+
+	self := admitting.identity.self
+	if !self.LaunchFileInInitData || !bytes.Equal(self.Registers[3], make([]byte, 48)) {
+		t.Fatalf("self pin reads MRCONFIGID %v with RTMR[3] pin %x", self.LaunchFileInInitData, self.Registers[3])
+	}
+	if _, err := admitting.verifier().admit(same.identity.certificate.Leaf.Raw); err != nil {
+		t.Fatalf("a replica started from the same MRCONFIGID was refused: %v", err)
+	}
+
+	for name, other := range map[string]mockapi.Verdict{
+		"another launch file":  tdxLauncherVerdict(testImage, testRTMR1, testRTMR2, []byte("another file")),
+		"a guest-measured one": tdxVerdict(testImage, testRTMR1, testRTMR2, testLaunchFile),
+	} {
+		admitting.judges(other)
+		if _, err := admitting.verifier().admit(same.identity.certificate.Leaf.Raw); !errors.Is(err, armtls.ErrPolicyViolation) {
+			t.Errorf("%s: admitted, %v", name, err)
+		}
 	}
 }
 

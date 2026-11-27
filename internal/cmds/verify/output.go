@@ -6,10 +6,16 @@ import (
 	"io"
 	"strings"
 	"time"
+
+	"github.com/confidential-dot-ai/attestation-go/remote"
 )
 
 // Outcome is the JSON-serializable verdict.
 type Outcome struct {
+	// acceptingImages is the --image-policy-file entries that accepted the
+	// evidence, which the init-data note is judged on.
+	acceptingImages []remote.ImagePin
+
 	Verified    bool      `json:"verified"`
 	VerifiedAt  time.Time `json:"verified_at"`
 	Backend     string    `json:"backend"`

@@ -6,6 +6,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/sha512"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
@@ -329,6 +330,16 @@ func tdxVerdict(mrtd, rtmr1, rtmr2 string, file []byte) mockapi.Verdict {
 		"rtmr_2": rtmr2,
 		"rtmr_3": hex.EncodeToString(bound[:]),
 	}
+	return verdict
+}
+
+// tdxLauncherVerdict is tdxVerdict for a guest whose launcher bound file in
+// MRCONFIGID and whose RTMR[3] nothing extended.
+func tdxLauncherVerdict(mrtd, rtmr1, rtmr2 string, file []byte) mockapi.Verdict {
+	verdict := tdxVerdict(mrtd, rtmr1, rtmr2, file)
+	verdict.Claims.PlatformData["rtmr_3"] = strings.Repeat("00", 48)
+	bound := sha512.Sum384(file)
+	verdict.Claims.InitData = bound[:]
 	return verdict
 }
 

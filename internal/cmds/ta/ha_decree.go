@@ -3,10 +3,12 @@ package ta
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strconv"
 	"time"
 
@@ -15,9 +17,12 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
+	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/taconn"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/worker"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/fileutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/localverify"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/taconfig"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tadecree"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/taha"
@@ -218,19 +223,37 @@ type pinFlags struct {
 	platform  string
 	vcpus     []int
 	manifests []string
+	// launchFileField is where the Trust Authority guests read their launch file on
+	// TDX: empty for RTMR[3], or launchFileFieldInitData.
+	launchFileField string
 }
+
+// launchFileFieldInitData pins guests whose launcher bound the launch file in
+// MRCONFIGID and whose RTMR[3] nothing extended.
+const launchFileFieldInitData = "init_data"
 
 func bindPinFlags(cmd *cobra.Command, p *pinFlags) {
 	f := cmd.Flags()
 	f.StringVar(&p.platform, "platform", "", "TEE platform the Trust Authority VMs run on: sev-snp or tdx (REQUIRED)")
 	f.IntSliceVar(&p.vcpus, "vcpus", nil, "SEV-SNP only: a vCPU count a Trust Authority VM may boot with, one pin entry each; repeatable")
 	f.StringArrayVar(&p.manifests, "image-manifest", nil, "manifest.json of a Trust Authority guest image the cluster accepts; repeatable (REQUIRED)")
+	f.StringVar(&p.launchFileField, "launch-file-field", "", "TDX only: \"init_data\" pins Trust Authority guests whose launcher bound the launch file in MRCONFIGID, with RTMR[3] all zero; omit for guests whose initrd extends RTMR[3]")
 	cmdsutil.RequireFlags(cmd, "platform", "image-manifest")
 }
 
 // document is the image set the decree carries: every named image bound to the
 // launch file the replicas boot, with that file elided.
 func (p pinFlags) document(launchFile []byte) (*tadecree.PinDocument, error) {
+	document, err := p.pins(launchFile)
+	if err != nil {
+		return nil, err
+	}
+	return tadecree.NewPinDocument(document)
+}
+
+// pins is the measurements document of the image set, launch file included:
+// what a replica holds once it restores the file the decree elides.
+func (p pinFlags) pins(launchFile []byte) ([]byte, error) {
 	family, err := taconfig.ParsePlatform(p.platform)
 	if err != nil {
 		return nil, fmt.Errorf("--platform: %w", err)
@@ -243,11 +266,107 @@ func (p pinFlags) document(launchFile []byte) (*tadecree.PinDocument, error) {
 		}
 		set.Images = append(set.Images, images...)
 	}
-	document, err := refvalues.Format(set)
+	if err := p.readInitData(set); err != nil {
+		return nil, err
+	}
+	return refvalues.Format(set)
+}
+
+// readInitData turns every entry into one that reads its launch file from
+// MRCONFIGID beside an untouched RTMR[3], when the flag asks for it.
+func (p pinFlags) readInitData(set refvalues.ReferenceValues) error {
+	switch p.launchFileField {
+	case "":
+		return nil
+	case launchFileFieldInitData:
+	default:
+		return fmt.Errorf("--launch-file-field %q, want %q or omit the flag", p.launchFileField, launchFileFieldInitData)
+	}
+	if set.Family != teetypes.FamilyTDX {
+		return fmt.Errorf("--launch-file-field is a TDX choice of field, and --platform is %s, where a launch file is always bound in HOST_DATA", p.platform)
+	}
+	for i := range set.Images {
+		set.Images[i].LaunchFileInInitData = true
+		if set.Images[i].Registers == nil {
+			set.Images[i].Registers = map[int][]byte{}
+		}
+		set.Images[i].Registers[3] = make([]byte, runtimemeasure.Size)
+	}
+	return nil
+}
+
+// admitted reads target over a connection whose peer satisfies both --ta-pin
+// and the very pins the decree carries, with their launch file restored, and
+// returns what it reports there. A Genesis whose pins do not match the
+// replica that forms the cluster commits and then admits none of them:
+// another family, another image, or another field for the launch file.
+func admitted(ctx context.Context, target replica, pins *tadecree.PinDocument, launchFile []byte) (taha.Status, error) {
+	bound, err := pins.WithLaunchFile(launchFile)
+	if err != nil {
+		return taha.Status{}, err
+	}
+	document, err := refvalues.Format(bound)
+	if err != nil {
+		return taha.Status{}, err
+	}
+	file, err := os.CreateTemp("", "c8s-ta-pins-*.json")
+	if err != nil {
+		return taha.Status{}, err
+	}
+	defer os.Remove(file.Name())
+	if _, err := file.Write(document); err != nil {
+		file.Close()
+		return taha.Status{}, err
+	}
+	if err := file.Close(); err != nil {
+		return taha.Status{}, err
+	}
+	// One attested peer must satisfy both policies: the host chooses where
+	// each connection lands, and a member id is not evidence.
+	operatorPins, err := refvalues.Load(target.taPin)
+	if err != nil {
+		return taha.Status{}, fmt.Errorf("--ta-pin: %w", err)
+	}
+	target.verifier = alsoPinned{base: target.verifier, name: "--ta-pin", images: operatorPins.Images}
+	target.taPin = file.Name()
+	reported, err := target.status(ctx)
+	switch {
+	case err == nil:
+	case errors.Is(err, localverify.ErrMeasurementNotAllowed), errors.Is(err, remote.ErrMeasurementNotAllowed),
+		errors.Is(err, remote.ErrRegistersNotAllowed), errors.Is(err, remote.ErrLaunchFileNotAllowed):
+		return taha.Status{}, fmt.Errorf("the target does not satisfy both --ta-pin and the decree's Trust Authority pins (--platform, --image-manifest, --vcpus, --launch-file-field). A refusal naming --ta-pin is that set's; any other is the decree's pins, and a cluster started with pins that refuse its replicas admits none of its replicas: %w", err)
+	default:
+		return taha.Status{}, fmt.Errorf("reading the target again, under both --ta-pin and the decree's Trust Authority pins: %w", err)
+	}
+	return reported, nil
+}
+
+// alsoPinned holds verified evidence to a second pin set, and names that set
+// where it is the one that refuses the peer. An error from base is another's
+// to name: the evidence itself, or the pins of the connection.
+type alsoPinned struct {
+	base   taconn.PinVerifier
+	name   string
+	images []remote.ImagePin
+}
+
+func (a alsoPinned) Verify(ctx context.Context, platform string, evidence json.RawMessage, params localverify.Params) (*teetypes.VerificationResult, error) {
+	result, err := a.base.Verify(ctx, platform, evidence, params)
 	if err != nil {
 		return nil, err
 	}
-	return tadecree.NewPinDocument(document)
+	held := taconn.ImagePinVerifier{Verifier: verified{result}, Images: a.images}
+	if _, err := held.Verify(ctx, platform, evidence, params); err != nil {
+		return nil, fmt.Errorf("%s: %w", a.name, err)
+	}
+	return result, nil
+}
+
+// verified answers with evidence already verified.
+type verified struct{ result *teetypes.VerificationResult }
+
+func (v verified) Verify(context.Context, string, json.RawMessage, localverify.Params) (*teetypes.VerificationResult, error) {
+	return v.result, nil
 }
 
 // imagePins names one image's entries after its launch digest, so the entries
@@ -262,9 +381,20 @@ func imagePins(manifest string, family teetypes.Family, vcpus []int, launchFile 
 		return nil, err
 	}
 	for i, image := range set.Images {
-		set.Images[i].Name = fmt.Sprintf("%s@%.4x", image.Name, image.Digest)
+		set.Images[i].Name = fmt.Sprintf("%s@%.4x%s", image.Name, image.Digest, buildSuffix(image))
 	}
 	return set.Images, nil
+}
+
+// buildSuffix tells apart TDX images whose names would otherwise meet: one
+// firmware under two kernels, or two firmwares sharing a digest prefix. It
+// is the whole digest of MRTD, RTMR[1] and RTMR[2].
+func buildSuffix(image remote.ImagePin) string {
+	if len(image.Registers[1]) == 0 && len(image.Registers[2]) == 0 {
+		return ""
+	}
+	build := sha256.Sum256(slices.Concat(image.Digest, image.Registers[1], image.Registers[2]))
+	return fmt.Sprintf("-%x", build)
 }
 
 // workerFlags name a worker document whose workers a decree also certifies,
@@ -406,6 +536,15 @@ func (o genesisOptions) run(cmd *cobra.Command) error {
 	target, address, err := o.target.statusAtAddress(cmd.Context())
 	if err != nil {
 		return err
+	}
+	// The decree is written from what the target reports over the connection
+	// that satisfied both --ta-pin and the decree's own pins.
+	first := target.ID
+	if target, err = admitted(cmd.Context(), o.target, taPins, c.launchFile); err != nil {
+		return err
+	}
+	if target.ID != first {
+		return fmt.Errorf("--target answered as member %s, then as %s: name one replica", first, target.ID)
 	}
 	if err := checkGenesisTarget(target, c.parsed.ClusterID); err != nil {
 		return err

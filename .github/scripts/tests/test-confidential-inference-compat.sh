@@ -123,13 +123,15 @@ for reply in 'I am not sure.' 'COMPATIBLEish.' 'Not INCOMPATIBLE.'; do
 done
 pass
 
-# Deleting a hashed source file is incompatible without asking the model.
+# Moving a hashed source file's directory or renaming the file is incompatible
+# without asking the model.
 rm "$work/request"
-git -C "$work/c8s" mv internal/cmds/ta/routes.go internal/cmds/ta/router.go
-renamed=$(commit "refactor(ta): rename the routes file")
+git -C "$work/c8s" mv internal/cmds/ta internal/cmds/router
+git -C "$work/c8s" mv internal/cmds/router/routes.go internal/cmds/router/router.go
+renamed=$(commit "refactor: move the routes package")
 REPLY=unused judge "$api_change" "$renamed"
 [[ $status -eq 1 && $(head -n1 "$work/report") = INCOMPATIBLE && $(cat "$work/report") = *internal/cmds/ta/routes.go* ]] ||
-  fail "renaming a hashed file was not incompatible: $(cat "$work/report")"
+  fail "moving a hashed file was not incompatible: $(cat "$work/report")"
 [ ! -e "$work/request" ] || fail "a deleted hashed file asked the model"
 pass
 

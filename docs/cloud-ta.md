@@ -45,8 +45,9 @@ another, so identify the TDX image with pins on MRTD, RTMR[1] and RTMR[2].
 The operator keys sit in the document's `ta-config.yaml` entry, so the
 whole-document digest binds them too. What the `MRCONFIGID` case does not
 show is which code read them: the image pins establish the image.
-`c8s verify` can also display `MRCONFIGID`. HA peer and generated Genesis
-pins still bind RTMR[3], so they cannot authenticate an MRCONFIGID-only TA.
+`c8s verify` can also display `MRCONFIGID`. The pins a decree command
+generates read RTMR[3] unless you pass `--launch-file-field init_data`, which
+pins guests that read `MRCONFIGID` beside an all-zero RTMR[3].
 
 For an MRCONFIGID-only TDX deployment with one replica filling one voter seat,
 follow the [runbook's `--alone` warning](ta-ha-runbooks.md#1-start-a-cluster-genesis).
@@ -58,12 +59,13 @@ the manifest must contain your Kata guest's MRTD, RTMR[1] and RTMR[2].
 `rtmr` array): every Trust Authority pin that reads `MRCONFIGID` must, and is
 refused otherwise, so the target cannot use a different RTMR[3]-bound launch
 file.
-`--alone` allows a one-voter Genesis without a peer response; the decree's
-generated RTMR[3] pins still do not match that target.
+`--alone` allows a one-voter Genesis without a peer response. Pass
+`--launch-file-field init_data` as well, so the pins the decree carries match
+that target; without it they read RTMR[3] and no replica or client holding
+them authenticates it.
 
-The cloud chart rejects schema 3 pins. A schema 2 TDX pin can pass rendering
-but fail TA authentication; install may warn and apply a release whose
-clients cannot authenticate their TA.
+`c8s install --ta-pin` takes that same schema 3 pin. A schema 2 TDX pin for
+such a guest passes rendering and fails TA authentication.
 
 Supply the TA container and an attestation API on guest loopback
 (`--attestation-api-url`). The guest launch digest does not cover containers
@@ -113,8 +115,12 @@ pin also fits the release ConfigMap's 1 MiB limit.
 
 The Kata guest agent evaluates `policy.rego` on every request the host makes
 of it. The launch binding covers the whole document, so a pin that embeds the
-document fixes the policy too. C8s requires the entry and does not judge its
-rules: whoever writes the pin answers for them. The policy must at least:
+document fixes the policy the document carries. That is the policy in force
+only where the guest checks the document it is handed against its launch
+binding before it loads the policy: C8s checks the bytes at `--config`, not
+what the agent loaded, so establish that for the guest image you run. C8s
+requires the entry and does not judge its rules: whoever writes the pin
+answers for them. The policy must at least:
 
 - allow a container only from the TA and attester images, each named by
   digest. With images pulled inside the guest, the rules that Kata's
@@ -127,6 +133,9 @@ rules: whoever writes the pin answers for them. The policy must at least:
   change them would choose the attester the TA asks about itself;
 - refuse `ExecProcessRequest`, `SetPolicyRequest` and writes to a container's
   input.
+
+Fixed mounts do not make storage private. Keep `--allowlist-db` and its side
+files on storage the host cannot write, as the TA serves what it finds there.
 
 `genpolicy` 3.30 output fixes those and denies those requests by default.
 Its settings need matching to the
@@ -154,9 +163,10 @@ cannot join the old cluster: they are a new cluster, started with
 [Genesis](ta-ha-runbooks.md#1-start-a-cluster-genesis), and what the old
 one issued does not carry over.
 
-`c8s ta config new` produces bare YAML and a pin for it. For Kata, write a
-schema 2 SEV-SNP [measurements config](measurements.md#the-measurements-config)
-for `c8s install --ta-pin` instead:
+`c8s ta config new` produces bare YAML and a pin for it. For Kata, write the
+pin for `c8s install --ta-pin` yourself. On TDX it is the schema 3 pin
+described above. On SEV-SNP it is a schema 2
+[measurements config](measurements.md#the-measurements-config):
 
 - Set `measurement` to your Kata guest's launch digest, established from your
   own build at the deployed vCPU count. The `ta-guest` image's digest will not match.
