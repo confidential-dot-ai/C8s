@@ -60,6 +60,7 @@ Everyone: [overview.md](overview.md), then [guarantees.md](guarantees.md).
 | **Verifying a deployment** | | |
 | [verify.md](verify.md) | how-to | Verify a deployment from outside |
 | [measurements.md](measurements.md) | reference | What each platform measures, and the measurements config |
+| [offline-media.md](offline-media.md) | how-to | Prepare, qualify and verify installation media for a disconnected TDX site |
 | [releases.md](releases.md) | reference | Versioning, published artifacts, release verification |
 | [../SECURITY.md](../SECURITY.md) | policy | Reporting a vulnerability |
 | **Contributing** | | |

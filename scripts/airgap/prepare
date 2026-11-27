@@ -1,0 +1,273 @@
+#!/usr/bin/env python3
+"""Stage the signed release and a site's approved inputs on a connected Noble host."""
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tomllib
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from tempfile import NamedTemporaryFile, TemporaryDirectory
+
+import yaml
+
+REPO = "confidential-dot-ai/confidential-kubernetes"
+HEX = r"[0-9a-f]{64}"
+SITE_FILES = {
+    "install.sh", "packages.txt", "target.json", "firmware.fd", "pck-cache.json",
+    "ta/disk.raw", "ta/manifest.json", "ta.yaml", "ta-pin.json",
+    "worker/disk.raw", "worker/manifest.json", "worker.yaml", "worker-image.json",
+    "nginx-entry.json", "k3s", "cilium-operator-generic", "helm",
+    "collateral/profile.json", "collateral/active",
+}
+
+
+def digest(path: Path) -> str:
+    with path.open("rb") as f:
+        return hashlib.file_digest(f, "sha256").hexdigest()
+
+
+def check(condition: bool, message: str) -> None:
+    if not condition:
+        raise ValueError(message)
+
+
+def site_inputs(source: Path, dest: Path, approved: str) -> None:
+    inventory = (source / "SHA256SUMS").read_bytes()
+    if hashlib.sha256(inventory).hexdigest() != approved:
+        raise ValueError("site inventory does not match its independently approved SHA-256")
+    copied = set()
+    for line in inventory.decode("ascii").splitlines():
+        match = re.fullmatch(rf"({HEX})  ([A-Za-z0-9][A-Za-z0-9_./+-]*)", line)
+        if match is None:
+            raise ValueError(f"invalid site inventory line: {line}")
+        checksum, name = match.groups()
+        path = source / name
+        check(path.resolve() == path and Path(name).as_posix() == name and path.is_file(),
+              f"expected a regular site input: {name}")
+        check(name not in copied and name != "SHA256SUMS", f"duplicate or reserved path: {name}")
+        copied.add(name)
+        out = dest / name
+        out.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(path, out)
+        check(out.stat().st_size > 0 and digest(out) == checksum, f"invalid site input: {name}")
+    check(SITE_FILES <= copied, f"missing site files: {sorted(SITE_FILES - copied)}")
+    collateral(dest / "collateral", json.loads((dest / "target.json").read_bytes()))
+    for name in ("install.sh", "helm", "k3s", "cilium-operator-generic"):
+        (dest / name).chmod(0o755)
+
+
+def collateral(root: Path, target: dict[str, object]) -> None:
+    selection = json.loads((root / "active").read_bytes())
+    pin = selection["sha256"]
+    check(isinstance(pin, str) and re.fullmatch(HEX, pin) is not None, "invalid collateral selection digest")
+    snapshot = root / f"snapshots/{pin}.json"
+    check(digest(snapshot) == pin, "initial collateral snapshot digest mismatch")
+    profile = json.loads((root / "profile.json").read_bytes())
+    with NamedTemporaryFile() as public_key:
+        public_key.write(profile["mediaPublicKey"].encode())
+        public_key.flush()
+        subprocess.run(["openssl", "pkeyutl", "-verify", "-pubin", "-inkey", public_key.name,
+                        "-rawin", "-in", snapshot, "-sigfile", snapshot.with_suffix(".sig")], check=True)
+    manifest = json.loads(snapshot.read_bytes())
+    generation = selection["generation"]
+    check(type(generation) is int and generation > 0 and type(manifest["generation"]) is int
+          and manifest["generation"] == generation, "invalid initial collateral generation")
+    check(bool(target["id"]) and manifest["target"] == profile["target"] == target["id"],
+          "initial collateral targets a different site")
+    deadline = datetime.fromisoformat(manifest["expiresAt"])
+    check(deadline.utcoffset() == timedelta(0) and deadline > datetime.now(UTC), "expired initial collateral")
+    fmspc, ca = target["intelFMSPC"], target["pckCA"]
+    check(isinstance(fmspc, str) and re.fullmatch("[0-9a-f]{12}", fmspc) is not None
+          and ca in ("platform", "processor"), "invalid Intel platform selectors")
+    api = "https://api.trustedservices.intel.com"
+    required = {f"{api}/tdx/certification/v4/tcb?fmspc={fmspc}",
+                f"{api}/tdx/certification/v4/qe/identity",
+                f"{api}/sgx/certification/v4/pckcrl?ca={ca}&encoding=der",
+                "https://certificates.trustedservices.intel.com/IntelSGXRootCA.der", "nvidia/policy"}
+    objects = manifest["objects"]
+    check(required <= objects.keys(), f"missing snapshot objects: {sorted(required - objects.keys())}")
+    check(any(key.startswith("nvidia/rim/") for key in objects)
+          and any(re.fullmatch("nvidia/ocsp/" + HEX, key) for key in objects),
+          "initial snapshot lacks NVIDIA RIMs or per-certificate OCSP")
+    for name, obj in manifest["objects"].items():
+        pin = obj["sha256"]
+        check(isinstance(pin, str) and re.fullmatch(HEX, pin) is not None
+              and digest(root / "objects" / pin) == pin, f"collateral object digest mismatch: {name}")
+
+
+def release(tag: str, repo: Path, dest: Path) -> str:
+    check(bool(re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tag)), f"expected a stable release tag: {tag}")
+    assets = ["release-statement.json", "release-statement.sigstore.json", "c8s-linux-amd64",
+              "allowlist-seed-tdx.json", "component-set-tdx.json"]
+    subprocess.run(["gh", "release", "download", tag, "--repo", REPO, "--dir", dest,
+                    *[arg for name in assets for arg in ("--pattern", name)]], check=True)
+    subprocess.run(["cosign", "verify-blob", "--bundle", dest / assets[1], "--certificate-identity",
+                    f"https://github.com/{REPO}/.github/workflows/semver-tag.yml@refs/heads/main",
+                    "--certificate-oidc-issuer", "https://token.actions.githubusercontent.com",
+                    dest / assets[0]], check=True)
+    statement = json.loads((dest / assets[0]).read_bytes())
+    commit = subprocess.check_output(["git", "-C", repo, "rev-parse", f"refs/tags/{tag}^{{commit}}"],
+                                     text=True).strip()
+    check((statement["tag"], statement["repository"], statement["commit"]) == (tag, REPO, commit),
+          "release statement does not match the selected repository, tag and commit")
+    for field, platform, name in (("cli", "linux-amd64", assets[2]), ("allowlistSeeds", "tdx", assets[3]),
+                                  ("componentSets", "tdx", assets[4])):
+        check(statement[field][platform] == {"asset": name, "sha256": digest(dest / name)},
+              f"release statement does not match {name}")
+    cli = dest / assets[2]
+    cli.chmod(0o755)
+    for command in (["ta", "verify"], ["verify"], ["ta", "ha", "decree", "genesis"]):
+        help_text = subprocess.check_output([cli, *command, "--help"], text=True)
+        check("--tdx-collateral-profile" in help_text,
+              f"{tag} c8s {' '.join(command)} lacks site-selected TDX verification")
+    return commit
+
+
+def packages(apt: Path, site: Path) -> None:
+    roots = (site / "packages.txt").read_text().splitlines()
+    check(bool(roots) and all(re.fullmatch(r"[a-z0-9][a-z0-9+.-]*=[A-Za-z0-9.+:~_-]+", p)
+                              for p in roots), "packages.txt requires a package=version on each line")
+    subprocess.run(["apt-get", "-o", "Debug::NoLocking=true", "-o", "Dir::State::status=/dev/null",
+                    "-o", f"Dir::Cache::archives={apt}", "--download-only", "--yes", "install", *roots],
+                   check=True)
+    check(any(apt.glob("*.deb")), "APT returned an empty package closure")
+    shutil.rmtree(apt / "partial", ignore_errors=True)
+    (apt / "lock").unlink(missing_ok=True)
+    with (apt / "Packages").open("wb") as index:
+        subprocess.run(["apt-ftparchive", "packages", "."], cwd=apt, stdout=index, check=True)
+
+
+def canonical_ref(ref: str) -> str:
+    name, separator, pin = ref.partition("@")
+    check(bool(separator and re.fullmatch("sha256:" + HEX, pin)), f"image lacks a digest: {ref}")
+    components = name.split("/")
+    components[-1] = components[-1].split(":")[0]
+    if len(components) == 1:
+        components = ["docker.io", "library", *components]
+    elif "." not in components[0] and ":" not in components[0] and components[0] != "localhost":
+        components.insert(0, "docker.io")
+    check(all(re.fullmatch(r"[a-z0-9][a-z0-9.:_-]*", part) for part in components), f"invalid image: {ref}")
+    return "/".join(components) + "@" + pin
+
+
+def workload_images(node: object) -> set[str]:
+    images: set[str] = set()
+    if isinstance(node, list):
+        for item in node:
+            images.update(workload_images(item))
+    if isinstance(node, dict):
+        for name, value in node.items():
+            if name in ("containers", "initContainers", "ephemeralContainers") and isinstance(value, list):
+                images.update(canonical_ref(c["image"]) for c in value)
+            else:
+                images.update(workload_images(value))
+    return images
+
+
+def platform(payload: Path, checkout: Path, tmp: Path) -> None:
+    site = payload / "site"
+    target = json.loads((site / "target.json").read_bytes())
+    for name in ("kernel", "firmware", "driver", "webhookHost"):
+        check(isinstance(target[name], str) and bool(target[name].strip()), f"missing target {name}")
+    ids = target["gpuUEIDs"]
+    for name in ("mediaTurnaroundSeconds", "maximumStatusAgeSeconds"):
+        check(type(target[name]) is int and target[name] > 0, f"expected a positive target {name}")
+    check(isinstance(ids, list) and all(isinstance(uid, str) and uid.strip() for uid in ids)
+          and len(ids) == len(set(ids)) == 8, "target requires eight distinct assigned GPU UEIDs")
+    worker = checkout / "images/node-guest/worker"
+    version = re.search(r'^KUBERNETES_VERSION="(v[0-9.]+)"$', (worker / "mkosi.sync").read_text(), re.MULTILINE)
+    if version is None:
+        raise ValueError("worker build lacks a kubelet version")
+    options = ["--hardware-platform", "tdx", "--kube-version", version[1]]
+    images = set()
+    for flag, image, field in (("image", "c8s-operator", "operatorImageDigest"),
+                               ("armtls-mesh-image", "armtls-mesh", "meshImageDigest"),
+                               ("volumed-image", "volumed", "volumedImageDigest")):
+        images.add(canonical_ref(f"ghcr.io/confidential-dot-ai/{image}@{target[field]}"))
+        options.extend([f"--{flag}-digest", target[field]])
+    cli = payload / "release/c8s-linux-amd64"
+    env = {**os.environ, "PATH": f"{site}:{os.environ['PATH']}"}
+    node = tmp / "node"
+    subprocess.run([cli, "node-image", "render", *options, "--output-dir", node], env=env, check=True)
+    for name in ("component-set", "allowlist-seed"):
+        check(digest(node / f"{name}.json") == digest(payload / f"release/{name}-tdx.json"),
+              f"rendered {name} differs from the verified release")
+    subprocess.run([cli, "worker", "control-plane", "render", *options, "--document", site / "worker.yaml",
+                    "--webhook-host", target["webhookHost"], "--output-dir", tmp / "control-plane"],
+                   env=env, check=True)
+    sample = payload / "sample"
+    sample.mkdir()
+    for name in ("nginx-confidential-pod.yaml", "nginx-env-policy.json"):
+        shutil.copyfile(checkout / "samples" / name, sample / name)
+    for path in [*sorted((node / "static-pods").glob("*.yaml")), tmp / "control-plane/cluster.yaml",
+                 sample / "nginx-confidential-pod.yaml"]:
+        for document in yaml.safe_load_all(path.read_bytes()):
+            images.update(workload_images(document))
+    config = tomllib.loads((worker / "mkosi.extra/etc/containerd/config.toml").read_text())
+    images.add(canonical_ref(config["plugins"]["io.containerd.cri.v1.images"]["pinned_images"]["sandbox"]))
+    images.add(canonical_ref((node / "router-image.txt").read_text().strip()))
+    for ref in target.get("additionalImages", []):
+        images.add(canonical_ref(ref))
+    for ref in sorted(images):
+        pin = ref.split("@sha256:")[1]
+        layout = payload / "oci" / pin
+        if not layout.exists():
+            subprocess.run(["skopeo", "copy", "--all", "--preserve-digests", f"docker://{ref}",
+                            f"dir:{layout}"], check=True)
+            check(digest(layout / "manifest.json") == pin, f"local OCI digest mismatch: {ref}")
+    (payload / "oci/refs.txt").write_text("".join(f"{ref}\n" for ref in sorted(images)))
+    subprocess.run([site / "helm", "package", checkout / "charts/worker", "--destination",
+                    payload / "charts"], check=True)
+
+
+def prepare(repo: Path, tag: str, source: Path, output: Path, approved: str) -> None:
+    check(subprocess.check_output(["dpkg", "--print-architecture"], text=True).strip() == "amd64"
+          and "VERSION_CODENAME=noble" in Path("/etc/os-release").read_text().splitlines(),
+          "prepare requires Ubuntu Noble amd64")
+    check(not output.exists(), f"output exists: {output}")
+    with TemporaryDirectory(dir=output.parent) as temp:
+        tmp = Path(temp)
+        payload = tmp / "payload"
+        for name in ("site", "release", "oci", "apt", "charts"):
+            (payload / name).mkdir(parents=True)
+        site_inputs(source, payload / "site", approved)
+        commit = release(tag, repo, payload / "release")
+        checkout = tmp / "source"
+        checkout.mkdir()
+        with (tmp / "source.tar").open("w+b") as archive:
+            subprocess.run(["git", "-C", repo, "archive", commit, "images/node-guest/worker", "samples",
+                            "charts"], stdout=archive, check=True)
+            archive.seek(0)
+            subprocess.run(["tar", "-x", "-C", checkout], stdin=archive, check=True)
+        platform(payload, checkout, tmp)
+        packages(payload / "apt", payload / "site")
+        staged = tmp / "staged"
+        staged.mkdir()
+        with (staged / "inventory.sha256").open("w") as inventory:
+            for file in sorted(payload.rglob("*")):
+                check(not file.is_symlink(), f"unexpected symlink: {file}")
+                if file.is_file():
+                    inventory.write(f"{digest(file)}  {file.relative_to(payload)}\n")
+        subprocess.run(["tar", "--sort=name", "--hard-dereference", "-cf", staged / "software.tar",
+                        "-C", payload, "."], check=True)
+        staged.rename(output)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("tag")
+    parser.add_argument("site", type=Path)
+    parser.add_argument("output", type=Path)
+    parser.add_argument("--site-inventory-sha256", required=True)
+    args = parser.parse_args()
+    try:
+        prepare(Path(__file__).resolve().parents[2], args.tag, args.site.resolve(), args.output.resolve(),
+                args.site_inventory_sha256)
+    except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as err:
+        sys.exit(str(err))
