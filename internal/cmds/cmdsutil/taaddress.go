@@ -46,6 +46,25 @@ func SplitTAAddress(address string) (string, uint16, error) {
 	return host, uint16(port), nil
 }
 
+// ValidateCDSEndpoints holds a Trust Authority replica set's endpoints, by slot, to the
+// rule every reader of them shares: 1, 3 or 5 distinct <host>:<port>.
+func ValidateCDSEndpoints(endpoints []string) error {
+	if n := len(endpoints); n != 1 && n != 3 && n != 5 {
+		return fmt.Errorf("%d endpoints: a replica set has 1, 3 or 5", n)
+	}
+	seen := map[string]bool{}
+	for _, endpoint := range endpoints {
+		if _, _, err := SplitTAAddress(endpoint); err != nil {
+			return fmt.Errorf("endpoint %w", err)
+		}
+		if seen[endpoint] {
+			return fmt.Errorf("endpoint %q is listed twice", endpoint)
+		}
+		seen[endpoint] = true
+	}
+	return nil
+}
+
 // validateTAHost accepts the two things a node's clients can dial: an IPv4
 // address, and a lowercase DNS name they resolve.
 func validateTAHost(host string) error {
