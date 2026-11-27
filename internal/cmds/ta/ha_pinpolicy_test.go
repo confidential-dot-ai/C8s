@@ -99,7 +99,7 @@ func TestPinPolicyRefusesADecreeTheConfigurationDoesNotAnswerFor(t *testing.T) {
 		platform:  "sev-snp",
 		vcpus:     []int{2},
 		manifests: []string{snpManifest(t, smp2Digest)},
-	}.document([]byte("clusterID: a-launch-file-no-replica-of-this-cluster-boots\n"))
+	}.document([]byte("schemaVersion: c8s-ta/v1\nclusterID: a-launch-file-no-replica-of-this-cluster-boots\n"))
 	if err != nil {
 		t.Fatal(err)
 	}

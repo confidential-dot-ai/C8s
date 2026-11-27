@@ -30,7 +30,7 @@ func TestAPinEmbeddingAnInitdataDocumentNeedsItsPolicyInEveryKind(t *testing.T) 
 		}
 		return values
 	}
-	const document = "algorithm = \"sha384\"\n[data]\n\"ta-config.yaml\" = \"clusterID: test\"\n"
+	const document = "algorithm = \"sha384\"\n[data]\n\"ta-config.yaml\" = \"schemaVersion: c8s-ta/v1\"\n"
 	withPolicy := document + "\"policy.rego\" = \"package agent_policy\"\n"
 	for _, kind := range []string{"auto", "router", "ta"} {
 		if err := requireTAIdentity(config{kind: kind}, pin(document)); err == nil || !strings.Contains(err.Error(), "policy.rego") {

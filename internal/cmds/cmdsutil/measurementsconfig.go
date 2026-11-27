@@ -112,7 +112,7 @@ func TALaunchFile(values refvalues.ReferenceValues) ([]byte, error) {
 		}
 	}
 	// An initdata document no Trust Authority starts from pins none.
-	if err := initdata.Check(file, values.Family); err != nil {
+	if err := initdata.CheckTrustAuthority(file, values.Family); err != nil {
 		return nil, fmt.Errorf("%w: its launch file: %w", ErrTAPinUnbound, err)
 	}
 	return file, nil

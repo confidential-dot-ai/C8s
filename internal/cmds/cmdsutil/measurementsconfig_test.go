@@ -388,7 +388,7 @@ func TestTALaunchFileRequiresAnUntouchedRTMR3BesideMRCONFIGID(t *testing.T) {
 	hex96 := func(b string) string { return strings.Repeat(b, 48) }
 	document := func(rtmr3, field string) []byte {
 		return []byte(`{"schema_version":"3","tee":"tdx","measurements":[{"name":"ta","mrtd":"` + hex96("aa") +
-			`","rtmr":[null,"` + hex96("bb") + `","` + hex96("cc") + `"` + rtmr3 + `],"launch_file":"clusterID: test\n"` + field + `}]}`)
+			`","rtmr":[null,"` + hex96("bb") + `","` + hex96("cc") + `"` + rtmr3 + `],"launch_file":"schemaVersion: c8s-ta/v1\n"` + field + `}]}`)
 	}
 	initData := `,"launch_file_field":"init_data"`
 	for _, tc := range []struct {
@@ -422,15 +422,20 @@ func TestTALaunchFileRefusesAnInitdataDocumentNoTrustAuthorityStartsFrom(t *test
 	hex96 := func(b string) string { return strings.Repeat(b, 48) }
 	const policy = "\"policy.rego\" = \"package agent_policy\"\n"
 	initdata := func(algorithm, entries string) string {
-		return "algorithm = \"" + algorithm + "\"\n[data]\n\"ta-config.yaml\" = \"clusterID: test\"\n" + entries
+		return "algorithm = \"" + algorithm + "\"\n[data]\n\"ta-config.yaml\" = \"schemaVersion: c8s-ta/v1\"\n" + entries
 	}
 	for _, tc := range []struct {
 		name, launchFile, want string
+		// taOnly marks what a pin naming a Trust Authority alone refuses and
+		// a set that may pin other guests does not judge.
+		taOnly bool
 	}{
 		{name: "a document with a policy", launchFile: initdata("sha384", policy)},
-		{name: "a bare configuration", launchFile: "clusterID: test\n"},
+		{name: "a bare configuration", launchFile: "schemaVersion: c8s-ta/v1\n"},
 		{name: "a document with no policy", launchFile: initdata("sha384", ""), want: "policy.rego"},
 		{name: "another family's digest", launchFile: initdata("sha256", policy), want: "sha384"},
+		{name: "bytes that are no configuration", launchFile: "x", want: "YAML mapping", taOnly: true},
+		{name: "another guest's configuration", launchFile: "schemaVersion: c8s-worker/v1\n", want: "c8s-ta/v1", taOnly: true},
 		{name: "a file over the cap", launchFile: "# " + strings.Repeat("x", 1024*1024) + "\n", want: "bytes"},
 		{name: "a document over the cap", launchFile: initdata("sha384", policy) + "# " + strings.Repeat("x", 1024*1024) + "\n", want: "bytes"},
 		{name: "a document with another entry", launchFile: initdata("sha384", policy) + "\"other\" = 1\n", want: ""},
@@ -454,7 +459,7 @@ func TestTALaunchFileRefusesAnInitdataDocumentNoTrustAuthorityStartsFrom(t *test
 		// A set that may also pin other guests refuses the same entries.
 		// A file over the cap is not decoded there: no Trust Authority reads
 		// one as initdata, and it may be another guest's.
-		refused := tc.want != "" && !strings.Contains(tc.want, "bytes")
+		refused := tc.want != "" && !tc.taOnly && !strings.Contains(tc.want, "bytes")
 		if err := CheckLaunchFiles(values); (err != nil) != refused {
 			t.Errorf("%s: CheckLaunchFiles = %v, want refusal %v", tc.name, err, refused)
 		}

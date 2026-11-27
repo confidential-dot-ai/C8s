@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	toml "github.com/pelletier/go-toml/v2"
+	"gopkg.in/yaml.v3"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 )
@@ -118,6 +119,33 @@ func Check(launchFile []byte, family teetypes.Family) error {
 	}
 	_, err := ReadFor(launchFile, family)
 	return err
+}
+
+// ConfigSchema is the schema a Trust Authority configuration declares.
+const ConfigSchema = "c8s-ta/v1"
+
+// CheckTrustAuthority is [Check] for a pin that names a Trust Authority and
+// nothing else: its launch file must also carry a configuration of the Trust
+// Authority's schema, so a pin on other bytes is refused before anything is
+// signed or written against it. The configuration is not otherwise parsed.
+func CheckTrustAuthority(launchFile []byte, family teetypes.Family) error {
+	if err := Check(launchFile, family); err != nil {
+		return err
+	}
+	configuration, err := ReadFor(launchFile, family)
+	if err != nil {
+		return err
+	}
+	var declared struct {
+		SchemaVersion string `yaml:"schemaVersion"`
+	}
+	if err := yaml.Unmarshal(configuration, &declared); err != nil {
+		return fmt.Errorf("the configuration the launch file carries is not a YAML mapping: %w", err)
+	}
+	if declared.SchemaVersion != ConfigSchema {
+		return fmt.Errorf("the configuration the launch file carries declares schemaVersion %q, want %q", declared.SchemaVersion, ConfigSchema)
+	}
+	return nil
 }
 
 // NamesTrustAuthority reports whether launchFile is an initdata document
