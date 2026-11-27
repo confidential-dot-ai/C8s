@@ -169,14 +169,15 @@ the all-zero register.
 
 Direct TA clients require the same full `launch_file` in every entry;
 digest-only pins are for consumers such as worker authorization.
-`c8s verify` currently mislabels a schema 3 MRCONFIGID binding as `not pinned`;
-its suggested `--init-data` flag does not accept the TDX digest.
+`c8s verify` reports the init-data digest as verified when every entry that
+accepts the evidence reads the launch file, or its digest, from `MRCONFIGID`;
+`--init-data` takes no TDX digest.
 
 Unknown fields, repeated JSON keys, trailing data and an empty `measurements`
 list are refused; omit the flag to pin nothing.
 
-`c8s install --ta-pin` currently requires schema 2: the cloud chart rejects
-schema 3 and carries accepted pins to every in-cluster verifier as a file.
+`c8s install --ta-pin` takes schema 2 or 3, and the cloud chart carries the
+pin to every in-cluster verifier as a file.
 The TA renders the set it enforces at
 `/measurements`, which `c8s verify --kind ta --served-policy-file` compares
 against the node identities you expect it to serve. To

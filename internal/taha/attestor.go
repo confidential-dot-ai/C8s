@@ -1,6 +1,7 @@
 package taha
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	agarmtls "github.com/confidential-dot-ai/attestation-go/armtls"
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote"
+	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 )
 
@@ -128,12 +130,41 @@ func (v verdict) imagePin(launchFile []byte) (remote.ImagePin, error) {
 	if err != nil {
 		return remote.ImagePin{}, err
 	}
-	return remote.ImagePin{
+	pin := remote.ImagePin{
 		Name:       selfPinName,
 		Digest:     digest,
 		Registers:  registers,
 		LaunchFile: launchFile,
-	}, nil
+	}
+	untouched, err := v.launcherBound(launchFile)
+	if err != nil {
+		return remote.ImagePin{}, err
+	}
+	if untouched != nil {
+		pin.LaunchFileInInitData = true
+		pin.Registers[3] = untouched
+	}
+	return pin, nil
+}
+
+// launcherBound is the all-zero RTMR[3] of a TDX guest whose launcher bound
+// launchFile in MRCONFIGID and whose guest extended nothing, and nil for any
+// other guest, whose pin reads the field its platform always uses.
+func (v verdict) launcherBound(launchFile []byte) ([]byte, error) {
+	if v.verifiedPlatform.Family() != teetypes.FamilyTDX {
+		return nil, nil
+	}
+	register, err := v.response.Result.Claims.RTMR(3)
+	if err != nil {
+		return nil, err
+	}
+	if !bytes.Equal(register, make([]byte, len(register))) {
+		return nil, nil
+	}
+	if runtimemeasure.VerifyInitDataFile(&v.response.Result, launchFile) != nil {
+		return nil, nil
+	}
+	return register, nil
 }
 
 func verifiedRegisters(claims teetypes.Claims, indices []int) (map[int][]byte, error) {

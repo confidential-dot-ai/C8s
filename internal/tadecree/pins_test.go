@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/pem"
 	"slices"
 	"strings"
@@ -193,10 +194,10 @@ func equalImages(got, want refvalues.ReferenceValues) bool {
 	return true
 }
 
-// A decree names its launch file by digest alone, so its entries cannot say
-// which field binds it: an entry reading MRCONFIGID is refused when the
-// decree is checked, before any reader binds a launch file to it.
-func TestDecreePinsCannotReadTheLaunchFileFromMRCONFIGID(t *testing.T) {
+// A decree's entries carry no launch file, so none of them can say which
+// field binds it: the document says it once, and an entry that names the
+// field itself is refused when the decree is checked.
+func TestDecreeEntriesCannotNameTheLaunchFileField(t *testing.T) {
 	register := func(b string) string { return strings.Repeat(b, 48) }
 	entry := `{"schema_version":"3","tee":"tdx","measurements":[{"name":"ta","mrtd":"` + register("aa") +
 		`","rtmr":[null,"` + register("bb") + `","` + register("cc") + `",""],"launch_file_field":"init_data"}]}`
@@ -207,4 +208,98 @@ func TestDecreePinsCannotReadTheLaunchFileFromMRCONFIGID(t *testing.T) {
 	if err := pins.check(); err == nil || !strings.Contains(err.Error(), "launch_file_field") {
 		t.Fatalf("check = %v, want a refusal naming launch_file_field", err)
 	}
+}
+
+// tdxInitDataImages is a Trust Authority pin whose one entry reads its launch
+// file from MRCONFIGID, with rtmr3 as the register array's fourth entry.
+func tdxInitDataImages(rtmr3 string) []byte {
+	register := func(b string) string { return strings.Repeat(b, 48) }
+	file, _ := json.Marshal(launchFile)
+	return []byte(`{"schema_version":"3","tee":"tdx","measurements":[{"name":"ta","mrtd":"` + register("aa") +
+		`","rtmr":[null,"` + register("bb") + `","` + register("cc") + `"` + rtmr3 + `],"launch_file":` + string(file) + `,"launch_file_field":"init_data"}]}`)
+}
+
+// A decree names the field once for all its entries, since an entry without
+// its launch file cannot: the pins come back reading MRCONFIGID.
+func TestPinsReadFromMRCONFIGIDTravelAndComeBack(t *testing.T) {
+	document := tdxInitDataImages(`,""`)
+	pins, err := NewPinDocument(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pins.LaunchFileField != "init_data" || bytes.Contains(pins.Images.json, []byte("launch_file")) {
+		t.Fatalf("launch_file_field = %q beside entries %s", pins.LaunchFileField, pins.Images.json)
+	}
+	wire, err := json.Marshal(pins)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var carried PinDocument
+	if err := json.Unmarshal(wire, &carried); err != nil {
+		t.Fatal(err)
+	}
+	if err := carried.check(); err != nil {
+		t.Fatalf("check: %v", err)
+	}
+	filled, err := carried.WithLaunchFile([]byte(launchFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	signed, err := refvalues.Parse(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !equalImages(filled, signed) || !filled.Images[0].LaunchFileInInitData {
+		t.Fatalf("filled pins %+v, want %+v", filled.Images, signed.Images)
+	}
+}
+
+// A decree whose entries read RTMR[3] says nothing about the field, so the
+// decrees already in a cluster's log keep their bytes.
+func TestPinsReadFromRTMR3NameNoField(t *testing.T) {
+	pins, err := NewPinDocument(taImagesTDX(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire, err := json.Marshal(pins)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pins.LaunchFileField != "" || bytes.Contains(wire, []byte("launch_file_field")) {
+		t.Fatalf("a decree reading RTMR[3] carries a field: %s", wire)
+	}
+}
+
+// The field is checked with the decree, before a reader binds a launch file:
+// an unknown value, and entries that leave RTMR[3] unpinned beside MRCONFIGID.
+func TestDecreePinsCheckTheLaunchFileField(t *testing.T) {
+	pins, err := NewPinDocument(tdxInitDataImages(`,""`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	unknown := *pins
+	unknown.LaunchFileField = "host_data"
+	if err := unknown.check(); err == nil || !strings.Contains(err.Error(), "launch_file_field") {
+		t.Errorf("check of an unknown field = %v, want a refusal naming launch_file_field", err)
+	}
+	unpinned, err := NewPinDocument(taImagesTDX(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	unpinned.LaunchFileField = "init_data"
+	if err := unpinned.check(); err == nil || !strings.Contains(err.Error(), "RTMR[3]") {
+		t.Errorf("check of entries leaving RTMR[3] unpinned = %v, want a refusal naming RTMR[3]", err)
+	}
+	if _, err := NewPinDocument(tdxInitDataImages(``)); err == nil {
+		t.Error("a pin reading MRCONFIGID with RTMR[3] unpinned became a decree")
+	}
+}
+
+// taImagesTDX is a Trust Authority pin whose one entry reads RTMR[3].
+func taImagesTDX(t *testing.T) []byte {
+	t.Helper()
+	register := func(b string) string { return strings.Repeat(b, 48) }
+	file, _ := json.Marshal(launchFile)
+	return []byte(`{"schema_version":"2","tee":"tdx","measurements":[{"name":"ta","mrtd":"` + register("aa") +
+		`","rtmr":[null,"` + register("bb") + `","` + register("cc") + `"],"launch_file":` + string(file) + `}]}`)
 }

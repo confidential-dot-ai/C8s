@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
+	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
@@ -358,5 +359,20 @@ func TestApplyInitDataNoteLaunchFilePin(t *testing.T) {
 	}
 	if launchBindingPinned(string(teetypes.PlatformTDX), plan.refValues.Images) {
 		t.Error("a launch-file pin binds RTMR[3] on TDX, not the reported MR_CONFIG_ID")
+	}
+	// An entry that reads the file or its digest from MRCONFIGID does pin it.
+	tdx := string(teetypes.PlatformTDX)
+	fromField := []remote.ImagePin{{LaunchFile: []byte("x"), LaunchFileInInitData: true}, {LaunchFileDigest: []byte{1}, LaunchFileInInitData: true}}
+	if !launchBindingPinned(tdx, fromField) {
+		t.Error("entries that read MRCONFIGID were reported as leaving it unpinned")
+	}
+	if launchBindingPinned(tdx, append(fromField, remote.ImagePin{LaunchFile: []byte("x")})) {
+		t.Error("an entry that binds RTMR[3] was counted as pinning MRCONFIGID")
+	}
+	if note := initDataNote(tdx, &verifyPlan{}, fromField); !strings.Contains(note, "MRCONFIGID") || !strings.HasPrefix(note, "verified") {
+		t.Errorf("TDX note = %q", note)
+	}
+	if note := initDataNote(tdx, &verifyPlan{}, nil); strings.Contains(note, "--init-data") {
+		t.Errorf("the TDX note points at a flag that takes no MRCONFIGID digest: %q", note)
 	}
 }
