@@ -1,0 +1,276 @@
+#!/usr/bin/env python3
+"""Prepare signed Intel and NVIDIA candidate media on the trusted workstation."""
+
+import argparse
+import base64
+import hashlib
+import json
+import os
+import re
+import stat
+import subprocess
+import sys
+import time
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from typing import Any
+
+
+def unique(items: list[tuple[str, Any]]) -> dict[str, Any]:
+    result = dict(items)
+    if len(result) != len(items):
+        raise ValueError("duplicate key in JSON input")
+    return result
+
+
+def read_regular(path: Path, limit: int = 8 << 20) -> bytes:
+    with os.fdopen(
+        os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb"
+    ) as f:
+        metadata = os.fstat(f.fileno())
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > limit:
+            raise ValueError(f"oversized or non-regular file: {path}")
+        data = f.read(limit + 1)
+    if len(data) > limit:
+        raise ValueError(f"oversized file: {path}")
+    return data
+
+
+def pin(value: str) -> str:
+    if not re.fullmatch("[0-9a-f]{64}", value):
+        raise ValueError("expected a lowercase SHA-256 digest")
+    return value
+
+
+def checked_bytes(path: Path, expected: str, limit: int = 8 << 20) -> bytes:
+    data = read_regular(path, limit)
+    if hashlib.sha256(data).hexdigest() != pin(expected):
+        raise ValueError(f"SHA-256 mismatch for {path}")
+    return data
+
+
+def utc(text: str) -> datetime:
+    value = datetime.fromisoformat(text.strip())
+    if value.utcoffset() != timedelta(0):
+        raise ValueError("expected authenticated UTC timestamp")
+    return value
+
+
+def site_now(state: Path) -> datetime:
+    earliest = time.time() - 2
+    stamp = utc(subprocess.check_output([state / "site-time"], text=True, timeout=10))
+    latest = time.time()
+    if not earliest <= stamp.timestamp() <= latest + 2:
+        raise ValueError("site time disagrees with the NTS-checked workstation")
+    return max(stamp, datetime.fromtimestamp(latest, UTC))
+
+
+def stage_intel(intel: Path, state: Path, stage: Path) -> dict[str, Any]:
+    selection = json.loads(
+        read_regular(intel / "active", 1024), object_pairs_hook=unique
+    )
+    digest = pin(selection["sha256"])
+    raw = checked_bytes(intel / "snapshots" / f"{digest}.json", digest, 4 << 20)
+    manifest = json.loads(raw, object_pairs_hook=unique)
+    if (
+        selection["generation"] != manifest["generation"]
+        or len(manifest["objects"]) != 4
+    ):
+        raise ValueError("expected four Intel records at the selected generation")
+    saved = stage.parent / "intel.json"
+    sig = stage.parent / "intel.sig"
+    saved.write_bytes(raw)
+    sig.write_bytes(read_regular(intel / "snapshots" / f"{digest}.sig", 64))
+    for obj in manifest["objects"].values():
+        name = pin(obj["sha256"])
+        (stage / "objects" / name).write_bytes(
+            checked_bytes(intel / "objects" / name, name)
+        )
+    check = ["c8s", "collateral", "check-intel", str(state / "enrolled-quote.bin")]
+    subprocess.run(
+        [*check, state / "profile.json", saved, sig, stage / "objects"],
+        input=site_now(state).isoformat(),
+        text=True,
+        timeout=40,
+        check=True,
+        stdout=subprocess.DEVNULL,
+    )
+    return dict(manifest)
+
+
+def add(objects: dict[str, Any], store: Path, selector: str, data: bytes) -> None:
+    digest = hashlib.sha256(data).hexdigest()
+    if selector in objects:
+        raise ValueError(f"duplicate selector {selector}")
+    (store / digest).write_bytes(data)
+    objects[selector] = {"sha256": digest}
+
+
+def stage_nvidia(
+    root: Path,
+    store: Path,
+    manifest: dict[str, Any],
+    approval: dict[str, Any],
+    report: dict[str, Any],
+) -> None:
+    if manifest["target"] != approval["target"]:
+        raise ValueError("GPU enrollment and Intel quote belong to different targets")
+    objects = manifest["objects"]
+    rimpins = approval["rimResponses"]
+    if not rimpins or sorted(rimpins.values()) != sorted(report["rimSha256"]):
+        raise ValueError(
+            "enrolled RIM selectors differ from the responses served during verification"
+        )
+    for rim_id, expected in rimpins.items():
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", rim_id) or any(
+            part in ("", ".", "..") for part in rim_id.split("/")
+        ):
+            raise ValueError(f"invalid RIM selector {rim_id!r}")
+        data = checked_bytes(root / "rims" / pin(expected), expected)
+        envelope = json.loads(data, object_pairs_hook=unique)
+        if envelope["id"] != rim_id or not base64.b64decode(
+            envelope["rim"], validate=True
+        ):
+            raise ValueError(f"incorrect or empty vendor RIM response for {rim_id}")
+        add(objects, store, f"nvidia/rim/{rim_id}", data)
+    fps = approval["certificateFingerprints"]
+    if (
+        fps != report["certificateFingerprints"]
+        or fps.keys() != report["ocspSha256"].keys()
+    ):
+        raise ValueError("OCSP responses differ from enrolled certificates")
+    for name, fp in fps.items():
+        body = checked_bytes(
+            root / "responses" / name / "ocsp.der", report["ocspSha256"][name]
+        )
+        add(objects, store, f"nvidia/ocsp/{pin(fp)}", body)
+    policy = checked_bytes(root / "run/policy.rego", approval["policySha256"])
+    add(objects, store, "nvidia/policy", policy)
+
+
+def sign(stage: Path, manifest: dict[str, Any], state: Path, key: Path) -> None:
+    raw = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
+    digest = hashlib.sha256(raw).hexdigest()
+    snapshots = stage / "snapshots"
+    snapshots.mkdir()
+    candidate = snapshots / f"{digest}.json"
+    signature = snapshots / f"{digest}.sig"
+    candidate.write_bytes(raw)
+    pkeyutl: list[str | Path] = ["openssl", "pkeyutl", "-rawin", "-in", candidate]
+    subprocess.run(
+        pkeyutl + ["-sign", "-inkey", key, "-out", signature], check=True, timeout=30
+    )
+    public = stage.parent / "signer.pem"
+    profile = json.loads(read_regular(state / "profile.json"), object_pairs_hook=unique)
+    public.write_text(profile["mediaPublicKey"])
+    verify = ["-verify", "-pubin", "-inkey", str(public), "-sigfile", str(signature)]
+    subprocess.run(
+        [*pkeyutl, *verify], check=True, timeout=30, stdout=subprocess.DEVNULL
+    )
+    if len(signature.read_bytes()) != 64:
+        raise ValueError("expected an Ed25519 media signature")
+    (stage / "active").write_text(
+        json.dumps({"generation": manifest["generation"], "sha256": digest})
+    )
+
+
+def prepare(args: argparse.Namespace) -> None:
+    source = args.gpu
+    run = source / "run"
+    approval = json.loads(
+        checked_bytes(run / "approval.json", args.approval_sha256),
+        object_pairs_hook=unique,
+    )
+    checker = Path(__file__).resolve().parents[2] / "test/e2e/b200/refresh-window.py"
+    captured = json.loads(
+        checked_bytes(source / "refresh-report.json", args.qualification_sha256),
+        object_pairs_hook=unique,
+    )
+    for name in approval["certificateFingerprints"]:
+        if not re.fullmatch("[A-Za-z0-9][A-Za-z0-9._-]*", name):
+            raise ValueError(f"invalid enrolled certificate name {name!r}")
+        for filename in ("cert.pem", "issuer.pem", "ocsp.der"):
+            read_regular(source / "responses" / name / filename)
+    observation = subprocess.check_output(
+        [
+            checker,
+            run,
+            args.approval_sha256,
+            source / "responses",
+            args.state / "nvidia-roots.pem",
+            source / "intermediates.pem",
+            source / "served-ocsp.sha256",
+            source / "served-rim.sha256",
+            str(args.refresh_started_unix),
+            str(args.import_finished_unix),
+        ],
+        timeout=300,
+    )
+    report = json.loads(observation, object_pairs_hook=unique)
+    # Only time remaining changes when rechecking an authenticated observation.
+    del captured["remainingSeconds"], report["remainingSeconds"]
+    if captured != report:
+        raise ValueError("authenticated GPU report differs from the recheck")
+    if report["approvalSha256"] != args.approval_sha256:
+        raise ValueError("GPU verdict does not match approved inputs")
+    if os.path.lexists(args.output):
+        raise FileExistsError(f"candidate output exists: {args.output}")
+    with TemporaryDirectory(dir=args.output.parent) as temp:
+        stage = Path(temp) / "media"
+        stage.mkdir(mode=0o700)
+        store = stage / "objects"
+        store.mkdir()
+        manifest = stage_intel(args.intel, args.state, stage)
+        if not manifest["generation"] < args.generation < 2**64:
+            raise ValueError(
+                "reserve a new uint64 generation greater than the Intel generation"
+            )
+        manifest["generation"] = args.generation
+        stage_nvidia(source, store, manifest, approval, report)
+        deadline, limiting = min(
+            (utc(manifest["expiresAt"]), "Intel quote collateral"),
+            (utc(report["earliestExpiryUtc"]), report["limitingObject"]),
+        )
+        verdict = json.loads(
+            checked_bytes(run / "attest.json", report["gpuVerdictSha256"])
+        )
+        for device in verdict["claims"]:
+            for chain in ("attestation-report", "driver-rim", "vbios-rim"):
+                claims = device[f"x-nvidia-gpu-{chain}-cert-chain"]
+                end = utc(claims["x-nvidia-cert-expiration-date"])
+                label = f"{device['ueid']} {chain} chain"
+                deadline, limiting = min((deadline, limiting), (end, label))
+        manifest["expiresAt"] = (
+            deadline.astimezone(UTC).isoformat().replace("+00:00", "Z")
+        )
+        sign(stage, manifest, args.state, args.media_key)
+        now = site_now(args.state)
+        if now.timestamp() < report["importFinishedUnix"]:
+            raise ValueError("site time precedes the observed import")
+        if now + timedelta(seconds=report["observedRefreshSeconds"] + 2) >= deadline:
+            raise ValueError(
+                f"{limiting} expires before another observed media turnaround completes: {deadline.isoformat()}"
+            )
+        stage.rename(args.output)
+    print(
+        f"Prepared candidate generation {manifest['generation']}, earliest expiry {manifest['expiresAt']} ({limiting})"
+    )
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("intel", type=Path, help="signed Intel-only candidate")
+    parser.add_argument("state", type=Path, help="trusted site inputs")
+    parser.add_argument("gpu", type=Path, help="authenticated B200 capture")
+    parser.add_argument("approval_sha256", type=pin)
+    parser.add_argument("qualification_sha256", type=pin, help="B200 report digest")
+    parser.add_argument("refresh_started_unix", type=int)
+    parser.add_argument("import_finished_unix", type=int)
+    parser.add_argument("generation", type=int, help="new reserved mixed generation")
+    parser.add_argument("media_key", type=Path)
+    parser.add_argument("output", type=Path, help="new candidate directory")
+    try:
+        prepare(parser.parse_args())
+    except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError) as e:
+        sys.exit(str(e))

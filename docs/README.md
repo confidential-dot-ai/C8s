@@ -58,6 +58,7 @@ Everyone: [overview.md](overview.md), then [guarantees.md](guarantees.md).
 | [ta-ha-alerts.md](ta-ha-alerts.md) | reference | What to watch on a replicated TA |
 | [upgrade.md](upgrade.md) | how-to | Upgrade a cluster to a new release |
 | **Verifying a deployment** | | |
+| [offline-mixed-candidate.md](offline-mixed-candidate.md) | how-to | Stage verified Intel and NVIDIA collateral for a disconnected site |
 | [verify.md](verify.md) | how-to | Verify a deployment from outside |
 | [measurements.md](measurements.md) | reference | What each platform measures, and the measurements config |
 | [releases.md](releases.md) | reference | Versioning, published artifacts, release verification |
