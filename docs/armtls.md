@@ -86,10 +86,10 @@ request (`armtls.RetiringTransport`). While the pins read the same, requests
 share one connection pool; every change starts a new pool, also a change back
 to an earlier set, so a request runs only on a connection checked against the
 pins in force when it started. A request whose pins cannot be read is not
-sent. The other clients read their pins when a connection is made: the secrets
-sidecars at every handshake, and the node's allowlist pull, which a node
-following a replica set's chain gives a new transport when the chain's pins
-change and which otherwise reads fixed pins once at startup.
+sent. The secrets sidecars and the Pod CVM secrets broker read their pins at
+every handshake instead. The node's allowlist pull reads its pins when its
+client is built; a node following a replica set's chain builds it a new
+transport when the chain's pins change.
 
 A failed check maps to a typed sentinel (`pkg/armtls/errors.go`):
 `ErrSignatureInvalid` (hardware chain), `ErrKeyBinding` (REPORTDATA mismatch —

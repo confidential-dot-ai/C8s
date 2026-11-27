@@ -157,8 +157,8 @@ func ClientTAPins(nodePolicy string, source ImagePolicySource) (armtls.Pins, err
 	return armtls.Pins(policy), nil
 }
 
-// TAPins resolves the pins as ResolveTAPins does: a client calling it per
-// handshake follows the node's pins, which the node rewrites in place when its
+// TAPins resolves the pins as ResolveTAPins does: a client calling it before each
+// request or handshake follows the node's pins, which the node rewrites in place when its
 // Trust Authority replica set accepts other builds.
 func TAPins(nodePolicy string, source ImagePolicySource) (armtls.Pins, error) {
 	policy, _, err := ResolveTAPins(nodePolicy, source)

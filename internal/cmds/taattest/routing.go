@@ -110,7 +110,7 @@ func checkRoutingFlags(cfg config) error {
 // point it elsewhere.
 var nodePinsPath = workloadclaims.TAPinsPath
 
-// routerCDSPins reads the router's Trust Authority pins per handshake: the node's pins
+// routerCDSPins reads the router's Trust Authority pins before each request: the node's pins
 // when the enforcer mounts them, which it rewrites as the replica set accepts
 // other builds, else the --image-policy-file pin.
 func routerCDSPins(file string) (armtls.Pins, error) {

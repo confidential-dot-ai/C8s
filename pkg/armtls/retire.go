@@ -13,7 +13,8 @@ import (
 // set of pins: a request reads the pins, and where they changed it continues
 // on a new pool whose handshakes check that set alone. A request in flight
 // finishes on its connection, which no later request reuses: it returns to
-// the pool left behind and idles out there.
+// the pool left behind and is closed by that pool's IdleConnTimeout, so base
+// must set one.
 type RetiringTransport struct {
 	base   *http.Transport
 	pins   func() (Pins, error)
