@@ -101,6 +101,14 @@ func (o *options) genesis(ctx context.Context, out io.Writer, urls []string, clu
 	if _, err := cdschain.VerifyGenesis(e); err != nil {
 		return err
 	}
+	if err := o.prepareStateDir(); err != nil {
+		return err
+	}
+	if rec, err := o.record(cluster); err != nil {
+		return fmt.Errorf("the record of cluster %s cannot be read, so nothing was sent: %w", cluster, err)
+	} else if rec != nil && rec.Genesis != e.Hash() {
+		return fmt.Errorf("cluster %s is recorded with genesis %s, not %s, so nothing was sent; after a re-root, remove the record", cluster, rec.Genesis, e.Hash())
+	}
 	if err := haapi.Call(ctx, client, http.MethodPost, urls[0]+haapi.GenesisPath, e, nil); err != nil {
 		var refusal *operatorauth.StatusError
 		if errors.As(err, &refusal) && (refusal.Status < 500 || refusal.Status == http.StatusServiceUnavailable) {
@@ -110,8 +118,11 @@ func (o *options) genesis(ctx context.Context, out io.Writer, urls []string, clu
 			"no answer confirmed the genesis %s (%w): if c8s ta ha status shows the replicas hold it, write with --genesis %s", e.Hash(), err, e.Hash())}
 	}
 	head := cdschain.Head{V: cdschain.Version, Cluster: cluster, Hash: e.Hash()}
+	if err := o.acknowledge(head.Hash, head); err != nil {
+		return recordFailure(fmt.Sprintf("Trust Authority accepted genesis %s", head.Hash), err)
+	}
 	fmt.Fprintf(out, "genesis %s\n", head.Hash)
-	return o.acknowledge(head.Hash, head)
+	return nil
 }
 
 func publicPEM(key *ecdsa.PublicKey, extraFile string) (string, error) {
