@@ -53,3 +53,37 @@ Use an independently authenticated build inventory for image and launch pins.
 Store the profile under workstation access control or bind it into the measured
 guest build. An HTTPS endpoint chosen by the hypervisor cannot supply these
 trust anchors.
+
+## Prepare Intel verification collateral
+
+On a connected workstation with authenticated current time, use the raw DCAP
+quote enrolled for the target. The command authenticates the quote against
+the built-in Intel root, requests the four responses for that quote, checks
+revocation and requires an `UpToDate` verdict. It prints the earliest UTC
+deadline across the signed documents, CRLs and certificates. Select a new
+directory for each attempt.
+
+```sh
+c8s collateral prepare-intel enrolled-quote.bin "$INVENTORY_ID" 1 candidate
+c8s collateral check-intel enrolled-quote.bin candidate/manifest.json candidate/objects
+mkdir -p candidate/snapshots
+digest=$(sha256sum candidate/manifest.json | cut -d' ' -f1)
+mv candidate/manifest.json "candidate/snapshots/$digest.json"
+openssl pkeyutl -sign -rawin -inkey "$MEDIA_SIGNING_KEY" \
+  -in "candidate/snapshots/$digest.json" -out "candidate/snapshots/$digest.sig"
+jq -n --arg sha256 "$digest" --argjson generation 1 \
+  '{generation:$generation,sha256:$sha256}' >candidate/active
+```
+
+Keep the private key on the workstation. A reference quote identifies the Intel
+provisioning target during import. Each connection to a running guest still
+uses the ordinary attestation flow. These commands prepare the Intel subset;
+GPU qualification also needs the assigned devices' RIMs, signed OCSP responses
+and the approved maximum status age.
+
+The quote generator also needs the platform's PCK certificates in its
+provisioning cache. For a deployment using PCCS in offline mode, register the
+platform, export the pending registration, fetch its platform collateral on
+the connected machine and use the PCCS admin tool's `put` operation at the
+site. Use Intel's procedure for the installed DCAP tool version.
+[Intel PCCS cache management flows](https://cc-enabling.trustedservices.intel.com/intel-sgx-tdx-pccs/08/cache_management_flows/)
