@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strconv"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/taconn"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/worker"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/fileutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/taconfig"
@@ -292,9 +294,9 @@ func (p pinFlags) readInitData(set refvalues.ReferenceValues) error {
 	return nil
 }
 
-// admitted verifies target a second time, against the very pins the decree
-// carries with their launch file restored, and returns what it then reports.
-// --ta-pin verified it first, and a Genesis whose pins do not match the
+// admitted reads target over a connection whose peer satisfies both --ta-pin
+// and the very pins the decree carries, with their launch file restored, and
+// returns what it reports there. A Genesis whose pins do not match the
 // replica that forms the cluster commits and then admits none of them:
 // another family, another image, or another field for the launch file.
 func admitted(ctx context.Context, target replica, pins *tadecree.PinDocument, launchFile []byte) (taha.Status, error) {
@@ -318,6 +320,13 @@ func admitted(ctx context.Context, target replica, pins *tadecree.PinDocument, l
 	if err := file.Close(); err != nil {
 		return taha.Status{}, err
 	}
+	// One attested peer must satisfy both policies: the host chooses where
+	// each connection lands, and a member id is not evidence.
+	operatorPins, err := refvalues.Load(target.taPin)
+	if err != nil {
+		return taha.Status{}, fmt.Errorf("--ta-pin: %w", err)
+	}
+	target.verifier = taconn.ImagePinVerifier{Verifier: target.verifier, Images: operatorPins.Images}
 	target.taPin = file.Name()
 	reported, err := target.status(ctx)
 	if err != nil {
@@ -343,14 +352,14 @@ func imagePins(manifest string, family teetypes.Family, vcpus []int, launchFile 
 	return set.Images, nil
 }
 
-// buildSuffix tells apart TDX images of one firmware: their launch digest,
-// MRTD, is the same, and RTMR[1] and RTMR[2] carry the kernel and initrd. It
-// is the whole digest of the two, so two builds never share a name.
+// buildSuffix tells apart TDX images whose names would otherwise meet: one
+// firmware under two kernels, or two firmwares sharing a digest prefix. It
+// is the whole digest of MRTD, RTMR[1] and RTMR[2].
 func buildSuffix(image remote.ImagePin) string {
 	if len(image.Registers[1]) == 0 && len(image.Registers[2]) == 0 {
 		return ""
 	}
-	build := sha256.Sum256(append(bytes.Clone(image.Registers[1]), image.Registers[2]...))
+	build := sha256.Sum256(slices.Concat(image.Digest, image.Registers[1], image.Registers[2]))
 	return fmt.Sprintf("-%x", build)
 }
 
@@ -494,8 +503,8 @@ func (o genesisOptions) run(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	// What the target reports under the decree's own pins is what the decree
-	// is written from, so a replica that changed in between is seen.
+	// The decree is written from what the target reports over the connection
+	// that satisfied both --ta-pin and the decree's own pins.
 	first := target.ID
 	if target, err = admitted(cmd.Context(), o.target, taPins, c.launchFile); err != nil {
 		return err

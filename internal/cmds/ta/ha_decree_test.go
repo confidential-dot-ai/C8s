@@ -836,3 +836,24 @@ func TestPinFlagsNameTwoTDXImagesOfOneFirmwareApart(t *testing.T) {
 		}
 	}
 }
+
+// The connection the decree is written from must satisfy --ta-pin as well as
+// the decree's pins: a guest that matches the decree's pins alone, wherever
+// the host routes the second read, is refused.
+func TestGenesisReadsItsTargetUnderBothPinSets(t *testing.T) {
+	c := newOperatorCluster(t)
+	target := c.replicaServing(t, map[string]any{statusPath: c.unjoined()})
+	pins, err := pinFlags{platform: "sev-snp", vcpus: []int{2}, manifests: []string{snpManifest(t, runningDigest)}}.document(c.config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admitted(context.Background(), target, pins, c.config); err != nil {
+		t.Fatalf("a target matching both pin sets: %v", err)
+	}
+	elsewhere := filepath.Join(t.TempDir(), "ta-pin.json")
+	writeTestFile(t, elsewhere, []byte(testutil.TAPinDocument(smp2Digest, string(c.config))))
+	target.taPin = elsewhere
+	if _, err := admitted(context.Background(), target, pins, c.config); err == nil {
+		t.Fatal("a target outside --ta-pin was read under the decree's pins alone")
+	}
+}
