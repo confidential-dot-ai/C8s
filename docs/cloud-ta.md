@@ -67,9 +67,10 @@ clients cannot authenticate their TA.
 
 Supply the TA container and an attestation API on guest loopback
 (`--attestation-api-url`). The guest launch digest does not cover containers
-loaded after launch: you must establish how the deployment enforces the TA's
-code, storage and attester. C8s provides no measured Kata TA image or
-integration tests for this deployment, including replicated TAs.
+loaded after launch: the [agent policy](#the-agent-policy) in the initdata
+document is what holds the guest to the TA's containers. C8s provides no
+measured Kata TA image or integration tests for this deployment, including
+replicated TAs.
 
 Put the TA configuration in the initdata document as follows (schematic, the
 SEV-SNP form; on TDX write `algorithm = "sha384"`):
@@ -83,12 +84,18 @@ algorithm = "sha256"
 schemaVersion: c8s-ta/v1
 ...
 '''
+"policy.rego" = '''
+package agent_policy
+...
+'''
 ```
 
-C8s detects initdata by its TOML `data` table and requires a string
-`ta-config.yaml` entry and a supported `algorithm`; other files are read as
-bare YAML configuration. Other initdata keys, including guest policy, are
-bound but not enforced by C8s. Establish their enforcement separately.
+C8s detects initdata by its TOML `data` table and requires a supported
+`algorithm`, a string `ta-config.yaml` entry and a string `policy.rego` entry
+that declares `package agent_policy`; other files are read as bare YAML
+configuration. The TA refuses to start from a document without the policy,
+and every command refuses a pin that embeds one. Other initdata keys are
+bound and not read.
 
 Pass the whole document to the runtime and mount identical bytes for
 `c8s ta --config`; even changes to comments or whitespace break the binding.
@@ -96,6 +103,46 @@ Use it for every command's `--config` and every TA pin's `launch_file`.
 Kata does not use the [`ta-guest` image's staging](../images/ta-guest/README.md#launch-requirements).
 On either platform the document must be at most 1 MiB; keep it well below that so its JSON-encoded
 pin also fits the release ConfigMap's 1 MiB limit.
+
+#### The agent policy
+
+The Kata guest agent evaluates `policy.rego` on every request the host makes
+of it. The launch binding covers the whole document, so a pin that embeds the
+document fixes the policy too. C8s requires the entry and does not judge its
+rules: whoever writes the pin answers for them. The policy must at least:
+
+- allow a container only from the TA and attester images, each named by
+  digest. With images pulled inside the guest, the rules that Kata's
+  `genpolicy` generates for 3.30 do not check the image a container is pulled
+  from, so add that rule. Tell the sandbox container apart by the
+  `io.kubernetes.cri.container-type` entry in the `image_guest_pull` storage's
+  driver options, which is the field the agent reads, not by an annotation;
+- fix each container's arguments, environment and mounts. The TA's
+  `--attestation-api-url` and `--config` are arguments, and a host that could
+  change them would choose the attester the TA asks about itself;
+- refuse `ExecProcessRequest`, `SetPolicyRequest` and writes to a container's
+  input.
+
+`genpolicy` 3.30 output fixes those and denies those requests by default.
+Its settings need matching to the
+cluster before the policy admits the pod: the OCI version the runtime sends,
+the container runtime's state directory, the guest-pull paths and
+`confidential_guest`. A refused request's error, in the pod's events, carries
+the policy's trace of the request it judged.
+
+A policy that denies `ReadStreamRequest` also denies `kubectl logs`. A
+privileged container makes the runtime mount the sandbox's `/sys` writable,
+which generated policies refuse: give the attester the one capability it
+needs instead.
+
+A policy generated from a bare Pod names that pod and its namespace. HA
+replicas share one launch file byte for byte, so they share one policy: C8s
+has not established a policy that admits each replica of a set.
+
+**Upgrading.** A TA already launched on a document with no `policy.rego`
+does not start on this release, and its pins are refused. Adding the entry
+changes the launch digest, so write the new document, pin it, and launch the
+TA again on it before upgrading the clients.
 
 `c8s ta config new` produces bare YAML and a pin for it. For Kata, write a
 schema 2 SEV-SNP [measurements config](measurements.md#the-measurements-config)

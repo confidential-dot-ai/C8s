@@ -2,6 +2,7 @@ package taconfig
 
 import (
 	"fmt"
+	"strings"
 
 	toml "github.com/pelletier/go-toml/v2"
 
@@ -15,6 +16,17 @@ import (
 const (
 	InitdataAlgorithmSNP = "sha256"
 	InitdataAlgorithmTDX = "sha384"
+)
+
+// PolicyFile is the initdata entry that holds the guest agent's policy, and
+// policyPackage the package the agent evaluates. The launch binding covers a
+// guest and this document, and the host names the containers afterwards: the
+// policy is what holds them to the Trust Authority's. [checkAgentPolicy]
+// requires one and does not judge its rules, which whoever pins the document
+// answers for.
+const (
+	PolicyFile    = "policy.rego"
+	policyPackage = "package agent_policy"
 )
 
 // maxInitdataSize bounds an initdata document supplied by the host.
@@ -96,7 +108,30 @@ func readInitdata(launchFile []byte) (configuration []byte, algorithm string, er
 	if !ok {
 		return nil, "", fmt.Errorf("initdata entry %q is not a string", ConfigFile)
 	}
+	if err := checkAgentPolicy(data); err != nil {
+		return nil, "", err
+	}
 	return []byte(text), algorithm, nil
+}
+
+// checkAgentPolicy requires an initdata document to carry a policy for the
+// guest agent. Without one the agent runs whatever containers the host names,
+// so the document would identify a configuration and no program.
+func checkAgentPolicy(data map[string]any) error {
+	entry, ok := data[PolicyFile]
+	if !ok {
+		return fmt.Errorf("initdata document has no %q entry, so nothing holds the guest to the Trust Authority's containers", PolicyFile)
+	}
+	policy, ok := entry.(string)
+	if !ok {
+		return fmt.Errorf("initdata entry %q is not a string", PolicyFile)
+	}
+	for _, line := range strings.Split(policy, "\n") {
+		if strings.TrimSpace(line) == policyPackage {
+			return nil
+		}
+	}
+	return fmt.Errorf("initdata entry %q does not declare %q, the package the guest agent evaluates", PolicyFile, policyPackage)
 }
 
 // overCap names the size cap in the refusal of a launch file too large to be

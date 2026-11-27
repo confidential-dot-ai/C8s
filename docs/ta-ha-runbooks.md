@@ -8,7 +8,9 @@ Every runbook assumes:
 
 - `ta-config.yaml`: the launch file every replica boots. For
   [Kata replicas](cloud-ta.md#under-a-kata-containers-runtime), use the whole
-  initdata document wherever these commands take `--config`;
+  initdata document wherever these commands take `--config`. It must carry
+  an [agent policy](cloud-ta.md#the-agent-policy), and one written before
+  that was required has to be [replaced](cloud-ta.md#the-agent-policy);
 - `ta-pin.json`: the pin document for the TA images the cluster accepts,
   which `c8s ta ha pin-policy --out` writes;
 - `operator.key`: a private key whose public half the launch file pins.
