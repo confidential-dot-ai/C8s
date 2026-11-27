@@ -8,7 +8,6 @@ import (
 	toml "github.com/pelletier/go-toml/v2"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/initdata"
 )
 

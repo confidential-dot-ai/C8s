@@ -4,7 +4,6 @@ import (
 	"fmt"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/initdata"
 )
 
