@@ -1,7 +1,7 @@
 {{- define "c8s.validateTAPin" -}}
 {{- $document := default "" . -}}
 {{- if not $document -}}
-{{- fail "VALIDATION_ERROR kind=ta_pins_required: ta.measurementsConfig is empty, so nothing pins the guest identity of this cluster's Trust Authority and nothing dialing it could tell it from any other attested TEE. Pass `c8s install --ta-pin <pin.json>` (written by `c8s ta config new`)." -}}
+{{- fail "VALIDATION_ERROR kind=ta_pins_required: ta.measurementsConfig is empty, so nothing pins the guest identity of this cluster's Trust Authority and nothing dialing it could tell it from any other attested TEE. Pass `c8s install --ta-pin <pin.json>` (written by `c8s ta config new`, or by hand for a guest whose launcher binds the launch file: see docs/cloud-ta.md)." -}}
 {{- end -}}
 {{- if not (hasPrefix "{" (trim $document)) -}}
 {{- fail "VALIDATION_ERROR kind=ta_pin_content: ta.measurementsConfig must be the JSON content of the Trust Authority pin, not a file path — use `c8s install --ta-pin <file>` or helm --set-file ta.measurementsConfig=<file>" -}}

@@ -181,23 +181,34 @@ func initDataNote(platform string, plan *verifyPlan) string {
 	switch {
 	case plan.initDataHash != nil:
 		return "verified: matches --init-data"
+	case launchBindingPinned(platform, plan.refValues.Images) && isTDX(platform):
+		return "verified: matches the launch file --image-policy-file pins (MRCONFIGID)"
 	case launchBindingPinned(platform, plan.refValues.Images):
 		return "verified: matches the launch file --image-policy-file pins (HOST_DATA)"
+	case isTDX(platform):
+		return "not pinned: the digest the evidence commits, compared against nothing (pin it with an --image-policy-file entry that reads MRCONFIGID)"
 	}
 	return "not pinned: the digest the evidence commits, compared against nothing (pass --init-data to pin it)"
 }
 
 // launchBindingPinned reports whether a launch-file pin enforced the init-data
 // field this verdict reports. On SEV-SNP that field is HOST_DATA, which such a
-// pin compares whole; TDX reports MR_CONFIG_ID there and carries its launch
-// binding in RTMR[3]. Every image must bind the file: the evidence matched one
-// of them, and another entry's binding says nothing about the one that did.
+// pin compares whole. TDX reports MRCONFIGID there: a pin enforces it only
+// where the entry reads the launch file, or its digest, from that field, and
+// one that binds RTMR[3] says nothing about it. Every image must bind the
+// field: the evidence matched one of them, and another entry's binding says
+// nothing about the one that did.
 func launchBindingPinned(platform string, images []remote.ImagePin) bool {
-	if isTDX(platform) || len(images) == 0 {
+	if len(images) == 0 {
 		return false
 	}
 	for _, img := range images {
-		if len(img.LaunchFile) == 0 {
+		switch {
+		case isTDX(platform):
+			if !img.LaunchFileInInitData || len(img.LaunchFile) == 0 && len(img.LaunchFileDigest) == 0 {
+				return false
+			}
+		case len(img.LaunchFile) == 0:
 			return false
 		}
 	}

@@ -22,6 +22,7 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/taconn"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/worker"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/fileutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/localverify"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/taconfig"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/tadecree"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/taha"
@@ -326,13 +327,27 @@ func admitted(ctx context.Context, target replica, pins *tadecree.PinDocument, l
 	if err != nil {
 		return taha.Status{}, fmt.Errorf("--ta-pin: %w", err)
 	}
-	target.verifier = taconn.ImagePinVerifier{Verifier: target.verifier, Images: operatorPins.Images}
+	target.verifier = namedPins{name: "--ta-pin", verifier: taconn.ImagePinVerifier{Verifier: target.verifier, Images: operatorPins.Images}}
 	target.taPin = file.Name()
 	reported, err := target.status(ctx)
 	if err != nil {
-		return taha.Status{}, fmt.Errorf("reading the target again under the decree's Trust Authority pins (--platform, --image-manifest, --vcpus, --launch-file-field) failed; if it is the pins that refused it, a cluster started with them admits none of its replicas: %w", err)
+		return taha.Status{}, fmt.Errorf("reading the target under both --ta-pin and the decree's Trust Authority pins (--platform, --image-manifest, --vcpus, --launch-file-field) failed; a refusal that does not name --ta-pin is the decree's pins, and a cluster started with pins that refuse its replicas admits none of its replicas: %w", err)
 	}
 	return reported, nil
+}
+
+// namedPins says which pin set refused a peer.
+type namedPins struct {
+	name     string
+	verifier taconn.PinVerifier
+}
+
+func (n namedPins) Verify(ctx context.Context, platform string, evidence json.RawMessage, params localverify.Params) (*teetypes.VerificationResult, error) {
+	result, err := n.verifier.Verify(ctx, platform, evidence, params)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", n.name, err)
+	}
+	return result, nil
 }
 
 // imagePins names one image's entries after its launch digest, so the entries
