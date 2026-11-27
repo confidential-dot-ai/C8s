@@ -40,11 +40,43 @@ func NewCmd() *cobra.Command {
 			return prepare(cmd.Context(), args[0], args[1], gen, args[3], cmd.OutOrStdout())
 		},
 	}, &cobra.Command{
-		Use:   "check-intel RAW-QUOTE MANIFEST OBJECT-DIRECTORY",
+		Use:   "check-intel RAW-QUOTE PROFILE MANIFEST SIGNATURE OBJECT-DIRECTORY",
 		Short: "Verify all objects of an Intel snapshot locally at the workstation's authenticated time",
-		Args:  cobra.ExactArgs(3),
+		Args:  cobra.ExactArgs(5),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return check(cmd.Context(), args[0], args[1], args[2], cmd.OutOrStdout())
+			stamp, err := io.ReadAll(io.LimitReader(cmd.InOrStdin(), 128))
+			if err != nil {
+				return err
+			}
+			at, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(string(stamp)))
+			if err != nil || at.IsZero() {
+				return errors.New("supply authenticated site UTC on standard input")
+			}
+			profileBytes, err := os.ReadFile(args[1])
+			if err != nil {
+				return err
+			}
+			var profile sitecollateral.Profile
+			if err := strictjson.Unmarshal(profileBytes, &profile); err != nil {
+				return err
+			}
+			key, err := sitecollateral.MediaKey([]byte(profile.MediaPublicKey))
+			if err != nil {
+				return err
+			}
+			raw, err := os.ReadFile(args[2])
+			if err != nil {
+				return err
+			}
+			sig, err := os.ReadFile(args[3])
+			if err != nil {
+				return err
+			}
+			manifest, err := sitecollateral.Authenticate(raw, sig, key, profile.Target, at)
+			if err != nil {
+				return err
+			}
+			return check(cmd.Context(), args[0], manifest, args[4], at, cmd.OutOrStdout())
 		},
 	})
 	return root
@@ -64,12 +96,12 @@ func (r *intelResponses) Get(name string) (map[string][]string, []byte, error) {
 	return obj.Header, r.bodies[name], nil
 }
 
-func (r *intelResponses) deadline(ctx context.Context, quotePath string, getter trust.HTTPSGetter) (time.Time, error) {
+func (r *intelResponses) deadline(ctx context.Context, quotePath string, getter trust.HTTPSGetter, at time.Time) (time.Time, error) {
 	quote, err := os.ReadFile(quotePath)
 	if err != nil {
 		return time.Time{}, err
 	}
-	end, err := localverify.IntelMediaDeadline(ctx, quote, getter, time.Now())
+	end, err := localverify.IntelMediaDeadline(ctx, quote, getter, at)
 	if err != nil {
 		return time.Time{}, err
 	}
@@ -170,7 +202,7 @@ func prepare(ctx context.Context, quote, target string, generation uint64, out s
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 	defer client.CloseIdleConnections()
-	end, err := r.deadline(ctx, quote, &capture{ctx: ctx, client: client, responses: &r})
+	end, err := r.deadline(ctx, quote, &capture{ctx: ctx, client: client, responses: &r}, time.Now())
 	if err != nil {
 		return err
 	}
@@ -198,15 +230,7 @@ func prepare(ctx context.Context, quote, target string, generation uint64, out s
 	return err
 }
 
-func check(ctx context.Context, quote, path, dir string, w io.Writer) error {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
-	var m sitecollateral.Manifest
-	if err := strictjson.Unmarshal(raw, &m); err != nil {
-		return err
-	}
+func check(ctx context.Context, quote string, m *sitecollateral.Manifest, dir string, at time.Time, w io.Writer) error {
 	r := intelResponses{manifest: sitecollateral.Manifest{Objects: make(map[string]sitecollateral.Object)}, bodies: make(map[string][]byte)}
 	root, err := os.OpenRoot(dir)
 	if err != nil {
@@ -236,11 +260,11 @@ func check(ctx context.Context, quote, path, dir string, w io.Writer) error {
 			return fmt.Errorf("invalid content digest for %s", name)
 		}
 	}
-	end, err := r.deadline(ctx, quote, &r)
+	end, err := r.deadline(ctx, quote, &r, at)
 	if err != nil {
 		return err
 	}
-	if !time.Now().Before(m.ExpiresAt) || m.ExpiresAt.After(end) {
+	if !at.Before(m.ExpiresAt) || m.ExpiresAt.After(end) {
 		return fmt.Errorf("snapshot expiry %s outside Intel validity (ends %s)", m.ExpiresAt, end)
 	}
 	_, err = fmt.Fprintln(w, m.ExpiresAt.UTC().Format(time.RFC3339Nano))
