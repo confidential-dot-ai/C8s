@@ -530,7 +530,7 @@ bare or moving SemVer alias.
 | Image | Base | Notes |
 |---|---|---|
 | `ghcr.io/confidential-dot-ai/c8s-operator` | distroless | Multi-mode `c8s` binary for operator/install and non-node roles |
-| `ghcr.io/confidential-dot-ai/ta` | distroless | |
+| `ghcr.io/confidential-dot-ai/trust-authority` | distroless | |
 | `ghcr.io/confidential-dot-ai/get-cert` | distroless | |
 | `ghcr.io/confidential-dot-ai/armtls-mesh` | debian-slim | |
 | `ghcr.io/confidential-dot-ai/nri-image-policy` | debian-slim | |

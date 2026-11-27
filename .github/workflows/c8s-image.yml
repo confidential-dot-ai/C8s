@@ -9,9 +9,10 @@
 # main; c8s-image-publish.yml adds :vX.Y.Z-{tdx,sev-snp}[-kubevirt].
 #
 # The same callers publish the Trust Authority image from images/ta-guest/:
-# ghcr.io/confidential-dot-ai/guests/ta, tags :<ref>[-kubevirt] and the
-# floating :main[-kubevirt]; c8s-image-publish.yml adds :vX.Y.Z[-kubevirt]. One
-# build serves both TEE families, so it has no platform matrix.
+# ghcr.io/confidential-dot-ai/guests/trust-authority, tags :<ref>[-kubevirt]
+# and the floating :main[-kubevirt]; c8s-image-publish.yml adds
+# :vX.Y.Z[-kubevirt]. One build serves both TEE families, so it has no platform
+# matrix.
 
 on:
   workflow_call:
@@ -731,7 +732,7 @@ jobs:
     runs-on: the-machine
     timeout-minutes: 120
     env:
-      IMAGE: ghcr.io/confidential-dot-ai/guests/ta
+      IMAGE: ghcr.io/confidential-dot-ai/guests/trust-authority
       # One image for both TEE families: images/ta-guest/build measures the
       # SNP launch digests and the TDX block in a single build.
       VARIANT: ta

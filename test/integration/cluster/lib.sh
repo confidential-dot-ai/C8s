@@ -151,7 +151,7 @@ ta_serve() {
         --name "$TA_CONTAINER" \
         --network "container:$TA_ATTESTATION_CONTAINER" \
         -v "$WORKDIR/ta:/etc/confai:ro" \
-        "ghcr.io/confidential-dot-ai/ta:$IMAGE_TAG" \
+        "ghcr.io/confidential-dot-ai/trust-authority:$IMAGE_TAG" \
         --config=/etc/confai/ta-config.yaml \
         --attestation-api-url=http://127.0.0.1:8400 \
         --allowlist-db=/tmp/allowlist.db \

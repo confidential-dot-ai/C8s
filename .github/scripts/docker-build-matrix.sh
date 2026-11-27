@@ -44,7 +44,7 @@ maybe_add() {
 }
 
 maybe_add "$C8S" c8s ghcr.io/confidential-dot-ai/c8s-operator cmd/c8s/Dockerfile
-maybe_add "$TA" ta ghcr.io/confidential-dot-ai/ta cmd/ta/Dockerfile
+maybe_add "$TA" ta ghcr.io/confidential-dot-ai/trust-authority cmd/ta/Dockerfile
 maybe_add "$GET_CERT" get-cert ghcr.io/confidential-dot-ai/get-cert cmd/get-cert/Dockerfile
 maybe_add "$ARMTLS_MESH" armtls-mesh ghcr.io/confidential-dot-ai/armtls-mesh cmd/armtls-mesh/Dockerfile
 maybe_add "$NRI_IMAGE_POLICY" nri-image-policy ghcr.io/confidential-dot-ai/nri-image-policy cmd/nri-image-policy/Dockerfile

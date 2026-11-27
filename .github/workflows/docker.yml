@@ -51,9 +51,10 @@ jobs:
   # Per-image jobs run only when the component's own cmd/<X> or
   # internal/cmds/<X> changed (this applies to both PR events and
   # pushes to main). Shared code (api/**, pkg/**, root internal/** minus
-  # cmds/helmchart, go.mod/sum, Makefile, this workflow) fans out to
-  # every image. The final release job rebuilds the complete component set from
-  # this exact revision before applying its SemVer aliases.
+  # cmds/helmchart, go.mod/sum, Makefile, this workflow, the script that
+  # names the images) fans out to every image. The final release job rebuilds
+  # the complete component set from this exact revision before applying its
+  # SemVer aliases.
   #
   # On a push to main, unchanged components keep their existing `main` tag
   # pointing at the previous build's manifest —
@@ -128,7 +129,7 @@ jobs:
               - '!**/*.md'
               - '!**/testdata/**'
             shared-root:
-              - '{go.mod,go.sum,go.work,go.work.sum,Makefile,.github/workflows/docker.yml}'
+              - '{go.mod,go.sum,go.work,go.work.sum,Makefile,.github/workflows/docker.yml,.github/scripts/docker-build-matrix.sh}'
             c8s:
               # cmd/c8s is the multi-mode binary used by the operator image;
               # it imports every internal/cmds subcommand, including get-cert.
