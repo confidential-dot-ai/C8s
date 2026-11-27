@@ -284,3 +284,33 @@ func TestInputCacheUsesPreSubmissionHead(t *testing.T) {
 		t.Fatalf("new signature bypassed validation: %+v", got)
 	}
 }
+
+func TestInputConfirmationOutlivesInputReadDeadline(t *testing.T) {
+	s := newSetWithStoreTimeout(t, 3, 10*time.Millisecond)
+	s.bootstrap()
+	store, _ := inputStore(t, s)
+	for _, n := range s.nodes[1:] {
+		n.setStore(store)
+	}
+	s.fault(1, false, 40*time.Millisecond)
+	s.fault(2, false, 40*time.Millisecond)
+	n := s.node(0)
+	e, _ := s.policyEntry(n.State().Head, "app")
+	raw, _ := e.Encode()
+	setInput(t, store, raw)
+	for range 2 {
+		p := inputPoller{name: "policy-input"}
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		got, retry := p.poll(ctx, n.Replica)
+		cancel()
+		if got.outcome != "confirmed" || retry || n.State().Head.Hash != e.Hash() {
+			t.Fatalf("confirmation used the input read deadline: %+v, retry=%v", got, retry)
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	p := inputPoller{name: "policy-input"}
+	if got, _ := p.poll(ctx, n.Replica); got.outcome == "confirmed" {
+		t.Fatal("cancelled polling reported confirmation")
+	}
+}

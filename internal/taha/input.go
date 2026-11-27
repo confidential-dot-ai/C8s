@@ -60,9 +60,9 @@ func (p *inputPoller) poll(ctx context.Context, r *Replica) (result inputResult,
 	if !serving || !ok {
 		return result, true
 	}
-	ctx, cancel := context.WithTimeout(ctx, r.cfg.StoreTimeout)
-	defer cancel()
-	cm, err := store.ConfigMaps.Get(ctx, p.name, metav1.GetOptions{})
+	readCtx, cancel := context.WithTimeout(ctx, r.cfg.StoreTimeout)
+	cm, err := store.ConfigMaps.Get(readCtx, p.name, metav1.GetOptions{})
+	cancel()
 	if err != nil {
 		result.reason = "input_unavailable"
 		return result, true
