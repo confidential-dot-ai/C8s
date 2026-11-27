@@ -32,7 +32,7 @@ func TestAPinEmbeddingAnInitdataDocumentNeedsItsPolicyInEveryKind(t *testing.T) 
 	}
 	const document = "algorithm = \"sha384\"\n[data]\n\"ta-config.yaml\" = \"schemaVersion: c8s-ta/v1\"\n"
 	withPolicy := document + "\"policy.rego\" = \"package agent_policy\"\n"
-	for _, kind := range []string{"auto", "router", "ta"} {
+	for _, kind := range []string{"auto", "lb", "workload", "ta"} {
 		if err := requireTAIdentity(config{kind: kind}, pin(document)); err == nil || !strings.Contains(err.Error(), "policy.rego") {
 			t.Errorf("kind %s: a document with no policy = %v, want a refusal naming policy.rego", kind, err)
 		}
