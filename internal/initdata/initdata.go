@@ -51,17 +51,28 @@ const MaxSize = 1024 * 1024
 // Keys are matched exactly, as the runtime reads them, so a document cannot
 // carry a second configuration under another spelling of a key.
 func Read(launchFile []byte) (configuration []byte, algorithm string, err error) {
-	if len(launchFile) > MaxSize {
-		return launchFile, "", nil
-	}
-	var document map[string]any
-	if err := toml.Unmarshal(launchFile, &document); err != nil {
-		return launchFile, "", nil
-	}
-	data, ok := document["data"].(map[string]any)
+	document, data, ok := decode(launchFile)
 	if !ok {
 		return launchFile, "", nil
 	}
+	return fromDocument(document, data)
+}
+
+// decode returns launchFile as an initdata document and its data table, or
+// false for a file that is not one.
+func decode(launchFile []byte) (document, data map[string]any, ok bool) {
+	if len(launchFile) > MaxSize {
+		return nil, nil, false
+	}
+	if err := toml.Unmarshal(launchFile, &document); err != nil {
+		return nil, nil, false
+	}
+	data, ok = document["data"].(map[string]any)
+	return document, data, ok
+}
+
+// fromDocument is Read for a decoded initdata document.
+func fromDocument(document, data map[string]any) (configuration []byte, algorithm string, err error) {
 	algorithm, _ = document["algorithm"].(string)
 	if algorithm != AlgorithmSNP && algorithm != AlgorithmTDX {
 		return nil, "", fmt.Errorf("initdata algorithm is %#v, want %q on SEV-SNP or %q on TDX, the digest the launch binding commits", document["algorithm"], AlgorithmSNP, AlgorithmTDX)
@@ -89,6 +100,15 @@ func ReadFor(launchFile []byte, family teetypes.Family) ([]byte, error) {
 	if err != nil || algorithm == "" {
 		return configuration, err
 	}
+	if err := holdToFamily(algorithm, family); err != nil {
+		return nil, err
+	}
+	return configuration, nil
+}
+
+// holdToFamily holds an initdata document's declared algorithm to the digest
+// family commits.
+func holdToFamily(algorithm string, family teetypes.Family) error {
 	var want string
 	switch family {
 	case teetypes.FamilySNP:
@@ -96,12 +116,12 @@ func ReadFor(launchFile []byte, family teetypes.Family) ([]byte, error) {
 	case teetypes.FamilyTDX:
 		want = AlgorithmTDX
 	default:
-		return nil, fmt.Errorf("initdata launch file on TEE family %q, which commits none", family)
+		return fmt.Errorf("initdata launch file on TEE family %q, which commits none", family)
 	}
 	if algorithm != want {
-		return nil, fmt.Errorf("initdata algorithm is %q, want %q, the digest a %s launch binding commits", algorithm, want, family)
+		return fmt.Errorf("initdata algorithm is %q, want %q, the digest a %s launch binding commits", algorithm, want, family)
 	}
-	return configuration, nil
+	return nil
 }
 
 // Check refuses a launch file a pin embeds that a Trust Authority of an
@@ -156,27 +176,26 @@ func CheckTrustAuthority(launchFile []byte, family teetypes.Family) error {
 	return nil
 }
 
-// NamesTrustAuthority reports whether launchFile is an initdata document
-// that carries a Trust Authority configuration entry. Another guest's launch
-// file may be any bytes, a TOML document with a data table included, and is
-// held to none of these rules.
+// CheckIfTrustAuthority is [Check] for a launch file that is an initdata
+// document carrying a Trust Authority configuration entry, and passes any
+// other. Another guest's launch file may be any bytes, a TOML document with a
+// data table included, and is held to none of these rules.
 //
-// A file over the size cap is not decoded and is not one: no Trust Authority
+// A file over the size cap is not decoded and passes: no Trust Authority
 // reads a document that large as initdata.
-func NamesTrustAuthority(launchFile []byte) bool {
-	if len(launchFile) > MaxSize {
-		return false
-	}
-	var document map[string]any
-	if err := toml.Unmarshal(launchFile, &document); err != nil {
-		return false
-	}
-	data, ok := document["data"].(map[string]any)
+func CheckIfTrustAuthority(launchFile []byte, family teetypes.Family) error {
+	document, data, ok := decode(launchFile)
 	if !ok {
-		return false
+		return nil
 	}
-	_, ok = data[ConfigFile]
-	return ok
+	if _, named := data[ConfigFile]; !named {
+		return nil
+	}
+	_, algorithm, err := fromDocument(document, data)
+	if err != nil {
+		return err
+	}
+	return holdToFamily(algorithm, family)
 }
 
 // checkAgentPolicy requires an initdata document to carry a policy for the

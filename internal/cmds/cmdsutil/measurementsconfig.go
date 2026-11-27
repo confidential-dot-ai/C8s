@@ -124,10 +124,7 @@ func TALaunchFile(values refvalues.ReferenceValues) ([]byte, error) {
 // [TALaunchFile] holds a set that pins a Trust Authority alone to more.
 func CheckLaunchFiles(values refvalues.ReferenceValues) error {
 	for _, image := range values.Images {
-		if !initdata.NamesTrustAuthority(image.LaunchFile) {
-			continue
-		}
-		if err := initdata.Check(image.LaunchFile, values.Family); err != nil {
+		if err := initdata.CheckIfTrustAuthority(image.LaunchFile, values.Family); err != nil {
 			return fmt.Errorf("entry %q: its launch file: %w", image.Name, err)
 		}
 	}

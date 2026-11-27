@@ -69,6 +69,9 @@ func taPinConfig(document []byte) (*taconfig.Config, error) {
 type taPin struct {
 	path   string
 	config *taconfig.Config
+	// document is the pin as it was read and checked. The release carries
+	// these bytes, whatever the file they came from holds later.
+	document []byte
 }
 
 // resolveTAPin is the one pin this install holds its Trust Authority to, read where the
@@ -91,7 +94,7 @@ func resolveTAPin(valuesFiles []string) (pin *taPin, remove func(), err error) {
 		if err != nil {
 			return nil, keep, err
 		}
-		return &taPin{path: path, config: config}, keep, nil
+		return &taPin{path: path, config: config, document: document}, keep, nil
 	}
 	values, err := taValuesFromFiles(valuesFiles)
 	if err != nil {
@@ -109,5 +112,5 @@ func resolveTAPin(valuesFiles []string) (pin *taPin, remove func(), err error) {
 	if err != nil {
 		return nil, keep, fmt.Errorf("write the Trust Authority pin a values file carries: %w", err)
 	}
-	return &taPin{path: path, config: config}, func() { os.Remove(path) }, nil
+	return &taPin{path: path, config: config, document: []byte(document)}, func() { os.Remove(path) }, nil
 }
