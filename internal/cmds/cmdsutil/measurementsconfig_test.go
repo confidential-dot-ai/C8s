@@ -429,13 +429,18 @@ func TestTALaunchFileRefusesAnInitdataDocumentNoTrustAuthorityStartsFrom(t *test
 		// othersGuest marks bytes that could be another guest's launch file:
 		// a set that may pin other guests does not judge them.
 		othersGuest bool
+		// oversizedTA marks a file over the cap that names the Trust
+		// Authority entry, which every set refuses.
+		oversizedTA bool
 	}{
 		{name: "a document with a policy", launchFile: initdata("sha384", policy)},
 		{name: "a bare configuration", launchFile: "clusterID: test\n"},
 		{name: "a document with no policy", launchFile: initdata("sha384", ""), want: "policy.rego"},
 		{name: "another family's digest", launchFile: initdata("sha256", policy), want: "sha384"},
 		{name: "a file over the cap", launchFile: "# " + strings.Repeat("x", 1024*1024) + "\n", want: "bytes"},
-		{name: "a data table under another case", launchFile: "algorithm = \"sha384\"\n[Data]\n\"ta-config.yaml\" = \"clusterID: test\"\n", want: "YAML mapping", othersGuest: true},
+		{name: "a data table under another case", launchFile: "algorithm = \"sha384\"\n[Data]\n\"ta-config.yaml\" = \"clusterID: test\"\n", want: "configuration", othersGuest: true},
+		{name: "a document over the cap", launchFile: initdata("sha384", policy) + "# " + strings.Repeat("x", 1024*1024) + "\n", want: "bytes", oversizedTA: true},
+		{name: "a document with another entry", launchFile: initdata("sha384", policy) + "\"other\" = 1\n", want: ""},
 		{name: "bytes that are no configuration", launchFile: "x", want: "YAML mapping", othersGuest: true},
 	} {
 		launchFile, err := json.Marshal(tc.launchFile)
@@ -455,7 +460,7 @@ func TestTALaunchFileRefusesAnInitdataDocumentNoTrustAuthorityStartsFrom(t *test
 			t.Errorf("%s: TALaunchFile = %v, want a refusal naming %q", tc.name, err, tc.want)
 		}
 		// A set that may also pin other guests refuses the same entries.
-		refused := tc.want != "" && !tc.othersGuest && !strings.Contains(tc.want, "bytes")
+		refused := tc.want != "" && !tc.othersGuest && (tc.oversizedTA || !strings.Contains(tc.want, "bytes"))
 		if err := CheckLaunchFiles(values); (err != nil) != refused {
 			t.Errorf("%s: CheckLaunchFiles = %v, want refusal %v", tc.name, err, refused)
 		}

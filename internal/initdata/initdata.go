@@ -5,6 +5,7 @@
 package initdata
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"slices"
@@ -120,7 +121,10 @@ func Check(launchFile []byte, family teetypes.Family) error {
 		return err
 	}
 	tree, err := yamlutil.DecodeTree(configuration)
-	if err != nil || !isMapping(tree) {
+	if err != nil {
+		return fmt.Errorf("the configuration the launch file carries: %w", err)
+	}
+	if !isMapping(tree) {
 		return errors.New("launch file is neither an initdata document with a \"data\" table nor a configuration, which is a YAML mapping")
 	}
 	return nil
@@ -138,9 +142,12 @@ func isMapping(tree *yaml.Node) bool {
 // that carries a Trust Authority configuration entry. Another guest's launch
 // file may be any bytes, a TOML document with a data table included, and is
 // held to none of these rules.
+//
+// A file over the size cap is not decoded. It is taken for one when it
+// names the entry anywhere, so that [Check] refuses it for its size.
 func NamesTrustAuthority(launchFile []byte) bool {
 	if len(launchFile) > MaxSize {
-		return false
+		return bytes.Contains(launchFile, []byte(ConfigFile))
 	}
 	var document map[string]any
 	if err := toml.Unmarshal(launchFile, &document); err != nil {

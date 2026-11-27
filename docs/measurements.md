@@ -155,7 +155,7 @@ takes the same document as `--ta-pin`. Some also accept
 | `mrtd` | TDX only and required there, 96 lowercase hex. |
 | `rtmr` | TDX only: up to four slots, `rtmr[0]` must be `null`, a null slot is unpinned, `""` pins the all-zero register. |
 | `approver_key` | Optional: a launch key, PEM. The entry then also requires that this guest was launched for that key — the RTMR[3] seed on TDX, `HOST_DATA` on SEV-SNP. |
-| `launch_file` | Optional, schema 2 or 3: exact launch-file bytes (configuration, or the whole [Kata initdata document](cloud-ta.md#under-a-kata-containers-runtime), which must carry an [agent policy](cloud-ta.md#the-agent-policy)). Excludes `approver_key`. |
+| `launch_file` | Optional, schema 2 or 3: exact launch-file bytes (configuration, or the whole [Kata initdata document](cloud-ta.md#under-a-kata-containers-runtime); in a TA pin that document must carry an [agent policy](cloud-ta.md#the-agent-policy)). Excludes `approver_key`. |
 | `launch_file_digest` | Optional, schema 2 or 3: the launch file's digest, lowercase hex: SHA-256 on SEV-SNP, SHA-384 on TDX. Excludes `approver_key` and `launch_file`. |
 | `launch_file_field` | Optional, schema 3, TDX only: `"init_data"` selects bare-metal `MRCONFIGID`. Requires `launch_file` or `launch_file_digest`. |
 
