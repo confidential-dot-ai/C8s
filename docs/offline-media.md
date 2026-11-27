@@ -48,3 +48,52 @@ packages and `oci/refs.txt` lists the original repository and digest of each
 image. Seed each local registry from `dir:oci/<64-hex-digest>` using
 `skopeo copy --all --preserve-digests`. Configure each original registry's
 `server` in the measured guest to reach only the site mirror.
+
+## Qualify and seal
+
+On a workstation with authenticated site time, the verifier maintainer and
+operator exercise local, fresh verification for all eight B200s with public
+egress blocked. Retain the raw verification and refresh/import observations.
+The qualifier signs `review.json` only when those observations establish every
+field below. A verifier that cannot identify the RIM and certificate-status
+bytes used for each assigned device leaves the archive in staging.
+
+| Qualification field | Evidence |
+| --- | --- |
+| `archiveSha256`, `inventorySha256` | SHA-256 of the exact `software.tar` and `inventory.sha256` qualified. |
+| `target`, `generation`, `snapshotSha256` | Approved site identifier and the selected signed snapshot. |
+| `offlineB200Verified`, `devices` | Successful disconnected verdict (`true`) and one record per distinct assigned `ueid`. Each record contains nonempty `rims` and `ocsp` objects mapping the signed snapshot selectors to the SHA-256 of the exact bytes used. Use `nvidia/rim/<id>` and `nvidia/ocsp/<certificate-DER-sha256>`. |
+| `policySha256`, `maximumStatusAgeSeconds` | SHA-256 of `nvidia/policy` and the status age approved for this site. |
+| `observedRefreshSeconds`, `earliestExpiryUtc`, `limitingObject` | Measured retrieval-to-import time in whole seconds, the earliest UTC deadline across signed validity, certificate expiry and approved status age, and its object selector. |
+
+Provision separate OpenSSH allowed-signers files for the qualifier
+(`c8s-qualification`) and release signer (`c8s-release`) independently.
+
+```sh
+ssh-keygen -Y sign -f "$QUALIFIER_KEY" -n c8s-b200-qualification review.json
+scripts/airgap/qualify seal "$TAG" staged "$QUALIFIER_SIGNERS" review.json "$MEDIA_KEY"
+```
+
+Transfer the four files in `staged`. Sealing and receipt both require enough
+remaining validity for the longer of the measured and planned refresh times.
+
+## Verify at the site
+
+Install OpenSSH, Python 3.11+, GNU coreutils and tar, and a trusted copy of
+`scripts/airgap/qualify` at `/usr/local/bin/c8s-qualify` before exchanging
+media. Copy the four sealed files to a private operator workstation directory,
+establish authenticated site time and run this block in one shell. The
+release signer and the expected tag come from the operator's trusted records.
+
+```sh
+set -eu
+/usr/local/bin/c8s-qualify verify "$TAG" staged "$MEDIA_SIGNERS"
+mkdir software
+tar --no-same-owner --no-same-permissions -xf staged/software.tar -C software
+(cd software && sha256sum --strict --check ../staged/inventory.sha256)
+```
+
+Keep an independent copy of the verified profile and pins on the workstation.
+Verify the transfer before executing `software/site/install.sh` on the host.
+The signed selection on media supplies the proposed initial import. Each
+verification queries the active selection maintained by the site authority.
