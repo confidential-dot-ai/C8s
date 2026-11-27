@@ -589,3 +589,5 @@ Migration state (see [#264] for the full plan):
 [confidential-os-builder]: https://github.com/confidential-dot-ai/confidential-os-builder
 [#264]: https://github.com/confidential-dot-ai/confidential-kubernetes/issues/264
 [#669]: https://github.com/confidential-dot-ai/confidential-kubernetes/issues/669
+
+For a site-specific measured network profile, see the [disconnected guest build](../../docs/offline-guest.md).
