@@ -223,6 +223,9 @@ func (r *Replica) HandleGossip(ctx context.Context, ping Gossip) (Gossip, error)
 // never delays the next. It also reads the store, so an idle replica still
 // writes it forward and notices another chain in it.
 func (r *Replica) Run(ctx context.Context) {
+	if r.cfg.InputConfigMap != "" {
+		go r.consumeInput(ctx, r.cfg.InputConfigMap)
+	}
 	ticker := time.NewTicker(r.cfg.Gossip / 2)
 	defer ticker.Stop()
 	for r.slot() < 0 && !r.learnSlot(ctx) {
