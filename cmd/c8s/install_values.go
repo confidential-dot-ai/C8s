@@ -77,9 +77,9 @@ func buildComputedValues(imagePins map[string]any) (map[string]any, error) {
 	}
 	values := helmchart.MergeValues(map[string]any{}, imagePins)
 	helmchart.MergeValues(values, ta)
-	if installTA != nil {
-		// The pin resolved and checked once is the one the release carries,
-		// from --ta-pin or a values file alike.
+	if installTA != nil && installTAPin == "" {
+		// A values file is read again by helm: the pin checked is the one
+		// the release carries.
 		helmchart.MergeValues(values, map[string]any{
 			"ta": map[string]any{"measurementsConfig": string(installTA.document)},
 		})

@@ -1,7 +1,5 @@
 // Package initdata reads the initdata document a Kata Containers runtime
-// binds to a guest's launch, as a Trust Authority launch file. It imports
-// nothing of the Trust Authority's, so the configuration reader and every
-// reader of a pin apply one check.
+// binds to a guest's launch: one check for a configuration and for a pin.
 package initdata
 
 import (
@@ -16,18 +14,15 @@ import (
 )
 
 // The digests an initdata launch file may declare: the launch binding is the
-// SHA-256 of the whole file on AMD SEV-SNP and its SHA-384 on Intel TDX. A
-// runtime told to hash it any other way commits a value no verifier accepts.
+// SHA-256 of the whole file on AMD SEV-SNP and its SHA-384 on Intel TDX.
 const (
 	AlgorithmSNP = "sha256"
 	AlgorithmTDX = "sha384"
 )
 
 // The entries a document must carry: the Trust Authority configuration and
-// the guest agent's policy. The launch binding covers a guest and this
-// document, and the host names the containers afterwards: the policy is what
-// holds them to the Trust Authority's. [Read] requires one and does not judge
-// its rules, which whoever pins the document answers for.
+// the guest agent's policy, which holds the containers the host names to
+// the Trust Authority's. [Read] requires one and does not judge its rules.
 const (
 	ConfigFile = "ta-config.yaml"
 	PolicyFile = "policy.rego"
@@ -58,13 +53,9 @@ func Read(launchFile []byte) (configuration []byte, algorithm string, err error)
 	return fromDocument(document, data)
 }
 
-// decode returns launchFile as an initdata document and its data table, or
-// false for a file that is not one.
+// decode returns launchFile as an initdata document and its data table.
 func decode(launchFile []byte) (document, data map[string]any, ok bool) {
-	if len(launchFile) > MaxSize {
-		return nil, nil, false
-	}
-	if err := toml.Unmarshal(launchFile, &document); err != nil {
+	if len(launchFile) > MaxSize || toml.Unmarshal(launchFile, &document) != nil {
 		return nil, nil, false
 	}
 	data, ok = document["data"].(map[string]any)
