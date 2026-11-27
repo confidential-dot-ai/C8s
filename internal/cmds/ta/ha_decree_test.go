@@ -385,7 +385,7 @@ func TestGenesisOfAOneReplicaClusterNeedsAlone(t *testing.T) {
 				pins: pinFlags{
 					platform:  "sev-snp",
 					vcpus:     []int{2},
-					manifests: []string{snpManifest(t, smp2Digest)},
+					manifests: []string{snpManifest(t, runningDigest)},
 				},
 				target: target,
 				alone:  alone,
@@ -413,7 +413,7 @@ func TestGenesisDecreeBindsTheTargetProcess(t *testing.T) {
 	err := signing(t, func(cmd *cobra.Command) error {
 		return genesisOptions{
 			decreeOptions: o,
-			pins:          pinFlags{platform: "sev-snp", vcpus: []int{2}, manifests: []string{snpManifest(t, smp2Digest)}},
+			pins:          pinFlags{platform: "sev-snp", vcpus: []int{2}, manifests: []string{snpManifest(t, runningDigest)}},
 			target:        target,
 			resumeVersion: 12,
 		}.run(cmd)
@@ -783,28 +783,56 @@ func TestPinFlagsPinGuestsThatReadMRCONFIGID(t *testing.T) {
 // A Genesis whose pins read another TDX field than the pin its replicas are
 // verified with would commit and then admit none of them, so it is refused
 // before anything is signed.
-func TestGenesisPinsReadTheFieldTheTAPinReads(t *testing.T) {
+
+// A Genesis whose pins do not match the replica that forms the cluster would
+// commit and then admit none of them, so the target is verified against the
+// decree's pins as well as --ta-pin, and nothing is signed when it fails.
+func TestGenesisRefusesPinsThatWouldNotAdmitItsTarget(t *testing.T) {
+	c := newOperatorCluster(t)
+	target := c.replicaServing(t, map[string]any{statusPath: c.unjoined()})
+	for name, pins := range map[string]pinFlags{
+		"another image":      {platform: "sev-snp", vcpus: []int{2}, manifests: []string{snpManifest(t, smp2Digest)}},
+		"another vCPU count": {platform: "sev-snp", vcpus: []int{4}, manifests: []string{snpManifest(t, runningDigest, smp4Digest)}},
+	} {
+		options := genesisOptions{decreeOptions: c.options(t), pins: pins, target: target}
+		options.baseVersion = 0
+		err := signing(t, options.run)
+		if err == nil || !strings.Contains(err.Error(), "would admit none of its replicas") {
+			t.Errorf("%s: Genesis = %v, want a refusal", name, err)
+		}
+		if _, statErr := os.Stat(options.out); statErr == nil {
+			t.Errorf("%s: a decree was written", name)
+		}
+	}
+}
+
+// runningDigest is the image the test replicas report: a Genesis is checked
+// against its target, so its manifest names this one.
+const runningDigest = testutil.TestMeasurement
+
+// An image roll on TDX names two images of one firmware: MRTD is the same and
+// the kernel registers differ, so the entries need names that differ too.
+func TestPinFlagsNameTwoTDXImagesOfOneFirmwareApart(t *testing.T) {
 	register := func(b string) string { return strings.Repeat(b, 48) }
-	pin := func(rtmr3, field string) string {
-		path := filepath.Join(t.TempDir(), "ta-pin.json")
-		writeTestFile(t, path, []byte(`{"schema_version":"3","tee":"tdx","measurements":[{"name":"ta","mrtd":"`+register("aa")+
-			`","rtmr":[null,"`+register("bb")+`","`+register("cc")+`"`+rtmr3+`],"launch_file":"x"`+field+`}]}`))
+	manifest := func(rtmr1 string) string {
+		path := filepath.Join(t.TempDir(), "manifest.json")
+		writeTestFile(t, path, []byte(fmt.Sprintf(`{"version":3,"build":{"platform":"tdx"},"tdx":{"mrtd":%q,"rtmr1":%q,"rtmr2":%q}}`,
+			register("aa"), rtmr1, register("cc"))))
 		return path
 	}
-	launcherBound, guestMeasured := pin(`,""`, `,"launch_file_field":"init_data"`), pin("", "")
-	for name, c := range map[string]struct {
-		flags pinFlags
-		taPin string
-		want  string
-	}{
-		"the flag is missing":   {pinFlags{}, launcherBound, "pass --launch-file-field"},
-		"the flag is misplaced": {pinFlags{launchFileField: "init_data"}, guestMeasured, "omit the flag"},
-		"both read MRCONFIGID":  {pinFlags{launchFileField: "init_data"}, launcherBound, ""},
-		"both read RTMR[3]":     {pinFlags{}, guestMeasured, ""},
-	} {
-		err := c.flags.readTheFieldOf(c.taPin)
-		if c.want == "" && err != nil || c.want != "" && (err == nil || !strings.Contains(err.Error(), c.want)) {
-			t.Errorf("%s: %v, want %q", name, err, c.want)
+	launchFile := []byte("schemaVersion: c8s-ta/v1\nclusterID: lane\n")
+	for _, field := range []string{"", "init_data"} {
+		flags := pinFlags{platform: "tdx", manifests: []string{manifest(register("bb")), manifest(register("dd"))}, launchFileField: field}
+		pins, err := flags.document(launchFile)
+		if err != nil {
+			t.Fatalf("field %q: %v", field, err)
+		}
+		bound, err := pins.WithLaunchFile(launchFile)
+		if err != nil {
+			t.Fatalf("field %q: %v", field, err)
+		}
+		if len(bound.Images) != 2 || bound.Images[0].Name == bound.Images[1].Name {
+			t.Fatalf("field %q: entries %+v, want two with distinct names", field, bound.Images)
 		}
 	}
 }

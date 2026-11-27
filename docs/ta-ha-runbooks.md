@@ -21,8 +21,10 @@ of their own in three places:
   Before Genesis no decree exists for `pin-policy --out` to read, so write it
   from the image manifest and the launch file.
 - Every command that takes `--image-manifest` takes `--platform tdx
-  --launch-file-field init_data` and no `--vcpus`. `genesis` refuses pins that
-  read another field than `ta-pin.json`.
+  --launch-file-field init_data` and no `--vcpus`. `genesis` verifies its
+  target against the pins the decree would carry as well as `ta-pin.json`,
+  and signs nothing when the target does not match them: another platform,
+  image or field would start a cluster that admits none of its replicas.
 - A release that does not know the field refuses a decree that carries it,
   and a replica stops if it meets one in its log. Before signing the
   first one, upgrade every replica, every node that follows the cluster's

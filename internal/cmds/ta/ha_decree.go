@@ -3,6 +3,7 @@ package ta
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -240,6 +241,16 @@ func bindPinFlags(cmd *cobra.Command, p *pinFlags) {
 // document is the image set the decree carries: every named image bound to the
 // launch file the replicas boot, with that file elided.
 func (p pinFlags) document(launchFile []byte) (*tadecree.PinDocument, error) {
+	document, err := p.pins(launchFile)
+	if err != nil {
+		return nil, err
+	}
+	return tadecree.NewPinDocument(document)
+}
+
+// pins is the measurements document of the image set, launch file included:
+// what a replica holds once it restores the file the decree elides.
+func (p pinFlags) pins(launchFile []byte) ([]byte, error) {
 	family, err := taconfig.ParsePlatform(p.platform)
 	if err != nil {
 		return nil, fmt.Errorf("--platform: %w", err)
@@ -255,11 +266,7 @@ func (p pinFlags) document(launchFile []byte) (*tadecree.PinDocument, error) {
 	if err := p.readInitData(set); err != nil {
 		return nil, err
 	}
-	document, err := refvalues.Format(set)
-	if err != nil {
-		return nil, err
-	}
-	return tadecree.NewPinDocument(document)
+	return refvalues.Format(set)
 }
 
 // readInitData turns every entry into one that reads its launch file from
@@ -285,26 +292,34 @@ func (p pinFlags) readInitData(set refvalues.ReferenceValues) error {
 	return nil
 }
 
-// readTheFieldOf refuses pins that read the launch file from another TDX
-// field than --ta-pin, the pin the replicas are verified with before the
-// decree applies: a Genesis signed over them would commit, and then admit
-// none of the replicas that formed it.
-func (p pinFlags) readTheFieldOf(taPinPath string) error {
-	verified, err := refvalues.Load(taPinPath)
+// admits verifies target a second time, against the pins the decree would
+// carry. --ta-pin verified it first, and a Genesis whose pins do not match the
+// replica that forms the cluster commits and then admits none of them: another
+// family, another image, or another field for the launch file.
+func (p pinFlags) admits(ctx context.Context, target replica, launchFile []byte, verified taha.Status) error {
+	document, err := p.pins(launchFile)
 	if err != nil {
-		return fmt.Errorf("--ta-pin: %w", err)
+		return err
 	}
-	if verified.Family != teetypes.FamilyTDX {
-		return nil
+	file, err := os.CreateTemp("", "c8s-ta-pins-*.json")
+	if err != nil {
+		return err
 	}
-	// Any entry may be the one the replicas match, so every entry must agree.
-	for _, image := range verified.Images {
-		switch {
-		case image.LaunchFileInInitData && p.launchFileField == "":
-			return fmt.Errorf("--ta-pin entry %q reads the launch file from MRCONFIGID, and the decree's pins would read RTMR[3]: pass --launch-file-field %s", image.Name, launchFileFieldInitData)
-		case !image.LaunchFileInInitData && p.launchFileField == launchFileFieldInitData:
-			return fmt.Errorf("--ta-pin entry %q reads the launch file from RTMR[3], and --launch-file-field %s pins guests that read MRCONFIGID: omit the flag, or drop the entry", image.Name, launchFileFieldInitData)
-		}
+	defer os.Remove(file.Name())
+	if _, err := file.Write(document); err != nil {
+		file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	target.taPin = file.Name()
+	admitted, err := target.status(ctx)
+	if err != nil {
+		return fmt.Errorf("the decree's Trust Authority pins (--platform, --image-manifest, --vcpus, --launch-file-field) do not match the target --ta-pin verified, so the cluster would admit none of its replicas: %w", err)
+	}
+	if admitted.ID != verified.ID {
+		return fmt.Errorf("--target answered as member %s, then as %s: name one replica", verified.ID, admitted.ID)
 	}
 	return nil
 }
@@ -321,9 +336,19 @@ func imagePins(manifest string, family teetypes.Family, vcpus []int, launchFile 
 		return nil, err
 	}
 	for i, image := range set.Images {
-		set.Images[i].Name = fmt.Sprintf("%s@%.4x", image.Name, image.Digest)
+		set.Images[i].Name = fmt.Sprintf("%s@%.4x%s", image.Name, image.Digest, buildSuffix(image))
 	}
 	return set.Images, nil
+}
+
+// buildSuffix tells apart TDX images of one firmware: their launch digest,
+// MRTD, is the same, and RTMR[1] and RTMR[2] carry the kernel and initrd.
+func buildSuffix(image remote.ImagePin) string {
+	if len(image.Registers[1]) == 0 && len(image.Registers[2]) == 0 {
+		return ""
+	}
+	build := sha256.Sum256(append(bytes.Clone(image.Registers[1]), image.Registers[2]...))
+	return fmt.Sprintf("-%.4x", build)
 }
 
 // workerFlags name a worker document whose workers a decree also certifies,
@@ -462,11 +487,11 @@ func (o genesisOptions) run(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	if err := o.pins.readTheFieldOf(o.target.taPin); err != nil {
-		return err
-	}
 	target, address, err := o.target.statusAtAddress(cmd.Context())
 	if err != nil {
+		return err
+	}
+	if err := o.pins.admits(cmd.Context(), o.target, c.launchFile, target); err != nil {
 		return err
 	}
 	if err := checkGenesisTarget(target, c.parsed.ClusterID); err != nil {
