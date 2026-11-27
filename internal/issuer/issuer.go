@@ -90,6 +90,64 @@ func NewCA(commonName string, validity time.Duration) (*CA, error) {
 	return &CA{Cert: cert, Key: key}, nil
 }
 
+// WrapCA wraps a pre-parsed certificate and private key as a CA suitable for
+// SignCSR. It verifies the certificate is currently usable for CA signing and
+// that the key matches the cert's public key so a misconfigured bundle surfaces
+// here rather than producing an unverifiable leaf on the first signing request.
+// Prefer this constructor over &CA{...} so any future field that participates
+// in signing is propagated in one place.
+func WrapCA(cert *x509.Certificate, key *ecdsa.PrivateKey) (*CA, error) {
+	if cert == nil {
+		return nil, fmt.Errorf("wrap ca: cert is required")
+	}
+	if key == nil {
+		return nil, fmt.Errorf("wrap ca: key is required")
+	}
+	certPub, ok := cert.PublicKey.(*ecdsa.PublicKey)
+	if !ok {
+		return nil, fmt.Errorf("wrap ca: cert has non-ECDSA public key: %T", cert.PublicKey)
+	}
+	if !key.PublicKey.Equal(certPub) {
+		return nil, fmt.Errorf("wrap ca: key does not match cert public key")
+	}
+	if err := validateUsableCA(cert, time.Now()); err != nil {
+		return nil, err
+	}
+	return &CA{Cert: cert, Key: key}, nil
+}
+
+func validateUsableCA(cert *x509.Certificate, now time.Time) error {
+	if !cert.IsCA {
+		return fmt.Errorf("wrap ca: certificate is not a CA")
+	}
+	if !cert.BasicConstraintsValid {
+		return fmt.Errorf("wrap ca: CA certificate basic constraints are invalid")
+	}
+	if cert.NotBefore.After(now) {
+		return fmt.Errorf("wrap ca: CA certificate is not valid before %s", cert.NotBefore.Format(time.RFC3339))
+	}
+	if cert.NotAfter.Before(now) {
+		return fmt.Errorf("wrap ca: CA certificate expired at %s", cert.NotAfter.Format(time.RFC3339))
+	}
+	if cert.KeyUsage != 0 && cert.KeyUsage&x509.KeyUsageCertSign == 0 {
+		return fmt.Errorf("wrap ca: CA certificate key usage does not allow certificate signing")
+	}
+	return nil
+}
+
+// LoadCA reconstructs a CA from PEM-encoded cert and key bytes.
+func LoadCA(certPEM, keyPEM []byte) (*CA, error) {
+	cert, err := certutil.ParseCertificatePEM(certPEM)
+	if err != nil {
+		return nil, fmt.Errorf("parse ca cert: %w", err)
+	}
+	key, err := certutil.ParseECPrivateKey(keyPEM)
+	if err != nil {
+		return nil, fmt.Errorf("parse ca key: %w", err)
+	}
+	return WrapCA(cert, key)
+}
+
 // PEM returns the CA cert and key as PEM bytes.
 func (c *CA) PEM() (certPEM, keyPEM []byte, err error) {
 	certPEM = certutil.EncodeCertPEM(c.Cert.Raw)
