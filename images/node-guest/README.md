@@ -545,6 +545,8 @@ symbol. A `/sys/bus/pci/rescan` by guest root or by any privileged platform
 pod still enumerates new devices without a check
 ([#669]). Tenant pods cannot do this under the measured floor.
 
+Verifier maintainers run the [hardware qualification](../../test/e2e/b200/README.md) on eight assigned B200s with isolated site responders before selecting a disconnected worker verifier. CI runs synthetic fixtures.
+
 ## Troubleshooting
 
 Inspect the core workloads with the control plane's kubeconfig:
