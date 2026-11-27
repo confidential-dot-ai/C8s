@@ -33,7 +33,7 @@ gate.
 | Component images: `c8s-operator`, `ta`, `get-cert`, `armtls-mesh`, `nri-image-policy`, `volumed` | `ghcr.io/confidential-dot-ai/<name>`, tagged `vX.Y.Z`, `X.Y.Z`, and the 7-character commit SHA |
 | Helm chart | `ghcr.io/confidential-dot-ai/charts/c8s-cloud`, version `X.Y.Z`, carrying the release's component image digests, packaged byte-reproducibly from the release commit |
 | Guest images | `ghcr.io/confidential-dot-ai/guests/worker:vX.Y.Z-{tdx,sev-snp}[-kubevirt]` and `ghcr.io/confidential-dot-ai/guests/ta:vX.Y.Z[-kubevirt]` |
-| GitHub release | `release-statement.json`, `release-statement.sigstore.json`, the CLI as `c8s-linux-amd64` and `c8s-darwin-arm64`, and the allowlist seed and component set of each CPU TEE as `allowlist-seed-{tdx,sev-snp}.json` and `component-set-{tdx,sev-snp}.json` |
+| GitHub release | `release-statement.json`, `release-statement.sigstore.json`, `guest-statement.json`, `guest-statement.sigstore.json`, the CLI as `c8s-linux-amd64` and `c8s-darwin-arm64`, and the allowlist seed and component set of each CPU TEE as `allowlist-seed-{tdx,sev-snp}.json` and `component-set-{tdx,sev-snp}.json` |
 
 A release also moves the `X.Y` image alias when it is the newest patch of that
 series, and `latest` when it is the newest stable release across all series. It
@@ -253,6 +253,76 @@ cmp "rendered/component-set-$PLATFORM.json" "component-set-$PLATFORM.json"
 kubelet version `mkosi.sync` pins, so the same commit, CLI, digests and Helm
 give the same bytes on any host.
 
+### Verify the guest images
+
+`guest-statement.json` names the guest images the release build pushed, by
+manifest digest:
+
+```json
+{
+  "commit": "<SHA>",
+  "guests": {
+    "ta": {
+      "diskRaw": "sha256:<DIGEST>",
+      "kubevirt": "ghcr.io/confidential-dot-ai/guests/ta@sha256:<DIGEST>",
+      "manifestJson": "sha256:<DIGEST>",
+      "raw": "ghcr.io/confidential-dot-ai/guests/ta@sha256:<DIGEST>"
+    },
+    "worker": {
+      "sev-snp": {
+        "diskRaw": "sha256:<DIGEST>",
+        "kubevirt": "ghcr.io/confidential-dot-ai/guests/worker@sha256:<DIGEST>",
+        "manifestJson": "sha256:<DIGEST>",
+        "raw": "ghcr.io/confidential-dot-ai/guests/worker@sha256:<DIGEST>"
+      },
+      "tdx": {
+        "diskRaw": "sha256:<DIGEST>",
+        "kubevirt": "ghcr.io/confidential-dot-ai/guests/worker@sha256:<DIGEST>",
+        "manifestJson": "sha256:<DIGEST>",
+        "raw": "ghcr.io/confidential-dot-ai/guests/worker@sha256:<DIGEST>"
+      }
+    }
+  },
+  "repository": "confidential-dot-ai/confidential-kubernetes",
+  "tag": "vX.Y.Z"
+}
+```
+
+`raw` is the oras artifact, `kubevirt` the KubeVirt image of the same build,
+and `manifestJson` and `diskRaw` the digests of the artifact's `manifest.json`
+and `disk.raw` layers. The file is compact, key-sorted JSON, and
+`guest-statement.sigstore.json` is a Sigstore bundle over its bytes, signed
+keyless by `c8s-image-publish.yml` on `main`. That workflow publishes it only
+when the release statement verifies under its channel's signer and names the
+same commit, and each guest-image alias names the listed digest.
+
+After the two release checks above, verify it and its fields:
+
+```sh
+gh release download "$TAG" \
+  --repo confidential-dot-ai/confidential-kubernetes \
+  --pattern guest-statement.json \
+  --pattern guest-statement.sigstore.json
+cosign verify-blob \
+  --bundle guest-statement.sigstore.json \
+  --certificate-identity https://github.com/confidential-dot-ai/confidential-kubernetes/.github/workflows/c8s-image-publish.yml@refs/heads/main \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  guest-statement.json
+jq -e \
+  --arg tag "$TAG" \
+  --arg commit "$COMMIT" \
+  '.repository == "confidential-dot-ai/confidential-kubernetes" and .tag == $tag and .commit == $commit' \
+  guest-statement.json
+```
+
+```text
+Verified OK
+true
+```
+
+Pull guests by the listed digest, never by tag. A release without
+`guest-statement.json` has no signed guest images.
+
 ## Beta releases
 
 A push to the protected `beta` branch runs the same pipeline and releases
@@ -270,6 +340,11 @@ identity does not accept one: verify it as above with
 proves that the `beta` workflow made the statement, so its value rests on the
 branch rules below. To bring `main` into `beta`, merge a pull request from
 `main` with a merge commit.
+
+A beta's guest statement is signed under the same `c8s-image-publish.yml` on
+`main` identity as a stable one, and its `.tag` names the beta. Accept it only
+with a release statement that verifies under the `beta` identity for the same
+tag and commit.
 
 ## Repository setup
 
@@ -294,8 +369,7 @@ Creating `refs/tags/vX.Y.Z` reserves the version before any registry write.
 Registry publication is not a transaction, so a failure after that can leave a
 release incomplete. Re-run the failed **Docker** workflow to repair component
 and chart publication, the CLI assets, the allowlist seeds and the signed
-statement; re-run the **c8s-image** workflow to repair guest-image aliases.
-Missing aliases are created and matching ones verified by digest. A re-run
+statement. A re-run
 rebuilds the CLI with the toolchain of the published binary and requires each
 published binary and seed and the published statement to equal what it built;
 it uploads only what is missing. If an interrupted first run left a draft
@@ -304,6 +378,18 @@ patch: when that differs, the re-run fails on the binary comparison, so delete
 the draft release and re-run. Neither workflow moves a Git tag,
 overwrites an exact image tag whose digest differs, or rolls `X.Y` or `latest`
 backward.
+
+To repair guest-image aliases and the guest statement, re-run the failed jobs
+of the **c8s-image** run within 30 days, while the digests its build legs
+recorded are kept. Missing aliases are created from those digests and matching
+ones verified. A new **c8s-image** run, from a full re-run or a Docker re-run,
+builds images whose digests differ, so it refuses. A `guest-statement.json`
+without its bundle, or the reverse, stops the job until a maintainer deletes
+it. Anyone who can push a guest-image alias or upload a release asset first can
+block a release this way, but cannot make it sign other images. A re-run
+keeps the workflow's commit, so a failure that needs a change to the script or
+the workflow leaves that release without a guest statement: the next release
+carries the fix.
 
 Never move, delete, or reuse a published stable tag. Fix a bad release with a
 new Conventional Commit and let the next version carry the fix.

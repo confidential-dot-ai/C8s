@@ -34,6 +34,9 @@ jobs:
       - name: Test the release allowlist seed render
         run: bash .github/scripts/tests/test-release-seeds.sh
 
+      - name: Test the release guest statement
+        run: bash .github/scripts/tests/test-release-guests.sh
+
       - name: Test the confos mkosi pin reader
         run: bash .github/scripts/tests/test-confos-mkosi-pin.sh
 
@@ -122,4 +125,6 @@ jobs:
             .github/scripts/confidential-inference-compat.sh \
             .github/scripts/tests/test-confidential-inference-compat.sh \
             .github/scripts/release-seeds.sh \
-            .github/scripts/tests/test-release-seeds.sh
+            .github/scripts/tests/test-release-seeds.sh \
+            .github/scripts/release-guests.sh \
+            .github/scripts/tests/test-release-guests.sh
