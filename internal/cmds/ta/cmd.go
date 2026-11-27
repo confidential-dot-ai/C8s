@@ -10,6 +10,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/taca"
+	hacli "github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/taha"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/talaunch"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/verify"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/issuer"
@@ -110,6 +111,7 @@ func NewCmd() *cobra.Command {
 
 	cmd.AddCommand(taca.NewCmd())
 	cmd.AddCommand(talaunch.NewCmd())
+	cmd.AddCommand(hacli.NewCmd())
 
 	return cmd
 }
