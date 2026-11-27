@@ -79,6 +79,18 @@ kernel, and RTMR[2], holding the command line that carries the dm-verity root
 hash. A measurement covers boot state, so runtime compromise inside a measured
 node is out of scope.
 
+A client checks its peer when a connection is made, and a connection it keeps
+is not checked again. `get-cert`, the allowlist proxy, the router, and the
+Trust Authority calling a node's inventory read their pins before every
+request (`armtls.RetiringTransport`). While the pins read the same, requests
+share one connection pool; every change starts a new pool, also a change back
+to an earlier set, so a request runs only on a connection checked against the
+pins in force when it started. A request whose pins cannot be read is not
+sent. The secrets sidecars and the Pod CVM secrets broker read their pins at
+every handshake instead. The node's allowlist pull reads its pins when its
+client is built; a node following a replica set's chain builds it a new
+transport when the chain's pins change.
+
 A failed check maps to a typed sentinel (`pkg/armtls/errors.go`):
 `ErrSignatureInvalid` (hardware chain), `ErrKeyBinding` (REPORTDATA mismatch —
 the key was not generated in that TEE) and `ErrPolicyViolation` (a pin not met).

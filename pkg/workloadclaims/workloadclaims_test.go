@@ -6,6 +6,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/asn1"
 	"encoding/json"
@@ -14,6 +15,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -1046,8 +1048,9 @@ func TestDigestsClientEmptyPins(t *testing.T) {
 	}
 }
 
-// With CurrentPins, Trust Authority holds an inventory to the set in force at each
-// handshake, not the set it started with.
+// With CurrentPins the client's own configuration reads the set in force, so
+// it can be built before the set names a guest. What holds a callback to the
+// set in force is the transport (TestDigestsTransportFollowsTheNodeSetInForce).
 func TestDigestsClientFollowsCurrentPins(t *testing.T) {
 	current := testPins()
 	cfg := DigestsClientConfig{
@@ -1066,6 +1069,40 @@ func TestDigestsClientFollowsCurrentPins(t *testing.T) {
 	}
 	if got := policy.Policy.Measurements; len(got) != 1 || !bytes.Equal(got[0], current.Measurements[0]) {
 		t.Fatalf("handshake pins = %x, want the set in force %x", got, current.Measurements)
+	}
+}
+
+// A client over a fixed node set needs one pool and takes no proxy from the
+// environment. A client over a changing set holds each callback to the set in
+// force, not to the fixed one beside it.
+func TestDigestsTransportFollowsTheNodeSetInForce(t *testing.T) {
+	cfg := DigestsClientConfig{AttestationAPIURL: "http://127.0.0.1:1", Pins: testPins()}
+	fixed, ok := digestsTransport(cfg, &tls.Config{MinVersion: tls.VersionTLS13}).(*http.Transport)
+	if !ok || fixed.Proxy != nil {
+		t.Fatalf("a fixed set runs on %T, want one transport with no proxy", fixed)
+	}
+
+	inventory := httptest.NewTLSServer(http.NotFoundHandler())
+	t.Cleanup(inventory.Close)
+	inForce := testPins()
+	cfg.CurrentPins = func() armtls.Pins { return inForce }
+	client := &http.Client{Transport: digestsTransport(cfg, &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS13})}
+	t.Cleanup(client.CloseIdleConnections)
+	get := func() error {
+		resp, err := client.Get(inventory.URL)
+		if err == nil {
+			_ = resp.Body.Close()
+		}
+		return err
+	}
+	// The set in force names a guest, so the peer's evidence is asked for;
+	// this peer has none.
+	if err := get(); err == nil || errors.Is(err, armtls.ErrUnpinned) {
+		t.Fatalf("a callback under a set naming a guest = %v, want its evidence checked and refused", err)
+	}
+	inForce = armtls.Pins{}
+	if err := get(); !errors.Is(err, armtls.ErrUnpinned) {
+		t.Fatalf("a callback once the set in force names no guest = %v, want %v whatever the fixed set holds", err, armtls.ErrUnpinned)
 	}
 }
 

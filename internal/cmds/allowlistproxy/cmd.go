@@ -148,11 +148,11 @@ func newHandler(cfg config, logger *slog.Logger) (http.Handler, error) {
 		return nil, err
 	}
 	// resolveTA checked the pins once; the client re-reads them per
-	// handshake to follow a Trust Authority upgrade.
+	// request to follow a Trust Authority upgrade.
 	pins := func() (armtls.Pins, error) {
 		return cmdsutil.TAPins(nodePinsPath, cmdsutil.ImagePolicySource{File: cfg.measurementsConfig})
 	}
-	httpClient, err := armtls.NewFollowingHTTPClient(pins, cfg.attestationAPIURL)
+	httpClient, err := armtls.NewRetiringHTTPClient(pins, cfg.attestationAPIURL)
 	if err == nil {
 		httpClient, err = cmdsutil.NodeCDSChain(httpClient, workloadclaims.TAAddressPath)
 	}

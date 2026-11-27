@@ -102,7 +102,8 @@ type ClientConfig struct {
 
 	// Current, when set, replaces Policy on every handshake and permits an
 	// initially empty Policy. A nil, empty or failed current policy refuses
-	// the handshake.
+	// the handshake. A client on a [RetiringTransport] reads its pins per
+	// request instead, and its pools replace this check.
 	Current func() (*VerifyPolicy, error)
 
 	// Platform and AttestFunc, when both set, enable mTLS: the client
