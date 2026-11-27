@@ -141,8 +141,13 @@ has not established a policy that admits each replica of a set.
 
 **Upgrading.** A TA already launched on a document with no `policy.rego`
 does not start on this release, and its pins are refused. Adding the entry
-changes the launch digest, so write the new document, pin it, and launch the
-TA again on it before upgrading the clients.
+makes a new launch file with a new launch digest, and there is no in-place
+path to it. For a single TA, write the new document, pin it, launch the TA
+again on it, and give every client the new pin. Replicas bind the launch file
+in their peer pins, decrees and snapshots, so replicas on the new document
+cannot join the old cluster: they are a new cluster, started with
+[Genesis](ta-ha-runbooks.md#1-start-a-cluster-genesis), and what the old
+one issued does not carry over.
 
 `c8s ta config new` produces bare YAML and a pin for it. For Kata, write a
 schema 2 SEV-SNP [measurements config](measurements.md#the-measurements-config)

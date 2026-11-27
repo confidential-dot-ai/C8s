@@ -268,11 +268,12 @@ func TestAnInitdataDocumentMustCarryAnAgentPolicy(t *testing.T) {
 		entries map[string]string
 		want    string
 	}{
-		"no policy entry":       {map[string]string{ConfigFile: configuration}, "no \"policy.rego\" entry"},
-		"an empty policy":       {map[string]string{ConfigFile: configuration, PolicyFile: ""}, "package agent_policy"},
-		"another package":       {map[string]string{ConfigFile: configuration, PolicyFile: "package other\n"}, "package agent_policy"},
-		"the package commented": {map[string]string{ConfigFile: configuration, PolicyFile: "# package agent_policy\n"}, "package agent_policy"},
-		"a longer package name": {map[string]string{ConfigFile: configuration, PolicyFile: "package agent_policy.extra\n"}, "package agent_policy"},
+		"no policy entry":          {map[string]string{ConfigFile: configuration}, "no \"policy.rego\" entry"},
+		"an empty policy":          {map[string]string{ConfigFile: configuration, PolicyFile: ""}, "package agent_policy"},
+		"another package":          {map[string]string{ConfigFile: configuration, PolicyFile: "package other\n"}, "package agent_policy"},
+		"the package commented":    {map[string]string{ConfigFile: configuration, PolicyFile: "# package agent_policy\n"}, "package agent_policy"},
+		"the package after a rule": {map[string]string{ConfigFile: configuration, PolicyFile: "default x := false\npackage agent_policy\n"}, "package agent_policy"},
+		"a longer package name":    {map[string]string{ConfigFile: configuration, PolicyFile: "package agent_policy.extra\n"}, "package agent_policy"},
 	} {
 		launchFile := bareInitdataDocument(t, InitdataAlgorithmSNP, tc.entries)
 		if _, err := Parse(launchFile); err == nil || !strings.Contains(err.Error(), tc.want) {

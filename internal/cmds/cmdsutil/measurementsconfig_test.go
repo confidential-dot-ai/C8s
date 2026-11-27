@@ -1,8 +1,8 @@
 package cmdsutil
 
 import (
-	"encoding/json"
 	"bytes"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"os"
@@ -431,6 +431,7 @@ func TestTALaunchFileRefusesAnInitdataDocumentNoTrustAuthorityStartsFrom(t *test
 		{name: "a bare configuration", launchFile: "clusterID: test\n"},
 		{name: "a document with no policy", launchFile: initdata("sha384", ""), want: "policy.rego"},
 		{name: "another family's digest", launchFile: initdata("sha256", policy), want: "sha384"},
+		{name: "a file over the cap", launchFile: "# " + strings.Repeat("x", 1024*1024) + "\n", want: "bytes"},
 	} {
 		launchFile, err := json.Marshal(tc.launchFile)
 		if err != nil {
@@ -447,6 +448,10 @@ func TestTALaunchFileRefusesAnInitdataDocumentNoTrustAuthorityStartsFrom(t *test
 			t.Errorf("%s: TALaunchFile = %q, %v, want the launch file", tc.name, got, err)
 		case tc.want != "" && (!errors.Is(err, ErrTAPinUnbound) || !strings.Contains(err.Error(), tc.want)):
 			t.Errorf("%s: TALaunchFile = %v, want a refusal naming %q", tc.name, err, tc.want)
+		}
+		// A set that may also pin other guests refuses the same entries.
+		if err := CheckLaunchFiles(values); (err != nil) != (tc.want != "") {
+			t.Errorf("%s: CheckLaunchFiles = %v, want refusal %v", tc.name, err, tc.want != "")
 		}
 	}
 }

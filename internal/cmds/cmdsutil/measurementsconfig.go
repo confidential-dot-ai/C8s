@@ -112,10 +112,26 @@ func TALaunchFile(values refvalues.ReferenceValues) ([]byte, error) {
 		}
 	}
 	// An initdata document no Trust Authority starts from pins none.
-	if _, err := initdata.ReadFor(file, values.Family); err != nil {
+	if err := initdata.Check(file, values.Family); err != nil {
 		return nil, fmt.Errorf("%w: its launch file: %w", ErrTAPinUnbound, err)
 	}
 	return file, nil
+}
+
+// CheckLaunchFiles refuses a pin set with an entry embedding a launch file no
+// Trust Authority starts from. It is for sets that may also pin other guests,
+// whose entries embed none and pass; [TALaunchFile] applies the same check to
+// a set that pins a Trust Authority alone.
+func CheckLaunchFiles(values refvalues.ReferenceValues) error {
+	for _, image := range values.Images {
+		if len(image.LaunchFile) == 0 {
+			continue
+		}
+		if err := initdata.Check(image.LaunchFile, values.Family); err != nil {
+			return fmt.Errorf("entry %q: its launch file: %w", image.Name, err)
+		}
+	}
+	return nil
 }
 
 // pinsUntouchedRTMR3 reports whether image pins RTMR[3] to all zero. A pin

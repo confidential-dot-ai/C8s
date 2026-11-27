@@ -103,6 +103,18 @@ func ReadFor(launchFile []byte, family teetypes.Family) ([]byte, error) {
 	return configuration, nil
 }
 
+// Check refuses a launch file a pin embeds that no Trust Authority starts
+// from: one over the size cap, or an initdata document [ReadFor] refuses. A
+// pin is read by clients that never parse the configuration, so the cap is
+// applied here and not left to that parse.
+func Check(launchFile []byte, family teetypes.Family) error {
+	if len(launchFile) > MaxSize {
+		return fmt.Errorf("launch file is %d bytes, over the %d one may be", len(launchFile), MaxSize)
+	}
+	_, err := ReadFor(launchFile, family)
+	return err
+}
+
 // checkAgentPolicy requires an initdata document to carry a policy for the
 // guest agent. Without one the agent runs whatever containers the host names,
 // so the document would identify a configuration and no program.
@@ -115,11 +127,18 @@ func checkAgentPolicy(data map[string]any) error {
 	if !ok {
 		return fmt.Errorf("initdata entry %q is not a string", PolicyFile)
 	}
+	// A Rego module opens with its package, after comments alone, so the
+	// first statement decides and no later line can stand in for it.
 	for _, line := range strings.Split(policy, "\n") {
 		statement, _, _ := strings.Cut(line, "#")
-		if slices.Equal(strings.Fields(statement), []string{"package", policyPackage}) {
+		fields := strings.Fields(statement)
+		if len(fields) == 0 {
+			continue
+		}
+		if slices.Equal(fields, []string{"package", policyPackage}) {
 			return nil
 		}
+		break
 	}
 	return fmt.Errorf("initdata entry %q does not declare package %s, the one the guest agent evaluates", PolicyFile, policyPackage)
 }

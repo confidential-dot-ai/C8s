@@ -154,6 +154,10 @@ func (o *Options) endpoint() (*url.URL, error) {
 			if _, err := cmdsutil.TALaunchFile(pins); err != nil {
 				return nil, fmt.Errorf("--image-policy-file %w", err)
 			}
+		} else if err := cmdsutil.CheckLaunchFiles(pins); err != nil {
+			// A router's pins embed no launch file; one that does may reach a
+			// Trust Authority through the direct fallback.
+			return nil, fmt.Errorf("--image-policy-file: %w", err)
 		}
 	default:
 		return nil, fmt.Errorf("--url scheme must be http or https, got %q", u.Scheme)
