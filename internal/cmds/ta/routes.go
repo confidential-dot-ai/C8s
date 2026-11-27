@@ -11,12 +11,17 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/issuer"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/secrets"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/server"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/taha"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/routes"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/secretbroker"
 )
 
 // dependencies bundles everything the Trust Authority router needs.
 type dependencies struct {
+	// HA, set for a replica of a set, serves the HA API and gates the rest.
+	HA          *taha.Replica
+	HAAuthorize taha.Authorizer
+
 	AttestHandler     AttestHandler
 	AllowlistHandler  allowlist.Handler
 	Routes            routeHandler
@@ -55,6 +60,17 @@ func newRouter(deps dependencies) http.Handler {
 	deps.AttestHandler.MeshCA = deps.MeshCA
 	r := chi.NewRouter()
 	r.Use(server.RequestLogger)
+	if deps.HA != nil {
+		r.Use(haGate(deps.HA))
+		r.Handle("/ha/*", deps.HA.Handler(deps.HAAuthorize))
+		deps.AttestHandler.Serving = haServing(deps.HA)
+		deps.AllowlistHandler.Objects = deps.HA.Policy
+		ready := deps.ReadyFn
+		deps.ReadyFn = func() bool {
+			s := deps.HA.Status()
+			return ready() && s.Serving == "" && s.StoreError == ""
+		}
+	}
 
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
