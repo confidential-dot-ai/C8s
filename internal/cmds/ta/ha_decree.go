@@ -321,7 +321,7 @@ func admitted(ctx context.Context, target replica, pins *tadecree.PinDocument, l
 	target.taPin = file.Name()
 	reported, err := target.status(ctx)
 	if err != nil {
-		return taha.Status{}, fmt.Errorf("the target --ta-pin verified did not verify against the decree's Trust Authority pins (--platform, --image-manifest, --vcpus, --launch-file-field), and a cluster whose pins do not match its replicas admits none of them: %w", err)
+		return taha.Status{}, fmt.Errorf("reading the target again under the decree's Trust Authority pins (--platform, --image-manifest, --vcpus, --launch-file-field) failed; if it is the pins that refused it, a cluster started with them admits none of its replicas: %w", err)
 	}
 	return reported, nil
 }
