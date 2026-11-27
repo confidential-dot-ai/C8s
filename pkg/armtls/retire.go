@@ -26,7 +26,9 @@ type RetiringTransport struct {
 
 // NewRetiringTransport is the transport over the pools of base, an armTLS
 // client transport the caller no longer uses: each pool is a clone of base
-// that holds its peer to one answer of pins.
+// that holds its peer to one answer of pins. The pool's check replaces the
+// one base was built with ([ClientConfig.Current] included), so the set a
+// request read is the only one its handshake is checked against.
 func NewRetiringTransport(base *http.Transport, pins func() (Pins, error), attestationApiURL string) *RetiringTransport {
 	return &RetiringTransport{
 		base: base,
@@ -45,7 +47,10 @@ func NewRetiringTransport(base *http.Transport, pins func() (Pins, error), attes
 
 // pool reads the pins, leaves the pool of another set and selects the pool
 // in one step, so no request that starts after a change runs on the pool
-// left behind.
+// left behind. The read is under the lock, which orders the requests of one
+// client through it: these clients make a few requests a minute (a
+// certificate renewal, an allowlist pull, one callback per issuance) and the
+// read is one small file or a value in memory.
 func (t *RetiringTransport) pool() (*http.Transport, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -88,8 +93,9 @@ func (t *RetiringTransport) CloseIdleConnections() {
 }
 
 // NewRetiringHTTPClient is [NewFollowingHTTPClient] for a client that keeps
-// running: it leaves its connections when pins answers another set, which
-// every request reads first. A request whose read fails is not sent.
+// running: every request reads pins and runs on the pool of that set, and
+// the pool of a set no longer answered is left to idle out. A request whose
+// read fails is not sent.
 func NewRetiringHTTPClient(pins func() (Pins, error), attestationApiURL string) (*http.Client, error) {
 	client, err := NewFollowingHTTPClient(pins, attestationApiURL)
 	if err != nil {

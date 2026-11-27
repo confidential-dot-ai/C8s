@@ -1,6 +1,7 @@
 package armtls
 
 import (
+	"bytes"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
@@ -21,6 +22,7 @@ type retiring struct {
 	client           *http.Client
 	url              string
 	started, release chan struct{}
+	letGo            func()
 
 	mu      sync.Mutex
 	pins    Pins
@@ -39,6 +41,10 @@ func newRetiring(t *testing.T, pins Pins) *retiring {
 		fmt.Fprint(w, req.RemoteAddr)
 	}))
 	t.Cleanup(srv.Close)
+	// Registered after the server's close, so it runs first: a handler that
+	// started is let go whatever the test fails on.
+	r.letGo = sync.OnceFunc(func() { close(r.release) })
+	t.Cleanup(r.letGo)
 	rt := NewRetiringTransport(&http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}, func() (Pins, error) {
 		r.mu.Lock()
 		defer r.mu.Unlock()
@@ -102,9 +108,6 @@ func TestRetiredConnectionCarriesNoLaterRequest(t *testing.T) {
 		conn, err := r.conn("/slow")
 		done <- result{conn, err}
 	}()
-	// Whatever fails below, a handler that started is let go.
-	release := sync.OnceFunc(func() { close(r.release) })
-	t.Cleanup(release)
 	select {
 	case <-r.started:
 	case early := <-done:
@@ -114,7 +117,7 @@ func TestRetiredConnectionCarriesNoLaterRequest(t *testing.T) {
 	// The change is seen by a request, which leaves the pool, while the slow
 	// one is still on its connection.
 	moved, movedErr := r.conn("/")
-	release()
+	r.letGo()
 	inFlight := <-done
 	if movedErr != nil {
 		t.Fatal(movedErr)
@@ -128,6 +131,12 @@ func TestRetiredConnectionCarriesNoLaterRequest(t *testing.T) {
 	if after := r.mustConn(t); after != moved {
 		t.Fatalf("a later request ran on %s, want the new pool's connection %s", after, moved)
 	}
+	// The connection the slow request ran on went back to the pool left
+	// behind: its own pins in force again start a new pool, not that one.
+	r.set(pinsOf(1), nil)
+	if back := r.mustConn(t); back == first || back == moved {
+		t.Fatalf("pins in force again ran on %s, a connection of a pool left behind (%s) or of the other set (%s)", back, first, moved)
+	}
 }
 
 // Every connection is checked against the pins its request started under, so
@@ -140,13 +149,18 @@ func TestAConnectionServesOnlyThePinsItWasCheckedAgainst(t *testing.T) {
 	underB := r.mustConn(t)
 	r.set(a, nil)
 	back := r.mustConn(t)
-	if underB == underA || back == underB {
+	if underB == underA || back == underB || back == underA {
 		t.Fatalf("connections %s (a), %s (b), %s (a again): a set shares one with another", underA, underB, back)
 	}
+	// One handshake per connection, each against the set its request read.
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if len(r.checked) != 3 || r.checked[0].Measurements[0][0] != 1 || r.checked[1].Measurements[0][0] != 2 || r.checked[2].Measurements[0][0] != 1 {
-		t.Fatalf("handshakes were checked against %v, want a, b, a", r.checked)
+	var checked []byte
+	for _, set := range r.checked {
+		checked = append(checked, set.Measurements[0][0])
+	}
+	if !bytes.Equal(checked, []byte{1, 2, 1}) {
+		t.Fatalf("handshakes were checked against the sets %v, want a, b, a", checked)
 	}
 }
 
