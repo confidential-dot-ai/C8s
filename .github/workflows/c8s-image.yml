@@ -695,13 +695,29 @@ jobs:
           fi
           # KubeVirt image first, oras artifact last: the change-check reads the
           # oras tag, so a partial failure re-publishes everything next run.
+          mkdir -p "$RUNNER_TEMP/guest-push"
           bin/confos push "output/${VARIANT}" --cdi \
             --registry "$IMAGE" \
-            --tag "$kubevirt_tags"
+            --tag "$kubevirt_tags" \
+            --digest-file "$RUNNER_TEMP/guest-push/worker-${TEE}-kubevirt.digest"
           bin/confos push "output/${VARIANT}" \
             --registry "$IMAGE" \
-            --tag "$oras_tags"
+            --tag "$oras_tags" \
+            --digest-file "$RUNNER_TEMP/guest-push/worker-${TEE}.digest"
           echo "tags=${kubevirt_tags},${oras_tags}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the pushed digests
+        # c8s-image-publish.yml promotes and signs the release from them; 30
+        # days is the window in which its failed jobs can be re-run.
+        if: inputs.release_tag != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: guest-push-worker-${{ env.TEE }}-${{ github.event.workflow_run.head_sha }}
+          path: |
+            ${{ runner.temp }}/guest-push/worker-${{ env.TEE }}.digest
+            ${{ runner.temp }}/guest-push/worker-${{ env.TEE }}-kubevirt.digest
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Summary
         if: inputs.gate != true
@@ -893,13 +909,28 @@ jobs:
           fi
           # KubeVirt image first, oras artifact last, as the worker image
           # publishes: a partial failure re-publishes everything on the next run.
+          mkdir -p "$RUNNER_TEMP/guest-push"
           bin/confos push "output/${VARIANT}" --cdi \
             --registry "$IMAGE" \
-            --tag "$kubevirt_tags"
+            --tag "$kubevirt_tags" \
+            --digest-file "$RUNNER_TEMP/guest-push/ta-kubevirt.digest"
           bin/confos push "output/${VARIANT}" \
             --registry "$IMAGE" \
-            --tag "$oras_tags"
+            --tag "$oras_tags" \
+            --digest-file "$RUNNER_TEMP/guest-push/ta.digest"
           echo "tags=${kubevirt_tags},${oras_tags}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the pushed digests
+        # As the worker legs upload theirs.
+        if: inputs.release_tag != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: guest-push-ta-${{ github.event.workflow_run.head_sha }}
+          path: |
+            ${{ runner.temp }}/guest-push/ta.digest
+            ${{ runner.temp }}/guest-push/ta-kubevirt.digest
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Summary
         env:
