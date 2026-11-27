@@ -294,7 +294,8 @@ func (p rtmrPins) any() bool {
 func requireTAIdentity(cfg config, refValues refvalues.ReferenceValues) error {
 	if cfg.kind != "ta" {
 		// The target may still be a Trust Authority, reached directly: hold
-		// any launch file the pins embed to what one starts from.
+		// any Trust Authority launch document the pins embed to what one
+		// starts from. Another guest's launch file is not read.
 		if err := cmdsutil.CheckLaunchFiles(refValues); err != nil {
 			return fmt.Errorf("--image-policy-file: %w", err)
 		}

@@ -108,8 +108,13 @@ func (o *Options) HTTPClient(ctx context.Context) (*http.Client, error) {
 		fmt.Fprintln(os.Stderr, "warning: --url is http:// with --insecure; Trust Authority attestation is NOT verified (dev/test only)")
 		return &http.Client{Timeout: o.Timeout}, nil
 	}
+	// The file is read again here, so the set the connection is verified
+	// against is held to the same rules as the one endpoint read.
 	pins, err := o.loadPins()
 	if err != nil {
+		return nil, err
+	}
+	if err := o.checkPins(pins); err != nil {
 		return nil, err
 	}
 	hc, err := o.httpsClient(ctx, pins)
@@ -145,24 +150,34 @@ func (o *Options) endpoint() (*url.URL, error) {
 		if err != nil {
 			return nil, err
 		}
-		if pins.Empty() {
-			return nil, fmt.Errorf("%w. Pass %s", ErrUnpinnedEndpoint, o.pinFlags())
-		}
-		// --url reaches Trust Authority itself, which is pinned to the configuration it
-		// runs on rather than to its image.
-		if o.DirectTA {
-			if _, err := cmdsutil.TALaunchFile(pins); err != nil {
-				return nil, fmt.Errorf("--image-policy-file %w", err)
-			}
-		} else if err := cmdsutil.CheckLaunchFiles(pins); err != nil {
-			// A router's pins embed no launch file; one that does may reach a
-			// Trust Authority through the direct fallback.
-			return nil, fmt.Errorf("--image-policy-file: %w", err)
+		if err := o.checkPins(pins); err != nil {
+			return nil, err
 		}
 	default:
 		return nil, fmt.Errorf("--url scheme must be http or https, got %q", u.Scheme)
 	}
 	return u, nil
+}
+
+// checkPins holds the pins of an https endpoint to what their target needs.
+func (o *Options) checkPins(pins refvalues.ReferenceValues) error {
+	if pins.Empty() {
+		return fmt.Errorf("%w. Pass %s", ErrUnpinnedEndpoint, o.pinFlags())
+	}
+	// --url reaches Trust Authority itself, which is pinned to the configuration it
+	// runs on rather than to its image.
+	if o.DirectTA {
+		if _, err := cmdsutil.TALaunchFile(pins); err != nil {
+			return fmt.Errorf("--image-policy-file %w", err)
+		}
+		return nil
+	}
+	// A router's pins embed no launch file; a set that embeds a Trust
+	// Authority's may reach one through the direct fallback.
+	if err := cmdsutil.CheckLaunchFiles(pins); err != nil {
+		return fmt.Errorf("--image-policy-file: %w", err)
+	}
+	return nil
 }
 
 // httpsClient builds the attestation-verifying client. A router front door

@@ -5,13 +5,16 @@
 package initdata
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
 
 	toml "github.com/pelletier/go-toml/v2"
+	"gopkg.in/yaml.v3"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/yamlutil"
 )
 
 // The digests an initdata launch file may declare: the launch binding is the
@@ -103,16 +106,52 @@ func ReadFor(launchFile []byte, family teetypes.Family) ([]byte, error) {
 	return configuration, nil
 }
 
-// Check refuses a launch file a pin embeds that no Trust Authority starts
-// from: one over the size cap, or an initdata document [ReadFor] refuses. A
-// pin is read by clients that never parse the configuration, so the cap is
-// applied here and not left to that parse.
+// Check refuses a launch file a Trust Authority pin embeds that no Trust
+// Authority starts from: one over the size cap, an initdata document
+// [ReadFor] refuses, or bytes that are neither that nor a configuration. A
+// pin is read by clients that never parse the configuration, so its shape
+// is held here and not left to that parse.
 func Check(launchFile []byte, family teetypes.Family) error {
 	if len(launchFile) > MaxSize {
 		return fmt.Errorf("launch file is %d bytes, over the %d one may be", len(launchFile), MaxSize)
 	}
-	_, err := ReadFor(launchFile, family)
-	return err
+	configuration, err := ReadFor(launchFile, family)
+	if err != nil {
+		return err
+	}
+	tree, err := yamlutil.DecodeTree(configuration)
+	if err != nil || !isMapping(tree) {
+		return errors.New("launch file is neither an initdata document with a \"data\" table nor a configuration, which is a YAML mapping")
+	}
+	return nil
+}
+
+// isMapping reports whether a decoded YAML document is a mapping.
+func isMapping(tree *yaml.Node) bool {
+	if tree != nil && tree.Kind == yaml.DocumentNode && len(tree.Content) == 1 {
+		tree = tree.Content[0]
+	}
+	return tree != nil && tree.Kind == yaml.MappingNode
+}
+
+// NamesTrustAuthority reports whether launchFile is an initdata document
+// that carries a Trust Authority configuration entry. Another guest's launch
+// file may be any bytes, a TOML document with a data table included, and is
+// held to none of these rules.
+func NamesTrustAuthority(launchFile []byte) bool {
+	if len(launchFile) > MaxSize {
+		return false
+	}
+	var document map[string]any
+	if err := toml.Unmarshal(launchFile, &document); err != nil {
+		return false
+	}
+	data, ok := document["data"].(map[string]any)
+	if !ok {
+		return false
+	}
+	_, ok = data[ConfigFile]
+	return ok
 }
 
 // checkAgentPolicy requires an initdata document to carry a policy for the

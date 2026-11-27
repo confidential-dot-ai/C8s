@@ -93,9 +93,12 @@ package agent_policy
 C8s detects initdata by its TOML `data` table and requires a supported
 `algorithm`, a string `ta-config.yaml` entry and a string `policy.rego` entry
 that declares `package agent_policy`; other files are read as bare YAML
-configuration. The TA refuses to start from a document without the policy,
-and every command refuses a pin that embeds one. Other initdata keys are
-bound and not read.
+configuration. The TA refuses to start from a document without the policy.
+So does every reader of a TA pin that embeds one: `c8s ta verify`, the `c8s
+ta ha` commands, `c8s routes` and `c8s allowlist`, `c8s verify`, and the
+node and pod components that authenticate the TA. `c8s measurements lint`
+checks the measurements schema only and passes such a pin. Other initdata
+keys are bound and not read.
 
 Pass the whole document to the runtime and mount identical bytes for
 `c8s ta --config`; even changes to comments or whitespace break the binding.

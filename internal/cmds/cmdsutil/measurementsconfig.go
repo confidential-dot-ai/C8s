@@ -118,13 +118,13 @@ func TALaunchFile(values refvalues.ReferenceValues) ([]byte, error) {
 	return file, nil
 }
 
-// CheckLaunchFiles refuses a pin set with an entry embedding a launch file no
-// Trust Authority starts from. It is for sets that may also pin other guests,
-// whose entries embed none and pass; [TALaunchFile] applies the same check to
-// a set that pins a Trust Authority alone.
+// CheckLaunchFiles refuses a pin set with an entry embedding a Trust Authority
+// initdata document no Trust Authority starts from. It is for sets that may
+// pin other guests, whose launch files are theirs to define and pass;
+// [TALaunchFile] holds a set that pins a Trust Authority alone to more.
 func CheckLaunchFiles(values refvalues.ReferenceValues) error {
 	for _, image := range values.Images {
-		if len(image.LaunchFile) == 0 {
+		if !initdata.NamesTrustAuthority(image.LaunchFile) {
 			continue
 		}
 		if err := initdata.Check(image.LaunchFile, values.Family); err != nil {
