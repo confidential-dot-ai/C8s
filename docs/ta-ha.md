@@ -372,6 +372,8 @@ The independent pins and predecessor have the same meaning as for submission.
 Observation sends only reads and needs no operator key. It verifies exact body
 and signature membership, then requires a fresh, serving replica to report a
 matching held head and recorded confirmation of the entry or a descendant.
+With `--endpoints`, it checks replicas in order until one supplies a verified
+confirmation. Each attempt verifies the log and status from the same endpoint.
 It saves that confirmation before printing JSON. `entry` identifies the artifact,
 `confirmed` its confirming head, and `held` the observed head. `current` says
 whether the artifact still supplies policy; `policy` identifies the policy entry

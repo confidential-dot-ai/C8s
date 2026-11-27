@@ -44,6 +44,7 @@ Print JSON only after saving the confirmed head durably. current reports whether
 this entry still supplies policy; policy and policy_sha256 identify the policy
 at held. Historical acceptance does not prove application readiness or that the
 current held head is confirmed. Missing confirmation or a changed head exits 3.
+With --endpoints, each replica is checked until one verifies confirmation.
 Confirmation records can be lost on replica restart: retry observation after
 the consumer or explicit manual submission confirms the entry again.
 An absent local record is treated as first use; retain --state-dir durably.
@@ -60,11 +61,7 @@ It neither publishes nor submits an entry.`,
 			if err != nil {
 				return err
 			}
-			w, err := o.connection(cmd.Context())
-			if err != nil {
-				return err
-			}
-			return w.observePolicy(cmd.Context(), cmd.OutOrStdout(), target, encoded, entry)
+			return o.observePolicy(cmd.Context(), cmd.OutOrStdout(), target, encoded, entry)
 		},
 	}
 	f := cmd.Flags()
@@ -75,35 +72,72 @@ It neither publishes nor submits an entry.`,
 	return cmd
 }
 
-func (w *writer) observePolicy(ctx context.Context, out io.Writer, target policyTarget, encoded []byte, entry cdschain.Entry) error {
-	history, err := w.readPolicy(ctx, target, entry)
+func (o *options) observePolicy(ctx context.Context, out io.Writer, target policyTarget, encoded []byte, entry cdschain.Entry) error {
+	urls, err := o.urls()
 	if err != nil {
 		return err
 	}
-	if history.entry.Seq > history.state.Head.Seq {
-		return fmt.Errorf("the replica does not hold the entry: %w", errPolicyUnconfirmed)
+	var failures []error
+	for _, url := range urls {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		client, err := o.client(ctx, url)
+		if err != nil {
+			failures = append(failures, fmt.Errorf("%s: %w", url, err))
+			continue
+		}
+		w := &writer{o: o, url: url, client: client}
+		observed, err := w.readObservedPolicy(ctx, target, encoded, entry)
+		client.CloseIdleConnections()
+		if err != nil {
+			failures = append(failures, fmt.Errorf("%s: %w", url, err))
+			continue
+		}
+		return o.reportObservedPolicy(out, target.genesis, observed)
 	}
-	var status haapi.Status
-	if err := haapi.Call(ctx, w.client, http.MethodGet, w.url+haapi.StatusPath, nil, &status); err != nil {
-		return err
+	err = errors.Join(failures...)
+	for _, failure := range failures {
+		if !errors.Is(failure, errPolicyUnconfirmed) {
+			return &cmdsutil.ExitStatusError{Status: 1, Err: err}
+		}
 	}
-	confirmed, err := history.confirmation(status)
-	if err != nil {
-		return err
-	}
-	if err := w.o.acknowledge(target.genesis, confirmed); err != nil {
+	return err
+}
+
+func (o *options) reportObservedPolicy(out io.Writer, genesis cdschain.Hash, observed observedPolicy) error {
+	if err := o.acknowledge(genesis, observed.Confirmed); err != nil {
 		if errors.Is(err, ErrRecordConflict) {
 			return err
 		}
 		return &cmdsutil.ExitStatusError{
 			Status: cmdsutil.ExitNotConfirmed,
-			Err:    fmt.Errorf("the Trust Authority confirmed head %d (%s), but the local record was not saved; fix storage and rerun observe-policy: %w", confirmed.Seq, confirmed.Hash, err),
+			Err:    fmt.Errorf("the Trust Authority confirmed head %d (%s), but the local record was not saved; fix storage and rerun observe-policy: %w", observed.Confirmed.Seq, observed.Confirmed.Hash, err),
 		}
+	}
+	return printJSON(out, observed)
+}
+
+func (w *writer) readObservedPolicy(ctx context.Context, target policyTarget, encoded []byte, entry cdschain.Entry) (observedPolicy, error) {
+	history, err := w.readPolicy(ctx, target, entry)
+	if err != nil {
+		return observedPolicy{}, err
+	}
+	if history.entry.Seq > history.state.Head.Seq {
+		return observedPolicy{}, fmt.Errorf("the replica does not hold the entry: %w", errPolicyUnconfirmed)
+	}
+	var status haapi.Status
+	if err := haapi.Call(ctx, w.client, http.MethodGet, w.url+haapi.StatusPath, nil, &status); err != nil {
+		return observedPolicy{}, err
+	}
+	confirmed, err := history.confirmation(status)
+	if err != nil {
+		return observedPolicy{}, err
 	}
 	policy := history.state.Head
 	policy.Seq = history.state.PolicySeq
 	policy.Hash = history.entries[policy.Seq].Hash()
-	return printJSON(out, observedPolicy{
+	return observedPolicy{
 		ArtifactSHA256: cdschain.Hash(sha256.Sum256(encoded)),
 		Entry:          history.entry,
 		Confirmed:      confirmed,
@@ -111,7 +145,7 @@ func (w *writer) observePolicy(ctx context.Context, out io.Writer, target policy
 		Current:        policy.Seq == history.entry.Seq,
 		Policy:         policy,
 		PolicySHA256:   cdschain.Hash(sha256.Sum256(history.state.Policy)),
-	})
+	}, nil
 }
 
 func (h *policyHistory) checkServingHead(s haapi.Status) error {
