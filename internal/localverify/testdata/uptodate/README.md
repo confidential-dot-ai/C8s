@@ -1,0 +1,1 @@
+The Intel-signed quote and responses come from the public [attestation-rs test corpus](https://github.com/confidential-dot-ai/attestation-rs/tree/1797fb1071ab2b4c0c6338eed97e3115c0665b6e/crates/attestation/test_data). They verify against the Intel root on 2026-10-16. The manifest is reconstructed locally in tests.

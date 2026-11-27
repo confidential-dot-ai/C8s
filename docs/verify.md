@@ -153,7 +153,7 @@ c8s ta verify https://<TA_ADDRESS> --image-policy-file ta-pin.json \
     --tdx-tcb-status UpToDate
 ```
 
-Each verification, including `--from-file`, fetches signed TCB information,
+By default each verification, including `--from-file`, fetches signed TCB information,
 quoting enclave (QE) identity, and the PCK and root CA revocation lists from
 Intel PCS within a positive `--timeout`. It rejects revoked certificates and
 invalid or expired collateral. The platform and QE must each have an accepted
@@ -178,10 +178,28 @@ favourable:
 The CLI rejects `Revoked` and refuses explicit status requirements for
 evidence without a TDX quote. Use `--min-tcb-*` for SEV-SNP. With
 `--tdx-offline`, the CLI skips the PCS check and warns on a passing TDX
-verdict. Offline mode excludes named TCB statuses.
+verdict. The flag excludes named TCB statuses and a site profile.
 
-An online verdict reports Intel's advisories and the earliest signed
-`nextUpdate` across the four collateral documents.
+To check TDX at a disconnected site, provision the site profile on the trusted
+operator workstation and pass it to each verifying command. For example:
+
+```sh
+c8s ta verify "https://${TA_ADDRESS}" --image-policy-file ta-pin.json \
+    --tdx-collateral-profile site.json
+```
+
+The profile selects Intel collateral for the TA, router or workload evidence.
+Each hardware verification reads the active generation and site time from the
+pinned site endpoint, verifies the media signature and checks the selected
+Intel data. It requires an `UpToDate` platform, QE and TDX module under the
+same component rules as the connected check. A missing object or unreachable
+site fails verification. Include the same flag on TA connections for Genesis,
+decree submission and signed allowlist writes. A Pod CVM leaf carries only a
+TA-issued certificate. Verify such a leaf through its pinned mesh CA.
+
+A TDX verdict reports Intel's advisories and the earliest signed
+`nextUpdate` across the four collateral documents. A site verification also
+bounds that deadline by the signed snapshot expiry.
 
 ```text
   Intel TCB:    UpToDate (Intel PCS collateral, expires 2026-12-17T21:30:01Z)

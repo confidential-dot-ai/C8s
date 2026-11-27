@@ -354,3 +354,20 @@ func TestCheckEndpointRefusesWithoutNetwork(t *testing.T) {
 		}
 	}
 }
+
+func TestSiteProfileRefusesPlaintext(t *testing.T) {
+	o := Options{URL: "http://ta.example", Insecure: true, TDXCollateralProfile: "site.json"}
+	if err := o.CheckEndpoint(); err == nil || !strings.Contains(err.Error(), "requires attested HTTPS") {
+		t.Fatalf("site profile accepted an unauthenticated connection: %v", err)
+	}
+}
+
+func TestSiteProfileRequiresPositiveTimeout(t *testing.T) {
+	o := Options{URL: "https://ta.example", Measurements: []string{strings.Repeat("ab", 48)}, TDXCollateralProfile: "site.json"}
+	for _, timeout := range []time.Duration{-time.Second, 0, time.Second} {
+		o.Timeout = timeout
+		if err := o.CheckEndpoint(); (err == nil) != (timeout > 0) {
+			t.Fatalf("CheckEndpoint with timeout %s = %v", timeout, err)
+		}
+	}
+}

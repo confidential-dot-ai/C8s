@@ -19,6 +19,7 @@ func verifyInProcess(ctx context.Context, ev *evidence, plan *verifyPlan, minTCB
 		AllowDebug:           plan.policy.Policy.AllowDebug,
 		MinTCB:               minTCB,
 		TDXTCBStatuses:       plan.tdxTCBStatuses,
+		TDXCollateralProfile: plan.tdxCollateralProfile,
 	})
 	if err != nil {
 		if _, ok := errors.AsType[*localverify.CollateralError](err); ok {

@@ -146,3 +146,20 @@ func TestAnOversizedAnswerMovesToTheNextReplica(t *testing.T) {
 		t.Fatalf("parse the answer: %v", err)
 	}
 }
+
+func TestSiteProfileProtectsDecreeDelivery(t *testing.T) {
+	handler := http.NewServeMux()
+	handler.HandleFunc("POST "+decreesPath, func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("signed decree reached a peer outside the TDX profile")
+		w.WriteHeader(http.StatusForbidden)
+	})
+	server := testutil.NewARMTLSServer(t, handler)
+	r := replica{
+		address:              strings.TrimPrefix(server.URL, "https://"),
+		taPin:                testutil.TAPinFile(t),
+		tdxCollateralProfile: "site.json",
+	}
+	if _, _, err := r.postDecree(t.Context(), tadecree.Signed{}); err == nil || !strings.Contains(err.Error(), "requires TDX evidence") {
+		t.Fatalf("direct TA offered SNP evidence under a TDX site profile: %v", err)
+	}
+}

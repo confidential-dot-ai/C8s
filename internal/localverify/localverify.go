@@ -82,8 +82,9 @@ type Params struct {
 	// it (armtls.EnforceImages).
 	RuntimeExtensions []string
 
-	// A nonempty set requires an online Intel status check for TDX evidence.
-	TDXTCBStatuses []teetypes.TdxTcbStatus
+	// A nonempty set requires an Intel status check for TDX evidence.
+	TDXTCBStatuses       []teetypes.TdxTcbStatus
+	TDXCollateralProfile string
 }
 
 // VerifyFunc is the signature of [Verify], taken as a parameter by consumers
@@ -106,14 +107,17 @@ func Verify(ctx context.Context, platform string, evidence json.RawMessage, p Pa
 	return res, err
 }
 
-// VerifyWithCollateralExpiry also returns the expiry from a successful online TDX status check.
+// VerifyWithCollateralExpiry also returns the expiry from a successful TDX status check.
 func VerifyWithCollateralExpiry(ctx context.Context, platform string, evidence json.RawMessage, p Params) (*teetypes.VerificationResult, *time.Time, error) {
 	envelope := teetypes.AttestationEvidence{
 		Platform: teetypes.NormalizePlatform(platform),
 		Evidence: evidence,
 	}
+	if p.TDXCollateralProfile != "" {
+		return verifySiteTDX(ctx, envelope, p)
+	}
 	if envelope.Platform.IsTDX() && len(p.TDXTCBStatuses) > 0 {
-		return verifyOnlineTDX(ctx, envelope, p)
+		return verifyTDXStatus(ctx, envelope, p, pcsGetter(), tdxCollateralTime)
 	}
 	res, err := verifyEnvelope(ctx, envelope, p, teeverify.Options{
 		SNP: snp.Options{Getter: snp.NewCachingKDSGetter(defaultKDSCacheDir(), kdsGetter())},

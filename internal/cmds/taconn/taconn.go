@@ -45,13 +45,14 @@ var ErrUnpinnedEndpoint = errors.New("refusing an unpinned endpoint: any atteste
 // Options are the connection and credential flags an operator CLI carries.
 // Embed it in a command's option struct and bind Flags to its persistent flags.
 type Options struct {
-	URL                string
-	Measurements       []string
-	MeasurementsFile   string
-	MeasurementsConfig string
-	Timeout            time.Duration
-	OperatorKey        string
-	Insecure           bool
+	URL                  string
+	Measurements         []string
+	MeasurementsFile     string
+	MeasurementsConfig   string
+	Timeout              time.Duration
+	OperatorKey          string
+	Insecure             bool
+	TDXCollateralProfile string
 
 	// Verifier verifies endpoint evidence. Nil defaults to LocalVerifier.
 	Verifier PinVerifier
@@ -79,6 +80,7 @@ func BindFlags(pf *pflag.FlagSet, o *Options) {
 		pf.StringVar(&o.URL, "url", "", "Base URL of the Trust Authority or a router with Trust Authority-issued public TLS (required). WebPKI router URLs lack an attestation binding")
 		cmdsutil.BindImagePolicyFlags(pf, &o.MeasurementsConfig, nil, "pins the endpoint; a direct Trust Authority URL requires binding its launch file")
 	}
+	cmdsutil.BindTDXCollateralProfile(pf, &o.TDXCollateralProfile)
 	pf.DurationVar(&o.Timeout, "timeout", 15*time.Second, "per-request timeout")
 	pf.StringVar(&o.OperatorKey, "operator-key", "", "operator EC private key PEM file, whose public key is pinned on the Trust Authority via --operator-keys (env "+EnvOperatorKey+"); required for writes")
 	pf.BoolVar(&o.Insecure, "insecure", false, "dev/test only: allow a plaintext http:// Trust Authority URL, skipping armTLS attestation of Trust Authority")
@@ -131,6 +133,12 @@ func (o *Options) endpoint() (*url.URL, error) {
 	u, err := url.Parse(o.URL)
 	if err != nil || u.Host == "" {
 		return nil, fmt.Errorf("invalid --url %q", o.URL)
+	}
+	if o.TDXCollateralProfile != "" && (o.Insecure || u.Scheme != "https") {
+		return nil, fmt.Errorf("--tdx-collateral-profile requires attested HTTPS")
+	}
+	if o.TDXCollateralProfile != "" && o.Timeout <= 0 {
+		return nil, fmt.Errorf("--tdx-collateral-profile requires a positive --timeout")
 	}
 	switch u.Scheme {
 	case "http":
@@ -222,7 +230,7 @@ func (o *Options) loadPins() (refvalues.ReferenceValues, error) {
 func (o *Options) pinVerifier(pins refvalues.ReferenceValues) PinVerifier {
 	verify := o.Verifier
 	if verify == nil {
-		verify = LocalVerifier{}
+		verify = LocalVerifier{TDXCollateralProfile: o.TDXCollateralProfile}
 	}
 	return ImagePinVerifier{Verifier: verify, Images: pins.Images}
 }

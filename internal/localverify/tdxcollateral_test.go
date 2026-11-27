@@ -172,6 +172,17 @@ func TestVerifyTDXTCBStatus(t *testing.T) {
 		}
 	})
 
+	t.Run("Intel TCB info cannot grade the quote before its signed issue date", func(t *testing.T) {
+		useRecordedPCS(t, loadRecordedPCS(t))
+		tdxCollateralTime = recordedPCSTime.Add(-time.Hour)
+		_, _, err := VerifyWithCollateralExpiry(t.Context(), platform, evidence, Params{
+			TDXTCBStatuses: []teetypes.TdxTcbStatus{teetypes.TdxUpToDate, teetypes.TdxOutOfDate},
+		})
+		if err == nil || !strings.Contains(err.Error(), "not yet valid") {
+			t.Fatalf("want a future-dated collateral rejection, got %v", err)
+		}
+	})
+
 	t.Run("expired collateral is refused", func(t *testing.T) {
 		useRecordedPCS(t, loadRecordedPCS(t))
 		tdxCollateralTime = recordedPCSTime.AddDate(0, 2, 0)
@@ -242,7 +253,7 @@ func TestTDXCollateralExpiryIncludesCRLs(t *testing.T) {
 	bodies[tcbURL] = []byte(`{"tcbInfo":{"nextUpdate":"2028-01-01T00:00:00Z"}}`)
 	bodies[pcs.QeIdentityURL()] = []byte(`{"enclaveIdentity":{"nextUpdate":"2028-01-01T00:00:00Z"}}`)
 	fetch := &collateralFetch{bodies: bodies}
-	got, err := fetch.earliestNextUpdate("b0c06f000000")
+	got, err := fetch.earliestNextUpdate("b0c06f000000", recordedPCSTime)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,7 +262,7 @@ func TestTDXCollateralExpiryIncludesCRLs(t *testing.T) {
 	}
 	rootURL := "https://certificates.trustedservices.intel.com/IntelSGXRootCA.der"
 	bodies[rootURL] = bytes.Replace(bodies[rootURL], []byte("270226130400Z"), []byte("261217212900Z"), 1)
-	got, err = fetch.earliestNextUpdate("b0c06f000000")
+	got, err = fetch.earliestNextUpdate("b0c06f000000", recordedPCSTime)
 	if err != nil {
 		t.Fatal(err)
 	}

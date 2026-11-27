@@ -19,9 +19,10 @@ type PinVerifier interface {
 
 // LocalVerifier verifies evidence in-process, including the launch-digest pins
 // in Params. Operator clients do not trust a remote service's unsigned verdict.
-type LocalVerifier struct{}
+type LocalVerifier struct{ TDXCollateralProfile string }
 
-func (LocalVerifier) Verify(ctx context.Context, platform string, evidence json.RawMessage, params localverify.Params) (*teetypes.VerificationResult, error) {
+func (v LocalVerifier) Verify(ctx context.Context, platform string, evidence json.RawMessage, params localverify.Params) (*teetypes.VerificationResult, error) {
+	params.TDXCollateralProfile = v.TDXCollateralProfile
 	return localverify.Verify(ctx, platform, evidence, params)
 }
 

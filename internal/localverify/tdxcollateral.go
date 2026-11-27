@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/tdx"
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/attestation/teeverify"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/sitecollateral"
 )
 
 var pcsGetter = func() tdxtrust.HTTPSGetter {
@@ -50,30 +52,62 @@ type collateralFetch struct {
 	lastFetchErr error
 }
 
-func verifyOnlineTDX(ctx context.Context, envelope teetypes.AttestationEvidence, p Params) (*teetypes.VerificationResult, *time.Time, error) {
-	// Authenticate the quote before fetching collateral for it, so evidence
-	// that fails on its own is a verdict and causes no request.
-	if _, err := verifyEnvelope(ctx, envelope, p, teeverify.Options{}); err != nil {
+func verifySiteTDX(ctx context.Context, envelope teetypes.AttestationEvidence, p Params) (*teetypes.VerificationResult, *time.Time, error) {
+	if !envelope.Platform.IsTDX() {
+		return nil, nil, fmt.Errorf("--tdx-collateral-profile requires TDX evidence, received %q", envelope.Platform)
+	}
+	for _, status := range p.TDXTCBStatuses {
+		if status != teetypes.TdxUpToDate {
+			return nil, nil, fmt.Errorf("--tdx-collateral-profile requires an UpToDate TCB, cannot accept %s", status)
+		}
+	}
+	p.TDXTCBStatuses = []teetypes.TdxTcbStatus{teetypes.TdxUpToDate}
+	snapshot, err := sitecollateral.Open(ctx, p.TDXCollateralProfile)
+	if errors.Is(err, sitecollateral.ErrUnavailable) {
+		return nil, nil, &CollateralError{Err: err}
+	}
+	if err != nil {
 		return nil, nil, err
 	}
-	fetch := &collateralFetch{ctx: ctx, inner: pcsGetter(), bodies: make(map[string][]byte)}
+	if snapshot.Time.IsZero() {
+		return nil, nil, fmt.Errorf("site selection lacks authenticated verification time")
+	}
+	res, expires, err := verifyTDXStatus(ctx, envelope, p, snapshot, snapshot.Time)
+	if err == nil && snapshot.Manifest.ExpiresAt.Before(*expires) {
+		expires = &snapshot.Manifest.ExpiresAt
+	}
+	return res, expires, err
+}
+
+func verifyTDXStatus(ctx context.Context, envelope teetypes.AttestationEvidence, p Params, getter tdxtrust.HTTPSGetter, at time.Time) (*teetypes.VerificationResult, *time.Time, error) {
+	if at.IsZero() {
+		at = time.Now()
+	}
+	// Authenticate the quote before looking up its collateral.
+	if _, err := verifyEnvelope(ctx, envelope, p, teeverify.Options{TDX: tdx.Options{Now: at}}); err != nil {
+		return nil, nil, err
+	}
+	fetch := &collateralFetch{ctx: ctx, inner: getter, bodies: make(map[string][]byte)}
 	res, err := verifyEnvelope(ctx, envelope, p, teeverify.Options{TDX: tdx.Options{
 		GetCollateral:       true,
 		CheckRevocations:    true,
 		Getter:              fetch,
-		Now:                 tdxCollateralTime,
+		Now:                 at,
 		AcceptedTCBStatuses: p.TDXTCBStatuses,
 	}})
 	if err != nil {
 		if fetchErr := fetch.failure(); fetchErr != nil {
+			if p.TDXCollateralProfile != "" && !errors.Is(fetchErr, sitecollateral.ErrUnavailable) {
+				return nil, nil, fetchErr
+			}
 			return nil, nil, &CollateralError{Err: fetchErr}
 		}
 		return nil, nil, err
 	}
-	if res.TCBStatus == nil || !slices.Contains(p.TDXTCBStatuses, res.TCBStatus.TCBStatus) {
+	if !res.Platform.IsTDX() || res.TCBStatus == nil || !slices.Contains(p.TDXTCBStatuses, res.TCBStatus.TCBStatus) {
 		return nil, nil, fmt.Errorf("TDX TCB status not proven to be one of %v", p.TDXTCBStatuses)
 	}
-	expiresAt, err := fetch.earliestNextUpdate(res.TCBStatus.FMSPC)
+	expiresAt, err := fetch.earliestNextUpdate(res.TCBStatus.FMSPC, at)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -124,7 +158,7 @@ func (f *collateralFetch) failure() error {
 }
 
 // Read expiry only from the responses authenticated by this verification.
-func (f *collateralFetch) earliestNextUpdate(fmspc string) (*time.Time, error) {
+func (f *collateralFetch) earliestNextUpdate(fmspc string, at time.Time) (*time.Time, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	var tcbInfo pcs.TdxTcbInfo
@@ -135,6 +169,12 @@ func (f *collateralFetch) earliestNextUpdate(fmspc string) (*time.Time, error) {
 	var qeIdentity pcs.QeIdentity
 	if err := json.Unmarshal(f.bodies[pcs.QeIdentityURL()], &qeIdentity); err != nil {
 		return nil, fmt.Errorf("read TDX QE identity expiry: %w", err)
+	}
+	if tcbInfo.TcbInfo.IssueDate.After(at) {
+		return nil, fmt.Errorf("TDX TCB info for %s is not yet valid", fmspc)
+	}
+	if qeIdentity.EnclaveIdentity.IssueDate.After(at) {
+		return nil, fmt.Errorf("TDX QE identity is not yet valid")
 	}
 	next := tcbInfo.TcbInfo.NextUpdate
 	if qe := qeIdentity.EnclaveIdentity.NextUpdate; qe.Before(next) {
@@ -148,6 +188,9 @@ func (f *collateralFetch) earliestNextUpdate(fmspc string) (*time.Time, error) {
 		crl, err := x509.ParseRevocationList(body)
 		if err != nil {
 			return nil, fmt.Errorf("read TDX CRL expiry: %w", err)
+		}
+		if crl.ThisUpdate.After(at) {
+			return nil, fmt.Errorf("TDX CRL %s is not yet valid", url)
 		}
 		if crl.NextUpdate.Before(next) {
 			next = crl.NextUpdate
