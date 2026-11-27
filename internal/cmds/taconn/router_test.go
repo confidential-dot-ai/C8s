@@ -53,3 +53,16 @@ func TestHTTPClientRouterFrontDoor(t *testing.T) {
 		})
 	}
 }
+
+func TestSiteProfileAppliesToRouterDiscovery(t *testing.T) {
+	router := testutil.NewRouterServer(t)
+	o := Options{
+		URL:                  router.URL,
+		TDXCollateralProfile: "site.json",
+		Measurements:         []string{testutil.TestMeasurement},
+		Timeout:              time.Second,
+	}
+	if _, err := o.HTTPClient(t.Context()); err == nil || !strings.Contains(err.Error(), "requires TDX evidence") {
+		t.Fatalf("router offered SNP evidence under a TDX site profile: %v", err)
+	}
+}

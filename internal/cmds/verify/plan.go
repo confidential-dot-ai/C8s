@@ -52,8 +52,9 @@ type verifyPlan struct {
 	trustKeys []*ecdsa.PublicKey
 	// operatorKeysDigest is the digest the set a kind=ta target serves at
 	// /operator-keys must equal, nil when no --operator-keys bundle pins it.
-	operatorKeysDigest []byte
-	tdxTCBStatuses     []teetypes.TdxTcbStatus
+	operatorKeysDigest   []byte
+	tdxTCBStatuses       []teetypes.TdxTcbStatus
+	tdxCollateralProfile string
 }
 
 // buildPolicy parses the measurement allowlist, resolves the register pins and
@@ -208,20 +209,23 @@ func buildPolicy(cfg config) (*verifyPlan, error) {
 			Registers:    pins.manual,
 			AllowDebug:   cfg.allowDebug,
 		}},
-		pins:               pins,
-		meshCA:             caPool,
-		initDataHash:       initDataHash,
-		refValues:          refValues,
-		served:             served,
-		routes:             routes,
-		trustKeys:          trustKeys,
-		operatorKeysDigest: operatorKeysDigest,
-		tdxTCBStatuses:     tdxTCBStatuses,
+		pins:                 pins,
+		meshCA:               caPool,
+		initDataHash:         initDataHash,
+		refValues:            refValues,
+		served:               served,
+		routes:               routes,
+		trustKeys:            trustKeys,
+		operatorKeysDigest:   operatorKeysDigest,
+		tdxTCBStatuses:       tdxTCBStatuses,
+		tdxCollateralProfile: cfg.tdxCollateralProfile,
 	}, nil
 }
 
 func (cfg config) acceptedTDXStatuses() ([]teetypes.TdxTcbStatus, error) {
 	switch {
+	case cfg.tdxOffline && cfg.tdxCollateralProfile != "":
+		return nil, fmt.Errorf("--tdx-offline excludes --tdx-collateral-profile")
 	case cfg.tdxOffline && len(cfg.tdxTCBStatuses) > 0:
 		return nil, fmt.Errorf("--tdx-offline excludes --tdx-tcb-status")
 	case cfg.tdxOffline:

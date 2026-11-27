@@ -193,3 +193,37 @@ func TestTDXTCBStatusRealEngine(t *testing.T) {
 		}
 	})
 }
+
+func TestVerifyRequiresSiteCollateralWhenSelected(t *testing.T) {
+	cfg := tdxFixtureConfig("json")
+	cfg.tdxCollateralProfile = "missing-site-profile"
+	code, oc, text := runVerify(t, t.Context(), cfg)
+	if code != exitFailed || oc.Verified || !strings.Contains(text, cfg.tdxCollateralProfile) {
+		t.Fatalf("exit %d, output %s; want a failure to read the required profile", code, text)
+	}
+	cfg.tdxOffline = true
+	code, _, text = runVerify(t, t.Context(), cfg)
+	if code != exitUsage || !strings.Contains(text, "--tdx-offline excludes --tdx-collateral-profile") {
+		t.Fatalf("exit %d, output %s; want conflicting flags", code, text)
+	}
+}
+
+func TestVerifyRefusesEmptySiteProfileFlag(t *testing.T) {
+	cmd := NewCmd(Defaults{})
+	if err := cmd.ParseFlags([]string{"--tdx-collateral-profile="}); err == nil {
+		t.Fatal("an explicitly empty profile must not fall back to the public Intel source")
+	}
+}
+
+func TestTDXMissingStatusDiagnostic(t *testing.T) {
+	for profile, want := range map[string]string{
+		"":          "online TDX verification requires a verified Intel TCB status and collateral expiry",
+		"site.json": "site-selected TDX verification requires a verified Intel TCB status and collateral expiry",
+	} {
+		oc := Outcome{Platform: "tdx", Verified: true}
+		applyTDXTCBStatus(&oc, &teetypes.VerificationResult{}, nil, config{tdxCollateralProfile: profile})
+		if oc.Verified || oc.Error != want {
+			t.Errorf("profile %q: verified %v, error %q, want %q", profile, oc.Verified, oc.Error, want)
+		}
+	}
+}

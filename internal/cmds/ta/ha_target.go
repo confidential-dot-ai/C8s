@@ -44,19 +44,18 @@ const (
 // the pin document naming this cluster's Trust Authority, and a decree records the member
 // id it reported and the address it answered at.
 type replica struct {
-	address string
-	taPin   string
-	// verifier decides whether the endpoint's evidence is a Trust Authority of this
-	// cluster, and is chosen when the flags are bound.
-	verifier taconn.PinVerifier
+	address              string
+	taPin                string
+	tdxCollateralProfile string
+	verifier             taconn.PinVerifier
 }
 
 // bindTargetFlags names the replica a decree is for, and the pin document it
 // is verified against. During an image roll the document names both images,
 // so it verifies the replica being replaced and the one replacing it.
 func bindTargetFlags(cmd *cobra.Command, target *replica) {
-	target.verifier = taconn.LocalVerifier{}
 	f := cmd.Flags()
+	cmdsutil.BindTDXCollateralProfile(f, &target.tdxCollateralProfile)
 	f.StringVar(&target.address, "target", "", "<host>[:"+strconv.Itoa(replicaPort)+"] of the replica this decree is for (REQUIRED)")
 	f.StringVar(&target.taPin, "ta-pin", "", "measurements document pinning this cluster's Trust Authority, which every replica read is verified against (REQUIRED)")
 	cmdsutil.RequireFlags(cmd, "target", "ta-pin")
@@ -65,8 +64,8 @@ func bindTargetFlags(cmd *cobra.Command, target *replica) {
 // bindDeliveryFlags names the replica a decree is posted to, which hands it to
 // the cluster's leader, and the pin document it is verified against.
 func bindDeliveryFlags(cmd *cobra.Command, to *replica) {
-	to.verifier = taconn.LocalVerifier{}
 	f := cmd.Flags()
+	cmdsutil.BindTDXCollateralProfile(f, &to.tdxCollateralProfile)
 	f.StringVar(&to.address, "to", "", "<host>[:"+strconv.Itoa(replicaPort)+"] of a replica of the cluster to post this decree to (REQUIRED)")
 	f.StringVar(&to.taPin, "ta-pin", "", "measurements document pinning this cluster's Trust Authority, which the replica posted to is verified against (REQUIRED)")
 	cmdsutil.RequireFlags(cmd, "to", "ta-pin")
@@ -119,11 +118,12 @@ func (r replica) dial(ctx context.Context) (*http.Client, netip.AddrPort, string
 		return nil, netip.AddrPort{}, "", err
 	}
 	options := taconn.Options{
-		URL:                base,
-		MeasurementsConfig: r.taPin,
-		Timeout:            replicaTimeout,
-		Verifier:           r.verifier,
-		DirectTA:           true,
+		URL:                  base,
+		MeasurementsConfig:   r.taPin,
+		Timeout:              replicaTimeout,
+		Verifier:             r.verifier,
+		TDXCollateralProfile: r.tdxCollateralProfile,
+		DirectTA:             true,
 	}
 	client, err := options.HTTPClient(ctx)
 	if err != nil {

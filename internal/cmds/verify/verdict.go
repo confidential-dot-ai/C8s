@@ -331,6 +331,13 @@ func replayedHistory(response remote.VerifyResponse, images []remote.ImagePin, p
 
 const tdxTCBUncheckedWarning = "Intel TCB status not checked: --tdx-offline accepts an out-of-date TDX platform"
 
+func (cfg config) tdxVerificationMode() string {
+	if cfg.tdxCollateralProfile != "" {
+		return "site-selected TDX verification"
+	}
+	return "online TDX verification"
+}
+
 func applyTDXTCBStatus(oc *Outcome, result *teetypes.VerificationResult, expiresAt *time.Time, cfg config) {
 	if oc.Error != "" || !isTDX(oc.Platform) {
 		return
@@ -341,7 +348,7 @@ func applyTDXTCBStatus(oc *Outcome, result *teetypes.VerificationResult, expires
 	}
 	if result.TCBStatus == nil || expiresAt == nil {
 		oc.Verified, oc.Partial = false, false
-		oc.Error = "online TDX verification requires a verified Intel TCB status and collateral expiry"
+		oc.Error = cfg.tdxVerificationMode() + " requires a verified Intel TCB status and collateral expiry"
 		return
 	}
 	oc.TDXTCBStatus = string(result.TCBStatus.TCBStatus)

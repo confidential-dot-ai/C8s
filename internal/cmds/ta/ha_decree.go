@@ -835,9 +835,10 @@ func (o admitOptions) appliedPins(ctx context.Context, c decreeConfig) (*tadecre
 // image, so the one --ta-pin verifies this replica and the target.
 func (o admitOptions) servingReplica() replica {
 	return replica{
-		address:  o.joined,
-		taPin:    o.target.taPin,
-		verifier: o.target.verifier,
+		address:              o.joined,
+		taPin:                o.target.taPin,
+		verifier:             o.target.verifier,
+		tdxCollateralProfile: o.target.tdxCollateralProfile,
 	}
 }
 

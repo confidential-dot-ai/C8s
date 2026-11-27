@@ -127,6 +127,8 @@ type config struct {
 	trustOperatorKeys  string
 	fetchAllowlists    string
 
+	tdxCollateralProfile string
+
 	output       string
 	showEvidence bool
 
@@ -163,7 +165,8 @@ bare report from AMD KDS (bounded by --timeout), so the machine running it needs
 outbound HTTPS to kdsintf.amd.com (no container runtime required). TDX evidence
 requires Intel's UpToDate TCB status by default, using fresh PCS collateral
 from api.trustedservices.intel.com and certificates.trustedservices.intel.com
-(bounded by --timeout). --tdx-offline skips the Intel TCB status check.
+(bounded by --timeout). --tdx-collateral-profile verifies Intel collateral
+selected by a trusted site. --tdx-offline skips the Intel TCB status check.
 
 Evidence sources:
   https://host:port      GET the discovery endpoint (/v1/discovery — cert +
@@ -248,6 +251,7 @@ responder chose).`,
 	f.UintVar(&cfg.minTCBSNP, "min-tcb-snp", 0, "minimum SNP firmware TCB component"+tcbSNPOnly)
 	f.UintVar(&cfg.minTCBMicrocode, "min-tcb-microcode", 0, "minimum microcode TCB component"+tcbSNPOnly)
 	f.StringSliceVar(&cfg.tdxTCBStatuses, "tdx-tcb-status", nil, "accepted Intel TCB status(es), default UpToDate on TDX (repeatable / comma-separated; never Revoked; every component must match one, so keep UpToDate when adding a weaker status). Checks fresh Intel PCS collateral within --timeout. Explicit values require TDX evidence; excludes --tdx-offline")
+	cmdsutil.BindTDXCollateralProfile(f, &cfg.tdxCollateralProfile)
 	f.BoolVar(&cfg.tdxOffline, "tdx-offline", false, "verify TDX without fetching Intel PCS collateral or checking Intel TCB status (UNSAFE); excludes --tdx-tcb-status")
 	f.StringSliceVar(&cfg.pinPolicies, "pin-policy", nil, "accepted allowlist policy digest(s) sha256:<hex> (repeatable / comma-separated): every policy in the node's replayed history, and the policy the leaf was issued under, must be one of these. The leaf's stamp counts as proven only with --mesh-ca; without it the verdict stays partial. Requires --operator-pkey or a TDX --image-policy-file image pinning an approver_key; excludes --trust-operator")
 	f.BoolVar(&cfg.trustOperator, "trust-operator", false, "accept every policy in the node's replayed history, and the policy the leaf was issued under, only when it carries a valid operator signature: each one is fetched from <target>/allowlist/objects/sha256/<hex>, re-hashed, and its stored write token checked against --trust-operator-keys. Only a document uploaded whole with a signed PUT /allowlist carries a token; a per-workload edit yields an unsigned policy. The leaf's stamp counts as proven only with --mesh-ca; without it the verdict stays partial. Requires --operator-pkey or a TDX --image-policy-file image pinning an approver_key, and --trust-operator-keys")
@@ -421,7 +425,7 @@ func verifyEvidence(ctx context.Context, cfg config, plan *verifyPlan, ev *evide
 		return verifyPodLeaf(cfg, plan, ev, held, out)
 	}
 	if isTDX(ev.platform) && !cfg.tdxOffline && cfg.timeout <= 0 {
-		fmt.Fprintln(errOut, "error: online TDX verification requires a positive --timeout")
+		fmt.Fprintf(errOut, "error: %s requires a positive --timeout\n", cfg.tdxVerificationMode())
 		return exitUsage
 	}
 	verifyCtx := ctx
@@ -470,7 +474,7 @@ func verifyPodLeaf(cfg config, plan *verifyPlan, ev *evidence, held *heldAllowli
 		Verified:   true,
 	}
 	if len(plan.policy.Policy.Measurements) > 0 || plan.pins.any() || !plan.refValues.Empty() || plan.initDataHash != nil ||
-		minTCBFromCfg(cfg) != nil || len(cfg.tdxTCBStatuses) > 0 {
+		minTCBFromCfg(cfg) != nil || len(cfg.tdxTCBStatuses) > 0 || cfg.tdxCollateralProfile != "" {
 		oc.Verified = false
 		oc.Error = "a Pod CVM leaf carries no hardware evidence, so measurement, register, init-data, TCB and policy-history pins cannot be checked against it; pin its stamps (--workload, --client-document, --sandbox-id, --allowlist) instead"
 	}
