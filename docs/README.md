@@ -50,6 +50,8 @@ Everyone: [overview.md](overview.md), then [guarantees.md](guarantees.md).
 | [routes-evidence.md](routes-evidence.md) | explanation | Proving which routes the router serves |
 | **Operating a cluster** | | |
 | [operator.md](operator.md) | explanation | Running a cluster: install, the Trust Authority, the router |
+| [offline-host.md](offline-host.md) | how-to | Install a qualified disconnected TDX host and bootstrap its worker |
+| [offline-guest.md](offline-guest.md) | how-to | Build the measured TA and worker against site trust anchors and enrolled GPUs |
 | [cloud-ta.md](cloud-ta.md) | how-to | Where a cloud cluster's TA runs, the flows it needs, node pins on AKS and GKE |
 | [launch-configuration.md](launch-configuration.md) | reference | The launch document a measured worker boots with |
 | [pod-cvm-provider.md](pod-cvm-provider.md) | reference | Scheduling annotated Pods as Cloud Pod CVMs |
@@ -59,6 +61,7 @@ Everyone: [overview.md](overview.md), then [guarantees.md](guarantees.md).
 | [upgrade.md](upgrade.md) | how-to | Upgrade a cluster to a new release |
 | **Verifying a deployment** | | |
 | [verify.md](verify.md) | how-to | Verify a deployment from outside |
+| [site-collateral.md](site-collateral.md) | how-to | Prepare, authenticate and refresh the site’s Intel collateral |
 | [measurements.md](measurements.md) | reference | What each platform measures, and the measurements config |
 | [offline-media.md](offline-media.md) | how-to | Prepare, qualify and verify installation media for a disconnected TDX site |
 | [releases.md](releases.md) | reference | Versioning, published artifacts, release verification |

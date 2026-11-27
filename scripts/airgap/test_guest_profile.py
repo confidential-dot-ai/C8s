@@ -23,6 +23,7 @@ class GuestProfileTest(unittest.TestCase):
             (site / "collateral/profile.json").write_text('{"target":"fixture"}')
             (site / "registry-ca.pem").write_text("fixture")
             (site / "target.json").write_text(json.dumps({
+                "gpuUEIDs": [f"enrolled-{n}" for n in range(8)],
                 "registry": "registry.site:5000", "dnsIPv4": "10.0.0.53", "ntpIPv4": "10.0.0.123",
             }))
             verifiers = site / "candidate"
@@ -60,6 +61,8 @@ class GuestProfileTest(unittest.TestCase):
             approval.write_text(json.dumps(hashes))
             BUILD(site, output, verifiers, approval)
             etc = output / "mkosi.extra/etc"
+            self.assertEqual(json.loads((etc / "c8s-site/gpu-ueids.json").read_text()),
+                             [f"enrolled-{n}" for n in range(8)])
             dns = (etc / "systemd/resolved.conf.d/90-site.conf").read_text()
             self.assertIn("DNS=\nDNS=10.0.0.53\n", dns)
             self.assertIn("FallbackDNS=\n", dns)
@@ -108,6 +111,10 @@ class GuestProfileTest(unittest.TestCase):
                     result = run_site()
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertEqual(hashlib.sha256(binary.read_bytes()).hexdigest(), hashes[role])
+                    unit = root / "etc/systemd/system/gpu-cc-enforce.service.d/90-enrollment.conf"
+                    self.assertEqual(unit.exists(), role == "worker")
+                    if role == "worker":
+                        self.assertIn("Environment=GPU_CC_ENROLLMENT=/etc/c8s-site/gpu-ueids.json", unit.read_text())
                     self.assertEqual(subprocess.run([binary]).returncode, 0 if role == "ta" else 1)
                     self.assertEqual((binary.parent / "c8s").read_bytes(), (verifiers / "c8s").read_bytes())
                     self.assertIn(b"matches the pinned connected verifier", run_site().stderr)

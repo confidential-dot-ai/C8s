@@ -105,7 +105,7 @@ verdict() {
     jq -cn --argjson n "$1" '{result: {
         signature_valid: true, platform: "tdx", report_data_match: true,
         claims: {nvidia_gpu: {overall_ok: true, nonce_binding_ok: true,
-            devices: ([range($n) | {arch: "HOPPER", secboot: true}] + [{arch: "LS10"}])}}}}' \
+            devices: ([range($n) | {arch: "HOPPER", ueid: ("device-" + tostring), secboot: true}] + [{arch: "LS10"}])}}}}' \
         | jq -c "${2:-.}"
 }
 attest_body='{"platform":"tdx","evidence":{"quote":"AAAA"},"nvidia_gpu":{"devices":[{"arch":"HOPPER"}]}}'
@@ -207,5 +207,35 @@ ok "fails when fewer GPUs attested than enumerated" not run_enforce
 ok "names the cause" stderr_has "gpus=1 want=2"
 api verify 200 "$(verdict 2)"
 ok "passes once both attest (the NVSwitch does not count)" run_enforce
+
+CASE="site GPU assignment"
+mkdir "$WORK/site"
+set_vendor 0x8086
+ok "stock gate ignores an unrelated site directory" run_enforce
+export GPU_CC_ENROLLMENT="$WORK/site/gpu-ueids.json"
+ok "absent measured assignment fails before the GPU-less shortcut" not run_enforce
+jq -cn '[range(8) | "device-" + tostring] | reverse' > "$WORK/site/gpu-ueids.json"
+ok "the site worker refuses a launch with all GPUs detached" not run_enforce
+set_vendor 0x10de
+SMI_GPUS=8 stub_smi 0 "CC status: ON"
+all_up
+api verify 200 "$(verdict 8)"
+ok "eight distinct enrolled UEIDs succeed regardless of order" run_enforce
+api verify 200 "$(verdict 7)"
+ok "withholding one still-assigned GPU fails" not run_enforce
+api verify 200 "$(verdict 8 '.result.claims.nvidia_gpu.devices[6].ueid="device-7"')"
+ok "a duplicate evidence identity fails" not run_enforce
+api verify 200 "$(verdict 8 '.result.claims.nvidia_gpu.devices[6].ueid="other"')"
+ok "a substituted device identity fails" not run_enforce
+api verify 200 "$(verdict 8 'del(.result.claims.nvidia_gpu.devices[6].ueid)')"
+ok "a missing device identity fails" not run_enforce
+api verify 200 "$(verdict 8 '.result.claims.nvidia_gpu.nonce_binding_ok=false')"
+ok "enrolled devices with unbound evidence fail" not run_enforce
+api verify 200 "$(verdict 8)"
+SMI_GPUS=7 stub_smi 0 "CC status: ON"
+ok "fewer CC-checked devices fail even with eight evidence claims" not run_enforce
+SMI_GPUS=8 stub_smi 0 "CC status: ON"
+jq -cn '[range(8) | "repeated"]' > "$WORK/site/gpu-ueids.json"
+ok "a duplicate measured assignment fails" not run_enforce
 
 summarize "gpu-cc-enforce"

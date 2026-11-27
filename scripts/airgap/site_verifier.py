@@ -67,6 +67,11 @@ def finalize(root: Path, profile: Path) -> None:
         detail = check.stderr.decode(errors="replace").strip() or "unexpected CLI usage"
         raise ValueError(f"the measured c8s helper failed its in-guest collateral selected-tdx PROFILE probe: {detail}")
 
+    if worker:
+        unit = root / "etc/systemd/system/gpu-cc-enforce.service.d/90-enrollment.conf"
+        unit.parent.mkdir(parents=True, exist_ok=True)
+        unit.write_text("[Service]\nEnvironment=GPU_CC_ENROLLMENT=/etc/c8s-site/gpu-ueids.json\n")
+
 
 if __name__ == "__main__":
     try:

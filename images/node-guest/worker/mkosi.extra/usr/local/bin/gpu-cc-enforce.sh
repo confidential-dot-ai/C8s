@@ -36,6 +36,13 @@ fail() {
     exit 1
 }
 
+site_ueids=""
+if [ -n "${GPU_CC_ENROLLMENT:-}" ]; then
+    site_ueids=$(jq -esc 'select(length == 1) | .[0] | select(type == "array" and
+        length == 8 and all(.[]; type == "string" and test("\\S")) and (unique | length == 8)) | sort' \
+        "$GPU_CC_ENROLLMENT") || fail "missing or invalid measured GPU assignment"
+fi
+
 present=0
 for vendor in /sys/bus/pci/devices/*/vendor; do
     [ -e "$vendor" ] || continue
@@ -45,6 +52,7 @@ for vendor in /sys/bus/pci/devices/*/vendor; do
     fi
 done
 if [ "$present" = 0 ]; then
+    [ -z "$site_ueids" ] || fail "none of the assigned site GPUs are present"
     echo "gpu-cc-enforce: no NVIDIA GPU present; nothing to enforce"
     exit 0
 fi
@@ -70,6 +78,12 @@ done
 cc_gpu_list=$(nvidia-smi --query-gpu=index,uuid --format=csv,noheader 2>&1) \
     || fail "nvidia-smi --query-gpu failed: $cc_gpu_list"
 [ -n "$cc_gpu_list" ] || fail "nvidia-smi enumerates no GPU despite CC mode on"
+if [ -n "$site_ueids" ]; then
+    printf '%s\n' "$cc_gpu_list" | awk -F',[[:space:]]*' '
+        NF != 2 || $1 !~ /^[0-9]+$/ || $2 == "" || indices[$1]++ || uuids[$2]++ { exit 1 }
+        END { if (NR != 8) exit 1 }
+    ' || fail "driver did not enumerate eight distinct assigned GPUs for the CC mode check"
+fi
 while read -r cc_gpu_line; do
     cc_gpu_index=${cc_gpu_line%%,*}
     cc_gpu_uuid=${cc_gpu_line#*, }
@@ -150,6 +164,13 @@ verified=$(printf '%s' "$verdict" | jq -r --argjson want "$gpu_count" '
       else "bad signature_valid=\($r.signature_valid) report_data_match=\($r.report_data_match) overall_ok=\($g.overall_ok) nonce_binding_ok=\($g.nonce_binding_ok) gpus=\($gpus) want=\($want)"
       end') || fail "cannot parse /verify response: $verdict"
 case "$verified" in
-ok\ *) echo "gpu-cc-enforce: ${verified#ok } NVIDIA GPU(s) attested (platform $platform)" ;;
+ok\ *) ;;
 *) fail "GPU attestation rejected: ${verified#bad }" ;;
 esac
+if [ -n "$site_ueids" ]; then
+    printf '%s\n' "$verdict" | jq -e --argjson expected "$site_ueids" --argjson count "$gpu_count" '
+        .result.platform == "tdx" and $count == ($expected | length) and
+        ([.result.claims.nvidia_gpu.devices[] | select(.arch != "LS10") | .ueid] | sort) == $expected
+    ' >/dev/null || fail "verified GPU UEIDs do not match the measured site assignment"
+fi
+echo "gpu-cc-enforce: ${verified#ok } NVIDIA GPU(s) attested (platform $platform)"

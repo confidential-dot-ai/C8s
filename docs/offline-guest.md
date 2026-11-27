@@ -18,6 +18,10 @@ activate a snapshot containing NVIDIA collateral. The released C8s binaries cann
 On the trusted builder, prepare `site/target.json` with `registry` (the
 private registry's host and port), `dnsIPv4` (the resolver before cluster
 DNS exists) and `ntpIPv4` (a private time server for the service clock).
+List eight independently enrolled evidence UEIDs in `gpuUEIDs`. The profile selects this inventory in a measured
+service drop-in. The worker requires this exact set in its nonce-bound, verified GPU claims before starting
+containerd. Missing GPUs, substituted identities and duplicate evidence fail
+the boot. Obtain UEIDs from authenticated evidence during enrollment.
 Include `site/registry-ca.pem` and the independent site's
 `site/collateral/profile.json`. Use the verifier release's reviewed full
 configuration as `site/attestation-api.toml`. It must configure current
