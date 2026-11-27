@@ -826,18 +826,14 @@ func TestCheckAdoptedEntries(t *testing.T) {
 		tmpl.Spec.Containers[0].VolumeMounts = []corev1.VolumeMount{{Name: "scratch", MountPath: "/scratch"}}
 		return tmpl
 	}
-	image := func(digest string) map[string]any {
-		return map[string]any{"repository": "example/component", "digest": digest}
-	}
-	values := func(workloads map[string]any, extra map[string]any) map[string]any {
+	values := func(workloads map[string]any) map[string]any {
 		if workloads == nil {
 			workloads = map[string]any{}
 		}
-		v := map[string]any{
+		return map[string]any{
 			"router":         map[string]any{"enabled": true, "nginx": map[string]any{"image": map[string]any{"repository": "nginx/nginx-unprivileged", "digest": dN}}},
 			"nriImagePolicy": map[string]any{"bootstrapAllowlist": map[string]any{"workloads": workloads}},
 		}
-		return helmchart.MergeValues(v, extra)
 	}
 	anyContainer := func(digest string) map[string]any {
 		return map[string]any{"digest": digest, "command": map[string]any{"policy": "any"}, "args": map[string]any{"policy": "any"}, "mounts": map[string]any{"policy": "any"}}
@@ -849,16 +845,15 @@ func TestCheckAdoptedEntries(t *testing.T) {
 		values  map[string]any
 		wantErr string
 	}{
-		{"multi-container pod beside per-digest entries", map[string]corev1.PodTemplateSpec{"web": pod(dA, dB)}, values(perDigest, nil), ""},
-		{"single image with an unconstrained per-digest entry", map[string]corev1.PodTemplateSpec{"web": pod(dA)}, values(perDigest, nil), "entries a also admit"},
+		{"multi-container pod beside per-digest entries", map[string]corev1.PodTemplateSpec{"web": pod(dA, dB)}, values(perDigest), ""},
+		{"single image with an unconstrained per-digest entry", map[string]corev1.PodTemplateSpec{"web": pod(dA)}, values(perDigest), "entries a also admit"},
 		{"argv-pinned -f entry counts, as on the Trust Authority", map[string]corev1.PodTemplateSpec{"web": pod(dA)},
-			values(map[string]any{"a": map[string]any{"containers": []any{map[string]any{"digest": dA, "command": map[string]any{"policy": "exact", "argv": []any{"/serve"}}, "mounts": map[string]any{"policy": "any"}}}}}, nil), "entries a also admit"},
-		{"own -f entry is replaced", map[string]corev1.PodTemplateSpec{"web": pod(dA)}, values(map[string]any{"web": map[string]any{"containers": []any{anyContainer(dA)}}}, nil), ""},
-		{"two adoptions, one image set", map[string]corev1.PodTemplateSpec{"web": pod(dA, dB), "api": pod(dA, dB)}, values(nil, nil), "entries web also admit"},
-		{"init image does not make a pod ambiguous", map[string]corev1.PodTemplateSpec{"web": withInit(pod(dA), dB), "api": pod(dB)}, values(nil, nil), ""},
-		{"same image, different mounts", map[string]corev1.PodTemplateSpec{"web": pod(dA), "api": withScratch(pod(dA))}, values(nil, nil), ""},
-		{"component image", map[string]corev1.PodTemplateSpec{"web": pod(dA)}, values(nil, map[string]any{"ta": map[string]any{"image": image(dA)}}), ""},
-		{"router nginx image", map[string]corev1.PodTemplateSpec{"web": pod(dN)}, values(nil, nil), ""},
+			values(map[string]any{"a": map[string]any{"containers": []any{map[string]any{"digest": dA, "command": map[string]any{"policy": "exact", "argv": []any{"/serve"}}, "mounts": map[string]any{"policy": "any"}}}}}), "entries a also admit"},
+		{"own -f entry is replaced", map[string]corev1.PodTemplateSpec{"web": pod(dA)}, values(map[string]any{"web": map[string]any{"containers": []any{anyContainer(dA)}}}), ""},
+		{"two adoptions, one image set", map[string]corev1.PodTemplateSpec{"web": pod(dA, dB), "api": pod(dA, dB)}, values(nil), "entries web also admit"},
+		{"init image does not make a pod ambiguous", map[string]corev1.PodTemplateSpec{"web": withInit(pod(dA), dB), "api": pod(dB)}, values(nil), ""},
+		{"same image, different mounts", map[string]corev1.PodTemplateSpec{"web": pod(dA), "api": withScratch(pod(dA))}, values(nil), ""},
+		{"router nginx image", map[string]corev1.PodTemplateSpec{"web": pod(dN)}, values(nil), ""},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1351,7 +1346,7 @@ func TestAvailableImageDigests(t *testing.T) {
 		initDigest      = "sha256:4444444444444444444444444444444444444444444444444444444444444444"
 	)
 	values := map[string]any{
-		"ta": map[string]any{"image": map[string]any{"digest": componentDigest}},
+		"attestationApi": map[string]any{"image": map[string]any{"digest": componentDigest}},
 		"nriImagePolicy": map[string]any{"bootstrapAllowlist": map[string]any{
 			"workloads": map[string]any{
 				"etcd": map[string]any{"containers": []any{map[string]any{"digest": bootDigest}}},
@@ -1362,7 +1357,7 @@ func TestAvailableImageDigests(t *testing.T) {
 			},
 		}},
 	}
-	got := availableImageDigests(values, []c8sComponent{{valuesPath: "ta.image"}, {valuesPath: "volumed.image"}}, nil)
+	got := availableImageDigests(values, []c8sComponent{{valuesPath: "attestationApi.image"}, {valuesPath: "volumed.image"}}, nil)
 	want := map[string]bool{componentDigest: true, bootDigest: true, workloadDigest: true, initDigest: true}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("availableImageDigests = %v, want %v", got, want)
