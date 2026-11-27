@@ -52,6 +52,7 @@ launch-file-bound --ta-image-policy-file.`,
 	f.StringVar(&opts.LaunchKeyPath, "launch-key", "", "existing pod launch key PEM (default: generate <out>/pod.key)")
 	f.StringVar(&opts.TAAddress, "ta-address", "", "external Trust Authority host:port")
 	f.StringVar(&opts.TAImagePolicyPath, "ta-image-policy-file", "", "measurements document binding the external Trust Authority image to its exact launch file")
+	f.StringVar(&opts.CDSChain, "cds-chain", "", "<seq>:<hash> of one entry of the Trust Authority replica set's chain the pod CVM pins (docs/ta-ha.md)")
 	cmdsutil.RequireFlags(cmd, "out", "cluster-id", "image-manifest", "name", "ta-address", "ta-image-policy-file")
 	return cmd
 }

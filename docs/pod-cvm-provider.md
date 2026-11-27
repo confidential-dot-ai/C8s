@@ -80,9 +80,12 @@ TEE are supported. Every generic launch
 document carries this explicit TA trust. Changing it affects new records only;
 existing Pod records retain their signed bytes.
 
-The provider takes no TA pin decree: after a TA image roll, deploy an updated
-`taImagePolicyFile`. Existing frozen Pod and assignment records keep their
-original trust.
+For a TA replica set, `cdsChain` (`<seq>:<hash>` of an entry of its chain,
+[ta-ha.md](ta-ha.md)) is carried in every pod's document. The pod CVM then
+follows the builds the chain accepts, as a worker does, and needs no new
+`taImagePolicyFile` after a TA image roll. Without it, after a roll deploy an
+updated `taImagePolicyFile`. Existing frozen Pod and assignment records keep
+their original trust.
 
 `workloadsFile` holds the `c8s.allowlist/v1` entries the provider signs into
 every assignment; its entries may be empty. `meshPeers` lists the static mesh

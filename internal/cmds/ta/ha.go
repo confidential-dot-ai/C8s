@@ -97,7 +97,7 @@ func startHA(ctx context.Context, cfg config, mesh *issuer.MeshCA, store *allowl
 			return ownBuildPasses(serving, measurements, cfg.attestationApiURL)
 		},
 		StoreTimeout: cfg.ha.storeTimeout,
-		Validate:     func(b cdschain.Body) error { return validateRoutes(b, mesh, store) },
+		Validate:     func(b cdschain.Body) error { return validateEntry(b, cfg.measured.PodImages, mesh, store) },
 		WarnBytes:    cfg.ha.warnBytes,
 		WarnEntries:  cfg.ha.warnEntries,
 	}, chainStore)
@@ -200,6 +200,7 @@ func servePolicy(store *allowlist.Store, s *cdschain.State, seed *pkgallowlist.A
 type chainNodes struct {
 	set    *nodeSet
 	launch refvalues.ReferenceValues
+	pods   []remote.ImagePin
 	retire func()
 	served string
 }
@@ -210,19 +211,70 @@ func (c *chainNodes) serve(measurements string) error {
 	if measurements == c.served {
 		return nil
 	}
-	values := c.launch
-	if measurements != "" {
-		var err error
-		if values, err = refvalues.Parse([]byte(measurements)); err != nil {
-			return err
-		}
-		slog.Info("Trust Authority certifies the chain's node images", "images", len(values.Images))
+	values, err := c.values(measurements)
+	if err != nil {
+		return err
 	}
 	if err := c.set.set(values); err != nil {
 		return err
 	}
 	c.served = measurements
 	c.retire()
+	return nil
+}
+
+// values is the set measurements names. A set that names a Pod launch key
+// as a node authority certifies no node, on every replica alike.
+func (c *chainNodes) values(measurements string) (refvalues.ReferenceValues, error) {
+	if measurements == "" {
+		return c.launch, nil
+	}
+	values, err := refvalues.Parse([]byte(measurements))
+	if err != nil {
+		return values, err
+	}
+	if err := taconfig.ValidatePodNodeAuthorities(c.pods, values.Images); err != nil {
+		slog.Error("Trust Authority replica certifies no node: the chain's node images name a Pod launch key", "error", err)
+		return refvalues.ReferenceValues{Family: values.Family}, nil
+	}
+	slog.Info("Trust Authority certifies the chain's node images", "images", len(values.Images))
+	return values, nil
+}
+
+// validateEntry checks an entry's payload beyond the chain's own rules
+// before any replica takes it.
+func validateEntry(b cdschain.Body, pods []remote.ImagePin, mesh *issuer.MeshCA, store *allowlist.Store) error {
+	if err := validatePodAuthorities(b, pods); err != nil {
+		return err
+	}
+	return validateRoutes(b, mesh, store)
+}
+
+// validatePodAuthorities refuses a nodes or operator-keys entry naming a Pod
+// launch key of the launch file as a node or operator authority.
+func validatePodAuthorities(b cdschain.Body, pods []remote.ImagePin) error {
+	switch b.Type {
+	case cdschain.TypeNodes:
+		var p cdschain.Nodes
+		if err := cdschain.DecodeStrict(b.Payload, &p); err != nil {
+			return err
+		}
+		values, err := refvalues.Parse([]byte(p.Nodes))
+		if err != nil {
+			return err
+		}
+		return taconfig.ValidatePodNodeAuthorities(pods, values.Images)
+	case cdschain.TypeOperatorKeys:
+		var p cdschain.OperatorKeys
+		if err := cdschain.DecodeStrict(b.Payload, &p); err != nil {
+			return err
+		}
+		keys, err := operatorauth.ParsePublicKeysPEM([]byte(p.Keys))
+		if err != nil {
+			return err
+		}
+		return taconfig.ValidatePodOperatorAuthorities(pods, keys)
+	}
 	return nil
 }
 
