@@ -38,7 +38,7 @@ func NewCmd() *cobra.Command {
 
 	flags := cmd.Flags()
 
-	flags.StringVar(&cfg.configPath, "config", "", "path to the launch file this VM was launched with (REQUIRED): the Trust Authority configuration document (c8s-ta/v1), or a Kata Containers initdata document declaring its platform's algorithm (sha256 on SEV-SNP, sha384 on TDX) and carrying it as its "+taconfig.ConfigFile+" entry. Trust Authority serves the cluster it describes only if a verified self-report binds the file byte for byte: in HOST_DATA on SEV-SNP; on TDX in the RTMR[3] seed, or in MRCONFIGID beside an all-zero RTMR[3]")
+	flags.StringVar(&cfg.configPath, "config", "", "path to the launch file this VM was launched with (REQUIRED): the Trust Authority configuration document (c8s-ta/v1), or a Kata Containers initdata document declaring its platform's algorithm (sha256 on SEV-SNP, sha384 on TDX) and carrying it as its "+taconfig.ConfigFile+" entry beside a guest agent policy ("+taconfig.PolicyFile+"). Trust Authority serves the cluster it describes only if a verified self-report binds the file byte for byte: in HOST_DATA on SEV-SNP; on TDX in the RTMR[3] seed, or in MRCONFIGID beside an all-zero RTMR[3]")
 	flags.StringVar(&cfg.host, "host", "0.0.0.0", "listen address; auto selects this VM's primary IPv4 address")
 	flags.IntVarP(&cfg.port, "port", "p", 8443, "listen port")
 	flags.StringVar(&cfg.logLevel, "log-level", "info", "log level: debug, info, warn, error")

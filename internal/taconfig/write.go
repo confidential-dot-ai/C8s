@@ -10,6 +10,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/initdata"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
 )
@@ -17,7 +18,7 @@ import (
 // The pair an operator launches and verifies a Trust Authority VM with, named the same by
 // every generator that writes them.
 const (
-	ConfigFile = "ta-config.yaml"
+	ConfigFile = initdata.ConfigFile
 	PinFile    = "ta-pin.json"
 )
 

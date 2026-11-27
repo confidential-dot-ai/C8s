@@ -2,6 +2,7 @@ package cmdsutil
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"os"
@@ -387,7 +388,7 @@ func TestTALaunchFileRequiresAnUntouchedRTMR3BesideMRCONFIGID(t *testing.T) {
 	hex96 := func(b string) string { return strings.Repeat(b, 48) }
 	document := func(rtmr3, field string) []byte {
 		return []byte(`{"schema_version":"3","tee":"tdx","measurements":[{"name":"ta","mrtd":"` + hex96("aa") +
-			`","rtmr":[null,"` + hex96("bb") + `","` + hex96("cc") + `"` + rtmr3 + `],"launch_file":"clusterID: test\n"` + field + `}]}`)
+			`","rtmr":[null,"` + hex96("bb") + `","` + hex96("cc") + `"` + rtmr3 + `],"launch_file":"schemaVersion: c8s-ta/v1\n"` + field + `}]}`)
 	}
 	initData := `,"launch_file_field":"init_data"`
 	for _, tc := range []struct {
@@ -410,6 +411,58 @@ func TestTALaunchFileRequiresAnUntouchedRTMR3BesideMRCONFIGID(t *testing.T) {
 		}
 		if tc.wantErr && err != nil && !strings.Contains(err.Error(), "RTMR[3]") {
 			t.Errorf("%s: refusal %q does not name RTMR[3]", tc.name, err)
+		}
+	}
+}
+
+// Every reader of a Trust Authority pin comes through TALaunchFile, so a pin
+// embedding an initdata document no Trust Authority starts from is refused
+// here: one with no agent policy, or one declaring another family's digest.
+func TestTALaunchFileRefusesAnInitdataDocumentNoTrustAuthorityStartsFrom(t *testing.T) {
+	hex96 := func(b string) string { return strings.Repeat(b, 48) }
+	const policy = "\"policy.rego\" = \"package agent_policy\"\n"
+	initdata := func(algorithm, entries string) string {
+		return "algorithm = \"" + algorithm + "\"\n[data]\n\"ta-config.yaml\" = \"schemaVersion: c8s-ta/v1\"\n" + entries
+	}
+	for _, tc := range []struct {
+		name, launchFile, want string
+		// taOnly marks what a pin naming a Trust Authority alone refuses and
+		// a set that may pin other guests does not judge.
+		taOnly bool
+	}{
+		{name: "a document with a policy", launchFile: initdata("sha384", policy)},
+		{name: "a bare configuration", launchFile: "schemaVersion: c8s-ta/v1\n"},
+		{name: "a document with no policy", launchFile: initdata("sha384", ""), want: "policy.rego"},
+		{name: "another family's digest", launchFile: initdata("sha256", policy), want: "sha384"},
+		{name: "bytes that are no configuration", launchFile: "x", want: "YAML mapping", taOnly: true},
+		{name: "a schema behind an anchor", launchFile: "schemaVersion: &v c8s-ta/v1\n", want: "configuration", taOnly: true},
+		{name: "another guest's configuration", launchFile: "schemaVersion: c8s-worker/v1\n", want: "c8s-ta/v1", taOnly: true},
+		{name: "a file over the cap", launchFile: "# " + strings.Repeat("x", 1024*1024) + "\n", want: "bytes"},
+		{name: "a document over the cap", launchFile: initdata("sha384", policy) + "# " + strings.Repeat("x", 1024*1024) + "\n", want: "bytes"},
+		{name: "a document with another entry", launchFile: initdata("sha384", policy) + "\"other\" = 1\n", want: ""},
+	} {
+		launchFile, err := json.Marshal(tc.launchFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		values, err := refvalues.Parse([]byte(`{"schema_version":"2","tee":"tdx","measurements":[{"name":"ta","mrtd":"` + hex96("aa") +
+			`","rtmr":[null,"` + hex96("bb") + `","` + hex96("cc") + `"],"launch_file":` + string(launchFile) + `}]}`))
+		if err != nil {
+			t.Fatalf("%s: parse: %v", tc.name, err)
+		}
+		got, err := TALaunchFile(values)
+		switch {
+		case tc.want == "" && (err != nil || string(got) != tc.launchFile):
+			t.Errorf("%s: TALaunchFile = %q, %v, want the launch file", tc.name, got, err)
+		case tc.want != "" && (!errors.Is(err, ErrTAPinUnbound) || !strings.Contains(err.Error(), tc.want)):
+			t.Errorf("%s: TALaunchFile = %v, want a refusal naming %q", tc.name, err, tc.want)
+		}
+		// A set that may also pin other guests refuses the same entries.
+		// A file over the cap is not decoded there: no Trust Authority reads
+		// one as initdata, and it may be another guest's.
+		refused := tc.want != "" && !tc.taOnly && !strings.Contains(tc.want, "bytes")
+		if err := CheckLaunchFiles(values); (err != nil) != refused {
+			t.Errorf("%s: CheckLaunchFiles = %v, want refusal %v", tc.name, err, refused)
 		}
 	}
 }

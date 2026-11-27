@@ -128,7 +128,10 @@ func initdataLaunchFile(t *testing.T, algorithm string) (launchFile, configurati
 	launchFile, err := toml.Marshal(map[string]any{
 		"version":   "0.1.0",
 		"algorithm": algorithm,
-		"data":      map[string]string{taconfig.ConfigFile: string(configuration)},
+		"data": map[string]string{
+			taconfig.ConfigFile: string(configuration),
+			taconfig.PolicyFile: "package agent_policy\n",
+		},
 	})
 	if err != nil {
 		t.Fatal(err)

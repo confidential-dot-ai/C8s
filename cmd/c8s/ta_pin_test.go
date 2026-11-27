@@ -193,7 +193,7 @@ func mustJSONString(s string) string {
 // The pin is written by hand: taconfig.Pin refuses this launch file itself, so
 // only a pin from another writer can carry it here.
 func TestTAPinRefusesAnInitdataDigestOfAnotherFamily(t *testing.T) {
-	launchFile, err := json.Marshal("algorithm = \"sha384\"\n[data]\n\"ta-config.yaml\" = \"clusterID: test\"\n")
+	launchFile, err := json.Marshal("algorithm = \"sha384\"\n[data]\n\"ta-config.yaml\" = \"clusterID: test\"\n\"policy.rego\" = \"package agent_policy\"\n")
 	if err != nil {
 		t.Fatal(err)
 	}

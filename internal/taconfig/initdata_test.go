@@ -8,6 +8,7 @@ import (
 	toml "github.com/pelletier/go-toml/v2"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/initdata"
 )
 
 // The launch binding proves an initdata document's bytes, not the digest it
@@ -39,9 +40,24 @@ func TestCheckInitdataFamilyHoldsTheDeclaredDigestToTheFamily(t *testing.T) {
 	}
 }
 
+// testPolicy is the least an agent policy entry holds: the package the
+// guest agent evaluates.
+const testPolicy = "package agent_policy\n"
+
 // initdataDocument renders the initdata document a Kata Containers runtime
-// binds, as its operator writes it.
+// binds, as its operator writes it, with an agent policy unless entries
+// bring their own.
 func initdataDocument(t *testing.T, algorithm string, entries map[string]string) []byte {
+	t.Helper()
+	withPolicy := map[string]string{PolicyFile: testPolicy}
+	for name, entry := range entries {
+		withPolicy[name] = entry
+	}
+	return bareInitdataDocument(t, algorithm, withPolicy)
+}
+
+// bareInitdataDocument is initdataDocument with the entries given and no more.
+func bareInitdataDocument(t *testing.T, algorithm string, entries map[string]string) []byte {
 	t.Helper()
 	data, err := toml.Marshal(map[string]any{
 		"version":   "0.1.0",
@@ -113,7 +129,7 @@ func TestParseReadsInitdataKeysExactly(t *testing.T) {
 	second := first
 	second.ClusterID = "other"
 	entry := func(table string, document wire) string {
-		return "[" + table + "]\n\"" + ConfigFile + "\" = '''\n" + string(render(t, document)) + "'''\n"
+		return "[" + table + "]\n\"" + ConfigFile + "\" = '''\n" + string(render(t, document)) + "'''\n\"" + PolicyFile + "\" = \"\"\"" + testPolicy + "\"\"\"\n"
 	}
 	head := "algorithm = \"sha256\"\n"
 
@@ -152,7 +168,7 @@ func TestParseReadsAnInitdataDocumentUpToTheCap(t *testing.T) {
 	_, operatorPEM := testKey(t)
 	_, anchorPEM := testKey(t)
 	document := testDocument(t, operatorPEM, anchorPEM)
-	head := "algorithm = \"sha256\"\n[data]\n\"" + ConfigFile + "\" = '''\n" + string(render(t, document)) + "'''\n# "
+	head := "algorithm = \"sha256\"\n[data]\n\"" + ConfigFile + "\" = '''\n" + string(render(t, document)) + "'''\n\"" + PolicyFile + "\" = \"\"\"" + testPolicy + "\"\"\"\n# "
 	atCap := head + strings.Repeat("x", maxInitdataSize-len(head)-1) + "\n"
 	if len(atCap) != maxInitdataSize {
 		t.Fatalf("fixture is %d bytes, want %d", len(atCap), maxInitdataSize)
@@ -204,7 +220,7 @@ func TestAConfigurationIsNotTOML(t *testing.T) {
 			if err := toml.Unmarshal(configuration, &document); err == nil {
 				t.Fatal("a configuration parsed as TOML")
 			}
-			read, algorithm, err := readInitdata(configuration)
+			read, algorithm, err := initdata.Read(configuration)
 			if err != nil || algorithm != "" || string(read) != string(configuration) {
 				t.Fatalf("read as %q declaring %q, %v; want the file itself", read, algorithm, err)
 			}
@@ -237,5 +253,40 @@ func TestAnOversizedInitdataDocumentIsRefusedNamingTheCap(t *testing.T) {
 	}
 	if _, err := ReadCluster(launchFile); err == nil || !strings.Contains(err.Error(), "an initdata document may be") {
 		t.Fatalf("ReadCluster = %v, want a refusal naming the cap", err)
+	}
+}
+
+// The launch binding covers the guest and this document, and the host names
+// the containers afterwards. A document with no agent policy would identify a
+// configuration and no program, so it is refused wherever it is read.
+func TestAnInitdataDocumentMustCarryAnAgentPolicy(t *testing.T) {
+	_, operatorPEM := testKey(t)
+	_, anchorPEM := testKey(t)
+	configuration := string(render(t, testDocument(t, operatorPEM, anchorPEM)))
+	for name, tc := range map[string]struct {
+		entries map[string]string
+		want    string
+	}{
+		"no policy entry":          {map[string]string{ConfigFile: configuration}, "no \"policy.rego\" entry"},
+		"an empty policy":          {map[string]string{ConfigFile: configuration, PolicyFile: ""}, "package agent_policy"},
+		"another package":          {map[string]string{ConfigFile: configuration, PolicyFile: "package other\n"}, "package agent_policy"},
+		"the package commented":    {map[string]string{ConfigFile: configuration, PolicyFile: "# package agent_policy\n"}, "package agent_policy"},
+		"the package after a rule": {map[string]string{ConfigFile: configuration, PolicyFile: "default x := false\npackage agent_policy\n"}, "package agent_policy"},
+		"a longer package name":    {map[string]string{ConfigFile: configuration, PolicyFile: "package agent_policy.extra\n"}, "package agent_policy"},
+	} {
+		launchFile := bareInitdataDocument(t, InitdataAlgorithmSNP, tc.entries)
+		if _, err := Parse(launchFile); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: Parse = %v, want a refusal naming %q", name, err, tc.want)
+		}
+		if err := CheckInitdataFamily(launchFile, teetypes.FamilySNP); err == nil {
+			t.Errorf("%s: a pin reader accepted the document", name)
+		}
+	}
+	withPolicy := bareInitdataDocument(t, InitdataAlgorithmSNP, map[string]string{
+		ConfigFile: configuration,
+		PolicyFile: "# generated\n  package   agent_policy  # the agent's\ndefault CreateContainerRequest := false\n",
+	})
+	if _, err := Parse(withPolicy); err != nil {
+		t.Fatalf("a document with a policy was refused: %v", err)
 	}
 }

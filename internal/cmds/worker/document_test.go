@@ -235,7 +235,7 @@ func TestParseRefusesEachMalformedField(t *testing.T) {
 		{"Trust Authority pin entries disagreeing on node subnets", func(d *Document) {
 			d.TA.Measurements = testTAPin(t, taConfig(t, "192.168.0.0/16"), taConfig(t, "172.16.0.0/12"))
 		}, "binds another configuration"},
-		{"Trust Authority pin binding something else", func(d *Document) { d.TA.Measurements = testTAPin(t, "kind: Pod\n") }, "the pinned Trust Authority configuration"},
+		{"Trust Authority pin binding something else", func(d *Document) { d.TA.Measurements = testTAPin(t, "kind: Pod\n") }, "schemaVersion"},
 		{"router", func(d *Document) { d.Router = &nodeservices.Router{ACMEEmail: "ops@acme.example"} }, "require router.hostnames"},
 
 		{"api server with a scheme", func(d *Document) { d.Kubernetes.APIServer = "https://acme.k8s.example:443" }, "must not carry a scheme"},

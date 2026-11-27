@@ -12,6 +12,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/initdata"
 )
 
 // document is a measurements document a decree carries, exactly as the
@@ -188,9 +189,11 @@ func (p PinDocument) check() error {
 	case "":
 		return nil
 	case launchFileFieldInitData:
-		// Any launch file stands in: the checks are on the entries, which must
-		// name one Trust Authority VM however they are later bound.
-		if _, err := cmdsutil.TALaunchFile(p.bound(images, []byte{0})); err != nil {
+		// A minimal configuration stands in for the launch file: the checks
+		// are on the entries, which must name one Trust Authority VM however
+		// they are later bound.
+		standIn := []byte("schemaVersion: " + initdata.ConfigSchema + "\n")
+		if _, err := cmdsutil.TALaunchFile(p.bound(images, standIn)); err != nil {
 			return fmt.Errorf("launch_file_field %q: the entries %w", p.LaunchFileField, err)
 		}
 		return nil

@@ -16,13 +16,14 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/initdata"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/yamlutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/operatorauth"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
-const SchemaVersion = "c8s-ta/v1"
+const SchemaVersion = initdata.ConfigSchema
 
 type Config struct {
 	// ClusterID names the cluster. Two clusters sharing an image and operator

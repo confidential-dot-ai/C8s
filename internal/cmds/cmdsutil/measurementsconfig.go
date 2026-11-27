@@ -14,6 +14,7 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
+	"github.com/confidential-dot-ai/confidential-kubernetes/internal/initdata"
 	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/armtls"
 )
 
@@ -87,7 +88,8 @@ var ErrTAPinUnbound = errors.New("is not one Trust Authority VM's identity")
 
 // TALaunchFile is the configuration a pin set identifies its Trust Authority by: every
 // entry must pin the registers its family identifies a guest by, and bind the
-// same launch file; a set binding none, or two, names no one VM. A Trust Authority is the
+// same launch file; a set binding none, or two, names no one VM, and neither
+// does an initdata document no Trust Authority starts from. A Trust Authority is the
 // cluster's trust root, and its image alone says nothing about the cluster it
 // serves — the configuration does, and the launch binding is what proves it.
 func TALaunchFile(values refvalues.ReferenceValues) ([]byte, error) {
@@ -109,7 +111,24 @@ func TALaunchFile(values refvalues.ReferenceValues) ([]byte, error) {
 			return nil, fmt.Errorf("%w: entry %q reads its launch file from MRCONFIGID without pinning RTMR[3] to all zero, and a Trust Authority starts from MRCONFIGID only beside an untouched RTMR[3]", ErrTAPinUnbound, image.Name)
 		}
 	}
+	// An initdata document no Trust Authority starts from pins none.
+	if err := initdata.CheckTrustAuthority(file, values.Family); err != nil {
+		return nil, fmt.Errorf("%w: its launch file: %w", ErrTAPinUnbound, err)
+	}
 	return file, nil
+}
+
+// CheckLaunchFiles refuses a pin set with an entry embedding a Trust Authority
+// initdata document no Trust Authority starts from. It is for sets that may
+// pin other guests, whose launch files are theirs to define and pass;
+// [TALaunchFile] holds a set that pins a Trust Authority alone to more.
+func CheckLaunchFiles(values refvalues.ReferenceValues) error {
+	for _, image := range values.Images {
+		if err := initdata.CheckIfTrustAuthority(image.LaunchFile, values.Family); err != nil {
+			return fmt.Errorf("entry %q: its launch file: %w", image.Name, err)
+		}
+	}
+	return nil
 }
 
 // pinsUntouchedRTMR3 reports whether image pins RTMR[3] to all zero. A pin

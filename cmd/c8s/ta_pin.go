@@ -33,6 +33,11 @@ func taInstallValues(address string, pin string) (map[string]any, error) {
 	if err != nil {
 		return nil, fmt.Errorf("--%s: %w", flagTAPin, err)
 	}
+	// The release carries these bytes, so they are the ones held to a pin's
+	// rules, whatever an earlier read of the file found.
+	if _, err := taPinConfig(document); err != nil {
+		return nil, fmt.Errorf("--%s: %w", flagTAPin, err)
+	}
 	return map[string]any{
 		"ta": map[string]any{
 			"address":            address,

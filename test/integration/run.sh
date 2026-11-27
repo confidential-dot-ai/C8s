@@ -38,7 +38,7 @@ docker compose version >/dev/null 2>&1 || { echo "FAIL: docker compose (v2) not 
 MOCK_MEASUREMENT=000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 TA_CONFIG="$WORKDIR/ta-config.yaml"
 TA_PIN="$WORKDIR/ta-pin.json"
-printf 'clusterID: integration\n' > "$TA_CONFIG"
+printf 'schemaVersion: c8s-ta/v1\nclusterID: integration\n' > "$TA_CONFIG"
 TA_HOST_DATA="$(openssl dgst -sha256 "$TA_CONFIG" | cut -d' ' -f2)"
 jq -Rs --arg measurement "$MOCK_MEASUREMENT" \
     '{schema_version:"2",tee:"sev-snp",measurements:[{name:"mock-ta",measurement:$measurement,launch_file:.}]}' \
