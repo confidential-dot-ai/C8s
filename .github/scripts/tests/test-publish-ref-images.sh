@@ -26,11 +26,13 @@ calls="$fixture_dir/calls"
 state="$fixture_dir/state"
 
 mkdir -p "$fixture_dir/bin" "$state"
-export FAKE_REAL_JQ
+export FAKE_REAL_JQ FAKE_REAL_PYTHON
 FAKE_REAL_JQ=$(command -v jq)
+FAKE_REAL_PYTHON=$(command -v python3)
 export PATH="$fixture_dir/bin:$PATH"
 export FAKE_CALLS="$calls" FAKE_STATE="$state"
 export FAKE_MANUAL_WORKFLOW="$repo_dir/.github/workflows/c8s-image-manual.yml"
+export FAKE_DOCKER_WORKFLOW="$repo_dir/.github/workflows/docker.yml"
 export PUBLISH_REF_IMAGES_POLL_SECONDS=0
 
 # Fixture files under $state:
@@ -54,6 +56,8 @@ case "$1 $2" in
       */git/ref/heads/*) [ -e "$FAKE_STATE/branch-sha" ] || { echo "{\"message\":\"Not Found\",\"status\":\"404\"}"; exit 1; } ; cat "$FAKE_STATE/branch-sha" ;;
       */contents/.github/workflows/c8s-image-manual.yml\?ref=*)
         if [ -e "$FAKE_STATE/workflow" ]; then cat "$FAKE_STATE/workflow"; else cat "$FAKE_MANUAL_WORKFLOW"; fi ;;
+      */contents/.github/workflows/docker.yml\?ref=*)
+        if [ -e "$FAKE_STATE/docker-workflow" ]; then cat "$FAKE_STATE/docker-workflow"; else cat "$FAKE_DOCKER_WORKFLOW"; fi ;;
       */actions/runs/4000[12]/attempts/1)
         run_id=${path%/attempts/1}; run_id=${run_id##*/}
         sha=$(cat "$FAKE_STATE/dispatched-sha-$run_id")
@@ -120,12 +124,17 @@ case "$url" in
     [ ! -e "$FAKE_STATE/manifest-fails" ] || { echo -n 503; exit 0; }
     repository=${url#*/v2/confidential-dot-ai/}; repository=${repository%%/manifests/*}
     tag=${url##*/manifests/}
-    if [[ " $* " == *" -fsSI "* ]]; then
+    headers=/dev/null
+    while [ $# -gt 0 ]; do
+      if [ "$1" = -D ]; then headers=$2; shift; fi
+      shift
+    done
+    if [ -e "$FAKE_STATE/present-tags" ] && grep -qx "$repository:$tag" "$FAKE_STATE/present-tags"; then
       ref="$repository:$tag"; value=${#ref}; [ ! -e "$FAKE_STATE/moved-tag" ] || value=2
-      printf 'Docker-Content-Digest: sha256:%064d\r\n' "$value"
-      exit 0
-    fi
-    if [ -e "$FAKE_STATE/present-tags" ] && grep -qx "$repository:$tag" "$FAKE_STATE/present-tags"; then echo -n 200; else echo -n 404; fi ;;
+      printf 'Docker-Content-Digest: sha256:%064d\r\n' "$value" >"$headers"
+      echo -n 200
+      if [[ "$repository" == guests/* ]] && [ -e "$FAKE_STATE/guest-transfer-fails" ]; then exit 18; fi
+    else echo -n 404; fi ;;
   *"/v2/"*"/tags/list"*)
     [ ! -e "$FAKE_STATE/listing-fails" ] || exit 22
     repository=${url#*/v2/confidential-dot-ai/}; repository=${repository%%/tags/list*}
@@ -142,7 +151,34 @@ if [[ " $* " == *" --argjson images "* ]]; then
 fi
 exec "$FAKE_REAL_JQ" "$@"
 EOF
-chmod +x "$fixture_dir/bin/gh" "$fixture_dir/bin/curl" "$fixture_dir/bin/jq"
+cat >"$fixture_dir/bin/python3" <<'EOF'
+#!/usr/bin/env bash
+if [ "$1" = - ]; then
+  exec "$FAKE_REAL_PYTHON" -c '
+import errno, os, sys
+from pathlib import Path
+original_link = os.link
+def unsupported(*args, **kwargs):
+    raise OSError(errno.EOPNOTSUPP, "hard links unsupported")
+def checked_link(source, target):
+    denied_parent = Path(os.environ["FAKE_STATE"]) / "unsupported-parent"
+    if denied_parent.exists() and Path(source).parent.resolve() == Path(denied_parent.read_text().strip()).resolve():
+        unsupported()
+    original_link(source, target)
+def denied(*args, **kwargs):
+    raise PermissionError(errno.EACCES, "subdirectory creation denied")
+if os.path.exists(os.environ["FAKE_STATE"] + "/no-hardlinks"):
+    os.link = unsupported
+else:
+    os.link = checked_link
+if os.path.exists(os.environ["FAKE_STATE"] + "/no-mkdir"):
+    os.mkdir = denied
+exec(sys.stdin.read())
+' "${@:2}"
+fi
+exec "$FAKE_REAL_PYTHON" "$@"
+EOF
+chmod +x "$fixture_dir/bin/gh" "$fixture_dir/bin/curl" "$fixture_dir/bin/jq" "$fixture_dir/bin/python3"
 
 reset() {
   rm -rf -- "$state" "$calls"
@@ -155,6 +191,12 @@ expect_failure() {
     fail "command unexpectedly succeeded: $*"
   fi
   cat "$fixture_dir/unexpected.stderr"
+}
+
+expected_mappings() {
+  while read -r ref; do
+    printf '  ghcr.io/confidential-dot-ai/%s -> ghcr.io/confidential-dot-ai/%s@sha256:%064d\n' "$ref" "${ref%:*}" "${#ref}"
+  done <"$state/pushed-tags-40002" | sort
 }
 
 # --- argument validation ----------------------------------------------------
@@ -172,6 +214,48 @@ ln -s "$fixture_dir/absent" "$fixture_dir/symlink-receipt"
 expect_failure bash "$script" --sha "$sha" --receipt "$fixture_dir/symlink-receipt" | grep -q 'receipt already exists' || fail "receipt symlink accepted"
 expect_failure env TMPDIR="$fixture_dir/missing" bash "$script" --sha "$sha" | grep -q 'mktemp' || fail "invalid temporary directory accepted"
 [ ! -s "$calls" ] || fail "argument errors reached gh or curl"
+pass
+
+reset
+touch "$state/commit-known" "$state/no-hardlinks"
+mkdir "$fixture_dir/unsupported-fs"
+expect_failure bash "$script" --sha "$sha" --receipt "$fixture_dir/unsupported-fs/receipt.json" \
+  | grep -q 'receipt directory must support atomic hard-link installation' || fail "unsupported hard links accepted"
+[ ! -s "$calls" ] || fail "unsupported receipt filesystem reached gh or curl"
+[ -z "$(ls -A "$fixture_dir/unsupported-fs")" ] || fail "receipt preflight leaked files"
+pass
+
+reset
+touch "$state/commit-known" "$state/no-mkdir"
+mkdir "$fixture_dir/files-only"
+bash "$script" --sha "$sha" --receipt "$fixture_dir/files-only/receipt.json" >/dev/null
+[ "$(ls -A "$fixture_dir/files-only")" = receipt.json ] || fail "file-only receipt directory failed or leaked probes"
+pass
+
+reset
+touch "$state/commit-known"
+mkdir -p "$fixture_dir/physical/child" "$fixture_dir/lexical"
+ln -s "$fixture_dir/physical/child" "$fixture_dir/lexical/linked"
+echo "$fixture_dir/physical" >"$state/unsupported-parent"
+expect_failure bash "$script" --sha "$sha" --receipt "$fixture_dir/lexical/linked/../receipt.json" \
+  | grep -q 'receipt directory must support atomic hard-link installation' || fail "receipt probe checked the lexical parent"
+[ ! -s "$calls" ] || fail "unsupported physical parent reached gh or curl"
+[ "$(ls -A "$fixture_dir/physical")" = child ] || fail "physical parent preflight leaked files"
+rm "$state/unsupported-parent"
+bash "$script" --sha "$sha" --receipt "$fixture_dir/lexical/linked/../receipt.json" >/dev/null
+[ -f "$fixture_dir/physical/receipt.json" ] || fail "receipt installed in the wrong physical parent"
+[ ! -e "$fixture_dir/lexical/receipt.json" ] || fail "receipt used lexical path resolution"
+pass
+
+reset
+touch "$state/commit-known"
+mkdir -p "$fixture_dir/receipts" "$fixture_dir/decoy/receipts"
+for search in . "$fixture_dir/decoy"; do
+  (cd "$fixture_dir" && CDPATH="$search" bash "$script" --sha "$sha" --receipt receipts/result.json) >/dev/null
+  [ -f "$fixture_dir/receipts/result.json" ] || fail "CDPATH redirected the receipt"
+  [ ! -e "$fixture_dir/decoy/receipts/result.json" ] || fail "receipt followed CDPATH"
+  rm "$fixture_dir/receipts/result.json"
+done
 pass
 
 # --- the commit must already be on the remote --------------------------------
@@ -200,12 +284,11 @@ grep -q 'gh api -X POST repos/confidential-dot-ai/confidential-kubernetes/git/re
 grep -q 'component tags missing at :c7cf2f3' <<<"$out" || fail "missing components not reported"
 order=$(sed -n 's|.*actions/workflows/\([^/]*\)/dispatches.*|\1|p' "$calls" | tr '\n' ' ')
 [ "$order" = "docker.yml c8s-image-manual.yml " ] || fail "dispatch order: $order"
-grep -Fq 'actions/workflows/docker.yml/dispatches -H X-GitHub-Api-Version: 2022-11-28 -f ref=build/c7cf2f3 -F return_run_details=true' "$calls" || fail "docker dispatch did not use the build branch"
+grep -Fq "actions/workflows/docker.yml/dispatches -H X-GitHub-Api-Version: 2022-11-28 -f ref=build/c7cf2f3 -F return_run_details=true -f inputs[expected_sha]=$sha --jq .workflow_run_id" "$calls" || fail "docker dispatch did not pin the source"
 grep -Fq 'actions/workflows/c8s-image-manual.yml/dispatches -H X-GitHub-Api-Version: 2022-11-28 -f ref=build/c7cf2f3 -F return_run_details=true -f inputs[c8s_ref]=c7cf2f3 -f inputs[expected_sha]=c7cf2f38de3b035fbce00fe22d2451e77cdcefa0 -f inputs[confos_ref]=af8cef0e937e4cc300ddd30c85af6ccd8cb9be91' "$calls" \
   || fail "image dispatch arguments differ: $(grep 'c8s-image-manual' "$calls")"
-while read -r ref; do
-  grep -Fxq "  ghcr.io/confidential-dot-ai/$ref -> ghcr.io/confidential-dot-ai/${ref%:*}@$(printf 'sha256:%064d' "${#ref}")" <<<"$out" || fail "wrong verified pin for $ref"
-done <"$state/pushed-tags-40002"
+diff -u <(expected_mappings) <(grep ' -> ' <<<"$out" | sort) || fail "verified output has missing, duplicate or incorrect mappings"
+[ "$(grep -c '^curl .*/manifests/sha-' "$calls")" -eq 6 ] || fail "guests must use one manifest request each"
 pass
 
 # --- a successful image run that published nothing is an error ---------------
@@ -247,7 +330,8 @@ touch "$state/commit-known"
 printf '%s' "$sha" >"$state/branch-sha"
 for c in c8s-operator nri-image-policy ta armtls-mesh volumed; do echo "$c:c7cf2f3" >>"$state/present-tags"; done
 out=$(bash "$script" --sha "$sha" --receipt "$fixture_dir/receipt.json")
-jq -e --arg sha "$sha" ' .source == $sha and .componentRun == "" and .componentAttempt == "" and .guestRun == "40002" and .guestAttempt == "1" and (.images | length) == 6 and ([.images[] | split("@sha256:")[1]] | unique | length) == 6 ' "$fixture_dir/receipt.json" >/dev/null || fail "receipt did not identify dispatched build"
+jq -e --arg sha "$sha" ' .source == $sha and .componentRun == "" and .componentAttempt == "" and .guestRun == "40002" and .guestAttempt == "1" and (.images | length) == 6 ' "$fixture_dir/receipt.json" >/dev/null || fail "receipt did not identify dispatched build"
+diff -u <(expected_mappings) <(jq -r '.images | to_entries[] | "  \(.key) -> \(.value)"' "$fixture_dir/receipt.json" | sort) || fail "receipt contains incorrect image mappings"
 ! grep -q '/tags/list' "$calls" || fail "publication depends on a paginated tag listing"
 grep -q 'branch build/c7cf2f3 already at c7cf2f3' <<<"$out" || fail "existing branch not reused"
 ! grep -q 'actions/workflows/docker.yml/dispatches' "$calls" || fail "docker dispatched although every tag exists"
@@ -307,6 +391,15 @@ for missing in '.on.workflow_dispatch.inputs.expected_sha' '.jobs.verify-source'
 done
 pass
 
+for missing in '.on.workflow_dispatch.inputs.expected_sha' '.jobs.verify-source' '.jobs.changes.needs'; do
+  reset
+  touch "$state/commit-known"
+  yq "del($missing)" "$FAKE_DOCKER_WORKFLOW" >"$state/docker-workflow"
+  expect_failure bash "$script" --sha "$sha" | grep -q 'target lacks the component source guard' || fail "unguarded component target accepted"
+  ! grep -q 'api -X POST' "$calls" || fail "unguarded component target mutated remote state"
+done
+pass
+
 reset
 touch "$state/commit-known"
 yq '.jobs.build-and-push.needs = ["verify-source"]' "$FAKE_MANUAL_WORKFLOW" >"$state/workflow"
@@ -336,17 +429,22 @@ for failure in move-branch wrong-run-sha; do
 done
 
 for missing in sha-c7cf2f3 sha-c7cf2f3-kubevirt; do
-  reset
-  touch "$state/commit-known"
-  echo "$missing" >"$state/missing-ta"
-  expect_failure bash "$script" --sha "$sha" --receipt "$fixture_dir/missing-ta-receipt" \
-    | grep -q "missing expected image guests/ta:$missing" || fail "missing TA format accepted"
-  [ ! -e "$fixture_dir/missing-ta-receipt" ] || fail "missing TA wrote a receipt"
-  pass
+  for receipt_path in '' "$fixture_dir/missing-ta-receipt"; do
+    reset
+    touch "$state/commit-known"
+    echo "$missing" >"$state/missing-ta"
+    receipt_args=()
+    [ -z "$receipt_path" ] || receipt_args=(--receipt "$receipt_path")
+    expect_failure bash "$script" --sha "$sha" "${receipt_args[@]}" \
+      | grep -q "missing expected image guests/ta:$missing" || fail "missing TA format accepted"
+    ! grep -Eq 'verified images|@sha256:' "$fixture_dir/unexpected.stdout" || fail "late failure printed partial publication"
+    [ ! -e "$fixture_dir/missing-ta-receipt" ] || fail "missing TA wrote a receipt"
+    pass
+  done
 done
 
 # --- mutable tags and conflicting build evidence cannot produce a receipt ---
-for failure in moved-tag conflicting-log image-publishes-nothing; do
+for failure in moved-tag conflicting-log image-publishes-nothing guest-transfer-fails; do
   for receipt_path in '' "$fixture_dir/race-receipt"; do
     reset
     touch "$state/commit-known" "$state/$failure"
@@ -354,7 +452,7 @@ for failure in moved-tag conflicting-log image-publishes-nothing; do
     receipt_args=()
     [ -z "$receipt_path" ] || receipt_args=(--receipt "$receipt_path")
     expect_failure bash "$script" --sha "$sha" "${receipt_args[@]}" \
-      | grep -Eq 'tag changed|conflicting publication digest' || fail "mismatched publication accepted"
+      | grep -Eq 'tag changed|conflicting publication digest|manifest request failed' || fail "mismatched publication accepted"
     ! grep -q 'verified images' "$fixture_dir/unexpected.stdout" || fail "unverified publication reported success"
     [ ! -e "$fixture_dir/race-receipt" ] || fail "mismatched publication wrote a receipt"
     pass
