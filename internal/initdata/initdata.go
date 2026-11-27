@@ -5,17 +5,13 @@
 package initdata
 
 import (
-	"bytes"
-	"errors"
 	"fmt"
 	"slices"
 	"strings"
 
 	toml "github.com/pelletier/go-toml/v2"
-	"gopkg.in/yaml.v3"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-	"github.com/confidential-dot-ai/confidential-kubernetes/internal/yamlutil"
 )
 
 // The digests an initdata launch file may declare: the launch binding is the
@@ -107,35 +103,21 @@ func ReadFor(launchFile []byte, family teetypes.Family) ([]byte, error) {
 	return configuration, nil
 }
 
-// Check refuses a launch file a Trust Authority pin embeds that no Trust
-// Authority starts from: one over the size cap, an initdata document
-// [ReadFor] refuses, or bytes that are neither that nor a configuration. A
-// pin is read by clients that never parse the configuration, so its shape
-// is held here and not left to that parse.
+// Check refuses a launch file a pin embeds that a Trust Authority of an
+// earlier release serves and one of this release does not: an initdata
+// document with no agent policy.
+//
+// INVARIANT: a pin reader need not repeat what a Trust Authority refuses at
+// start with or without this check. A configuration is at most the cap and
+// carries its schema, so no evidence matches a pin on a larger file or on
+// bytes that are no configuration, and neither is parsed here. The cap and
+// the family are held because the read yields them.
 func Check(launchFile []byte, family teetypes.Family) error {
 	if len(launchFile) > MaxSize {
 		return fmt.Errorf("launch file is %d bytes, over the %d one may be", len(launchFile), MaxSize)
 	}
-	configuration, err := ReadFor(launchFile, family)
-	if err != nil {
-		return err
-	}
-	tree, err := yamlutil.DecodeTree(configuration)
-	if err != nil {
-		return fmt.Errorf("the configuration the launch file carries: %w", err)
-	}
-	if !isMapping(tree) {
-		return errors.New("launch file is neither an initdata document with a \"data\" table nor a configuration, which is a YAML mapping")
-	}
-	return nil
-}
-
-// isMapping reports whether a decoded YAML document is a mapping.
-func isMapping(tree *yaml.Node) bool {
-	if tree != nil && tree.Kind == yaml.DocumentNode && len(tree.Content) == 1 {
-		tree = tree.Content[0]
-	}
-	return tree != nil && tree.Kind == yaml.MappingNode
+	_, err := ReadFor(launchFile, family)
+	return err
 }
 
 // NamesTrustAuthority reports whether launchFile is an initdata document
@@ -143,11 +125,11 @@ func isMapping(tree *yaml.Node) bool {
 // file may be any bytes, a TOML document with a data table included, and is
 // held to none of these rules.
 //
-// A file over the size cap is not decoded. It is taken for one when it
-// names the entry anywhere, so that [Check] refuses it for its size.
+// A file over the size cap is not decoded and is not one: no Trust Authority
+// reads a document that large as initdata.
 func NamesTrustAuthority(launchFile []byte) bool {
 	if len(launchFile) > MaxSize {
-		return bytes.Contains(launchFile, []byte(ConfigFile))
+		return false
 	}
 	var document map[string]any
 	if err := toml.Unmarshal(launchFile, &document); err != nil {
