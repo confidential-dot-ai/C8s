@@ -31,6 +31,10 @@ def build(site: Path, destination: Path, verifiers: Path, approval: Path) -> Non
     if destination.name != "site-offline" or destination.exists():
         raise ValueError("output must be a new directory named site-offline")
     target = json.loads((site / "target.json").read_bytes())
+    enrolled = target["gpuUEIDs"]
+    if (not isinstance(enrolled, list) or not all(isinstance(uid, str) and uid.strip() for uid in enrolled)
+            or len(set(enrolled)) != 8 or len(enrolled) != 8):
+        raise ValueError("the disconnected worker requires eight distinct assigned GPU evidence UEIDs")
     registry = target["registry"]
     if not re.fullmatch(r"[a-z0-9.-]+:[0-9]+", registry) or not 0 < int(registry.split(":")[1]) < 65536:
         raise ValueError("registry must be the site DNS name or IPv4 address and port")
@@ -71,6 +75,7 @@ def build(site: Path, destination: Path, verifiers: Path, approval: Path) -> Non
         write(etc, "attestation-api/config.toml", service)
         anchors = etc / "c8s-site"
         anchors.mkdir()
+        write(anchors, "gpu-ueids.json", json.dumps(sorted(enrolled)) + "\n")
         shutil.copyfile(site / "registry-ca.pem", anchors / "registry-ca.pem")
         shutil.copyfile(site / "collateral/profile.json", anchors / "profile.json")
         profile.rename(destination)

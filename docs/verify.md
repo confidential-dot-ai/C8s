@@ -180,8 +180,8 @@ evidence without a TDX quote. Use `--min-tcb-*` for SEV-SNP. With
 `--tdx-offline`, the CLI skips the PCS check and warns on a passing TDX
 verdict. The flag excludes named TCB statuses and a site profile.
 
-To check TDX at a disconnected site, provision the site profile on the trusted
-operator workstation and pass it to each verifying command. For example:
+To check TDX at a disconnected site, provision the [site collateral profile](site-collateral.md)
+on the trusted operator workstation and pass it to each verifying command.
 
 ```sh
 c8s ta verify "https://${TA_ADDRESS}" --image-policy-file ta-pin.json \
