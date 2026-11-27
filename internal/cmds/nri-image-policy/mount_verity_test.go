@@ -294,6 +294,61 @@ func TestSynchronizeSharesOneVerityBudget(t *testing.T) {
 	}
 }
 
+func TestKillRevokedSharesOneVerityBudget(t *testing.T) {
+	calls := hangMeasurement(t)
+	setVerityBudget(t, 20*time.Millisecond)
+	p, killed := verityEnforcingPlugin(t)
+	p.SetReady()
+	pod := makePod("default", "pod")
+	for i, name := range []string{"a", "b"} {
+		ctr := verityCtr(pod, api.ContainerState_CONTAINER_RUNNING, uint32(42+i))
+		ctr.Id, ctr.Name = name, name
+		p.running.add(pod, ctr)
+	}
+	p.KillRevoked(t.Context())
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("measurements on a hung filesystem = %d, want 1: one budget per KillRevoked", got)
+	}
+	if len(*killed) != 0 {
+		t.Fatalf("KillRevoked stopped %v over measurements that did not run", *killed)
+	}
+}
+
+// A component set in force admits an fsVerityFile bind as the workloads
+// section does: on the digest measured at the start check.
+func TestComponentSetFSVerityDecidedAtStart(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		digest string
+		want   bool
+	}{
+		{"pinned digest", testVerityDigest, true},
+		{"other digest", strings.Repeat("a", 64), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stubMeasurement(t, func(uint32, string, string) (string, error) { return tc.digest, nil })
+			component := allowlist.Container{
+				Digest:  mustDigest(t, pushDigestB),
+				Command: allowlist.ArgvPolicy{Policy: allowlist.PolicyExact, Argv: []string{"/bin/app"}},
+				Args:    allowlist.ArgvPolicy{Policy: allowlist.PolicyAny},
+				Mounts: allowlist.MountPolicy{Policy: allowlist.PolicyExact, Rules: []allowlist.MountRule{{
+					Destination: verityTestDestination, Kind: allowlist.MountFSVerityFile, Source: verityTestSource, ReadOnly: true, VerityDigest: testVerityDigest,
+				}}},
+			}
+			document := componentDocument(t, nil, component)
+			p, _ := newCachedPlugin(&config{Policy: enforcing, Allowlist: allowlistConfig{Pull: pullConfig{URL: "https://cds"}}}, document)
+			p.SetReady()
+			p.inventory = newAdmissionInventory(t.TempDir())
+			pod := makePod("default", "pod")
+			ctr := verityCtr(pod, api.ContainerState_CONTAINER_CREATED, 42)
+			err := p.StartContainer(t.Context(), pod, ctr)
+			if (err == nil) != tc.want {
+				t.Fatalf("StartContainer(%s) = %v, want admitted %t", tc.name, err, tc.want)
+			}
+		})
+	}
+}
+
 func setVerityBudget(t *testing.T, budget time.Duration) {
 	t.Helper()
 	original := verityBudget

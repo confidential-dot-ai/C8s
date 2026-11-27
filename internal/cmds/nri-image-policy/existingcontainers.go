@@ -290,11 +290,12 @@ func (p *plugin) KillRevoked(ctx context.Context) {
 	}
 	running := p.running.list()
 	var killed, failed int
+	// One budget for the whole recheck, as in Synchronize.
+	ctx = p.withExistingVerityCheck(ctx)
 	for _, c := range running {
 		if cfg.isExemptNamespace(c.pod.GetNamespace()) {
 			continue
 		}
-		ctx := p.withExistingVerityCheck(ctx)
 		// The same image admission matched: on a Pod guest the staged pin,
 		// not an alias the CRI annotation may have moved since.
 		imageRef, err := p.cvm().imageOf(c.pod, c.ctr)

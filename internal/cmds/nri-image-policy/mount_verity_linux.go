@@ -28,7 +28,9 @@ func enforcesFSVerity(fsType uint32) bool {
 }
 
 // containerFileDigest measures the file that container id sees at
-// destination, through the root of its process pid.
+// destination, through the root of its process pid. At the start check that
+// process is still the runtime's init, before execve, so no workload code has
+// yet been able to mount over destination.
 func containerFileDigest(pid uint32, id, destination string) (string, error) {
 	pidfd, err := unix.PidfdOpen(int(pid), 0)
 	if err != nil {
