@@ -113,8 +113,12 @@ pin also fits the release ConfigMap's 1 MiB limit.
 
 The Kata guest agent evaluates `policy.rego` on every request the host makes
 of it. The launch binding covers the whole document, so a pin that embeds the
-document fixes the policy too. C8s requires the entry and does not judge its
-rules: whoever writes the pin answers for them. The policy must at least:
+document fixes the policy the document carries. That is the policy in force
+only where the guest checks the document it is handed against its launch
+binding before it loads the policy: C8s checks the bytes at `--config`, not
+what the agent loaded, so establish that for the guest image you run. C8s
+requires the entry and does not judge its rules: whoever writes the pin
+answers for them. The policy must at least:
 
 - allow a container only from the TA and attester images, each named by
   digest. With images pulled inside the guest, the rules that Kata's
@@ -127,6 +131,9 @@ rules: whoever writes the pin answers for them. The policy must at least:
   change them would choose the attester the TA asks about itself;
 - refuse `ExecProcessRequest`, `SetPolicyRequest` and writes to a container's
   input.
+
+Fixed mounts do not make storage private. Keep `--allowlist-db` and its side
+files on storage the host cannot write, as the TA serves what it finds there.
 
 `genpolicy` 3.30 output fixes those and denies those requests by default.
 Its settings need matching to the
