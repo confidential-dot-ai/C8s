@@ -332,7 +332,8 @@ func admitted(ctx context.Context, target replica, pins *tadecree.PinDocument, l
 	reported, err := target.status(ctx)
 	switch {
 	case err == nil:
-	case errors.Is(err, remote.ErrMeasurementNotAllowed), errors.Is(err, remote.ErrRegistersNotAllowed), errors.Is(err, remote.ErrLaunchFileNotAllowed):
+	case errors.Is(err, localverify.ErrMeasurementNotAllowed), errors.Is(err, remote.ErrMeasurementNotAllowed),
+		errors.Is(err, remote.ErrRegistersNotAllowed), errors.Is(err, remote.ErrLaunchFileNotAllowed):
 		return taha.Status{}, fmt.Errorf("the target does not satisfy both --ta-pin and the decree's Trust Authority pins (--platform, --image-manifest, --vcpus, --launch-file-field). A refusal naming --ta-pin is that set's; any other is the decree's pins, and a cluster started with pins that refuse its replicas admits none of its replicas: %w", err)
 	default:
 		return taha.Status{}, fmt.Errorf("reading the target again, under both --ta-pin and the decree's Trust Authority pins: %w", err)
