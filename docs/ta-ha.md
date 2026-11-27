@@ -20,7 +20,9 @@ ha:
 `c8s ta config new --ha-endpoint <host:port> ...` writes it.
 The order is the slot order. All replicas boot the same launch file, so they share one measurement.
 
-Every entry of the launch file's `nodes` must bind a launch (`approver_key`, `launch_file` or `launch_file_digest`), as every `nodes` entry of the chain must: the launch file's set is the first one the chain certifies.
+The launch file's `nodes` is the initial authorization set and may be empty.
+Every image it contains must bind a launch (`approver_key`, `launch_file` or `launch_file_digest`).
+Signed `nodes` entries must be nonempty and every image must bind a launch.
 A replica refuses to start on a launch file with an unbound entry, and `accept-node` refuses to extend such a set.
 
 Replica flags (none of them is measured; a wrong value costs availability, not safety):
@@ -38,6 +40,32 @@ The Kubernetes store is the control plane the workers join, outside every TEE, a
 `c8s worker control-plane render` creates its account, `c8s-cds/cds-store`, which may get, create and update the ConfigMaps of `c8s-cds`.
 `c8s worker control-plane credentials` also writes `c8s-cds-store.kubeconfig`, a token of that account, which `c8s ta ha store-credential --file` posts to the replicas.
 Each replica must reach the API server it names.
+
+### Starting without workers
+
+Pass an explicit node document to `--node-pins`, even when no worker is admitted.
+For SEV-SNP workers, save this as `empty-nodes.json`:
+
+```json
+{"schema_version":"1","tee":"sev-snp","measurements":[]}
+```
+
+Use `"tdx"` for TDX workers. This is the worker family; the Trust Authority VM may use a
+different TEE. The empty form requires `--ha-endpoint`; a standalone Trust Authority
+requires initial node pins.
+
+1. Generate the Trust Authority configuration with `--node-pins empty-nodes.json` and one
+   `--ha-endpoint`. Boot that measured Trust Authority with a reachable chain store; for a
+   disposable bootstrap test, `--ha-store-memory` supplies the store.
+2. Run `c8s ta ha genesis` with the generated `ta-pin.json`. Genesis establishes
+   the chain and accepted Trust Authority build; it admits no workers.
+3. Create the worker document with that Trust Authority pin and the genesis entry in
+   `ta.chain`. Run [`c8s ta ha accept-node`](launch-configuration.md#admitting-a-worker-document)
+   with the document and worker image measurements. The signed entry admits
+   that image bound to the document's exact digest.
+4. Launch the worker with that document. Until its admission commits, Trust Authority
+   refuses its node certificate and attested inventory callbacks. Changing the
+   document requires another admission.
 
 ## The chain
 
@@ -209,4 +237,7 @@ Accepted windows and residuals:
 
 ## Secrets
 
-Secrets and the sandbox ledger are served only by a single replica. A set of more than one replica refuses them.
+Secrets and the sandbox ledger are served only by a single replica. Its secret
+endpoints are mounted even with empty initial nodes; workload release still
+requires an admitted inventory and the usual [authorization checks](secrets.md#what-the-ta-checks).
+A set of more than one replica refuses secrets.

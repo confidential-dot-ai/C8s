@@ -120,7 +120,7 @@ func parseWorkerImage(measurements []byte) (refvalues.ReferenceValues, error) {
 // parseSetInForce is the node image set a worker joins, of the worker image's
 // TEE family.
 func parseSetInForce(nodes []byte, family teetypes.Family) (refvalues.ReferenceValues, error) {
-	set, err := refvalues.Parse(nodes)
+	set, err := refvalues.ParseRendered(nodes)
 	if err != nil {
 		return set, fmt.Errorf("--nodes: %w", err)
 	}
