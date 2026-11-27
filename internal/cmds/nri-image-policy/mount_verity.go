@@ -73,7 +73,7 @@ func (p *plugin) withVerityCheck(ctx context.Context) context.Context {
 
 // withExistingVerityCheck starts the fs-verity measurements of one check of
 // containers already running: the whole recovery and startup check of a
-// Synchronize, or one container's revocation recheck.
+// Synchronize, or the whole revocation recheck of a KillRevoked.
 func (p *plugin) withExistingVerityCheck(ctx context.Context) context.Context {
 	return context.WithValue(ctx, verityCheckKey{}, p.newVerityCheck(true))
 }
