@@ -114,11 +114,16 @@ func ReadFor(launchFile []byte, family teetypes.Family) ([]byte, error) {
 // bytes that are no configuration, and neither is parsed here. The cap and
 // the family are held because the read yields them.
 func Check(launchFile []byte, family teetypes.Family) error {
-	if len(launchFile) > MaxSize {
-		return fmt.Errorf("launch file is %d bytes, over the %d one may be", len(launchFile), MaxSize)
-	}
-	_, err := ReadFor(launchFile, family)
+	_, err := checked(launchFile, family)
 	return err
+}
+
+// checked is Check, returning the configuration the launch file carries.
+func checked(launchFile []byte, family teetypes.Family) ([]byte, error) {
+	if len(launchFile) > MaxSize {
+		return nil, fmt.Errorf("launch file is %d bytes, over the %d one may be", len(launchFile), MaxSize)
+	}
+	return ReadFor(launchFile, family)
 }
 
 // ConfigSchema is the schema a Trust Authority configuration declares.
@@ -129,10 +134,7 @@ const ConfigSchema = "c8s-ta/v1"
 // Authority's schema, so a pin on other bytes is refused before anything is
 // signed or written against it. The configuration is not otherwise parsed.
 func CheckTrustAuthority(launchFile []byte, family teetypes.Family) error {
-	if err := Check(launchFile, family); err != nil {
-		return err
-	}
-	configuration, err := ReadFor(launchFile, family)
+	configuration, err := checked(launchFile, family)
 	if err != nil {
 		return err
 	}
