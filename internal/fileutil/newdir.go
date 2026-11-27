@@ -53,3 +53,30 @@ func WriteNew(path string, data []byte, mode os.FileMode) error {
 	}
 	return nil
 }
+
+// WriteNewDurable is WriteNew, synced: the data, then the directory that
+// names it. A failed write or sync removes path again.
+func WriteNewDurable(path string, data []byte, mode os.FileMode) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+	if err != nil {
+		return err
+	}
+	_, err = f.Write(data)
+	if err == nil {
+		err = f.Sync()
+	}
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err == nil {
+		var dir *os.File
+		if dir, err = os.Open(filepath.Dir(path)); err == nil {
+			err = syncAndClose(dir, (*os.File).Sync)
+		}
+	}
+	if err != nil {
+		os.Remove(path)
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	return nil
+}

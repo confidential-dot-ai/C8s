@@ -20,8 +20,8 @@ import (
 // replace on POSIX filesystems; a /tmp tmp would silently degrade to a
 // copy+remove on cross-mount writes.
 func WriteAtomic(path string, data []byte, mode os.FileMode) error {
-	if path != "" && os.IsPathSeparator(path[len(path)-1]) {
-		return fmt.Errorf("write atomically: path %q ends in a path separator", path)
+	if err := rejectTrailingSeparator("write atomically", path); err != nil {
+		return err
 	}
 	dir := filepath.Dir(path)
 	base := filepath.Base(path)
@@ -38,6 +38,148 @@ func WriteAtomic(path string, data []byte, mode os.FileMode) error {
 // through the rename prevents a later replacement of its pathname from
 // redirecting the write.
 func WriteAtomicRoot(root *os.Root, name string, data []byte, mode os.FileMode) error {
+	return writeAtomicRoot(
+		root,
+		name,
+		data,
+		mode,
+		nil,
+	)
+}
+
+// WriteAtomicDurable syncs the temporary file before replacement, then the
+// destination directory and that directory's parent, which holds its entry.
+// Both must exist and be readable; directories above them are not opened.
+// An error after replacement can leave the new contents visible.
+func WriteAtomicDurable(path string, data []byte, mode os.FileMode) error {
+	return writeAtomicDurable(
+		path,
+		data,
+		mode,
+		(*os.File).Sync,
+	)
+}
+
+func writeAtomicDurable(path string, data []byte, mode os.FileMode, syncFile func(*os.File) error) error {
+	if err := rejectTrailingSeparator("write durably", path); err != nil {
+		return err
+	}
+	dir, err := physicalDir(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	if err := writeAtomicRoot(
+		root,
+		filepath.Base(path),
+		data,
+		mode,
+		syncFile,
+	); err != nil {
+		return err
+	}
+	directory, err := root.Open(".")
+	if err != nil {
+		return err
+	}
+	if err := syncAndClose(directory, syncFile); err != nil {
+		return err
+	}
+	return syncParent(dir, syncFile)
+}
+
+// MkdirAllDurable creates dir and syncs its physical ancestors through the root,
+// including directories a previous failed attempt may have left behind.
+func MkdirAllDurable(dir string, mode os.FileMode) error {
+	return mkdirAllDurable(dir, mode, (*os.File).Sync)
+}
+
+func mkdirAllDurable(dir string, mode os.FileMode, syncFile func(*os.File) error) error {
+	if err := os.MkdirAll(dir, mode); err != nil {
+		return err
+	}
+	dir, err := physicalDir(dir)
+	if err != nil {
+		return err
+	}
+	for {
+		directory, err := os.Open(dir)
+		if err != nil {
+			return err
+		}
+		if err := syncAndClose(directory, syncFile); err != nil {
+			return err
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return nil
+		}
+		dir = parent
+	}
+}
+
+// SyncDirWithParent syncs dir and its parent, as WriteAtomicDurable does
+// after a write. It tells a caller whether dir can hold a durable file.
+func SyncDirWithParent(dir string) error {
+	return syncDirWithParent(dir, (*os.File).Sync)
+}
+
+func syncDirWithParent(dir string, syncFile func(*os.File) error) error {
+	dir, err := physicalDir(dir)
+	if err != nil {
+		return err
+	}
+	directory, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	if err := syncAndClose(directory, syncFile); err != nil {
+		return err
+	}
+	return syncParent(dir, syncFile)
+}
+
+// physicalDir resolves symlinks, so that the parent is the directory that
+// holds dir's entry.
+func physicalDir(dir string) (string, error) {
+	dir, err := filepath.Abs(dir)
+	if err != nil {
+		return "", err
+	}
+	return filepath.EvalSymlinks(dir)
+}
+
+func syncParent(dir string, syncFile func(*os.File) error) error {
+	parent := filepath.Dir(dir)
+	if parent == dir {
+		return nil
+	}
+	directory, err := os.Open(parent)
+	if err != nil {
+		return err
+	}
+	return syncAndClose(directory, syncFile)
+}
+
+func syncAndClose(directory *os.File, syncFile func(*os.File) error) error {
+	if err := errors.Join(syncFile(directory), directory.Close()); err != nil {
+		return fmt.Errorf("sync directory %s: %w", directory.Name(), err)
+	}
+	return nil
+}
+
+func rejectTrailingSeparator(op, path string) error {
+	if path != "" && os.IsPathSeparator(path[len(path)-1]) {
+		return fmt.Errorf("%s: path %q ends in a path separator", op, path)
+	}
+	return nil
+}
+
+func writeAtomicRoot(root *os.Root, name string, data []byte, mode os.FileMode, syncFile func(*os.File) error) error {
 	if root == nil {
 		return fmt.Errorf("write atomically: nil directory root")
 	}
@@ -68,6 +210,11 @@ func WriteAtomicRoot(root *os.Root, name string, data []byte, mode os.FileMode) 
 	if err := tmp.Chmod(mode); err != nil {
 		_ = tmp.Close()
 		return err
+	}
+	if syncFile != nil {
+		if err := syncFile(tmp); err != nil {
+			return err
+		}
 	}
 	if err := tmp.Close(); err != nil {
 		return err
