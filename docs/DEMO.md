@@ -87,3 +87,5 @@ c8s uninstall --namespace c8s-system
 `c8s uninstall` removes the release, then sweeps the node-side artifacts it
 left: the admission plugin's containerd registration, the mesh's netfilter
 chains.
+
+For the disconnected TDX pilot, run the [nginx renewal, restart and egress checks](../test/e2e/offline/README.md).
