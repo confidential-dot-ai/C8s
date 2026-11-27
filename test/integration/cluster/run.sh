@@ -68,7 +68,7 @@ log "Building component images"
 DOCKER_ARCH="$(docker version --format '{{.Server.Arch}}')"
 GOOS=linux GOARCH="$DOCKER_ARCH" make build-c8s >/dev/null
 docker build -q -f cmd/c8s/Dockerfile               -t "ghcr.io/confidential-dot-ai/c8s-operator:$IMAGE_TAG"     . >/dev/null
-docker build -q -f cmd/ta/Dockerfile                -t "ghcr.io/confidential-dot-ai/ta:$IMAGE_TAG"              . >/dev/null
+docker build -q -f cmd/ta/Dockerfile                -t "ghcr.io/confidential-dot-ai/trust-authority:$IMAGE_TAG" . >/dev/null
 docker build -q -f cmd/nri-image-policy/Dockerfile  -t "ghcr.io/confidential-dot-ai/nri-image-policy:$IMAGE_TAG" . >/dev/null
 docker build -q -f cmd/armtls-mesh/Dockerfile        -t "ghcr.io/confidential-dot-ai/armtls-mesh:$IMAGE_TAG"       . >/dev/null
 docker build -q -f test/mock-attestation/Dockerfile -t "ghcr.io/confidential-dot-ai/mock-attestation:$IMAGE_TAG" . >/dev/null
