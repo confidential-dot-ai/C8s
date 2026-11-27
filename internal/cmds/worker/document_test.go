@@ -230,6 +230,7 @@ func TestParseRefusesEachMalformedField(t *testing.T) {
 	}{
 		{"schema", func(d *Document) { d.SchemaVersion = "c8s-worker/v2" }, "schemaVersion must be c8s-worker/v1"},
 		{"Trust Authority address without port", func(d *Document) { d.TA.Address = "ta.acme.example" }, "must be <host>:<port>"},
+		{"Trust Authority chain not an entry pin", func(d *Document) { d.TA.Chain = "genesis" }, "ta.chain"},
 		{"Trust Authority pin binding no configuration", func(d *Document) { d.TA.Measurements = testDigestOnlyPin(t) }, "binds no launch file"},
 		{"Trust Authority pin entries disagreeing on node subnets", func(d *Document) {
 			d.TA.Measurements = testTAPin(t, taConfig(t, "192.168.0.0/16"), taConfig(t, "172.16.0.0/12"))

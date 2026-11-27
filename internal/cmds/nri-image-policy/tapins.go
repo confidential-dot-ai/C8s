@@ -55,10 +55,25 @@ func (p *plugin) prepareTAPins() error {
 	if err != nil {
 		return fmt.Errorf("render the node's Trust Authority pins: %w", err)
 	}
-	path, err := renderNodeDocument(renderedTAPinsName, document)
+	path, err := rewriteNodeDocument(renderedTAPinsName, document)
 	if err != nil {
 		return err
 	}
 	p.taPins = path
 	return nil
+}
+
+// rewriteNodeDocument is renderNodeDocument for a document pods read on every
+// handshake: one already rendered is rewritten in place, so the pods started
+// before a plugin restart, which bind-mount its inode, read the new contents
+// and the chain's later in-place updates too.
+func rewriteNodeDocument(name string, document []byte) (string, error) {
+	if err := os.MkdirAll(enforcerRuntimeDir, 0o700); err != nil {
+		return "", fmt.Errorf("the plugin's runtime directory: %w", err)
+	}
+	path := filepath.Join(enforcerRuntimeDir, name)
+	if err := writeInPlace(path, document, 0o644); err != nil {
+		return "", fmt.Errorf("write %s: %w", name, err)
+	}
+	return path, nil
 }

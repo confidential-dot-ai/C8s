@@ -30,6 +30,7 @@ that admits it names the worker image it is bound to
 | `schemaVersion` | yes | `c8s-worker/v1`. |
 | `ta.address` | yes | The TA endpoint, `<host>:<port>`, the host a DNS name or an IPv4 address. A name is resolved by the clients that dial it, through the resolvers the worker image is built with, so it must resolve there. |
 | `ta.measurements` | yes | One measurements JSON document ([measurements.md](measurements.md)), pinning the TA image to the launch file that VM boots with. Every entry must bind that file. |
+| `ta.chain` | no | `<seq>:<hash>` of one entry of the Trust Authority replica set's chain ([ta-ha.md](ta-ha.md#what-nodes-pin)): the worker's Trust Authority pins then follow the builds the chain accepts, and every Trust Authority answer must name this entry. |
 | `tlsSAN` | yes | The DNS name of the router's front-door certificate. The TA configuration `ta.measurements` binds must let a leaf carry it. |
 | `router.hostnames` | no | Up to 100 lowercase DNS names the router serves. A non-empty list puts the baked front door in ACME mode at boot. |
 | `router.acmeEmail` | no | Bare email address for the ACME account. Requires `hostnames`. |

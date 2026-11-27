@@ -160,6 +160,7 @@ func workerDocumentBytes(t *testing.T) []byte {
 	doc.Kubernetes.PodCIDR = "10.100.0.0/16"
 	doc.Kubernetes.ServiceCIDR = "10.200.0.0/16"
 	doc.Kubernetes.ClusterDNS = "10.200.0.10"
+	doc.TA.Chain = "3:" + strings.Repeat("ab", 32)
 	return marshalDocument(t, doc)
 }
 
@@ -233,7 +234,8 @@ func TestStagePublishesTheDocumentsFloor(t *testing.T) {
 	var floor struct {
 		Allowlist struct {
 			Pull struct {
-				URL string `yaml:"url"`
+				URL   string `yaml:"url"`
+				Chain string `yaml:"cds_chain"`
 			} `yaml:"pull"`
 		} `yaml:"allowlist"`
 		Mesh struct {
@@ -255,8 +257,8 @@ func TestStagePublishesTheDocumentsFloor(t *testing.T) {
 		t.Errorf("node-ip = %q, %v; want this host's primary address", got, err)
 	}
 	pull := floor.Allowlist.Pull
-	if pull.URL != "https://ta.acme.example:8443" {
-		t.Errorf("pull = %+v, want the document's Trust Authority", pull)
+	if pull.URL != "https://ta.acme.example:8443" || pull.Chain != doc.TA.Chain {
+		t.Errorf("pull = %+v, want the document's Trust Authority and chain pin %s", pull, doc.TA.Chain)
 	}
 	roles := floor.Mesh.Roles
 	if i := slices.IndexFunc(roles, func(r stagedRole) bool { return r.Name == allowlist.RoleCredentials }); i < 0 || roles[i].Port != 8443 {

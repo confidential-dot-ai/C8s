@@ -84,16 +84,21 @@ func fetchesRouteManifest(pod *api.PodSandbox, ctr *api.Container) bool {
 		ctr.GetUser().GetUid() == workloadclaims.UpstreamUID
 }
 
-// routerTAMount is the Trust Authority endpoint alone: the router polls the signed route
-// manifest from the one Trust Authority its node admits, and takes its pins from the
-// measured base the chart renders rather than from a node document.
+// routerTAMount is the Trust Authority endpoint and the node's Trust Authority pins: the router polls
+// the signed route manifest from the one Trust Authority its node admits, under the pins
+// the node rewrites as the replica set accepts other builds.
 func (p *plugin) routerTAMount() *api.ContainerAdjustment {
-	if p.taAddress == "" {
+	var mounts []*api.Mount
+	if p.taPins != "" {
+		mounts = append(mounts, readOnlyBind(p.taPins, workloadclaims.TAPinsPath))
+	}
+	if p.taAddress != "" {
+		mounts = append(mounts, readOnlyBind(p.taAddress, workloadclaims.TAAddressPath))
+	}
+	if mounts == nil {
 		return nil
 	}
-	return &api.ContainerAdjustment{
-		Mounts: []*api.Mount{readOnlyBind(p.taAddress, workloadclaims.TAAddressPath)},
-	}
+	return &api.ContainerAdjustment{Mounts: mounts}
 }
 
 // injectedCredentialSidecar reports the webhook's own shape: a reserved

@@ -146,6 +146,9 @@ func bindTAPull(a map[string]any, ta cmdsutil.TA) (map[string]any, error) {
 	}
 	pull["url"] = cmdsutil.TAURL(ta.Address)
 	pull["ta_measurements_config"] = PublicDir + "/" + TAOutput
+	if ta.Chain != "" {
+		pull["cds_chain"] = ta.Chain
+	}
 	return pull, nil
 }
 

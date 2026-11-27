@@ -204,23 +204,18 @@ func taHTTPClient(cfg config) (*http.Client, error) {
 		return nil, fmt.Errorf("--ta-url must use https (armTLS); got scheme %q", parsed.Scheme)
 	}
 
-	pins, err := taPins(cfg)
-	if err != nil {
-		return nil, err
-	}
-	client, err := armtls.NewVerifyingHTTPClient(pins, cfg.AttestationApiURL)
+	// Pins are read per handshake: a renewing get-cert follows a Trust Authority upgrade.
+	client, err := armtls.NewFollowingHTTPClient(func() (armtls.Pins, error) { return taPins(cfg) }, cfg.AttestationApiURL)
 	if err != nil {
 		return nil, fmt.Errorf("the Trust Authority armTLS client: %w", err)
 	}
-	return client, nil
+	return cmdsutil.NodeCDSChain(client, workloadclaims.TAAddressPath)
 }
 
+// taPins resolves the pins get-cert holds its Trust Authority to.
 func taPins(cfg config) (armtls.Pins, error) {
-	return cmdsutil.ClientTAPins(workloadclaims.TAPinsPath,
-		cmdsutil.ImagePolicySource{
-			File: cfg.MeasurementsConfig,
-			JSON: cfg.MeasurementsConfigJSON,
-		})
+	return cmdsutil.TAPins(workloadclaims.TAPinsPath,
+		cmdsutil.ImagePolicySource{File: cfg.MeasurementsConfig, JSON: cfg.MeasurementsConfigJSON})
 }
 
 // obtainCertFn is a var so renewal-loop tests can observe attempts.

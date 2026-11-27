@@ -245,7 +245,7 @@ func nodeTAFiles(t *testing.T) (address, pins, verifier string) {
 	t.Helper()
 	dir := t.TempDir()
 	address = filepath.Join(dir, "ta-address")
-	if err := os.WriteFile(address, cmdsutil.FormatTAAddress("ta.example.org:30808"), 0o600); err != nil {
+	if err := os.WriteFile(address, cmdsutil.FormatTAAddress("ta.example.org:30808", ""), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	pins = filepath.Join(dir, "ta-pins.json")
