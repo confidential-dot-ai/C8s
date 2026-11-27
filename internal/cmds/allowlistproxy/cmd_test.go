@@ -399,6 +399,11 @@ func TestNewHandlerServesHealthWithoutDialingTA(t *testing.T) {
 	if rec.Body.Len() != 0 {
 		t.Fatalf("health body = %q, want empty", rec.Body.String())
 	}
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/worker-gpu-attestations/10.0.0.5", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("worker relay on a cloud router returned %d", rec.Code)
+	}
 }
 
 func TestRunContextServesAndShutsDown(t *testing.T) {

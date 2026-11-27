@@ -17,6 +17,7 @@ import (
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/cmds/nodeservices"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/fileutil"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/readutil"
+	"github.com/confidential-dot-ai/confidential-kubernetes/pkg/workloadclaims"
 )
 
 // INVARIANT: on a worker image only stage writes under kubernetesDir; the
@@ -27,7 +28,7 @@ const kubernetesDir = "/run/kubernetes"
 const (
 	bootstrapKubeconfigPath = kubernetesDir + "/bootstrap-kubelet.conf"
 	kubeletConfigPath       = kubernetesDir + "/kubelet-config.yaml"
-	kubeletEnvPath          = kubernetesDir + "/kubelet.env"
+	kubeletEnvPath          = workloadclaims.WorkerKubeletEnv
 	staticPodPath           = kubernetesDir + "/manifests"
 )
 
@@ -83,9 +84,7 @@ func tokenFileError(err error) error {
 }
 
 // nodeName identifies the worker slot at address.
-func nodeName(address [4]byte) string {
-	return fmt.Sprintf("n-%d-%d-%d-%d", address[0], address[1], address[2], address[3])
-}
+func nodeName(address [4]byte) string { return workloadclaims.WorkerNodeName(address) }
 
 // kubeletConfiguration is the part of kubelet.config.k8s.io/v1beta1 a worker
 // sets, every field written.

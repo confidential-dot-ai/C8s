@@ -185,6 +185,7 @@ func run(ctx context.Context, cfg config) error {
 	}
 
 	deps := dependencies{
+		WorkerGPUAttestation: workerGPUAttestation(inventoryHosts, sandboxDigests.GPUAttestation),
 		AttestHandler: AttestHandler{
 			Challenges:        challengeStore,
 			AttestationClient: asClient,
