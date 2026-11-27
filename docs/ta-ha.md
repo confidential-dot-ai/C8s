@@ -426,7 +426,7 @@ Accepted windows and residuals:
 - A host that withholds the store from every replica but the writer, and cuts the writer off, can keep the others stale until an outside check notices (the CLI's acknowledged head).
 - With the vendor co-signature removed, an operator can accept a build of their own, which could read the keys.
 - A member whose build is no longer accepted still counts toward quorums until it is replaced.
-- Pod clients (get-cert, the sidecars, allowlist-proxy, ta-attest routing) read the node's Trust Authority pins on every TLS handshake, so a long-running one keeps reaching Trust Authority after the replica set moves to a new build. A pin file that does not parse, mid-rewrite, fails that one handshake; the next one reads it again.
+- Pod clients follow the node's Trust Authority pins, so a long-running one keeps reaching Trust Authority after the replica set moves to a new build. get-cert, allowlist-proxy and ta-attest routing read them before every request and leave the connections made under another set; the sidecars read them on every TLS handshake ([armtls.md](armtls.md#the-handshake-and-pin-checks)). A pin file that does not parse, mid-rewrite, fails that one request or handshake; the next one reads it again.
 - v1 never prunes the chain. Each entry is one ConfigMap in the cluster's etcd, and a re-seed after a wipe takes time linear in its length.
 
 ## Secrets
