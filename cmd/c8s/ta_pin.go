@@ -29,14 +29,16 @@ func taInstallValues(address string, pin string) (map[string]any, error) {
 	if _, _, err := cmdsutil.SplitTAAddress(address); err != nil {
 		return nil, fmt.Errorf("--%s %w", flagTAAddress, err)
 	}
-	document, err := os.ReadFile(pin)
-	if err != nil {
+	// The release carries the bytes that were held to a pin's rules.
+	var document []byte
+	if installTA != nil {
+		document = installTA.document
+	} else if read, err := os.ReadFile(pin); err != nil {
 		return nil, fmt.Errorf("--%s: %w", flagTAPin, err)
-	}
-	// The release carries these bytes, so they are the ones held to a pin's
-	// rules, whatever an earlier read of the file found.
-	if _, err := taPinConfig(document); err != nil {
+	} else if _, err := taPinConfig(read); err != nil {
 		return nil, fmt.Errorf("--%s: %w", flagTAPin, err)
+	} else {
+		document = read
 	}
 	return map[string]any{
 		"ta": map[string]any{
@@ -69,6 +71,14 @@ func taPinConfig(document []byte) (*taconfig.Config, error) {
 type taPin struct {
 	path   string
 	config *taconfig.Config
+	// document is the pin as it was read and checked. The release carries
+	// these bytes and connections read them from held, a private copy,
+	// whatever the file they came from holds later.
+	document []byte
+	held     string
+	// address is the endpoint the values files named beside the pin, read
+	// with it; empty when --ta-address names it.
+	address string
 }
 
 // resolveTAPin is the one pin this install holds its Trust Authority to, read where the
@@ -78,36 +88,32 @@ type taPin struct {
 // since the clients this install dials read a path.
 func resolveTAPin(valuesFiles []string) (pin *taPin, remove func(), err error) {
 	keep := func() {}
+	var document []byte
+	path, address := "", ""
 	if installTAPin != "" {
-		path, err := filepath.Abs(installTAPin)
+		if path, err = filepath.Abs(installTAPin); err == nil {
+			document, err = os.ReadFile(path)
+		}
 		if err != nil {
 			return nil, keep, fmt.Errorf("--%s: %w", flagTAPin, err)
 		}
-		document, err := os.ReadFile(path)
-		if err != nil {
-			return nil, keep, fmt.Errorf("--%s: %w", flagTAPin, err)
-		}
-		config, err := taPinConfig(document)
-		if err != nil {
+	} else {
+		values, err := taValuesFromFiles(valuesFiles)
+		if err != nil || values["measurementsConfig"] == "" {
 			return nil, keep, err
 		}
-		return &taPin{path: path, config: config}, keep, nil
+		document, address = []byte(values["measurementsConfig"]), values["address"]
 	}
-	values, err := taValuesFromFiles(valuesFiles)
+	config, err := taPinConfig(document)
 	if err != nil {
 		return nil, keep, err
 	}
-	document := values["measurementsConfig"]
-	if document == "" {
-		return nil, keep, nil
-	}
-	config, err := taPinConfig([]byte(document))
+	held, err := fileutil.WriteTemp("c8s-ta-pin-*.json", document)
 	if err != nil {
-		return nil, keep, err
+		return nil, keep, fmt.Errorf("write a copy of the Trust Authority pin: %w", err)
 	}
-	path, err := fileutil.WriteTemp("c8s-ta-pin-*.json", []byte(document))
-	if err != nil {
-		return nil, keep, fmt.Errorf("write the Trust Authority pin a values file carries: %w", err)
+	if path == "" {
+		path = held
 	}
-	return &taPin{path: path, config: config}, func() { os.Remove(path) }, nil
+	return &taPin{path: path, config: config, document: document, held: held, address: address}, func() { os.Remove(held) }, nil
 }

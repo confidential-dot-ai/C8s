@@ -123,3 +123,63 @@ func TestInstallTrustAuthorityValuesMerge(t *testing.T) {
 		t.Fatalf("resolved endpoint = %s, %v", ta["address"], err)
 	}
 }
+
+// The release and the install's own connections carry the endpoint and pin
+// that were read and checked, whatever their files hold afterwards.
+func TestInstallCarriesThePinItChecked(t *testing.T) {
+	carried := func(t *testing.T) (address, document, held string) {
+		t.Helper()
+		values, err := buildComputedValues(nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ta := values["ta"].(map[string]any)
+		copied, err := os.ReadFile(installTAConn("https://ta.example").MeasurementsConfig)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ta["address"].(string), ta["measurementsConfig"].(string), string(copied)
+	}
+	resolve := func(t *testing.T) {
+		t.Helper()
+		resolved, cleanup, err := resolveTAPin(installValues)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(cleanup)
+		installTA = resolved
+	}
+	pin, err := os.ReadFile(pinnedTAPinFile(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("values files", func(t *testing.T) {
+		resetCLIState(t)
+		installValues = []string{
+			computedValuesFile(t, valuesAtPath("ta.address", "first.example:8443")),
+			computedValuesFile(t, valuesAtPath("ta.measurementsConfig", string(pin))),
+		}
+		resolve(t)
+		for _, file := range installValues {
+			if err := os.WriteFile(file, []byte("ta:\n  address: other.example:8443\n  measurementsConfig: '{}'\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if address, document, held := carried(t); address != "first.example:8443" || document != string(pin) || held != string(pin) {
+			t.Fatalf("carried %q, %q and %q, want what was checked", address, document, held)
+		}
+	})
+
+	t.Run("--ta-pin", func(t *testing.T) {
+		resetCLIState(t)
+		installTAAddress, installTAPin = "10.9.9.9:8443", pinnedTAPinFile(t)
+		resolve(t)
+		if err := os.WriteFile(installTAPin, []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if address, document, held := carried(t); address != "10.9.9.9:8443" || document != string(pin) || held != string(pin) {
+			t.Fatalf("carried %q, %q and %q, want what was checked", address, document, held)
+		}
+	})
+}
