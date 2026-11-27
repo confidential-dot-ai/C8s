@@ -34,15 +34,28 @@ ATTESTATION_API_DIGEST=$(jq -er '.builds["node-image"].attestation_api_digest' "
 CONFOS_DIR=${CONFOS_DIR:-"$IMAGE_DIR/../../../confidential-os-builder"}
 [ -x "$CONFOS_DIR/bin/confos" ] \
     || { echo "images/ta-guest/build: confos checkout not found at $CONFOS_DIR (set CONFOS_DIR)" >&2; exit 1; }
-cd "$CONFOS_DIR"
 # A profile dir is enabled under its basename, so ./ta must keep that name.
 # attest before ta: profile order is mkosi's config-merge order, so ./ta's
 # sync hook runs last and its attestation-api is the one measured.
+platform=both
+site_profile=()
+if [ -n "${C8S_SITE_PROFILE:-}" ]; then
+    site_dir=$(realpath -e -- "$C8S_SITE_PROFILE")
+    [ "${site_dir##*/}" = site-offline ] || { echo "expected the generated site-offline profile" >&2; exit 1; }
+    if [ ! -x "$site_dir/mkosi.finalize" ] || ! cmp -s "$site_dir/mkosi.finalize" "$IMAGE_DIR/../../scripts/airgap/site_verifier.py"; then
+        echo "expected the generated site verifier finalizer" >&2
+        exit 1
+    fi
+    platform=tdx
+    site_profile=(--profile-dir "$site_dir")
+fi
+cd "$CONFOS_DIR"
 exec bin/confos build ta \
     --profile attest \
     --profile ta \
     --profile-dir "$IMAGE_DIR/ta" \
+    "${site_profile[@]}" \
     --sync-input "c8s-ref=${C8S_REF}" \
     --sync-input "attestation-api-digest=${ATTESTATION_API_DIGEST}" \
-    --platform both \
+    --platform "$platform" \
     --memory 4G

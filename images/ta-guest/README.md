@@ -68,3 +68,5 @@ primary IPv4 assignment, and the route to AMD's or Intel's certificate
 service. systemd restarts the service every 5s for as long as the VM runs.
 
 [confos]: https://github.com/confidential-dot-ai/confidential-os-builder
+
+For a site-specific measured network profile, see the [disconnected guest build](../../docs/offline-guest.md).

@@ -23,9 +23,9 @@ if [ "${profiles[*]}" != "attest ta" ]; then
   echo "::error::$build must enable the attest and ta profiles in that order, got: ${profiles[*]:-none}"
   exit 1
 fi
-profile_dir=$(grep -oE -- '--profile-dir "[^"]+"' "$build" | sed 's/.*"\(.*\)"$/\1/')
-if [ "${profile_dir##*/}" != ta ]; then
-  echo "::error::$build must stage a profile dir named ta, which is the name confos enables it under; got: ${profile_dir:-none}"
+mapfile -t profile_dirs < <(grep -oE -- '--profile-dir "[^"]+"' "$build" | cut -d'"' -f2)
+if [[ "${profile_dirs[*]}" != '$site_dir $IMAGE_DIR/ta' ]]; then
+  echo "::error::$build must stage a profile dir named ta, plus the optional generated site profile; got: ${profile_dirs[*]}"
   exit 1
 fi
 if grep -qF -- '"$@"' "$build"; then

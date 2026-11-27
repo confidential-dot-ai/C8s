@@ -95,6 +95,18 @@ fi
 IMAGE_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 CONFOS_DIR=${CONFOS_DIR:-"$IMAGE_DIR/../../../confidential-os-builder"}
 [ -x "$CONFOS_DIR/bin/confos" ] || { echo "images/node-guest/build: confos checkout not found at $CONFOS_DIR (set CONFOS_DIR)" >&2; exit 1; }
+if [ -n "${C8S_SITE_PROFILE:-}" ]; then
+    site_dir=$(realpath -e -- "$C8S_SITE_PROFILE")
+    if [ "${site_dir##*/}" != site-offline ] || [ "$C8S_PROFILE" != worker ] || [ "$C8S_PLATFORM" != tdx ]; then
+        echo "site-offline requires a TDX worker and the generated site-offline profile" >&2
+        exit 1
+    fi
+    if [ ! -x "$site_dir/mkosi.finalize" ] || ! cmp -s "$site_dir/mkosi.finalize" "$IMAGE_DIR/../../scripts/airgap/site_verifier.py"; then
+        echo "expected the generated site verifier finalizer" >&2
+        exit 1
+    fi
+    [ "$#" = 0 ] || { echo "site-offline requires a fixed worker profile stack" >&2; exit 1; }
+fi
 cd "$CONFOS_DIR"
 FRAGMENT="$IMAGE_DIR/kernel/c8s.config"
 KB_PKGS=dwarves,python3,pkg-config,zlib1g-dev
@@ -116,6 +128,9 @@ PROFILE_DIRS=(--profile-dir "$IMAGE_DIR/worker")
 if [ "$C8S_PROFILE" = pod ]; then
     PROFILES+=(--profile pod)
     PROFILE_DIRS+=(--profile-dir "$IMAGE_DIR/pod")
+fi
+if [ -n "${C8S_SITE_PROFILE:-}" ]; then
+    PROFILE_DIRS+=(--profile-dir "$site_dir")
 fi
 # Fingerprint-gated: the module build must rerun iff the kernel, the fetch
 # script (NVIDIA pins), or the signing cert changed. The kernel manifest
@@ -139,7 +154,12 @@ else
     cp -a mkosi/base/mkosi.local/mkosi.extra "$GPU_MIRROR"
     echo "$GPU_FPR" > "$GPU_STAMP"
 fi
-bin/confos-fetch-attest-gpu
+if [ -n "${C8S_SITE_PROFILE:-}" ]; then
+    # Force attest-gpu's pinned OCI sync, including its matching libnvat and ICU.
+    rm -f mkosi/base/mkosi.local/mkosi.extra/usr/local/bin/attestation-api
+else
+    bin/confos-fetch-attest-gpu
+fi
 if [ -n "${C8S_BINARY:-}" ]; then
     install -D -m 0755 "$C8S_BINARY" mkosi/base/mkosi.local/mkosi.extra/usr/local/bin/c8s
 fi

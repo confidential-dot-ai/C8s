@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+"""Stage site settings for a disconnected TDX image build awaiting verifier qualification."""
+
+import argparse
+import ipaddress
+import json
+import re
+import shutil
+import sys
+import tomllib
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from site_verifier import digest, expected_digests, verify_config
+
+
+def site_address(target: dict[str, str], key: str) -> str:
+    addr = ipaddress.IPv4Address(target[key])
+    if addr.is_multicast or addr.is_unspecified or addr.is_loopback:
+        raise ValueError(f"{key} must be a unicast site address")
+    return str(addr)
+
+
+def write(root: Path, path: str, text: str) -> None:
+    dest = root / path
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(text)
+
+
+def build(site: Path, destination: Path, verifiers: Path, approval: Path) -> None:
+    if destination.name != "site-offline" or destination.exists():
+        raise ValueError("output must be a new directory named site-offline")
+    target = json.loads((site / "target.json").read_bytes())
+    registry = target["registry"]
+    if not re.fullmatch(r"[a-z0-9.-]+:[0-9]+", registry) or not 0 < int(registry.split(":")[1]) < 65536:
+        raise ValueError("registry must be the site DNS name or IPv4 address and port")
+    dns = site_address(target, "dnsIPv4")
+    ntp = site_address(target, "ntpIPv4")
+    service = (site / "attestation-api.toml").read_text()
+    expected_config = tomllib.loads(service)
+    verify_config(expected_config, "0.0.0.0:8400")
+    expected_config["server"]["bind"] = "127.0.0.1:8400"
+    canonical = 'bind = "0.0.0.0:8400"'
+    # The stock mkosi.finalize uses this anchored sed pattern, including its wildcard dots.
+    narrowed = re.sub(f"^{canonical}$", 'bind = "127.0.0.1:8400"', service, flags=re.MULTILINE)
+    if canonical not in service.split("\n") or tomllib.loads(narrowed) != expected_config:
+        raise ValueError(f"stock finalization must change only server.bind; use the exact line {canonical}")
+    with TemporaryDirectory(dir=destination.parent) as tmp:
+        profile = Path(tmp) / "site-offline"
+        etc = profile / "mkosi.extra/etc"
+        write(profile, "mkosi.conf", "[Build]\nToolsTreePackages=python3\n")
+        # These files stay in the builder's profile directory outside the guest.
+        (profile / "verifiers").mkdir()
+        shutil.copyfile(approval, profile / "approved-verifiers.json")
+        for role, expected in expected_digests(profile / "approved-verifiers.json").items():
+            candidate = profile / "verifiers" / role
+            shutil.copyfile(verifiers / role, candidate)
+            if digest(candidate) != expected:
+                raise ValueError(f"{role} verifier differs from the site-approved SHA-256")
+        shutil.copyfile(Path(__file__).with_name("site_verifier.py"), profile / "mkosi.finalize")
+        (profile / "mkosi.finalize").chmod(0o755)
+        write(etc, "systemd/resolved.conf.d/90-site.conf",
+              f"[Resolve]\nDNS=\nDNS={dns}\nDomains=~.\nFallbackDNS=\nLLMNR=no\nMulticastDNS=no\n")
+        write(etc, "systemd/timesyncd.conf.d/90-site.conf", f"[Time]\nNTP=\nNTP={ntp}\nFallbackNTP=\n")
+        write(etc, "systemd/network/80-dhcp.network.d/90-site.conf",
+              "[DHCPv4]\nUseDNS=no\nUseNTP=no\nUseDomains=no\n"
+              "[DHCPv6]\nUseDNS=no\nUseNTP=no\nUseDomains=no\n"
+              "[IPv6AcceptRA]\nUseDNS=no\nUseDomains=no\n")
+        write(etc, "containerd/certs.d/_default/hosts.toml", f'server = "https://{registry}"\n'
+              'capabilities = ["pull", "resolve"]\nca = "/etc/c8s-site/registry-ca.pem"\n')
+        write(etc, "attestation-api/config.toml", service)
+        anchors = etc / "c8s-site"
+        anchors.mkdir()
+        shutil.copyfile(site / "registry-ca.pem", anchors / "registry-ca.pem")
+        shutil.copyfile(site / "collateral/profile.json", anchors / "profile.json")
+        profile.rename(destination)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("site", type=Path)
+    parser.add_argument("destination", type=Path)
+    parser.add_argument("--verifiers", type=Path, required=True, help="directory containing c8s, ta and worker executables")
+    parser.add_argument("--approval", type=Path, required=True, help="independently approved executable SHA-256 inventory")
+    args = parser.parse_args()
+    try:
+        build(args.site, args.destination, args.verifiers, args.approval)
+    except (ValueError, OSError, KeyError) as err:
+        sys.exit(str(err))
