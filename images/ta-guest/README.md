@@ -21,6 +21,8 @@ C8S_REF=abc1234 images/ta-guest/build   # -> output/ta/ in the confos checkout
 The build writes `disk.raw`, `uki.efi`, `manifest.json`, `roothash` and one
 `guest-smp<N>.igvm` per vCPU count. `manifest.json` carries the SNP launch
 digests and the TDX measurement block a Trust Authority pin is derived from.
+The sync log records the selected C8s operator image as
+`C8S_BUILD_COMPONENT <repository> <digest>`, before staging its binary.
 
 ## What the image contains
 
@@ -30,7 +32,8 @@ confos's `base` + `attest` profiles and this profile: the `c8s` binary at
 `.github/build-pins.json` pins for the node images, fetched by the manifest's
 `attestation_api_digest` and by nothing a registry tag names on build day, so
 a cluster has one verifier version. No RKE2, kubelet, container runtime or SSH server, and
-cloud-init is disabled. The Trust Authority never talks to a Kubernetes API.
+cloud-init is disabled. A replica can use the Kubernetes API as its untrusted
+policy-log store, through the credential described below.
 
 Nothing platform-specific is baked, so one build measures the SNP launch
 digests and the TDX block; the operator picks the TEE family at launch. The
@@ -64,6 +67,13 @@ Kubernetes store credential arrives over the attested HA API
 (`c8s ta ha store-credential`). An etcd store instead needs a disk labelled
 `cds-store`, mounted read-only at `/run/cds-store` and not measured, holding
 the etcd client file `etcd.yaml`.
+
+For signed policy input through the Kubernetes store, generate the launch file
+with `c8s ta config new --ha-input-configmap policy-input` and `--ha-endpoint`.
+The optional `ha.inputConfigMap` field is bound by the launch pin; an absent or
+empty field leaves consumption disabled. The guest reads it after verifying the
+launch file. Changing the input name requires a new launch configuration and pin.
+See [signed policy input](../../docs/ta-ha.md#signed-policy-input-from-kubernetes).
 
 No scratch disk is needed. The config is read-only, the allowlist store lives
 in the unit's runtime directory, and the mesh CA stays in memory: a restart

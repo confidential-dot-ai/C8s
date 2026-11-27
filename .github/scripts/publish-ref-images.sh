@@ -18,7 +18,7 @@
 #      if any is missing, dispatches docker.yml on the build branch and waits;
 #   3. dispatches c8s-image-manual.yml on the build branch with c8s_ref set to
 #      the same short SHA (plus --confos-ref when given) and waits;
-#   4. prints the run URLs and the published image tags.
+#   4. verifies the guest digests against the run's logs and prints immutable references.
 #
 # Who may run it: anyone who can push a branch and dispatch workflows in the
 # repository. Nothing here changes who holds the signing material; the
@@ -26,35 +26,35 @@
 #
 # Usage:
 #   publish-ref-images.sh --sha <40-hex> [--confos-ref <ref>]
-#       [--branch <name>] [--repo <owner/name>] [--dry-run]
+#       [--branch <name>] [--repo <owner/name>] [--receipt <file>] [--dry-run]
 #
 #   --confos-ref   build with this confos commit instead of the pinned one
 #   --branch       build branch name (default: build/<short-sha>)
 #   --repo         GitHub repository (default: confidential-dot-ai/confidential-kubernetes)
+#   --receipt      write source, dispatched run IDs and verified guest digest references
 #   --dry-run      resolve and check, print what would be dispatched, exit 0
 #
-# Needs: gh (authenticated), curl, jq. GH_TOKEN (or gh's own token) is used for
-# the ghcr token exchange so private component packages resolve too.
+# Needs: gh (authenticated), curl, jq, yq v4; --receipt also needs python3.
+# GH_TOKEN (or gh's own token) authenticates private packages through ghcr.
 
 set -euo pipefail
 
 registry_host=ghcr.io
 registry_namespace=confidential-dot-ai
 # The repositories images/node-guest/worker/mkosi.sync resolves at C8S_REF.
-components=(c8s-operator nri-image-policy ta armtls-mesh)
-image_repo=guests/worker
-# One oras artifact and one KubeVirt image per TEE, per commit.
-ref_tags_expected=4
+components=(c8s-operator nri-image-policy ta armtls-mesh volumed)
 docker_workflow=docker.yml
 image_workflow=c8s-image-manual.yml
 poll_seconds="${PUBLISH_REF_IMAGES_POLL_SECONDS:-30}"
-find_run_attempts="${PUBLISH_REF_IMAGES_FIND_ATTEMPTS:-20}"
 
 repo=confidential-dot-ai/confidential-kubernetes
 sha=""
 confos_ref=""
 branch=""
 dry_run=false
+receipt=""
+component_run_id=""
+last_run_id=""
 
 die() {
   echo "publish-ref-images: $*" >&2
@@ -72,6 +72,12 @@ while [ $# -gt 0 ]; do
     --confos-ref) confos_ref="${2:-}"; shift 2 ;;
     --branch) branch="${2:-}"; shift 2 ;;
     --repo) repo="${2:-}"; shift 2 ;;
+    --receipt)
+      receipt="${2:-}"
+      if [[ -z "$receipt" || "$receipt" == */ || "$receipt" == --* || ( "$receipt" == -* && "$receipt" != */* ) ]]; then
+        die "--receipt needs a file path; use ./ for option-shaped names"
+      fi
+      shift 2 ;;
     --dry-run) dry_run=true; shift ;;
     -h|--help) usage ;;
     *) die "unknown argument: $1" ;;
@@ -89,8 +95,14 @@ branch="${branch:-build/$short}"
 if [[ ! "$branch" =~ ^[0-9A-Za-z][0-9A-Za-z._/-]{0,254}$ ]] || [[ "$branch" == *..* ]]; then
   die "--branch is not a safe branch name"
 fi
+if [ -n "$receipt" ]; then
+  command -v python3 >/dev/null || die "--receipt requires python3"
+  [ ! -e "$receipt" ] && [ ! -L "$receipt" ] || die "receipt already exists: $receipt"
+  receipt_dir=$(dirname -- "$receipt")
+  [ -d "$receipt_dir" ] && [ -w "$receipt_dir" ] || die "receipt directory is not writable"
+fi
 
-for tool in gh curl jq; do
+for tool in gh curl jq yq; do
   command -v "$tool" >/dev/null || die "$tool is required"
 done
 
@@ -120,7 +132,6 @@ ensure_branch() {
     echo "branch $branch already at $short"
     return
   fi
-  commit_exists || die "commit $sha is not on $repo; push it to a branch first"
   if [ "$dry_run" = true ]; then
     echo "would create branch $branch at $short"
     return
@@ -139,19 +150,6 @@ registry_token() {
   fi
   curl -fsS "${auth[@]}" "https://$registry_host/token?service=$registry_host&scope=repository:$registry_namespace/$scope:pull" \
     | jq -r '.token // empty'
-}
-
-# ref_tags <repository> <prefix>: the repository's tags that start with prefix.
-# The listing is checked on its own, so an unreadable package is not a missing
-# tag.
-ref_tags() {
-  local repository=$1 prefix=$2 token listing
-  token=$(registry_token "$repository")
-  [ -n "$token" ] || die "no registry token for $registry_namespace/$repository"
-  listing=$(curl -fsS -H "Authorization: Bearer $token" \
-    "https://$registry_host/v2/$registry_namespace/$repository/tags/list") \
-    || die "cannot list $registry_namespace/$repository"
-  jq -r --arg prefix "$prefix" '.tags[]? | select(startswith($prefix))' <<< "$listing" | sort
 }
 
 # tag_exists <repository> <tag>: HEAD on the manifest, any media type.
@@ -184,33 +182,49 @@ missing_components() {
 # URL. Fails if the run fails.
 dispatch_and_wait() {
   local workflow=$1; shift
-  local since run_id url attempt
-  since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  gh workflow run "$workflow" --repo "$repo" --ref "$branch" "$@"
-  run_id=""
-  for ((attempt = 0; attempt < find_run_attempts; attempt++)); do
-    sleep "$poll_seconds"
-    # shellcheck disable=SC2016 # $since is a jq variable
-    run_id=$(gh run list --repo "$repo" --workflow "$workflow" --branch "$branch" --limit 5 --json databaseId,createdAt \
-      | jq -r --arg since "$since" '[.[] | select(.createdAt >= $since)] | sort_by(.createdAt) | last | .databaseId // empty')
-    [ -n "$run_id" ] && break
-  done
-  [ -n "$run_id" ] || die "no $workflow run appeared on $branch after dispatch"
+  local run_id url details
+  [ "$(branch_sha)" = "$sha" ] || die "build branch changed before dispatch"
+  run_id=$(gh api -X POST "repos/$repo/actions/workflows/$workflow/dispatches" \
+    -H 'X-GitHub-Api-Version: 2022-11-28' -f "ref=$branch" -F return_run_details=true \
+    "$@" --jq .workflow_run_id)
+  [[ "$run_id" =~ ^[1-9][0-9]*$ ]] || die "dispatch did not return a run ID; do not retry without inspecting Actions"
   url="https://github.com/$repo/actions/runs/$run_id"
   echo "waiting for $workflow run $url"
-  gh run watch "$run_id" --repo "$repo" --exit-status --interval "$poll_seconds" >/dev/null \
-    || die "$workflow run failed: $url"
+  while true; do
+    details=$(gh api "repos/$repo/actions/runs/$run_id/attempts/1")
+    jq -e --arg sha "$sha" '.head_sha == $sha and .run_attempt == 1' <<<"$details" >/dev/null \
+      || die "dispatched run $run_id has a different source SHA or attempt"
+    [ "$(jq -r .status <<<"$details")" != completed ] || break
+    sleep "$poll_seconds"
+  done
+  [ "$(jq -r .conclusion <<<"$details")" = success ] || die "$workflow run failed: $url"
   echo "$workflow run succeeded: $url"
+  last_run_id=$run_id
 }
 
 # --- main -------------------------------------------------------------------
 
+if [ "$dry_run" = false ]; then
+  work=$(mktemp -d)
+  temporary=""
+  trap 'rm -rf -- "$work"; [ -z "$temporary" ] || rm -f -- "$temporary"' EXIT
+fi
+commit_exists || die "commit $sha is not on $repo; push it to a branch first"
+manual=$(gh api "repos/$repo/contents/.github/workflows/$image_workflow?ref=$sha" \
+  -H 'Accept: application/vnd.github.raw+json')
+if ! yq -o=json <<<"$manual" | jq -e '
+  (.on.workflow_dispatch.inputs | has("expected_sha")) and (.jobs | has("verify-source")) and
+  (.jobs["build-and-push"].needs | if type == "array" then index("verify-source") != null else . == "verify-source" end)
+' >/dev/null; then
+  die "target lacks the guest source guard; use that revision's publisher"
+fi
 ensure_branch
 
+missing_text=$(missing_components)
 missing=()
 while IFS= read -r component; do
   [ -n "$component" ] && missing+=("$component")
-done < <(missing_components)
+done <<< "$missing_text"
 
 if [ "${#missing[@]}" -eq 0 ]; then
   echo "component tags present: ${components[*]} at :$short"
@@ -220,37 +234,52 @@ else
     echo "would dispatch $docker_workflow on $branch"
   else
     dispatch_and_wait "$docker_workflow"
+    component_run_id=$last_run_id
     still_missing=$(missing_components)
     [ -z "$still_missing" ] || die "$docker_workflow finished but tags are still missing: $still_missing"
   fi
 fi
 
-image_args=(-f "c8s_ref=$short")
+image_args=(-f "inputs[c8s_ref]=$short" -f "inputs[expected_sha]=$sha")
 if [ -n "$confos_ref" ]; then
-  image_args+=(-f "confos_ref=$confos_ref")
+  image_args+=(-f "inputs[confos_ref]=$confos_ref")
 fi
 
+guest_refs=("guests/worker:sha-$short-tdx" "guests/worker:sha-$short-tdx-kubevirt"
+            "guests/worker:sha-$short-sev-snp" "guests/worker:sha-$short-sev-snp-kubevirt"
+            "guests/ta:sha-$short" "guests/ta:sha-$short-kubevirt")
 if [ "$dry_run" = true ]; then
   echo "would dispatch $image_workflow on $branch with: ${image_args[*]}"
-else
-  dispatch_and_wait "$image_workflow" "${image_args[@]}"
+  for expected in "${guest_refs[@]}"; do echo "  would publish $registry_host/$registry_namespace/$expected"; done
+  exit 0
 fi
+dispatch_and_wait "$image_workflow" "${image_args[@]}"
+image_run_id=$last_run_id
 
-# The commit's tags as the registry lists them, so a tag spelled differently
-# than c8s-image.yml pushes it is a count error rather than a bad hint.
-echo "images for $short (profile and components from the same commit):"
-tag_prefix="sha-$short-"
-if [ "$dry_run" = true ]; then
-  echo "  would publish $ref_tags_expected $registry_host/$registry_namespace/$image_repo:$tag_prefix* tags"
-else
-  listing=$(ref_tags "$image_repo" "$tag_prefix")
-  published=()
-  while IFS= read -r tag; do
-    [ -n "$tag" ] && published+=("$tag")
-  done <<< "$listing"
-  [ "${#published[@]}" -eq "$ref_tags_expected" ] \
-    || die "$image_workflow succeeded but $image_repo has ${#published[@]} :$tag_prefix* tags, expected $ref_tags_expected: ${published[*]:-none}"
-  for tag in "${published[@]}"; do
-    echo "  $registry_host/$registry_namespace/$image_repo:$tag"
-  done
+# Bind digests to the dispatched attempt before reporting any publication.
+gh run view "$image_run_id" --repo "$repo" --attempt 1 --log >"$work/guest.log"
+guests='{}'
+for expected in "${guest_refs[@]}"; do
+  reference="$registry_host/$registry_namespace/$expected"
+  tag_exists "${expected%%:*}" "${expected#*:}" || die "missing expected image $expected"
+  published=$(awk -F '\t' -v ref="$reference" '
+    /Pushed \[registry\] / {line=$NF; sub(/^.*Pushed \[registry\] /, "", line); selected[$1]=(line==ref)}
+    / Digest: sha256:[0-9a-f]+$/ && selected[$1] {sub(/^.* Digest: /, "", $NF); print $NF; selected[$1]=0}' "$work/guest.log" | sort -u)
+  [[ "$published" =~ ^sha256:[0-9a-f]{64}$ ]] || die "missing or conflicting publication digest for $reference"
+  token=$(registry_token "${expected%%:*}")
+  curl -fsSI -H "Authorization: Bearer $token" \
+    -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json' \
+    "https://$registry_host/v2/$registry_namespace/${expected%%:*}/manifests/${expected#*:}" >"$work/headers"
+  current=$(awk 'tolower($1)=="docker-content-digest:" {gsub(/\r/, "", $2); print $2}' "$work/headers")
+  [ "$current" = "$published" ] || die "guest tag changed since run $image_run_id: $reference"
+  guests=$(jq -c --arg tag "$reference" --arg pin "${reference%:*}@$published" '. + {($tag): $pin}' <<<"$guests")
+done
+jq -r --arg short "$short" '"verified images for \($short):", (to_entries[] | "  \(.key) -> \(.value)")' <<<"$guests"
+if [ -n "$receipt" ]; then
+  temporary=$(mktemp -- "$receipt_dir/.publication.XXXXXX")
+  jq -n --arg source "$sha" --arg repository "$repo" --arg branch "$branch" \
+    --arg components "$component_run_id" --arg guests "$image_run_id" --argjson images "$guests" \
+    '{source: $source, repository: $repository, branch: $branch, componentRun: $components,
+      componentAttempt: (if $components == "" then "" else "1" end), guestRun: $guests, guestAttempt: "1", images: $images}' >"$temporary"
+  python3 -c 'import os, sys; os.link(sys.argv[1], sys.argv[2])' "$temporary" "$receipt"
 fi

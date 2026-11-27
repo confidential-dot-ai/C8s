@@ -471,6 +471,21 @@ Published builds resolve C8s container digests from the registry tag
 static pod pins record those digests. A rebuild after a mutable `C8S_REF` tag
 moves will not match.
 
+The sync log emits `C8S_BUILD_COMPONENT <repository> <digest>` for resolved core
+images and the plugin binary's source. Compare these records with deployment pins;
+source SHAs and guest digests alone do not establish their component map.
+`publish-ref-images.sh` verifies all six guest digests against its run's push logs.
+Pull the printed `repository@sha256:…` pins or the receipt's `images` values.
+Optional `--receipt <file>` saves run IDs, pins in `images`, and first-attempt numbers
+in `guestAttempt` and `componentAttempt`; component fields are empty for existing tags.
+Read logs with `gh run view <run> --attempt <attempt> --log --repo <repo>`.
+Receipts require Python 3 and install atomically without replacing existing paths.
+
+The publisher requires yq v4 and the target workflow's `expected_sha` source guard,
+which rejects moved sources before guest builds. Unsupported targets are rejected
+before mutation; use their matching publisher. Component-pin verification also
+requires a target containing the sync log records.
+
 ## Physical host prerequisites
 
 ### TDX
