@@ -146,7 +146,9 @@ func installOperatorKeyPath() string {
 // holds it to.
 func installTAConn(url string) *taconn.Options {
 	pin := ""
-	if installTA != nil {
+	if installTA != nil && installTA.held != "" {
+		pin = installTA.held
+	} else if installTA != nil {
 		pin = installTA.path
 	}
 	return &taconn.Options{

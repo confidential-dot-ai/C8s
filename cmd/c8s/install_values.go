@@ -77,6 +77,13 @@ func buildComputedValues(imagePins map[string]any) (map[string]any, error) {
 	}
 	values := helmchart.MergeValues(map[string]any{}, imagePins)
 	helmchart.MergeValues(values, ta)
+	if installTA != nil && installTAPin == "" {
+		// A values file is read again by helm: the endpoint and pin read
+		// and checked together are the ones the release carries.
+		helmchart.MergeValues(values, map[string]any{
+			"ta": map[string]any{"address": installTA.address, "measurementsConfig": string(installTA.document)},
+		})
+	}
 	if installVolumes {
 		// volumed opens a pod's encrypted volumes (docs/volumes.md).
 		helmchart.MergeValues(values, map[string]any{
