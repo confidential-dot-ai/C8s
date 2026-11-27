@@ -179,7 +179,7 @@ Once the set serves again (it waits up to `--settle-timeout`, 30 s), the command
 A node that pulled a dropped branch's allowlist then sees a higher version and fetches the kept one.
 If the kept chain has no policy entry, the command says so; write the allowlist with `c8s allowlist`.
 
-Every done write prints `committed head N (hash)`.
+Every done write prints `confirmed head N (hash)`: Trust Authority confirmed the entry at N. A `submit-policy` retry can confirm an entry that later entries already follow, so N is not always the chain's newest head; `status` shows that.
 
 ## What nodes pin
 
@@ -201,6 +201,7 @@ The clients that do this: get-cert, the sidecars, allowlist-proxy, ta-attest and
 | `status` | every replica's status |
 | `genesis --cluster --version` | signs entry 0 (`--image-policy-file` pins the replicas and is the first accepted build) |
 | `prepare-policy --cluster --genesis --expect-head --file --policy-sha256 --out` | signs a reviewed canonical policy into a new native entry file without submitting it |
+| `submit-policy --cluster --genesis --expect-head --file` | submits a prepared policy entry unchanged, without an operator private key |
 | `accept-image --new-pin --version [--floor] [--force]` | accepts a build, optionally evicting builds below a version |
 | `raise-floor --to [--force]` | evicts builds below a version |
 | `accept-node --worker-document --worker-image` | admits a worker document: writes a `nodes` entry adding the worker image bound to the document's digest, after you confirm the facts it prints |
@@ -252,6 +253,35 @@ Signing authorizes the entry at that position. Preparation does not submit it,
 acknowledge its head, cache it as accepted policy or reserve its sequence. If
 another entry takes that position, prepare a replacement with a new expected
 head and output path; the original artifact stays unchanged.
+
+### Submit a prepared policy
+
+Transfer the reviewed entry file to the delivery machine. Supply the cluster,
+trusted genesis, Trust Authority image pins and original predecessor independently of that
+file. The delivery machine needs no operator private key:
+
+```sh
+c8s ta ha submit-policy \
+  --url https://TA_HOST:PORT --image-policy-file ta-pin.json \
+  --state-dir durable-state --cluster CLUSTER --genesis GENESIS_HASH \
+  --expect-head SEQ:HEAD_HASH --file policy.entry.json
+```
+
+Submission verifies the policy log, the recorded acknowledged-head floor and the
+entry's signature under the operator keys at its predecessor. It requires
+attested HTTPS and sends the file's exact bytes without rewriting or signing.
+It leaves the input file and verified-chain cache unchanged.
+
+An exact retry is allowed after later policies or operator-key rotation. Keep
+`--expect-head` at the artifact's original predecessor. Finding the entry in the
+log does not establish success: Trust Authority must freshly confirm that entry, and the CLI
+must persist its acknowledgement. A retry confirms the original entry; it does
+not make that policy current again or lower a newer local acknowledgement.
+
+After exit 3, retain the artifact and rerun the same submission to establish
+confirmation. A refused retry does not undo an earlier acceptance. If another
+entry occupies the position, an operator must review and prepare a replacement
+against the new head; submission never rebases the artifact.
 
 ## Deployment and upgrades
 
