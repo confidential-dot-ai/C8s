@@ -797,7 +797,7 @@ func TestGenesisRefusesPinsThatWouldNotAdmitItsTarget(t *testing.T) {
 		options := genesisOptions{decreeOptions: c.options(t), pins: pins, target: target}
 		options.baseVersion = 0
 		err := signing(t, options.run)
-		if err == nil || !strings.Contains(err.Error(), "would admit none of its replicas") {
+		if err == nil || !strings.Contains(err.Error(), "admits none of them") {
 			t.Errorf("%s: Genesis = %v, want a refusal", name, err)
 		}
 		if _, statErr := os.Stat(options.out); statErr == nil {

@@ -292,36 +292,38 @@ func (p pinFlags) readInitData(set refvalues.ReferenceValues) error {
 	return nil
 }
 
-// admits verifies target a second time, against the pins the decree would
-// carry. --ta-pin verified it first, and a Genesis whose pins do not match the
-// replica that forms the cluster commits and then admits none of them: another
-// family, another image, or another field for the launch file.
-func (p pinFlags) admits(ctx context.Context, target replica, launchFile []byte, verified taha.Status) error {
-	document, err := p.pins(launchFile)
+// admitted verifies target a second time, against the very pins the decree
+// carries with their launch file restored, and returns what it then reports.
+// --ta-pin verified it first, and a Genesis whose pins do not match the
+// replica that forms the cluster commits and then admits none of them:
+// another family, another image, or another field for the launch file.
+func admitted(ctx context.Context, target replica, pins *tadecree.PinDocument, launchFile []byte) (taha.Status, error) {
+	bound, err := pins.WithLaunchFile(launchFile)
 	if err != nil {
-		return err
+		return taha.Status{}, err
+	}
+	document, err := refvalues.Format(bound)
+	if err != nil {
+		return taha.Status{}, err
 	}
 	file, err := os.CreateTemp("", "c8s-ta-pins-*.json")
 	if err != nil {
-		return err
+		return taha.Status{}, err
 	}
 	defer os.Remove(file.Name())
 	if _, err := file.Write(document); err != nil {
 		file.Close()
-		return err
+		return taha.Status{}, err
 	}
 	if err := file.Close(); err != nil {
-		return err
+		return taha.Status{}, err
 	}
 	target.taPin = file.Name()
-	admitted, err := target.status(ctx)
+	reported, err := target.status(ctx)
 	if err != nil {
-		return fmt.Errorf("the decree's Trust Authority pins (--platform, --image-manifest, --vcpus, --launch-file-field) do not match the target --ta-pin verified, so the cluster would admit none of its replicas: %w", err)
+		return taha.Status{}, fmt.Errorf("the target --ta-pin verified did not verify against the decree's Trust Authority pins (--platform, --image-manifest, --vcpus, --launch-file-field), and a cluster whose pins do not match its replicas admits none of them: %w", err)
 	}
-	if admitted.ID != verified.ID {
-		return fmt.Errorf("--target answered as member %s, then as %s: name one replica", verified.ID, admitted.ID)
-	}
-	return nil
+	return reported, nil
 }
 
 // imagePins names one image's entries after its launch digest, so the entries
@@ -491,8 +493,14 @@ func (o genesisOptions) run(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	if err := o.pins.admits(cmd.Context(), o.target, c.launchFile, target); err != nil {
+	// What the target reports under the decree's own pins is what the decree
+	// is written from, so a replica that changed in between is seen.
+	first := target.ID
+	if target, err = admitted(cmd.Context(), o.target, taPins, c.launchFile); err != nil {
 		return err
+	}
+	if target.ID != first {
+		return fmt.Errorf("--target answered as member %s, then as %s: name one replica", first, target.ID)
 	}
 	if err := checkGenesisTarget(target, c.parsed.ClusterID); err != nil {
 		return err
