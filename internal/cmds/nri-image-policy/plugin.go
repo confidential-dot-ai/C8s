@@ -94,10 +94,6 @@ type plugin struct {
 	// injected. prepareTAPins sets it before any container can be created (tapins.go).
 	taPins string
 
-	// awaitingDecree holds back every container taPins would be mounted
-	// into while the node takes its first Trust Authority pin decree (main.go).
-	awaitingDecree atomic.Bool
-
 	// taAddress is the node-side path of the Trust Authority endpoint handed to those
 	// same clients, or "" when no pod of this node is injected.
 	// prepareTAAddress sets it before any container can be created

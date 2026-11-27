@@ -9,9 +9,6 @@ import (
 
 var ErrNoTAAddress = errors.New("names no <host>:<port> a Trust Authority serves on")
 
-// ClusterVersion counts the pin decrees this cluster's operator has signed.
-type ClusterVersion uint64
-
 // TA names the Trust Authority a node's clients reach. It runs on a
 // confidential VM of its own, so its TEE family is that VM's.
 type TA struct {
@@ -20,8 +17,6 @@ type TA struct {
 	// Measurements is a measurements document binding the Trust Authority image to its
 	// launch file.
 	Measurements string `yaml:"measurements" json:"measurements"`
-	// PinFloor is the lowest cluster version this node takes a pin decree at.
-	PinFloor ClusterVersion `yaml:"pinFloor,omitempty" json:"pin_floor,omitempty"`
 }
 
 // TAEndpoint is an accepted Trust Authority block.

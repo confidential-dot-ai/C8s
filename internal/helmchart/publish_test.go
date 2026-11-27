@@ -28,7 +28,7 @@ import (
 
 // operatorTA serves Trust Authority's allowlist routes over store, writes gated by an
 // operator key it writes to dir, and returns its URL and that key's path.
-func operatorTA(t *testing.T, store *allowlist.Handle, dir string) (url, keyPath string) {
+func operatorTA(t *testing.T, store *allowlist.Store, dir string) (url, keyPath string) {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -43,7 +43,7 @@ func operatorTA(t *testing.T, store *allowlist.Handle, dir string) (url, keyPath
 		t.Fatal(err)
 	}
 	h := allowlist.Handler{
-		Allowlist:         store,
+		Store:             store,
 		WriteAuthorizer:   operatorauth.Verifier{Keys: []*ecdsa.PublicKey{&key.PublicKey}, ClockSkew: 30 * time.Second}.Authorize,
 		MaxWriteBodyBytes: 1 << 20,
 	}
@@ -174,15 +174,14 @@ func publishOverride(t *testing.T, repository string) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	allowlistWrites := store.Local()
-	if _, _, err := allowlistWrites.SeedWorkloads(renderedSeed(t, before).Workloads); err != nil {
+	if _, _, err := store.SeedWorkloads(renderedSeed(t, before).Workloads); err != nil {
 		t.Fatal(err)
 	}
-	if err := allowlistWrites.StartJournal(); err != nil {
+	if err := store.StartJournal(); err != nil {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
-	url, keyPath := operatorTA(t, allowlistWrites, dir)
+	url, keyPath := operatorTA(t, &store, dir)
 	n := &node{client: allowlistclient.NewClientWithHTTP(url, &http.Client{})}
 	n.pull(t)
 	served := n.version

@@ -169,27 +169,6 @@ func TestParseReadsAnInitdataDocumentUpToTheCap(t *testing.T) {
 	}
 }
 
-// A client reads its cluster from the same launch file the Trust Authority
-// booted on, whichever form it takes. The file names a replica set, so a read
-// that missed the carried configuration would report a single Trust Authority
-// and stop the client following its decrees.
-func TestReadClusterReadsAnInitdataDocument(t *testing.T) {
-	operator, operatorPEM := testKey(t)
-	_, anchorPEM := testKey(t)
-	document := testHADocument(t, operatorPEM, anchorPEM)
-	configuration := render(t, document)
-	got, err := ReadCluster(initdataDocument(t, InitdataAlgorithmSNP, map[string]string{ConfigFile: string(configuration)}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !got.Replicated || got.ClusterID != document.ClusterID {
-		t.Fatalf("read %+v, want the replicated cluster %q", got, document.ClusterID)
-	}
-	if len(got.OperatorKeys) != 1 || !got.OperatorKeys[0].Equal(operator) {
-		t.Fatalf("operator keys = %v, want the carried configuration's one key", got.OperatorKeys)
-	}
-}
-
 // The two forms cannot be confused: a configuration is a YAML mapping, whose
 // `key: value` lines are not TOML, so it is never read as an initdata document.
 func TestAConfigurationIsNotTOML(t *testing.T) {
@@ -234,8 +213,5 @@ func TestAnOversizedInitdataDocumentIsRefusedNamingTheCap(t *testing.T) {
 		[]byte("# "+strings.Repeat("x", maxInitdataSize)+"\n")...)
 	if _, err := Parse(launchFile); err == nil || !strings.Contains(err.Error(), "an initdata document may be") {
 		t.Fatalf("Parse = %v, want a refusal naming the cap", err)
-	}
-	if _, err := ReadCluster(launchFile); err == nil || !strings.Contains(err.Error(), "an initdata document may be") {
-		t.Fatalf("ReadCluster = %v, want a refusal naming the cap", err)
 	}
 }

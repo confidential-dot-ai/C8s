@@ -53,7 +53,6 @@ func TestNewWritesTheDocumentItsFlagsName(t *testing.T) {
 		"--out", out,
 		"--ta-address", "ta.acme.example:8443",
 		"--ta-pin", pinPath,
-		"--ta-pin-floor", "3",
 		"--tls-san", "c8s.acme.example",
 		"--router-hostname", "api.acme.example",
 		"--acme-email", "ops@acme.example",
@@ -71,8 +70,8 @@ func TestNewWritesTheDocumentItsFlagsName(t *testing.T) {
 	}
 	pin, _ := os.ReadFile(pinPath)
 	ca, _ := os.ReadFile(caPath)
-	if doc.TA.Address != "ta.acme.example:8443" || doc.TA.Measurements != string(pin) || doc.TA.PinFloor != 3 {
-		t.Fatalf("TA = %+v, want the flags' address, floor and the pin file's bytes", doc.TA)
+	if doc.TA.Address != "ta.acme.example:8443" || doc.TA.Measurements != string(pin) {
+		t.Fatalf("TA = %+v, want the flags' address and the pin file's bytes", doc.TA)
 	}
 	if doc.TLSSAN != "c8s.acme.example" {
 		t.Fatalf("tlsSAN = %q, want the flag's", doc.TLSSAN)

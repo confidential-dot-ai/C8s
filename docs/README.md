@@ -53,9 +53,6 @@ Everyone: [overview.md](overview.md), then [guarantees.md](guarantees.md).
 | [cloud-ta.md](cloud-ta.md) | how-to | Where a cloud cluster's TA runs, the flows it needs, node pins on AKS and GKE |
 | [launch-configuration.md](launch-configuration.md) | reference | The launch document a measured worker boots with |
 | [pod-cvm-provider.md](pod-cvm-provider.md) | reference | Scheduling annotated Pods as Cloud Pod CVMs |
-| [ta-ha.md](ta-ha.md) | explanation | Running a cluster's TA as several VMs |
-| [ta-ha-runbooks.md](ta-ha-runbooks.md) | how-to | Starting, rolling, recovering a replicated TA |
-| [ta-ha-alerts.md](ta-ha-alerts.md) | reference | What to watch on a replicated TA |
 | [upgrade.md](upgrade.md) | how-to | Upgrade a cluster to a new release |
 | **Verifying a deployment** | | |
 | [verify.md](verify.md) | how-to | Verify a deployment from outside |

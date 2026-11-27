@@ -8,13 +8,13 @@ import (
 	pkgallowlist "github.com/confidential-dot-ai/confidential-kubernetes/pkg/allowlist"
 )
 
-// seedWorkloads seeds the measured configuration's workload entries into the
-// allowlist; the version-stable merge is the seed command.
+// seedWorkloads seeds the measured configuration's workload entries into
+// store; the version-stable merge is Store.SeedWorkloads.
 //
 // Seeding runs before the HTTP server serves, so the first GET /allowlist
 // reflects the configuration. Any error fails closed: Trust Authority must not serve an
 // empty or partial allowlist because its seed could not be applied.
-func seedWorkloads(store *allowlist.Handle, seed *pkgallowlist.Allowlist) error {
+func seedWorkloads(store *allowlist.Store, seed *pkgallowlist.Allowlist) error {
 	if len(seed.Components) > 0 {
 		return fmt.Errorf("the components section is written by an operator, never seeded: remove it from the measured configuration")
 	}

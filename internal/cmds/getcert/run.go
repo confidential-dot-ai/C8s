@@ -180,8 +180,8 @@ func setupLogging(verbose bool) {
 
 // newTAClient builds the attest and allowlist clients over one armTLS-pinned
 // HTTP client, so the policy watch trusts Trust Authority exactly as issuance does.
-func newTAClient(ctx context.Context, cfg config) (attestclient.Client, allowlistclient.Client, error) {
-	httpClient, err := taHTTPClient(ctx, cfg)
+func newTAClient(cfg config) (attestclient.Client, allowlistclient.Client, error) {
+	httpClient, err := taHTTPClient(cfg)
 	if err != nil {
 		return attestclient.Client{}, allowlistclient.Client{}, err
 	}
@@ -190,7 +190,7 @@ func newTAClient(ctx context.Context, cfg config) (attestclient.Client, allowlis
 	return client, allowlistclient.NewClientWithHTTP(cfg.TAURL, httpClient), nil
 }
 
-func taHTTPClient(ctx context.Context, cfg config) (*http.Client, error) {
+func taHTTPClient(cfg config) (*http.Client, error) {
 	parsed, err := url.Parse(cfg.TAURL)
 	if err != nil {
 		return nil, fmt.Errorf("--ta-url: %w", err)
@@ -204,19 +204,19 @@ func taHTTPClient(ctx context.Context, cfg config) (*http.Client, error) {
 		return nil, fmt.Errorf("--ta-url must use https (armTLS); got scheme %q", parsed.Scheme)
 	}
 
-	pins, err := taPins(ctx, cfg)
+	pins, err := taPins(cfg)
 	if err != nil {
 		return nil, err
 	}
-	client, err := armtls.NewRefreshingHTTPClient(pins, cfg.AttestationApiURL)
+	client, err := armtls.NewVerifyingHTTPClient(pins, cfg.AttestationApiURL)
 	if err != nil {
 		return nil, fmt.Errorf("the Trust Authority armTLS client: %w", err)
 	}
 	return client, nil
 }
 
-func taPins(ctx context.Context, cfg config) (armtls.PinSource, error) {
-	return cmdsutil.ClientTAPins(ctx, workloadclaims.TAPinsPath,
+func taPins(cfg config) (armtls.Pins, error) {
+	return cmdsutil.ClientTAPins(workloadclaims.TAPinsPath,
 		cmdsutil.ImagePolicySource{
 			File: cfg.MeasurementsConfig,
 			JSON: cfg.MeasurementsConfigJSON,
@@ -275,7 +275,7 @@ func run(ctx context.Context, cfg config) error {
 
 	ctx = cmdsutil.WatchNodeIP(ctx, rawAttestationURL, attestationURL)
 
-	client, policyClient, err := newTAClient(ctx, cfg)
+	client, policyClient, err := newTAClient(cfg)
 	if err != nil {
 		return err
 	}

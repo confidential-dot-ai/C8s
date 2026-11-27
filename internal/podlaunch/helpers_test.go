@@ -53,7 +53,6 @@ func testPodDocument(t *testing.T, platform string) (Document, *ecdsa.PrivateKey
 		TA: cmdsutil.TA{
 			Address:      "ta.example.org:8443",
 			Measurements: testTAPin(t, teetypes.FamilySNP, 2),
-			PinFloor:     9,
 		},
 	}
 	if platform == "tdx" {

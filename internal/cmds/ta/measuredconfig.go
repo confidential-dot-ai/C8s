@@ -30,31 +30,20 @@ func runMeasuredConfig(ctx context.Context, cfg config) error {
 	if err != nil {
 		return fmt.Errorf("--config %s is not the document this VM was launched with: %w", cfg.configPath, err)
 	}
-	served, err := withMeasuredConfig(cfg, document, platform)
+	measured, err := taconfig.ParseForFamily(document, platform)
 	if err != nil {
 		return fmt.Errorf("--config %s: %w", cfg.configPath, err)
 	}
-	served.host, err = resolveListenHost(served.host)
-	if err != nil {
-		return err
-	}
-	slog.Info("serving a measured Trust Authority configuration", "cluster_id", served.measured.ClusterID, "platform", platform)
-	return run(ctx, served)
+	slog.Info("serving a measured Trust Authority configuration", "cluster_id", measured.ClusterID, "platform", platform)
+	return run(ctx, withMeasuredConfig(cfg, measured, platform))
 }
 
-// withMeasuredConfig returns cfg serving the document this VM was launched
-// with, on the platform its launch proved. The settings and the bytes they
-// were read from are one verified read: a replica's peers and its cluster's
-// decrees are bound to those bytes.
-func withMeasuredConfig(cfg config, document []byte, platform teetypes.Family) (config, error) {
-	measured, err := taconfig.ParseForFamily(document, platform)
-	if err != nil {
-		return config{}, err
-	}
-	cfg.measuredFile = document
+// withMeasuredConfig returns cfg serving measured on the platform its launch
+// proved.
+func withMeasuredConfig(cfg config, measured *taconfig.Config, platform teetypes.Family) config {
 	cfg.measured = measured
 	cfg.armtlsPlatform = platform
-	return cfg, nil
+	return cfg
 }
 
 // requireLoopbackAttestationAPI holds the self-report to the attester inside

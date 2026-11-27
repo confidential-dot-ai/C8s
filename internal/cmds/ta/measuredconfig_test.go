@@ -5,10 +5,8 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -98,26 +96,13 @@ func measuredConfig(t *testing.T, c cluster) *taconfig.Config {
 	return measured
 }
 
-// A Kata Containers runtime binds its initdata document, not the configuration
-// inside it, so the bytes a replica's peers and its cluster's decrees pin are
-// the whole document.
-func TestMeasuredConfigKeepsAnInitdataLaunchFileWhole(t *testing.T) {
-	launchFile, _ := initdataLaunchFile(t, taconfig.InitdataAlgorithmSNP)
-	cfg, err := withMeasuredConfig(config{}, launchFile, teetypes.FamilySNP)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(cfg.measuredFile, launchFile) {
-		t.Fatal("the measured file is not the launch file the VM was bound to")
-	}
-	if cfg.measured.ClusterID != "lane" {
-		t.Fatalf("cluster %q, want the one the carried configuration names", cfg.measured.ClusterID)
-	}
-	// The binding proves the bytes, not the digest they declare, so a document
-	// declaring another family's is refused before it serves.
-	if _, err := withMeasuredConfig(config{}, launchFile, teetypes.FamilyTDX); err == nil || !strings.Contains(err.Error(), "algorithm") {
-		t.Fatalf("an SEV-SNP initdata document on TDX = %v, want an algorithm refusal", err)
-	}
+// pastTheBinding is a log level no Trust Authority takes: startup reads it
+// first once the launch binding holds, so a run that stops on it passed the
+// binding check.
+const pastTheBinding = "past-the-binding"
+
+func stoppedPastTheBinding(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "--log-level")
 }
 
 // initdataLaunchFile returns a Kata Containers initdata document and the
@@ -153,14 +138,10 @@ func TestRunMeasuredConfigBindsTheWholeInitdataDocument(t *testing.T) {
 		stub.SetVerdict(verdict)
 	}
 	// Startup past the binding check stops at the first step after it.
-	noRoute := errors.New("no default route")
-	previous := chooseHostInterface
-	t.Cleanup(func() { chooseHostInterface = previous })
-	chooseHostInterface = func() (net.IP, error) { return nil, noRoute }
-	cfg := config{configPath: path, attestationApiURL: stub.URL(), host: "auto"}
+	cfg := config{configPath: path, attestationApiURL: stub.URL(), logLevel: pastTheBinding}
 
 	bind(launchFile)
-	if err := runMeasuredConfig(t.Context(), cfg); !errors.Is(err, noRoute) {
+	if err := runMeasuredConfig(t.Context(), cfg); !stoppedPastTheBinding(err) {
 		t.Fatalf("a report binding the whole document = %v, want startup to pass the launch-binding check", err)
 	}
 	bind(configuration)
@@ -191,14 +172,10 @@ func TestRunMeasuredConfigReadsAnInitdataDocumentFromMRCONFIGID(t *testing.T) {
 		verdict.Claims.PlatformData = map[string]any{"rtmr_3": register}
 		stub.SetVerdict(verdict)
 	}
-	noRoute := errors.New("no default route")
-	previous := chooseHostInterface
-	t.Cleanup(func() { chooseHostInterface = previous })
-	chooseHostInterface = func() (net.IP, error) { return nil, noRoute }
-	cfg := config{configPath: path, attestationApiURL: stub.URL(), host: "auto"}
+	cfg := config{configPath: path, attestationApiURL: stub.URL(), logLevel: pastTheBinding}
 
 	bind(launchFile, untouched)
-	if err := runMeasuredConfig(t.Context(), cfg); !errors.Is(err, noRoute) {
+	if err := runMeasuredConfig(t.Context(), cfg); !stoppedPastTheBinding(err) {
 		t.Fatalf("a report whose MRCONFIGID binds the document = %v, want startup to pass the launch-binding check", err)
 	}
 	bind(configuration, untouched)
@@ -215,7 +192,7 @@ func TestRunMeasuredConfigReadsAnInitdataDocumentFromMRCONFIGID(t *testing.T) {
 	// too, whatever MRCONFIGID holds.
 	seed := runtimemeasure.Seed(launchFile)
 	bind(configuration, hex.EncodeToString(seed[:]))
-	if err := runMeasuredConfig(t.Context(), cfg); !errors.Is(err, noRoute) {
+	if err := runMeasuredConfig(t.Context(), cfg); !stoppedPastTheBinding(err) {
 		t.Fatalf("a report whose RTMR[3] seed binds the document = %v, want startup to pass the launch-binding check", err)
 	}
 }
@@ -225,15 +202,8 @@ func TestRunMeasuredConfigReadsAnInitdataDocumentFromMRCONFIGID(t *testing.T) {
 // rather than one an argument claimed.
 func TestMeasuredConfigDecidesEverySetting(t *testing.T) {
 	operatorPEM := operatorKeysPEM(t)
-	launched := cluster{
-		operatorPEM: operatorPEM,
-		workloads:   map[string]string{"attestation-api": digestA},
-	}
-	cfg, err := withMeasuredConfig(config{}, measuredDocument(t, launched), teetypes.FamilySNP)
-	if err != nil {
-		t.Fatal(err)
-	}
-	measured := cfg.measured
+	measured := measuredConfig(t, cluster{operatorPEM: operatorPEM, workloads: map[string]string{"attestation-api": digestA}})
+	cfg := withMeasuredConfig(config{}, measured, teetypes.FamilySNP)
 
 	if cfg.armtlsPlatform != teetypes.FamilySNP {
 		t.Errorf("armTLS platform = %q, want %q", cfg.armtlsPlatform, teetypes.FamilySNP)
@@ -281,31 +251,6 @@ func TestRunMeasuredConfigRefusesADocumentTheLaunchDidNotBind(t *testing.T) {
 	}
 }
 
-func TestRunMeasuredConfigRequiresAutoHostAddress(t *testing.T) {
-	path := writeMeasuredDocument(t)
-	document, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stub := mockapi.New(t)
-	stub.SetPlatform(teetypes.PlatformSNP)
-	verdict := mockapi.PassingVerdict(strings.Repeat("ab", 48))
-	bound := runtimemeasure.HostData(document)
-	verdict.Claims.InitData = bound[:]
-	stub.SetVerdict(verdict)
-
-	noRoute := errors.New("no default route")
-	previous := chooseHostInterface
-	t.Cleanup(func() { chooseHostInterface = previous })
-	chooseHostInterface = func() (net.IP, error) { return nil, noRoute }
-	err = runMeasuredConfig(t.Context(), config{
-		configPath: path, attestationApiURL: stub.URL(), host: "auto",
-	})
-	if !errors.Is(err, noRoute) {
-		t.Fatalf("startup error = %v, want the host-address selection failure", err)
-	}
-}
-
 // The self-report admitting the configuration comes from the attester inside
 // this VM; one fetched over the network is another guest's, and one this
 // process cannot parse reaches no attester at all.
@@ -325,31 +270,6 @@ func TestRunMeasuredConfigRequiresALoopbackAttester(t *testing.T) {
 	}
 }
 
-// replicatedDocument is the measured document of a cluster whose Trust Authority runs as
-// a replica set, with the operator keys a test signs decrees with.
-func replicatedDocument(t *testing.T, operatorPEM []byte) []byte {
-	t.Helper()
-	var document map[string]any
-	measured := measuredDocument(t, cluster{
-		operatorPEM: operatorPEM,
-		workloads:   map[string]string{"attestation-api": digestA},
-	})
-	if err := yaml.Unmarshal(measured, &document); err != nil {
-		t.Fatal(err)
-	}
-	document["ha"] = map[string]any{
-		// A loopback address no replica answers at: the replica under test
-		// reaches none of its cluster and joins nothing.
-		"replicas": []string{"127.0.0.9"},
-		"voters":   1,
-	}
-	data, err := yaml.Marshal(document)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return data
-}
-
 // writeMeasuredDocument stages the document where a launched VM reads it.
 func writeMeasuredDocument(t *testing.T) string {
 	t.Helper()
@@ -366,14 +286,7 @@ func writeMeasuredDocument(t *testing.T) string {
 func TestRunServesTheMeasuredConfiguration(t *testing.T) {
 	cfg := validRunConfig(t, mockapi.New(t).URL())
 	cfg.port = freePort(t)
-	launched := cluster{
-		operatorPEM: operatorKeysPEM(t),
-		workloads:   map[string]string{"attestation-api": digestA},
-	}
-	cfg, err := withMeasuredConfig(cfg, measuredDocument(t, launched), teetypes.FamilySNP)
-	if err != nil {
-		t.Fatal(err)
-	}
+	cfg = withMeasuredConfig(cfg, measuredConfig(t, cluster{operatorPEM: operatorKeysPEM(t), workloads: map[string]string{"attestation-api": digestA}}), teetypes.FamilySNP)
 
 	base := fmt.Sprintf("https://127.0.0.1:%d", cfg.port)
 	client := armTLSClient(nil)
@@ -449,7 +362,7 @@ func TestRunMeasuredConfigNamesBothTDXFieldsWhenNeitherBinds(t *testing.T) {
 	verdict := mockapi.PassingVerdict(strings.Repeat("ab", 48))
 	verdict.Claims.PlatformData = map[string]any{"rtmr_3": strings.Repeat("00", 48)}
 	stub.SetVerdict(verdict)
-	err := runMeasuredConfig(t.Context(), config{configPath: path, attestationApiURL: stub.URL(), host: "auto"})
+	err := runMeasuredConfig(t.Context(), config{configPath: path, attestationApiURL: stub.URL()})
 	if err == nil || !strings.Contains(err.Error(), "launched with") || !strings.Contains(err.Error(), "RTMR[3]") || !strings.Contains(err.Error(), "MRCONFIGID") {
 		t.Fatalf("got %v, want a launch-binding refusal naming RTMR[3] and MRCONFIGID", err)
 	}
@@ -473,7 +386,7 @@ func TestRunMeasuredConfigNamesAnUnreadableInitdataDocument(t *testing.T) {
 	verdict.Claims.InitData = digest
 	verdict.Claims.PlatformData = map[string]any{"rtmr_3": strings.Repeat("00", 48)}
 	stub.SetVerdict(verdict)
-	err = runMeasuredConfig(t.Context(), config{configPath: path, attestationApiURL: stub.URL(), host: "auto"})
+	err = runMeasuredConfig(t.Context(), config{configPath: path, attestationApiURL: stub.URL()})
 	if err == nil || !strings.Contains(err.Error(), "algorithm") || strings.Contains(err.Error(), "launched with") {
 		t.Fatalf("got %v, want a refusal naming the algorithm", err)
 	}
