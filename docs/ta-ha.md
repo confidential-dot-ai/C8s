@@ -241,7 +241,9 @@ The clients that do this: get-cert, the sidecars, allowlist-proxy, ta-attest and
 | `status` | every replica's status |
 | `genesis --cluster --version` | signs entry 0 (`--image-policy-file` pins the replicas and is the first accepted build) |
 | `prepare-policy --cluster --genesis --expect-head --file --policy-sha256 --out` | signs a reviewed canonical policy into a new native entry file without submitting it |
+| `verify-policy --cluster --genesis --expect-head --file --policy-sha256` | checks a signed successor against the reviewed policy digest and current attested head without submitting it |
 | `submit-policy --cluster --genesis --expect-head --file` | submits a prepared policy entry unchanged, without an operator private key |
+| `observe-policy --cluster --genesis --expect-head --file` | verifies held policy confirmation and saves the confirmed head without submitting the entry |
 | `accept-image --new-pin --version [--floor] [--force]` | accepts a build, optionally evicting builds below a version |
 | `raise-floor --to [--force]` | evicts builds below a version |
 | `accept-node --worker-document --worker-image` | admits a worker document: writes a `nodes` entry adding the worker image bound to the document's digest, after you confirm the facts it prints |
@@ -293,6 +295,37 @@ Signing authorizes the entry at that position. Preparation does not submit it,
 acknowledge its head, cache it as accepted policy or reserve its sequence. If
 another entry takes that position, prepare a replacement with a new expected
 head and output path; the original artifact stays unchanged.
+
+### Verify a signed successor before publication
+
+Check the signed artifact against the independently reviewed policy hash and the
+head it is meant to extend:
+
+```sh
+c8s ta ha verify-policy \
+  --url https://TA_HOST:PORT --image-policy-file ta-pin.json \
+  --state-dir durable-state --cluster CLUSTER --genesis GENESIS_HASH \
+  --expect-head SEQ:HEAD_HASH --file policy.entry.json \
+  --policy-sha256 REVIEWED_CANONICAL_ALLOWLIST_SHA256
+```
+
+The command verifies the native signature, canonical policy bytes and saved
+acknowledged floor, then requires fresh, serving status at exactly that
+predecessor. It returns the full artifact hash, the candidate allowlist hash,
+the predecessor and the proposed entry head.
+`current_entries` contains the latest held `policy` and `routes` entries, with
+their exact bodies and signatures. A missing type has no entry in the verified
+log; `{}` identifies a bootstrap log without either type. These entries describe
+the held predecessor and do not establish confirmation. An already-held candidate is refused;
+use observation for accepted history. Validation sends only GETs, loads no
+operator key and leaves the artifact, records and cache unchanged.
+
+This does not confirm the predecessor or candidate, reserve a position, or prove
+Git review or application readiness. Deployment tooling must independently check
+the accepted Git baseline and phase gates. Another write can invalidate the
+successor after validation. An absent local record is first use; callers must
+detect and recover lost established state. ConfigMap size and byte round-trip
+checks belong to publication. Any failed validation withholds JSON and exits 1.
 
 ### Submit a prepared policy
 
