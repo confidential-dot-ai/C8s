@@ -327,27 +327,41 @@ func admitted(ctx context.Context, target replica, pins *tadecree.PinDocument, l
 	if err != nil {
 		return taha.Status{}, fmt.Errorf("--ta-pin: %w", err)
 	}
-	target.verifier = namedPins{name: "--ta-pin", verifier: taconn.ImagePinVerifier{Verifier: target.verifier, Images: operatorPins.Images}}
+	target.verifier = alsoPinned{base: target.verifier, name: "--ta-pin", images: operatorPins.Images}
 	target.taPin = file.Name()
 	reported, err := target.status(ctx)
 	if err != nil {
-		return taha.Status{}, fmt.Errorf("reading the target under both --ta-pin and the decree's Trust Authority pins (--platform, --image-manifest, --vcpus, --launch-file-field) failed; a refusal that does not name --ta-pin is the decree's pins, and a cluster started with pins that refuse its replicas admits none of its replicas: %w", err)
+		return taha.Status{}, fmt.Errorf("reading the target under both --ta-pin and the decree's Trust Authority pins (--platform, --image-manifest, --vcpus, --launch-file-field) failed. A refusal naming --ta-pin is that set's; another refusal of the peer's identity is the decree's pins, and a cluster started with pins that refuse its replicas admits none of its replicas: %w", err)
 	}
 	return reported, nil
 }
 
-// namedPins says which pin set refused a peer.
-type namedPins struct {
-	name     string
-	verifier taconn.PinVerifier
+// alsoPinned holds verified evidence to a second pin set, and names that set
+// where it is the one that refuses the peer. An error from base is another's
+// to name: the evidence itself, or the pins of the connection.
+type alsoPinned struct {
+	base   taconn.PinVerifier
+	name   string
+	images []remote.ImagePin
 }
 
-func (n namedPins) Verify(ctx context.Context, platform string, evidence json.RawMessage, params localverify.Params) (*teetypes.VerificationResult, error) {
-	result, err := n.verifier.Verify(ctx, platform, evidence, params)
+func (a alsoPinned) Verify(ctx context.Context, platform string, evidence json.RawMessage, params localverify.Params) (*teetypes.VerificationResult, error) {
+	result, err := a.base.Verify(ctx, platform, evidence, params)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", n.name, err)
+		return nil, err
+	}
+	held := taconn.ImagePinVerifier{Verifier: verified{result}, Images: a.images}
+	if _, err := held.Verify(ctx, platform, evidence, params); err != nil {
+		return nil, fmt.Errorf("%s: %w", a.name, err)
 	}
 	return result, nil
+}
+
+// verified answers with evidence already verified.
+type verified struct{ result *teetypes.VerificationResult }
+
+func (v verified) Verify(context.Context, string, json.RawMessage, localverify.Params) (*teetypes.VerificationResult, error) {
+	return v.result, nil
 }
 
 // imagePins names one image's entries after its launch digest, so the entries

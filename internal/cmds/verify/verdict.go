@@ -571,3 +571,18 @@ func formatTCB(tcb teetypes.TcbInfo) string {
 	}
 	return ""
 }
+
+// matchedImages is the image-policy entries the evidence satisfies, each
+// judged alone and without its anchor, as enforceEachImage first judges them.
+func matchedImages(result *teetypes.VerificationResult, images []remote.ImagePin, platform string) []remote.ImagePin {
+	response := remote.VerifyResponse{Result: *result}
+	var matched []remote.ImagePin
+	for _, img := range images {
+		bare := img
+		bare.Anchor = nil
+		if armtls.EnforceImages(response, []remote.ImagePin{bare}, teetypes.NormalizePlatform(platform), nil) == nil {
+			matched = append(matched, img)
+		}
+	}
+	return matched
+}

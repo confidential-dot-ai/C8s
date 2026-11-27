@@ -170,23 +170,23 @@ func applyInitDataNote(oc *Outcome, result *teetypes.VerificationResult, plan *v
 		}
 	case len(result.Claims.InitData) > 0:
 		oc.InitData = hex.EncodeToString(result.Claims.InitData)
-		oc.InitDataNote = initDataNote(oc.Platform, plan)
+		oc.InitDataNote = initDataNote(oc.Platform, plan, matchedImages(result, plan.refValues.Images, oc.Platform))
 	}
 }
 
 // initDataNote says what stands behind the init-data digest the evidence
 // commits: the --init-data pin, the launch file an image policy binds, or
 // nothing at all.
-func initDataNote(platform string, plan *verifyPlan) string {
+func initDataNote(platform string, plan *verifyPlan, matched []remote.ImagePin) string {
 	switch {
 	case plan.initDataHash != nil:
 		return "verified: matches --init-data"
-	case launchBindingPinned(platform, plan.refValues.Images) && isTDX(platform):
+	case launchBindingPinned(platform, matched) && isTDX(platform):
 		return "verified: matches the launch file --image-policy-file pins (MRCONFIGID)"
-	case launchBindingPinned(platform, plan.refValues.Images):
+	case launchBindingPinned(platform, matched):
 		return "verified: matches the launch file --image-policy-file pins (HOST_DATA)"
 	case isTDX(platform):
-		return "not pinned: the digest the evidence commits, compared against nothing (pin it with an --image-policy-file entry that reads MRCONFIGID)"
+		return "not pinned: no --image-policy-file entry the evidence matches reads MRCONFIGID, or one that does not also matches, so this verdict does not say the digest was compared"
 	}
 	return "not pinned: the digest the evidence commits, compared against nothing (pass --init-data to pin it)"
 }
@@ -195,9 +195,9 @@ func initDataNote(platform string, plan *verifyPlan) string {
 // field this verdict reports. On SEV-SNP that field is HOST_DATA, which such a
 // pin compares whole. TDX reports MRCONFIGID there: a pin enforces it only
 // where the entry reads the launch file, or its digest, from that field, and
-// one that binds RTMR[3] says nothing about it. Every image must bind the
-// field: the evidence matched one of them, and another entry's binding says
-// nothing about the one that did.
+// one that binds RTMR[3] says nothing about it. images are the entries the
+// evidence matches, and every one must bind the field: the verdict stands on
+// any of them.
 func launchBindingPinned(platform string, images []remote.ImagePin) bool {
 	if len(images) == 0 {
 		return false

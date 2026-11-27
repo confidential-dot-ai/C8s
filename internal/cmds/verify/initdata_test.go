@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/confidential-kubernetes/internal/testutil"
@@ -370,10 +369,10 @@ func TestApplyInitDataNoteLaunchFilePin(t *testing.T) {
 	if launchBindingPinned(tdx, append(fromField, remote.ImagePin{LaunchFile: []byte("x")})) {
 		t.Error("an entry that binds RTMR[3] was counted as pinning MRCONFIGID")
 	}
-	if note := initDataNote(tdx, &verifyPlan{refValues: refvalues.ReferenceValues{Images: fromField}}); !strings.Contains(note, "MRCONFIGID") || !strings.HasPrefix(note, "verified") {
+	if note := initDataNote(tdx, &verifyPlan{}, fromField); !strings.Contains(note, "MRCONFIGID") || !strings.HasPrefix(note, "verified") {
 		t.Errorf("TDX note = %q", note)
 	}
-	if note := initDataNote(tdx, &verifyPlan{}); strings.Contains(note, "--init-data") {
+	if note := initDataNote(tdx, &verifyPlan{}, nil); strings.Contains(note, "--init-data") {
 		t.Errorf("the TDX note points at a flag that takes no MRCONFIGID digest: %q", note)
 	}
 }
