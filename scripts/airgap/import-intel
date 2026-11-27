@@ -1,0 +1,167 @@
+#!/usr/bin/env python3
+"""Publish a fully validated Intel snapshot on the independent site authority."""
+
+import fcntl
+import hashlib
+import json
+import os
+import re
+import stat
+import subprocess
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+from tempfile import NamedTemporaryFile, TemporaryDirectory
+from typing import Any
+
+
+def unique(fields: list[tuple[str, Any]]) -> dict[str, Any]:
+    result = dict(fields)
+    if len(result) != len(fields):
+        raise ValueError("duplicate snapshot field")
+    return result
+
+
+def digest(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def valid_digest(value: Any) -> str:
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
+        raise ValueError("expected a lowercase SHA-256 digest")
+    return value
+
+
+def read_regular(path: Path, limit: int) -> bytes:
+    with os.fdopen(
+        os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb"
+    ) as f:
+        if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+            raise ValueError(f"expected a regular file: {path}")
+        data = f.read(limit + 1)
+    if len(data) > limit:
+        raise ValueError(f"oversized file: {path}")
+    return data
+
+
+def replace(path: Path, data: bytes) -> None:
+    with NamedTemporaryFile(dir=path.parent, delete=False) as f:
+        temp = Path(f.name)
+        try:
+            f.write(data)
+            f.flush()
+            os.fchmod(f.fileno(), 0o644)
+            os.fsync(f.fileno())
+            os.replace(temp, path)
+        finally:
+            temp.unlink(missing_ok=True)
+    fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def site_time(state: Path) -> datetime:
+    text = subprocess.check_output([state / "site-time"], text=True, timeout=10).strip()
+    value = datetime.fromisoformat(text)
+    if value.utcoffset() != UTC.utcoffset(value):
+        raise ValueError("site clock must return an authenticated UTC timestamp")
+    return value
+
+
+def publish(media: Path, state: Path, store: Path) -> None:
+    selection_bytes = read_regular(media / "active", 1024)
+    selected = json.loads(selection_bytes, object_pairs_hook=unique)
+    if set(selected) != {"sha256", "generation"}:
+        raise ValueError("selection must contain exactly sha256 and generation")
+    pin = valid_digest(selected["sha256"])
+    generation = selected["generation"]
+    if type(generation) is not int or not 0 < generation < 2**64:
+        raise ValueError("generation must be a positive uint64")
+    raw = read_regular(media / "snapshots" / f"{pin}.json", 4 << 20)
+    if digest(raw) != pin:
+        raise ValueError("candidate manifest differs from selection")
+    signature = read_regular(media / "snapshots" / f"{pin}.sig", 64)
+    profile = json.loads(
+        (state / "profile.json").read_bytes(), object_pairs_hook=unique
+    )
+    with TemporaryDirectory(dir=state) as directory:
+        stage = Path(directory)
+        manifest = stage / "manifest.json"
+        manifest.write_bytes(raw)
+        sigfile = stage / "signature"
+        sigfile.write_bytes(signature)
+        m = json.loads(raw, object_pairs_hook=unique)
+        if (
+            m["generation"] != generation
+            or not profile["target"]
+            or m["target"] != profile["target"]
+        ):
+            raise ValueError("signed manifest differs from the target or selection")
+        if len(m["objects"]) != 4:
+            raise ValueError(
+                "Intel import requires the four Intel verification objects"
+            )
+        objects = stage / "objects"
+        objects.mkdir()
+        for name, obj in m["objects"].items():
+            obj_pin = valid_digest(obj["sha256"])
+            data = read_regular(media / "objects" / obj_pin, 8 << 20)
+            if digest(data) != obj_pin:
+                raise ValueError(f"digest mismatch for {name}")
+            (objects / obj_pin).write_bytes(data)
+        with (state / "import.lock").open("a") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            active = state / "active"
+            if active.exists():
+                previous = json.loads(active.read_bytes(), object_pairs_hook=unique)
+                if previous["generation"] >= generation and previous != selected:
+                    raise ValueError(
+                        "import would roll back or replace the active generation"
+                    )
+            now = site_time(state)
+            subprocess.run(
+                [
+                    "c8s",
+                    "collateral",
+                    "check-intel",
+                    state / "enrolled-quote.bin",
+                    state / "profile.json",
+                    manifest,
+                    sigfile,
+                    objects,
+                ],
+                input=now.isoformat(),
+                text=True,
+                check=True,
+                timeout=30,
+            )
+            for path in objects.iterdir():
+                replace(store / "objects" / path.name, path.read_bytes())
+            replace(store / "snapshots" / f"{pin}.json", raw)
+            replace(store / "snapshots" / f"{pin}.sig", signature)
+            completed = site_time(state)
+            if completed < now or completed >= datetime.fromisoformat(m["expiresAt"]):
+                raise ValueError(
+                    "site time or candidate validity changed during import"
+                )
+            replace(active, selection_bytes)
+    print(f"Active generation {generation}, SHA-256 {pin}, expires {m['expiresAt']}")
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 4:
+        sys.exit(
+            "usage: import-intel READ_ONLY_MEDIA TRUSTED_STATE PUBLIC_OBJECT_STORE"
+        )
+    try:
+        publish(*(Path(arg).resolve(strict=True) for arg in sys.argv[1:]))
+    except (
+        OSError,
+        KeyError,
+        TypeError,
+        ValueError,
+        subprocess.SubprocessError,
+    ) as error:
+        sys.exit(str(error))

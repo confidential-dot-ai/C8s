@@ -65,12 +65,13 @@ directory for each attempt.
 
 ```sh
 c8s collateral prepare-intel enrolled-quote.bin "$INVENTORY_ID" 1 candidate
-c8s collateral check-intel enrolled-quote.bin candidate/manifest.json candidate/objects
 mkdir -p candidate/snapshots
 digest=$(sha256sum candidate/manifest.json | cut -d' ' -f1)
 mv candidate/manifest.json "candidate/snapshots/$digest.json"
 openssl pkeyutl -sign -rawin -inkey "$MEDIA_SIGNING_KEY" \
   -in "candidate/snapshots/$digest.json" -out "candidate/snapshots/$digest.sig"
+"$SITE_TIME" | c8s collateral check-intel enrolled-quote.bin site-profile.json \
+  "candidate/snapshots/$digest.json" "candidate/snapshots/$digest.sig" candidate/objects
 jq -n --arg sha256 "$digest" --argjson generation 1 \
   '{generation:$generation,sha256:$sha256}' >candidate/active
 ```
@@ -87,3 +88,54 @@ platform, export the pending registration, fetch its platform collateral on
 the connected machine and use the PCCS admin tool's `put` operation at the
 site. Use Intel's procedure for the installed DCAP tool version.
 [Intel PCCS cache management flows](https://cc-enabling.trustedservices.intel.com/intel-sgx-tdx-pccs/08/cache_management_flows/)
+
+## Import and serve an Intel generation
+
+Run the authority on the operator's independent system. Use two separately
+owned locations, a durable selection directory and a static web directory.
+Install the verified `c8s` CLI on its trusted PATH. Set `SITE_TIME` to the
+site's executable that performs a fresh authenticated time query, prints one
+UTC RFC 3339 timestamp and exits with an error if the clock is unavailable.
+It must finish within eight seconds. Keep its credentials on the authority.
+
+```sh
+install -d -m 0750 -o root -g www-data /etc/c8s/site
+install -m 0640 site-profile.json /etc/c8s/site/profile.json
+install -m 0640 enrolled-quote.bin /etc/c8s/site/enrolled-quote.bin
+install -m 0750 -o root -g www-data "$SITE_TIME" /etc/c8s/site/site-time
+install -d -m 0755 /srv/c8s-collateral/{objects,snapshots}
+scripts/airgap/import-intel candidate /etc/c8s/site /srv/c8s-collateral
+```
+
+Mount incoming media read-only with `nodev,nosuid,noexec`. For every refresh
+run the same import command with the new candidate. The importer stages
+candidate bytes, verifies the media signature and target, and validates all
+four Intel objects under the enrolled quote. It then writes the immutable
+objects and replaces the selection in one rename while holding the import
+lock. The receiving machine's web server needs read access to the selection
+and execute access to the authenticated clock helper.
+
+For Apache with CGI enabled, install `active.cgi` as
+`/usr/lib/cgi-bin/c8s-active`. Configure the site's pinned TLS virtual host
+with these mappings, allowing read access to the static directories and
+execution of the single CGI. Disable shared caches on this origin. After an
+import, check the selection and time under the Apache service identity.
+
+```sh
+challenge=$(openssl rand -hex 32)
+sudo -u www-data env REQUEST_METHOD=GET HTTP_X_C8S_CHALLENGE="$challenge" \
+  /usr/lib/cgi-bin/c8s-active
+```
+
+The response must echo the challenge, include the site timestamp and name the
+generation just imported. The CGI account has read and execute access only.
+
+```apache
+ScriptAlias "/active" "/usr/lib/cgi-bin/c8s-active"
+Alias "/objects/" "/srv/c8s-collateral/objects/"
+Alias "/snapshots/" "/srv/c8s-collateral/snapshots/"
+```
+
+The Intel importer rejects additional objects. Activation of a mixed
+Intel/NVIDIA generation requires the qualified NVIDIA verifier to validate
+the exact RIMs and OCSP responses for the enrolled GPUs.
