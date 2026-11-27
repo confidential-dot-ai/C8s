@@ -297,7 +297,15 @@ rm "$release/guest-statement"*
 FAKE_OIDC_IDENTITY="https://github.com/$repo/.github/workflows/c8s-image-publish.yml@refs/heads/feature" \
   expect_refusal "is not a signature of" publish "$tag" "$out"
 [[ ! -e "$release/guest-statement.json" ]] || fail "a statement signed under another identity was uploaded"
-expect_refusal "there is no release v0.110.1" publish v0.110.1 "$out"
+# publish takes only the statement of its own tag, and asks GitHub nothing before it knows.
+: >"$FAKE/calls.log"
+expect_refusal "is not the guest statement of v0.110.1" publish v0.110.1 "$out"
+mkdir "$work/empty"
+expect_refusal "is not the guest statement of $tag" publish "$tag" "$work/empty"
+[[ ! -s "$FAKE/calls.log" ]] || fail "publish called out before it refused: $(cat "$FAKE/calls.log")"
+mkdir "$work/unreleased"
+jq -c '.tag = "v0.110.1"' "$out/guest-statement.json" >"$work/unreleased/guest-statement.json"
+expect_refusal "there is no release v0.110.1" publish v0.110.1 "$work/unreleased"
 tests=$((tests + 1))
 
 # Arguments.

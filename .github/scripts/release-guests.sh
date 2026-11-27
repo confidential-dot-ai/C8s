@@ -194,6 +194,9 @@ verify_guest_statement() {
 publish() {
   local tag=$1 out=$2 assets
   require_release_tag "$tag"
+  jq -e --arg repository "$repository" --arg tag "$tag" '.repository == $repository and .tag == $tag' \
+    "$out/$statement" >/dev/null 2>&1 ||
+    die "$out/$statement is not the guest statement of $tag; run statement first"
   assets=$(bounded gh release view "$tag" --repo "$repository" --json assets --jq '.assets[].name') ||
     die "there is no release $tag"
   if grep -Fxq "$statement" <<<"$assets" && grep -Fxq "$bundle" <<<"$assets"; then
