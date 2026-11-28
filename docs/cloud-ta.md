@@ -236,9 +236,8 @@ TA configuration is written.
    attestation-api image's allowlist entry admits only the DaemonSet's argv
    and mounts. For a new machine shape or node image after the install, run
    these steps on a node of that shape and image in a cluster without C8s.
-   Write this as `node-evidence.yaml` and apply it in the release namespace
-   (`c8s-system` below), the one where the chart's `deny-host-namespaces` policy admits the
-   privilege that opening a TEE device needs. The selector and devices are the
+   Write this as `node-evidence.yaml`; step 2 applies it in `c8s-system`,
+   which the install later uses as the release namespace. The selector and devices are the
    platform values file's `confidentialNodeSelector` and
    `attestationApi.devices`: below is `values-aks-snp.yaml`, and on GKE the
    selector is `cloud.google.com/gke-confidential-nodes-instance-type: SEV_SNP`
@@ -298,6 +297,7 @@ TA configuration is written.
 2. Forward the API's port into its pod, which is where it binds:
 
    ```sh
+   kubectl create namespace c8s-system
    kubectl -n c8s-system apply -f node-evidence.yaml
    kubectl -n c8s-system wait --for=condition=Ready pod/node-evidence
    kubectl -n c8s-system port-forward pod/node-evidence 8400:8400 &
