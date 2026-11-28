@@ -230,11 +230,14 @@ from a confidential node of the pool the cluster will run on, read before the
 TA configuration is written.
 
 1. Serve the attestation API on one confidential node of each machine shape
-   the pool runs. An installed cluster already runs it on every confidential
-   node, as the chart's DaemonSet. Before the install, write this as
-   `node-evidence.yaml` and apply it in the release namespace (`c8s-system`
-   below), the one where the chart's `deny-host-namespaces` policy admits the
-   privilege that opening a TEE device needs. The selector and devices are the
+   the pool runs, before C8s is installed on it. An installed cluster offers
+   no route: its DaemonSet listens only on a node-local socket, which no
+   port-forward reaches, and an enforcing node denies the pod below, since the
+   attestation-api image's allowlist entry admits only the DaemonSet's argv
+   and mounts. For a new machine shape or node image after the install, run
+   these steps on a node of that shape and image in a cluster without C8s.
+   Write this as `node-evidence.yaml`; step 2 applies it in `c8s-system`,
+   which the install later uses as the release namespace. The selector and devices are the
    platform values file's `confidentialNodeSelector` and
    `attestationApi.devices`: below is `values-aks-snp.yaml`, and on GKE the
    selector is `cloud.google.com/gke-confidential-nodes-instance-type: SEV_SNP`
@@ -294,20 +297,10 @@ TA configuration is written.
 2. Forward the API's port into its pod, which is where it binds:
 
    ```sh
+   kubectl create namespace c8s-system
    kubectl -n c8s-system apply -f node-evidence.yaml
    kubectl -n c8s-system wait --for=condition=Ready pod/node-evidence
    kubectl -n c8s-system port-forward pod/node-evidence 8400:8400 &
-   PF=$!
-   ```
-
-   On an installed cluster, forward the DaemonSet pod of the node you are
-   reading instead, with `NODE` holding that node's name:
-
-   ```sh
-   POD=$(kubectl -n c8s-system get pod -o name \
-       -l app.kubernetes.io/component=attestation-api \
-       --field-selector "spec.nodeName=$NODE")
-   kubectl -n c8s-system port-forward "$POD" 8400:8400 &
    PF=$!
    ```
 

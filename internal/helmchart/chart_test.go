@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	toml "github.com/pelletier/go-toml/v2"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 	admissionregv1 "k8s.io/api/admissionregistration/v1"
@@ -637,9 +638,9 @@ func TestChartNRIImagePolicyUsesPullMode(t *testing.T) {
 }
 
 // The default attestation-api shape publishes nothing routable: no Service at
-// all, the API bound to pod loopback, a default-deny NetworkPolicy on the
-// DaemonSet pods, and the attest-proxy sidecar serving the on-node Unix
-// socket every consumer dials.
+// all, no TCP listener, a default-deny NetworkPolicy on the DaemonSet pods,
+// and the API itself bound on the on-node Unix socket every consumer dials,
+// with a probes sidecar that only connects to it.
 func TestChartAttestationApiDefaultsToNodeLocalSocket(t *testing.T) {
 	t.Parallel()
 	out, err := helmTemplate(t)
@@ -665,43 +666,90 @@ func TestChartAttestationApiDefaultsToNodeLocalSocket(t *testing.T) {
 	if renderedManifestHasNamedKind(t, out, "Secret", "c8s-attestation-api") {
 		t.Fatalf("attestation-api config must render as a ConfigMap, not a Secret\n%s", out)
 	}
-	cfg := renderedConfigMap(t, out, "c8s-attestation-api").Data["config.toml"]
-	if !strings.Contains(cfg, `bind = "127.0.0.1:8400"`) {
-		t.Fatalf("default config must bind pod loopback; got:\n%s", cfg)
+	var cfg map[string]any
+	if err := toml.Unmarshal([]byte(renderedConfigMap(t, out, "c8s-attestation-api").Data["config.toml"]), &cfg); err != nil {
+		t.Fatalf("attestation-api config.toml does not parse: %v", err)
 	}
-	if strings.Contains(cfg, "[auth]") {
-		t.Fatalf("config must not render [auth] (nothing routable to protect); got:\n%s", cfg)
+	want := map[string]any{
+		"server": map[string]any{
+			"bind":         "unix:///run/nri-image-policy/attestation-api.sock",
+			"socket_mode":  "0660",
+			"socket_group": int64(workloadclaims.InventorySocketGID),
+		},
+		"attestation": map[string]any{
+			"enabled": true,
+		},
+	}
+	if !reflect.DeepEqual(cfg, want) {
+		t.Fatalf("attestation-api config = %#v, want exactly %#v", cfg, want)
 	}
 
 	ds := renderedDaemonSet(t, out, "c8s-attestation-api")
-	proxy := renderedDaemonSetContainer(t, out, "c8s-attestation-api", "attest-proxy")
-	assertContainerArgs(t, proxy,
-		"attest-proxy",
-		"--socket=/run/nri-image-policy/attestation-api.sock",
-		"--upstream=http://127.0.0.1:8400",
-	)
-	assertContainerNoArgPrefix(t, "attest-proxy", proxy.Args, "--api-key-file")
-	// The proxy publishes into the socket-dir hostPath, and both it and the
-	// API read their config from the ConfigMap — dropping either renders
-	// fine and only fails at runtime.
 	assertPodVolume(t, &ds.Spec.Template.Spec, "socket-dir", func(v corev1.Volume) bool {
 		return v.HostPath != nil && v.HostPath.Path == "/run/nri-image-policy"
 	})
 	assertPodVolume(t, &ds.Spec.Template.Spec, "config", func(v corev1.Volume) bool {
 		return projectedConfigMap(v) == "c8s-attestation-api"
 	})
-	assertContainerMount(t, proxy, "socket-dir", "/run/nri-image-policy")
-	// HTTP (a locked node image denies every runc exec it was not granted), against
-	// the proxy's own health listener: the API's loopback bind is not
-	// kubelet-dialable. Readiness covers the evidence path; each liveness
-	// covers only its own container.
-	api := renderedDaemonSetContainer(t, out, "c8s-attestation-api", "attestation-api")
-	health, ok := findContainerPort(proxy, "health")
-	if !ok {
-		t.Fatalf("attest-proxy must name its health port; got %+v", proxy.Ports)
+	if names := containerNames(ds.Spec.Template.Spec.Containers); !slices.Equal(names, []string{"attestation-api", "probes"}) {
+		t.Fatalf("attestation-api pod containers = %v, want [attestation-api probes]: nothing but the API may serve the socket", names)
 	}
+
+	// The API stages its socket in a private directory beside it, so it needs
+	// the directory read-write, and it listens on no TCP port.
+	api := renderedDaemonSetContainer(t, out, "c8s-attestation-api", "attestation-api")
+	if m, ok := containerMount(api, "socket-dir"); !ok || m.MountPath != "/run/nri-image-policy" || m.ReadOnly {
+		t.Fatalf("attestation-api must mount socket-dir read-write at /run/nri-image-policy; got %+v", api.VolumeMounts)
+	}
+	if len(api.Ports) != 0 {
+		t.Fatalf("attestation-api must expose no container port; got %+v", api.Ports)
+	}
+	if api.ReadinessProbe != nil {
+		t.Fatalf("attestation-api container must leave readiness to the probes sidecar; got %+v", api.ReadinessProbe)
+	}
+
+	probes := renderedDaemonSetContainer(t, out, "c8s-attestation-api", "probes")
+	assertContainerArgs(t, probes,
+		"attest-proxy",
+		"probes",
+		"--socket=/run/nri-image-policy/attestation-api.sock",
+	)
+	for _, flag := range []string{"--upstream", "--socket-gid", "--api-key-file"} {
+		assertContainerNoArgPrefix(t, "probes", probes.Args, flag)
+	}
+	if m, ok := containerMount(probes, "socket-dir"); !ok || m.MountPath != "/run/nri-image-policy" || !m.ReadOnly {
+		t.Fatalf("probes must mount socket-dir read-only at /run/nri-image-policy; got %+v", probes.VolumeMounts)
+	}
+	// Non-root in the socket's group: it connects by membership and can
+	// neither bind nor replace the socket.
+	sc := probes.SecurityContext
+	if sc == nil || sc.RunAsUser == nil || *sc.RunAsUser != 65532 || sc.RunAsGroup == nil || *sc.RunAsGroup != workloadclaims.InventorySocketGID {
+		t.Fatalf("probes must run as uid and gid 65532; got %+v", sc)
+	}
+	if sc.RunAsNonRoot == nil || !*sc.RunAsNonRoot || sc.AllowPrivilegeEscalation == nil || *sc.AllowPrivilegeEscalation {
+		t.Fatalf("probes must run non-root without privilege escalation; got %+v", sc)
+	}
+	if sc.Capabilities == nil || !slices.Equal(sc.Capabilities.Drop, []corev1.Capability{"ALL"}) || len(sc.Capabilities.Add) != 0 {
+		t.Fatalf("probes must drop all capabilities; got %+v", sc.Capabilities)
+	}
+	if sc.ReadOnlyRootFilesystem == nil || !*sc.ReadOnlyRootFilesystem {
+		t.Fatalf("probes must mount its root filesystem read-only; got %+v", sc.ReadOnlyRootFilesystem)
+	}
+	if sc.SeccompProfile == nil || sc.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
+		t.Fatalf("probes must run under the RuntimeDefault seccomp profile; got %+v", sc.SeccompProfile)
+	}
+
+	// HTTP (a locked node image denies every runc exec it was not granted),
+	// against the sidecar's listener: kubelet cannot dial a Unix socket.
+	// Readiness covers the evidence path; each liveness covers only its own
+	// container.
+	health, ok := findContainerPort(probes, "health")
+	if !ok {
+		t.Fatalf("probes must name its health port; got %+v", probes.Ports)
+	}
+	assertContainerArgs(t, probes, fmt.Sprintf("--addr=:%d", health.ContainerPort))
 	// The API container has no port named "health", so its probes dial the
-	// proxy's port by number.
+	// sidecar's port by number.
 	healthPort := intstr.FromInt32(health.ContainerPort)
 	for _, tc := range []struct {
 		name  string
@@ -710,27 +758,27 @@ func TestChartAttestationApiDefaultsToNodeLocalSocket(t *testing.T) {
 		port  intstr.IntOrString
 	}{
 		{
-			name:  "attest-proxy readiness",
-			probe: proxy.ReadinessProbe,
+			name:  "probes readiness",
+			probe: probes.ReadinessProbe,
 			path:  "/healthz",
 			port:  intstr.FromString("health"),
 		},
 		{
-			name:  "attest-proxy liveness",
-			probe: proxy.LivenessProbe,
+			name:  "probes liveness",
+			probe: probes.LivenessProbe,
 			path:  "/livez",
 			port:  intstr.FromString("health"),
 		},
 		{
 			name:  "attestation-api startup",
 			probe: api.StartupProbe,
-			path:  "/upstream/livez",
+			path:  "/api/livez",
 			port:  healthPort,
 		},
 		{
 			name:  "attestation-api liveness",
 			probe: api.LivenessProbe,
-			path:  "/upstream/livez",
+			path:  "/api/livez",
 			port:  healthPort,
 		},
 	} {
@@ -746,23 +794,7 @@ func TestChartAttestationApiDefaultsToNodeLocalSocket(t *testing.T) {
 			t.Fatalf("%s probe timeoutSeconds = %d, want 5", tc.name, tc.probe.TimeoutSeconds)
 		}
 	}
-	// uid 0 owns the socket (clients reject a foreign owner) and gid 65532 is
-	// the socket's group — the chgrp works by membership, all caps dropped.
-	sc := proxy.SecurityContext
-	if sc == nil || sc.RunAsUser == nil || *sc.RunAsUser != 0 || sc.RunAsGroup == nil || *sc.RunAsGroup != 65532 {
-		t.Fatalf("attest-proxy must run as uid 0 / gid 65532 (socket owner and group); got %+v", sc)
-	}
-	if sc.Capabilities == nil || !slices.Contains(sc.Capabilities.Drop, corev1.Capability("ALL")) {
-		t.Fatalf("attest-proxy must drop all capabilities; got %+v", sc.Capabilities)
-	}
-	if sc.ReadOnlyRootFilesystem == nil || !*sc.ReadOnlyRootFilesystem {
-		t.Fatalf("attest-proxy must mount its root filesystem read-only; got %+v", sc.ReadOnlyRootFilesystem)
-	}
-	// The proxy's readiness already covers the API end to end.
-	if api.ReadinessProbe != nil {
-		t.Fatalf("attestation-api container must leave readiness to attest-proxy; got %+v", api.ReadinessProbe)
-	}
-	// The API's probes fail whenever attest-proxy is down, so one attest-proxy
+	// The API's probes fail whenever the sidecar is down, so one sidecar
 	// restart at the kubelet's 300s maximum backoff must not restart the API.
 	const maxRestartBackoff = 300
 	for name, probe := range map[string]*corev1.Probe{"startup": api.StartupProbe, "liveness": api.LivenessProbe} {
@@ -770,6 +802,90 @@ func TestChartAttestationApiDefaultsToNodeLocalSocket(t *testing.T) {
 			t.Errorf("attestation-api %s window = %ds, want over %ds", name, window, maxRestartBackoff)
 		}
 	}
+}
+
+// attestationApiConfigKeys are the keys attestation-api accepts in each
+// table, the top level at "". It refuses any other at startup.
+var attestationApiConfigKeys = map[string][]string{
+	"":            {"server", "verify", "auth", "nras", "token", "attestation"},
+	"server":      {"bind", "socket_mode", "socket_group", "tls", "max_connections"},
+	"server.tls":  {"enabled", "cert_path", "key_path"},
+	"verify":      {"workers", "queue_per_worker", "queue_deadline_ms", "fetch_deadline_ms", "warm"},
+	"auth":        {"api_keys"},
+	"nras":        {"gpu_url", "switch_url"},
+	"token":       {"enabled", "issuer", "duration_minutes", "key_path"},
+	"attestation": {"enabled", "platforms", "allow_debug", "allow_revoked_or_unlisted_tcb", "allow_nonzero_vmpl", "tdx_quote_method"},
+}
+
+// Every key the chart renders into the attestation-api config is one the
+// API accepts, so a stray key fails here rather than at pod start.
+func TestChartAttestationApiConfigKeysAreAccepted(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{
+			name: "default",
+		},
+		{
+			name: "aks snp",
+			args: []string{"-f", filepath.Join(cloudChartDir, "values-aks-snp.yaml")},
+		},
+		{
+			name: "aks tdx",
+			args: []string{"-f", filepath.Join(cloudChartDir, "values-aks-tdx.yaml")},
+		},
+		{
+			name: "gke snp",
+			args: []string{"-f", filepath.Join(cloudChartDir, "values-gke-snp.yaml")},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			out, err := helmTemplate(t, tc.args...)
+			if err != nil {
+				t.Fatalf("helm template: %v\n%s", err, out)
+			}
+			var cfg map[string]any
+			if err := toml.Unmarshal([]byte(renderedConfigMap(t, out, "c8s-attestation-api").Data["config.toml"]), &cfg); err != nil {
+				t.Fatalf("attestation-api config.toml does not parse: %v", err)
+			}
+			if unknown := unknownConfigKeys("", cfg); len(unknown) != 0 {
+				t.Fatalf("attestation-api config has keys it refuses: %v", unknown)
+			}
+		})
+	}
+}
+
+// unknownConfigKeys returns the dotted paths in table, itself at path, that
+// attestationApiConfigKeys does not list.
+func unknownConfigKeys(path string, table map[string]any) []string {
+	var unknown []string
+	for key, value := range table {
+		full := key
+		if path != "" {
+			full = path + "." + key
+		}
+		if !slices.Contains(attestationApiConfigKeys[path], key) {
+			unknown = append(unknown, full)
+			continue
+		}
+		if sub, ok := value.(map[string]any); ok {
+			unknown = append(unknown, unknownConfigKeys(full, sub)...)
+		}
+	}
+	slices.Sort(unknown)
+	return unknown
+}
+
+func containerMount(c corev1.Container, volume string) (corev1.VolumeMount, bool) {
+	for _, m := range c.VolumeMounts {
+		if m.Name == volume {
+			return m, true
+		}
+	}
+	return corev1.VolumeMount{}, false
 }
 
 // assertNoLegacyAttestationStrings keeps the routable shapes the hardening

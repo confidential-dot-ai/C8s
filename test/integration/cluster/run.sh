@@ -12,8 +12,8 @@
 #
 # The TEE is replaced at exactly one point: evidence generation. The chart's
 # attestation-api DaemonSet runs the mock (test/mock-attestation), which
-# serves synthetic SNP reports — launch digest all-zero — behind the chart's
-# own attest-proxy socket. Every stack component that delegates verification
+# serves synthetic SNP reports — launch digest all-zero — on the chart's
+# own attestation-api socket. Every stack component that delegates verification
 # to the attestation-api (get-cert, the Trust Authority (TA), the mesh, the NRI plugin) works
 # unchanged. In-process hardware verification
 # (`c8s verify`, the `c8s allowlist` CLI) cannot pass synthetic evidence, so

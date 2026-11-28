@@ -4,10 +4,15 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
@@ -248,4 +253,46 @@ func verify(t *testing.T, evidence json.RawMessage) teetypes.VerificationResult 
 		t.Fatalf("decode /verify: %v", err)
 	}
 	return resp.Result
+}
+
+// The mock binds the socket the chart's config names, with its mode and group,
+// so the chart's probes and consumers reach it as they reach the real api.
+func TestListenHonoursUnixBind(t *testing.T) {
+	dir := t.TempDir()
+	sock := filepath.Join(dir, "api.sock")
+	config := filepath.Join(dir, "config.toml")
+	body := fmt.Sprintf("[server]\nbind = \"unix://%s\"\nsocket_mode = \"0640\"\nsocket_group = %d\n\n[attestation]\nenabled = true\n", sock, os.Getgid())
+	if err := os.WriteFile(config, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A socket a previous run left is replaced.
+	if err := os.WriteFile(sock, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	listener, err := listen(config, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	fi, err := os.Lstat(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode()&os.ModeSocket == 0 || fi.Mode().Perm() != 0o640 {
+		t.Fatalf("%s mode = %s, want a 0640 socket", sock, fi.Mode())
+	}
+	if gid := fi.Sys().(*syscall.Stat_t).Gid; int(gid) != os.Getgid() {
+		t.Fatalf("%s gid = %d, want %d", sock, gid, os.Getgid())
+	}
+}
+
+func TestListenWithoutConfigUsesPort(t *testing.T) {
+	listener, err := listen("", "0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	if _, ok := listener.Addr().(*net.TCPAddr); !ok {
+		t.Fatalf("listen without a config bound %s, want TCP", listener.Addr())
+	}
 }

@@ -578,7 +578,7 @@ func TestValidate_LabelRuleRejectsInvalidKubernetesLabelValue(t *testing.T) {
 }
 
 // The chart's rendered boot config points attestation_api_url at the
-// attest-proxy's node-local socket; pin that exact string loading through
+// attestation-api's node-local socket; pin that exact string loading through
 // validation and driving the evidence client over a real socket (the
 // construction path main.go uses for the Trust Authority pull handshake).
 func TestLoadConfig_UnixAttestationAPIURL(t *testing.T) {
