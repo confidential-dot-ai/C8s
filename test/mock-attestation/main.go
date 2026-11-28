@@ -3,8 +3,9 @@
 // SEV-SNP reports binding the requested REPORTDATA and the HOST_DATA the
 // environment names; /verify checks the REPORTDATA binding and refuses
 // mismatches with the real api's 422 verification_failed shape. Speaks the
-// production wire types (pkg/types). No real TEE — use only in test
-// environments.
+// production wire types (pkg/types). It listens where its --config's
+// server.bind says, as the real api does, else on $PORT. No real TEE — use
+// only in test environments.
 package main
 
 import (
@@ -13,11 +14,17 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
+	"strconv"
+	"strings"
+
+	toml "github.com/pelletier/go-toml/v2"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote"
@@ -41,10 +48,8 @@ const (
 var noHostData [hostDataSize]byte
 
 func main() {
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8400"
-	}
+	configPath := flag.String("config", "", "attestation-api config file whose server.bind, socket_mode and socket_group to honour")
+	flag.Parse()
 
 	hostData, err := parseHostData(os.Getenv("HOST_DATA"))
 	if err != nil {
@@ -62,11 +67,71 @@ func main() {
 	mux.HandleFunc("POST /verify", handleVerify)
 	mux.HandleFunc("GET /health", handleHealth)
 
-	slog.Info("mock attestation-api starting", "port", port)
-	if err := http.ListenAndServe(":"+port, mux); err != nil {
+	listener, err := listen(*configPath, os.Getenv("PORT"))
+	if err != nil {
+		slog.Error("listen failed", "error", err)
+		os.Exit(1)
+	}
+	slog.Info("mock attestation-api starting", "addr", listener.Addr())
+	if err := http.Serve(listener, mux); err != nil {
 		slog.Error("server failed", "error", err)
 		os.Exit(1)
 	}
+}
+
+// serverConfig is the part of the attestation-api config the mock honours.
+type serverConfig struct {
+	Server struct {
+		Bind        string `toml:"bind"`
+		SocketMode  string `toml:"socket_mode"`
+		SocketGroup *int   `toml:"socket_group"`
+	} `toml:"server"`
+}
+
+// listen binds the server.bind configPath names, or :port (default 8400)
+// without a config. A unix: bind gets socket_mode (default 0660) and
+// socket_group, replacing whatever socket a previous run left.
+func listen(configPath, port string) (net.Listener, error) {
+	if configPath == "" {
+		if port == "" {
+			port = "8400"
+		}
+		return net.Listen("tcp", ":"+port)
+	}
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil, err
+	}
+	var cfg serverConfig
+	if err := toml.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", configPath, err)
+	}
+	path, ok := strings.CutPrefix(cfg.Server.Bind, "unix://")
+	if !ok {
+		return net.Listen("tcp", cfg.Server.Bind)
+	}
+	mode := uint64(0o660)
+	if cfg.Server.SocketMode != "" {
+		if mode, err = strconv.ParseUint(cfg.Server.SocketMode, 8, 32); err != nil {
+			return nil, fmt.Errorf("socket_mode %q: %w", cfg.Server.SocketMode, err)
+		}
+	}
+	_ = os.Remove(path)
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.Chmod(path, os.FileMode(mode)); err != nil {
+		_ = listener.Close()
+		return nil, err
+	}
+	if cfg.Server.SocketGroup != nil {
+		if err := os.Chown(path, -1, *cfg.Server.SocketGroup); err != nil {
+			_ = listener.Close()
+			return nil, err
+		}
+	}
+	return listener, nil
 }
 
 // attestHandler answers synthetic reports carrying the guest image's launch
