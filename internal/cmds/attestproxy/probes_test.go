@@ -176,9 +176,10 @@ func TestServeProbes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	sock := serveAPI(t, healthStatus("ok"))
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- serveProbes(ctx, listener, serveAPI(t, healthStatus("ok"))) }()
+	go func() { done <- serveProbes(ctx, listener, sock) }()
 
 	resp, err := http.Get("http://" + listener.Addr().String() + "/healthz")
 	if err != nil {
