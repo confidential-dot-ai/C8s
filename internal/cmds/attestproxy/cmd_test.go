@@ -12,7 +12,6 @@ import (
 	"net/http/httputil"
 	"os"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -98,7 +97,7 @@ func TestProxySocketPermissions(t *testing.T) {
 
 func TestProxyReportsUpstreamDown(t *testing.T) {
 	// Nothing listens on the upstream; the proxy must answer 502, not hang.
-	sock := serveProxy(t, config{upstream: "http://127.0.0.1:1", socketGID: 0})
+	sock := serveProxy(t, config{upstream: deadUpstream, socketGID: 0})
 	_, err := remote.NewClient("unix://" + sock).Health(context.Background())
 	var unexpErr *remote.UnexpectedError
 	if err == nil {
@@ -118,7 +117,6 @@ func TestNewProxyRejectsBadConfig(t *testing.T) {
 		{"relative socket", config{socket: "rel.sock", upstream: upstream, readHeaderTimeout: time.Second}},
 		{"bad upstream scheme", config{socket: "/tmp/x.sock", upstream: "ftp://x", readHeaderTimeout: time.Second}},
 		{"nonpositive header timeout", config{socket: "/tmp/x.sock", upstream: upstream}},
-		{"health address without a port", config{socket: "/tmp/x.sock", upstream: upstream, readHeaderTimeout: time.Second, healthAddr: "8401"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := newProxy(tc.cfg); err == nil {
@@ -156,219 +154,12 @@ func TestHealthcheckCmd(t *testing.T) {
 	}
 }
 
-// /healthz, the readiness probe, must answer for a live upstream and fail for a
-// dead one, matching the healthcheck subcommand.
-func TestHealthEndpoint(t *testing.T) {
-	tests := []struct {
-		name     string
-		upstream http.Handler
-		want     int
-	}{
-		{
-			name: "live upstream",
-			upstream: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				w.Header().Set("Content-Type", "application/json")
-				_, _ = w.Write([]byte(`{"status":"ok"}`))
-			}),
-			want: http.StatusOK,
-		},
-		{
-			name:     "upstream refusing health",
-			upstream: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusInternalServerError) }),
-			want:     http.StatusServiceUnavailable,
-		},
-		{
-			name:     "upstream starting",
-			upstream: healthStatus("starting"),
-			want:     http.StatusServiceUnavailable,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			upstream := startUpstream(t, tt.upstream)
-			sock := serveProxy(t, config{upstream: upstream, socketGID: 0})
-
-			rec := httptest.NewRecorder()
-			healthHandler(sock, upstream).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
-
-			if rec.Code != tt.want {
-				t.Errorf("GET /healthz = %d, want %d", rec.Code, tt.want)
-			}
-		})
-	}
-}
-
-// A probe against a proxy whose socket is gone must fail, not hang.
-func TestHealthEndpointWithoutSocket(t *testing.T) {
-	rec := httptest.NewRecorder()
-	healthHandler(filepath.Join(t.TempDir(), "gone.sock"), deadUpstream).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Errorf("GET /healthz with no socket = %d, want %d", rec.Code, http.StatusServiceUnavailable)
-	}
-}
-
-// attest-proxy's liveness reports only its own state: a dead upstream keeps it
-// live, and so does a wedged serve loop; a missing socket does not.
-func TestLivez(t *testing.T) {
-	sock := serveProxy(t, config{upstream: deadUpstream, socketGID: 0})
-	notSocket := filepath.Join(t.TempDir(), "file")
-	if err := os.WriteFile(notSocket, nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	// A wedged serve loop: the kernel queues connections, nothing answers.
-	// /livez never dials, so it passes; readiness is what catches this.
-	wedged := filepath.Join(t.TempDir(), "wedged.sock")
-	wl, err := net.Listen("unix", wedged)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = wl.Close() })
-	tests := []struct {
-		name   string
-		socket string
-		want   int
-	}{
-		{
-			name:   "serve loop wedged",
-			socket: wedged,
-			want:   http.StatusOK,
-		},
-		{
-			name:   "upstream down",
-			socket: sock,
-			want:   http.StatusOK,
-		},
-		{
-			name:   "socket gone",
-			socket: filepath.Join(t.TempDir(), "gone.sock"),
-			want:   http.StatusServiceUnavailable,
-		},
-		{
-			name:   "socket replaced by a file",
-			socket: notSocket,
-			want:   http.StatusServiceUnavailable,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			rec := httptest.NewRecorder()
-			healthHandler(tt.socket, deadUpstream).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/livez", nil))
-			if rec.Code != tt.want {
-				t.Errorf("GET /livez = %d, want %d", rec.Code, tt.want)
-			}
-		})
-	}
-}
-
-// /upstream/livez, the attestation-api's liveness, calls the upstream directly,
-// so it needs no socket, and passes on any status a 2xx answer reports.
-func TestUpstreamLivez(t *testing.T) {
-	tests := []struct {
-		name     string
-		upstream string
-		want     int
-	}{
-		{
-			name:     "upstream up",
-			upstream: startUpstream(t, healthStatus("ok")),
-			want:     http.StatusOK,
-		},
-		{
-			name:     "upstream starting",
-			upstream: startUpstream(t, healthStatus("starting")),
-			want:     http.StatusOK,
-		},
-		{
-			name: "upstream answers 200 without JSON",
-			upstream: startUpstream(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				_, _ = fmt.Fprint(w, "not json")
-			})),
-			want: http.StatusServiceUnavailable,
-		},
-		{
-			name: "upstream answers 503",
-			upstream: startUpstream(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				http.Error(w, `{"status":"degraded"}`, http.StatusServiceUnavailable)
-			})),
-			want: http.StatusServiceUnavailable,
-		},
-		{
-			name:     "upstream down",
-			upstream: deadUpstream,
-			want:     http.StatusServiceUnavailable,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			rec := httptest.NewRecorder()
-			healthHandler(filepath.Join(t.TempDir(), "gone.sock"), tt.upstream).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/upstream/livez", nil))
-			if rec.Code != tt.want {
-				t.Errorf("GET /upstream/livez = %d, want %d", rec.Code, tt.want)
-			}
-		})
-	}
-}
-
 // healthStatus answers GET /health with status.
 func healthStatus(status string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprintf(w, `{"status":%q}`, status)
 	})
-}
-
-// A hung upstream fails /upstream/livez on the handler's own budget rather
-// than hanging until the kubelet gives up.
-func TestUpstreamLivezTimesOut(t *testing.T) {
-	t.Parallel()
-	release := make(chan struct{})
-	upstream := startUpstream(t, http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-		select {
-		case <-r.Context().Done():
-		case <-release:
-		}
-	}))
-	t.Cleanup(func() { close(release) })
-
-	start := time.Now()
-	rec := httptest.NewRecorder()
-	healthHandler("/nonexistent.sock", upstream).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/upstream/livez", nil))
-	elapsed := time.Since(start)
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Errorf("GET /upstream/livez against a hung upstream = %d, want %d", rec.Code, http.StatusServiceUnavailable)
-	}
-	// The upper bound only catches a handler that ignores its budget; it is
-	// loose so a loaded runner does not trip it.
-	if maxElapsed := healthcheckTimeout + 5*time.Second; elapsed < healthcheckTimeout || elapsed >= maxElapsed {
-		t.Errorf("GET /upstream/livez took %s, want between %s and %s", elapsed, healthcheckTimeout, maxElapsed)
-	}
-}
-
-// The health endpoint binds before the proxy serves, and a bind failure is
-// a startup error rather than a pod whose probes never pass.
-func TestServeHealthAddr(t *testing.T) {
-	upstream := startUpstream(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"status":"ok"}`))
-	}))
-	serveProxy(t, config{upstream: upstream, healthAddr: "127.0.0.1:0"})
-
-	taken, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer taken.Close()
-	cfg := config{socket: filepath.Join(t.TempDir(), "attest.sock"), upstream: upstream, readHeaderTimeout: time.Second, healthAddr: taken.Addr().String()}
-	proxy, err := newProxy(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	listener, err := workloadclaims.ListenUnix(cfg.socket, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := serve(context.Background(), cfg, proxy, listener); err == nil || !strings.Contains(err.Error(), "--health-addr") {
-		t.Fatalf("serve with a taken --health-addr = %v, want a --health-addr error", err)
-	}
 }
 
 // awaitServerClose fails the test unless the server closes c within wait.
@@ -427,7 +218,7 @@ func TestServerBoundsConnections(t *testing.T) {
 }
 
 func TestNewProxyCapsUpstreamConns(t *testing.T) {
-	h, err := newProxy(config{socket: "/tmp/x.sock", upstream: "http://127.0.0.1:1", readHeaderTimeout: time.Second})
+	h, err := newProxy(config{socket: "/tmp/x.sock", upstream: deadUpstream, readHeaderTimeout: time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
