@@ -343,7 +343,7 @@ allowlist:
   pull:
     interval: "5s"
     timeout: "30s"
-    # Node-local socket served by the DaemonSet's attest-proxy sidecar.
+    # Node-local socket the attestation-api DaemonSet binds.
     attestation_api_url: {{ printf "unix://%s" (include "c8s.attestationApiSocket" $root) | quote }}
     # The Trust Authority this cluster trusts, installed beside this config
     # from the ConfigMap the installer mounts: the endpoint the plugin pulls

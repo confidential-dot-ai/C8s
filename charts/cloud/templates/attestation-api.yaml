@@ -14,9 +14,6 @@ containers:
     imagePullPolicy: IfNotPresent
     command: {{ include "c8s.entrypoint" (dict "root" . "valuePath" "attestationApi.image") }}
     args: [--config, /mnt/c8s-data/attestation-api/config.toml]
-    ports:
-      - name: http
-        containerPort: {{ include "c8s.attestationApiPort" . }}
     securityContext:
       # A hostPath device mount adds no device-cgroup rule, so opening a TEE
       # device is EPERM from an unprivileged container.
@@ -24,26 +21,26 @@ containers:
       readOnlyRootFilesystem: true
       seccompProfile:
         type: RuntimeDefault
-    # The API binds pod loopback, which kubelet cannot dial: its probes go
-    # through attest-proxy's health port, which GETs the API's /health. Both
-    # probes share one failure window: liveness must cover startup
-    # (kubernetes/kubernetes#141155), and the window outlasts the kubelet's
-    # 300s maximum restart backoff, so one attest-proxy restart or a slow
-    # attest-proxy image pull does not restart the API; an attest-proxy crash
-    # loop still does, once per window.
+    # Kubelet cannot probe a Unix socket: these probes go through the probes
+    # sidecar, which GETs /health over it. Both share one failure window:
+    # liveness must cover startup (kubernetes/kubernetes#141155), and the
+    # window outlasts the kubelet's 300s maximum restart backoff, so one
+    # sidecar restart or a slow sidecar image pull does not restart the API; a
+    # sidecar crash loop, or a socket that stays gone, still does, once per
+    # window.
     {{- $probeWindowSeconds := 360 }}
     startupProbe:
       httpGet:
-        path: /upstream/livez
-        port: {{ include "c8s.attestProxyHealthPort" . }}
+        path: /api/livez
+        port: {{ include "c8s.attestationApiProbePort" . }}
       periodSeconds: 10
-      # Above the handler's 3s upstream budget.
+      # Above the handler's 3s budget.
       timeoutSeconds: 5
       failureThreshold: {{ div $probeWindowSeconds 10 }}
     livenessProbe:
       httpGet:
-        path: /upstream/livez
-        port: {{ include "c8s.attestProxyHealthPort" . }}
+        path: /api/livez
+        port: {{ include "c8s.attestationApiProbePort" . }}
       periodSeconds: 30
       timeoutSeconds: 5
       failureThreshold: {{ div $probeWindowSeconds 30 }}
@@ -51,6 +48,10 @@ containers:
       - name: config
         mountPath: /mnt/c8s-data/attestation-api
         readOnly: true
+      # Read-write: the API stages its socket in a private directory here
+      # before moving it into place.
+      - name: socket-dir
+        mountPath: {{ include "nri-image-policy.runtimeDir" . }}
       {{- range .Values.attestationApi.devices }}
       - name: {{ base . | replace "_" "-" }}
         mountPath: {{ . }}
@@ -62,45 +63,42 @@ containers:
       limits:
         cpu: 500m
         memory: 256Mi
-  # The on-node front door: publishes the pod-loopback API on a
-  # hostPath Unix socket next to the admission inventory's socket, so
-  # exactly host processes and pods the socket dir is mounted into can
-  # request evidence.
-  - name: attest-proxy
+  # Serves the kubelet's probes for the API's socket; it never binds it.
+  - name: probes
     image: {{ include "c8s.image" . }}
     imagePullPolicy: IfNotPresent
     command: {{ include "c8s.entrypoint" (dict "root" . "valuePath" "image") }}
     args:
       - attest-proxy
+      - probes
       - --socket={{ include "c8s.attestationApiSocket" . }}
-      - --upstream=http://127.0.0.1:{{ include "c8s.attestationApiPort" . }}
-      - --health-addr=:{{ include "c8s.attestProxyHealthPort" . }}
+      - --addr=:{{ include "c8s.attestationApiProbePort" . }}
     ports:
       - name: health
-        containerPort: {{ include "c8s.attestProxyHealthPort" . }}
-    # uid 0 so the socket is root-owned (callers reject a socket owned
-    # by anyone but root or themselves); runAsGroup is the socket's
-    # group so the chgrp needs no CAP_CHOWN.
+        containerPort: {{ include "c8s.attestationApiProbePort" . }}
+    # Connects as the socket's group; the read-only mount keeps it from
+    # binding or replacing the socket.
     securityContext:
-      runAsUser: 0
-      runAsGroup: 65532
+      runAsUser: 65532
+      runAsGroup: {{ include "c8s.nodeSocketGID" . }}
+      runAsNonRoot: true
       allowPrivilegeEscalation: false
       readOnlyRootFilesystem: true
       capabilities:
         drop: [ALL]
       seccompProfile:
         type: RuntimeDefault
-    # HTTP, not exec: a locked node image denies every runc exec it was not granted, so an
-    # exec probe can never pass there (c8s internal/cmds/c8srunc). Readiness
-    # runs the `attest-proxy healthcheck` round-trip over the proxy's own
-    # socket; liveness checks only that the health server answers and the
-    # socket file exists, so a hung API never restarts the proxy.
+    # HTTP, not exec: a locked node image denies every runc exec it was not
+    # granted, so an exec probe can never pass there (c8s
+    # internal/cmds/c8srunc). Readiness is the /health round-trip with status
+    # ok; liveness checks only that the probe server answers, so a hung API
+    # never restarts the sidecar.
     readinessProbe:
       httpGet:
         path: /healthz
         port: health
       initialDelaySeconds: 2
-      # Above the healthcheck's internal 3s budget (kubelet default is 1s).
+      # Above the handler's 3s budget (kubelet default is 1s).
       timeoutSeconds: 5
     livenessProbe:
       httpGet:
@@ -109,11 +107,9 @@ containers:
       periodSeconds: 30
       timeoutSeconds: 5
     volumeMounts:
-      - name: config
-        mountPath: /mnt/c8s-data/attestation-api
-        readOnly: true
       - name: socket-dir
         mountPath: {{ include "nri-image-policy.runtimeDir" . }}
+        readOnly: true
     resources:
       requests:
         cpu: 10m
@@ -189,8 +185,9 @@ spec:
     spec:
 {{- include "c8s.attestationApiPodSpec" . | nindent 6 }}
 ---
-# The API binds pod loopback, so nothing on the pod network can reach it; this
-# policy is the second line, keeping even an accidental rebind pod-unreachable.
+# The API binds only the node-local socket, so nothing on the pod network can
+# reach it; this policy is the second line, keeping even an accidental TCP bind
+# pod-unreachable.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

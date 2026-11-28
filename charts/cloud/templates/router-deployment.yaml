@@ -88,10 +88,9 @@ volumes:
 securityContext:
   runAsNonRoot: true
   fsGroup: {{ include "c8s.certFsGroup" "" }}
-  # workloadclaims.InventorySocketGID: the inventory and attest-proxy
-  # chgrp their sockets to this group so the non-root get-cert sidecar
-  # can connect.
-  supplementalGroups: [65532]
+  # The inventory and the attestation-api chgrp their sockets to this group
+  # so the non-root get-cert sidecar can connect.
+  supplementalGroups: [{{ include "c8s.nodeSocketGID" . }}]
   seccompProfile:
     type: RuntimeDefault
 {{- end -}}

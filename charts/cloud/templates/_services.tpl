@@ -1,7 +1,7 @@
 {{/* Services helpers. See ../helpers/services/README.md. */}}
 
-{{/* The attestation-api's Unix socket, which its attest-proxy serves in the
-     node runtime directory beside the admission inventory's. */}}
+{{/* The attestation-api's Unix socket, which it binds in the node runtime
+     directory beside the admission inventory's. */}}
 {{- define "c8s.attestationApiSocket" -}}
 {{ include "nri-image-policy.runtimeDir" . }}/attestation-api.sock
 {{- end -}}
@@ -10,10 +10,12 @@
 unix://{{ include "c8s.attestationApiSocket" . }}
 {{- end -}}
 
-{{- define "c8s.attestationApiPort" -}}8400{{- end -}}
+{{/* workloadclaims.InventorySocketGID: the group of the node-local sockets,
+     so non-root clients connect by membership. */}}
+{{- define "c8s.nodeSocketGID" -}}65532{{- end -}}
 
-{{/* The attest-proxy's health listener, which kubelet probes. */}}
-{{- define "c8s.attestProxyHealthPort" -}}8401{{- end -}}
+{{/* The probe sidecar's listener, which kubelet probes. */}}
+{{- define "c8s.attestationApiProbePort" -}}8401{{- end -}}
 
 {{- define "c8s.attestationApiSocketVolume" -}}
 - name: attestation-api-socket
@@ -30,16 +32,12 @@ unix://{{ include "c8s.attestationApiSocket" . }}
 
 {{- define "c8s.attestationApiConfig" -}}
 [server]
-# Pod loopback only: consumers enter through the attest-proxy sidecar's
-# node-local Unix socket; nothing routable can reach /attest.
-bind = "127.0.0.1:{{ include "c8s.attestationApiPort" . }}"
-
-[server.tls]
-enabled = false
+# The node-local socket is the only listener: nothing routable can reach
+# /attest.
+bind = "{{ include "c8s.attestationApiURL" . }}"
+socket_mode = "0660"
+socket_group = {{ include "c8s.nodeSocketGID" . }}
 
 [attestation]
 enabled = true
-
-[certs]
-cache_max_entries = 1024
 {{- end -}}
