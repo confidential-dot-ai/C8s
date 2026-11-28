@@ -591,8 +591,8 @@ refuses, so write that entry yourself
 The chart ships one ingress policy per component it installs, each admitting
 only the ports that pod answers on: 9443, 8081 and 8080 for the operator pod,
 8443 for the router plus the ACME HTTP-01 port `8080` on a baked node, and
-nothing at all for attestation-api and volumed, which answer
-on pod loopback and a node-local socket. None of them carries a `from`, so each
+nothing at all for attestation-api and volumed, which serve their APIs
+on node-local sockets. None of them carries a `from`, so each
 narrows which port answers, not who may connect: the router is public and the
 API server's address is not nameable. They are ingress-only — outward reach is
 the node's packet ruleset — and additive, so another port is your own

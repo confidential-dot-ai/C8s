@@ -66,9 +66,8 @@ ta:
   operatorKeys: ""
 
 ## DaemonSet running the attestation-api image from github.com/confidential-dot-ai/attestation-rs.
-## Evidence generation is node-local only: the API binds pod loopback and the
-## attest-proxy sidecar serves it on a hostPath Unix socket in
-## /run/nri-image-policy (0660, root:65532).
+## Evidence generation is node-local only: the API binds a hostPath Unix
+## socket in /run/nri-image-policy (0660, root:65532) and no TCP port.
 attestationApi:
   image:
     repository: ghcr.io/confidential-dot-ai/attestation-api

@@ -105,7 +105,7 @@ and the commands defined in `cmd/c8s` itself: `install`, `uninstall`, `operator`
 | `c8s-runc`: privilege floor, exec denial | measured images | `internal/cmds/c8srunc` |
 | Sidecars: `get-cert` (`c8s-cert`), `armtls-mesh` (`c8s-mesh`), `probe-file` (`c8s-cert-wait`), and when a pod asks for them `get-secret` (`c8s-secret`) and `get-volume` (`c8s-volume`) | every member pod | `internal/cmds/{getcert,armtlsmesh,probefile,getsecret,getvolume,sidecar}` |
 | `ta-attest`, `allowlist-proxy`, `acme` | the router pod (the attestation container is named `ta-attest`) | `internal/cmds/{taattest,allowlistproxy,acme}`, `pkg/overenc`, `pkg/routes` |
-| `volumed`, `attest-proxy`, `volume attach\|detach` | the node | `internal/cmds/{volumed,attestproxy,volume}` |
+| `volumed`, `attest-proxy` (and `attest-proxy probes` beside the chart's attestation-api), `volume attach\|detach` | the node | `internal/cmds/{volumed,attestproxy,volume}` |
 | `worker stage`, `launch-config stage`, `node-services`, `pod-status` | guest boot | `internal/cmds/{worker,nodeservices,podstatus}`, `internal/podlaunch` |
 | Operator CLIs: `keys`, `measurements`, `allowlist`, `routes`, `secrets`, `volume create`, `verify`, `ta verify\|ca\|config\|ha` | the operator's machine | `internal/cmds/{keys,measurements,allowlist,routes,secrets,volume,verify,taca,talaunch,ta}`, with `internal/cmds/taconn` for the TA connection |
 
@@ -116,7 +116,9 @@ Shared libraries: `pkg/armtls` (TLS configs, pins, certificate extensions),
 `charts/embed.go`. Guest images are under `images/`, harnesses under `test/`.
 
 Hardware evidence is produced by the node-local `attestation-api`, which is built
-outside this repository. armTLS peers and the TA verify evidence through it. `c8s
+outside this repository. The cloud chart's DaemonSet binds it on
+`/run/nri-image-policy/attestation-api.sock`; on the measured node image it
+binds loopback and `attest-proxy` publishes it on that socket. armTLS peers and the TA verify evidence through it. `c8s
 verify`, the operator CLIs (through `taconn`) and the operator's Pod CVM
 provider verify in-process with the attestation-go library
 (`internal/localverify`, `internal/guestverify`).

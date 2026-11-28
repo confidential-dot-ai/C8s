@@ -47,7 +47,7 @@ type VerifyPolicy struct {
 	// SECURITY: the /verify response is currently not signed; the verifier
 	// trusts whatever this URL returns. Operators MUST point this at an
 	// attestation-api inside the same TCB (e.g. the node-local Unix socket
-	// the DaemonSet's attest-proxy serves, or an in-guest loopback service).
+	// the DaemonSet's attestation-api binds, or an in-guest loopback service).
 	// A response-signing scheme would lift this constraint.
 	AttestationApiURL string
 

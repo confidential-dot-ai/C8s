@@ -58,8 +58,8 @@ subset a pull request runs.
 
 The TEE is replaced at exactly one point: evidence generation. The chart's
 attestation-api DaemonSet runs `test/mock-attestation`, which serves synthetic
-SNP reports with an all-zero launch measurement behind the chart's own
-attest-proxy socket. It answers verification requests too, so no hop
+SNP reports with an all-zero launch measurement on the chart's own
+attestation-api socket. It answers verification requests too, so no hop
 proves a hardware property; what matches production is the pinning — that
 measurement is the one this cluster's TA pin and node pins carry, compared
 exactly as in production — and every component delegating verification to the
